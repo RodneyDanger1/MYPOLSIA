@@ -28,10 +28,10 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 | Agent | Responsibility | Schedule |
 |-------|---------------|----------|
 | **Orchestrator** | Writes morning plan + evening summary | 06:00 / 20:00 |
-| **Business Planning** | Strategy, KPIs, growth recommendations | Daily |
-| **Competitor Research** | Web search, profile updates | Daily |
+| **Business Planning** | Strategy, KPIs, growth recommendations | Via the morning plan (no beat entry) |
+| **Competitor Research** | Web search, profile updates | Via the morning plan (no beat entry) |
 | **Social Media** | Draft + post tweets | Every 2h |
-| **Email Outreach** | Prospect finding + cold email sequences | Every 3h |
+| **Email Outreach** | Prospect finding + cold email sequences | On demand — no beat entry creates it |
 | **Customer Support** | Read inbox, draft replies | Every 3h |
 | **Ads Management** | Google + Meta campaign optimization | Every 6h |
 | **Code Generation** | Ship features, open PRs | On demand |
@@ -88,6 +88,21 @@ Fill in the relevant sections of `.env` to activate each integration:
 - **Google Ads / Meta Ads** — Campaign management
 - **Stripe** — Revenue and expense tracking
 - **GitHub** — Open PRs from the code generation agent
+
+## Known gaps (measured, not hidden)
+
+Things this repository declares or advertises that are **not** yet true, recorded here instead of being
+quietly relaxed. Each one names its measurement.
+
+- **Backend unit coverage is 51.48%** (2,267 of 4,404 statements, `pytest tests/unit --cov=app`), against the
+  `fail_under = 75` this project originally declared. No run of this repository has ever met 75%, so the gate
+  has been **ratcheted to the measured floor (51)**: it now fails the moment coverage drops below what was
+  measured, and closing the gap to 75% is open work rather than a number that is quietly edited away.
+- **Two advertised capabilities have no producer wired in.** The policy firewall's per-channel send caps
+  read `sends_today` from `channel_sends`, which currently has no writer anywhere in the tree (so the caps
+  cannot fire), and the finance agents' summary reads snapshot/expense tables whose writers
+  (`upsert_revenue_snapshot`, `record_expense`, the ad-metric writers) have no callers. Both are honest
+  0-with-no-data situations today; both are tracked as work, not presented as working features.
 
 ## Development
 

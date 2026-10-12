@@ -24,12 +24,14 @@ from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.core.errors import E_REDIS, PolsiaError
 from app.core.security import check_api_key
 from app.schemas.task import AgentStatusResponse, AgentTriggerRequest, AgentTriggerResponse
 from app.services.task_service import (
     VALID_AGENT_TYPES,
     create_task,
     get_agent_statuses,
+    update_task_status,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -78,10 +80,26 @@ async def trigger_agent(
         # the loop free; the bounded broker transport (celery_app/celery_config.py) keeps the thread
         # from waiting out a long ladder before the except branch below handles the outage.
         await asyncio.to_thread(run_agent_task.delay, task.id)
-    except Exception:  # broker unavailable: the task row still exists and is queued
+    except Exception as exc:  # broker unavailable: NO delivery was accepted for this row
+        # The row exists and will never be claimed: `claim_task`'s only caller is broker delivery, and
+        # nothing reconciles a pending row. The old branch logged this and still answered 202 +
+        # `status:"queued"` — a fake success, because the caller is told work is waiting that no worker
+        # was ever told about. Instead the row records the measured terminal state (why it will never
+        # run) and the caller gets the named refusal, which the app renders as 503 + E_REDIS + how_to_fix.
         import logging
 
         logging.getLogger(__name__).warning("failed to enqueue task %s", task.id, exc_info=True)
+        await update_task_status(
+            db,
+            task.id,
+            "failed",
+            error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
+        )
+        raise PolsiaError(
+            E_REDIS,
+            f"task #{task.id} was created but could not be handed to a worker",
+            context={"task_id": task.id, "agent_type": agent_name},
+        ) from exc
     return AgentTriggerResponse(
         status="queued",
         task_id=task.id,

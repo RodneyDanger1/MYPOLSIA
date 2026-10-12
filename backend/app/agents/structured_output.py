@@ -264,7 +264,7 @@ def coerce_types(payload: Any, field_types: dict[str, type]) -> Any:
                 out[key] = val.strip().lower() in ("true", "1", "yes")
             elif want in (int, float) and isinstance(val, str):
                 out[key] = want(float(val.strip()))
-            elif want is str and not isinstance(val, (dict, list)):
+            elif want is str and not isinstance(val, dict | list):
                 out[key] = str(val)
         except (TypeError, ValueError):
             pass  # leave as-is; the validator will report it

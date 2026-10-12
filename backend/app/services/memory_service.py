@@ -83,7 +83,7 @@ async def store_memory(
     }
     if metadata:
         chroma_metadata.update(
-            {k: v for k, v in metadata.items() if isinstance(v, (str, int, float, bool))}
+            {k: v for k, v in metadata.items() if isinstance(v, str | int | float | bool)}
         )
     try:
         collection = get_collection()

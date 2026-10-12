@@ -179,7 +179,7 @@ def build_plan(
             warn.append(f"node '{title}': non-numeric estimate coerced to defaults")
             cost, dur = 0.0, 60.0
         prio = spec.get("priority", 3)
-        prio = int(prio) if isinstance(prio, (int, float)) or (isinstance(prio, str) and prio.isdigit()) else 3
+        prio = int(prio) if isinstance(prio, int | float) or (isinstance(prio, str) and prio.isdigit()) else 3
         side_effect = SideEffect(str(spec.get("side_effect") or "internal_write"))
         plan.add(PlanNode(
             node_id=node_id, title=title, agent_type=agent,

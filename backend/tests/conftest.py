@@ -24,6 +24,12 @@ def mock_claude_cli(monkeypatch):
 @pytest_asyncio.fixture
 async def async_db_session():
     """SQLite in-memory async session — no Postgres required for unit tests."""
+    # `app.models` is imported for its REGISTRATION side effect: `Base.metadata` only knows a table once
+    # the module declaring it has been imported. Taking `Base` alone and calling `create_all` on it creates
+    # ZERO tables when nothing has imported the models yet, and the first query then dies with
+    # `no such table: tasks` — a fixture-ordering artefact that was recorded here as an unexplained puzzle
+    # and reproduced three ways before being closed by this import.
+    import app.models  # noqa: F401  (registers every table on Base.metadata)
     from app.core.database import Base
 
     engine = create_async_engine(

@@ -1,57 +1,89 @@
+"use client";
+import { useEffect, useState } from "react";
+
 import { MetricsCard } from "@/components/dashboard/MetricsCard";
 import { api, type FinanceSummary } from "@/lib/api";
-
-async function getFinanceSummary(): Promise<FinanceSummary | null> {
-  try {
-    return await api.get<FinanceSummary>("/finance/summary");
-  } catch {
-    return null;
-  }
-}
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export default async function FinancePage() {
-  const summary = await getFinanceSummary();
+/**
+ * Client component on purpose.
+ *
+ * This page used to be an async Server Component doing `await api.get(...)`. Next prerenders this route
+ * (`○ (Static)` in the build output), so that fetch ran at BUILD time and the empty result was baked into
+ * the HTML: the page showed its empty state forever, even while the API served rows. The repo's e2e run
+ * caught it — `GET /api/v1/tasks` returned 11 tasks and the page still rendered "No tasks yet."
+ *
+ * The old `catch { return [] }` made it worse: a failed read became the words "no data", which is the one
+ * thing this project forbids. Three states now, and they are different on purpose:
+ *   loading  -> a skeleton, because "not read yet" is not "empty"
+ *   error    -> the failure named on the page, never an empty list standing in for it
+ *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ */
+
+export default function FinancePage() {
+  const [data, setData] = useState<FinanceSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<FinanceSummary>("/finance/summary")
+      .then((rows) => {
+        if (!cancelled) setData(rows);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Finance</h1>
-        {summary?.last_snapshot_date && (
-          <p className="text-gray-400 text-sm">Last snapshot: {summary.last_snapshot_date}</p>
+        {data?.last_snapshot_date && (
+          <p className="text-gray-400 text-sm">Last snapshot: {data.last_snapshot_date}</p>
         )}
       </div>
+
+      {error && (
+        <p className="text-red-400" role="alert">
+          Could not load the finance summary: {error}
+        </p>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <MetricsCard
           title="MRR"
-          value={summary ? formatCents(summary.mrr_cents) : "—"}
+          value={data ? formatCents(data.mrr_cents) : "—"}
           trend="up"
         />
         <MetricsCard
           title="ARR"
-          value={summary ? formatCents(summary.arr_cents) : "—"}
+          value={data ? formatCents(data.arr_cents) : "—"}
           trend="up"
         />
         <MetricsCard
           title="Active Subscribers"
-          value={summary?.active_subscribers ?? "—"}
+          value={data?.active_subscribers ?? "—"}
         />
         <MetricsCard
           title="Stripe Balance"
-          value={summary ? formatCents(summary.stripe_balance_cents) : "—"}
+          value={data ? formatCents(data.stripe_balance_cents) : "—"}
         />
         <MetricsCard
           title="Total Ad Spend"
-          value={summary ? `$${summary.total_ad_spend_usd.toFixed(2)}` : "—"}
+          value={data ? `$${data.total_ad_spend_usd.toFixed(2)}` : "—"}
           trend="neutral"
         />
         <MetricsCard
           title="Expenses (Month)"
-          value={summary ? formatCents(summary.total_expenses_month_cents) : "—"}
+          value={data ? formatCents(data.total_expenses_month_cents) : "—"}
           trend="neutral"
         />
       </div>

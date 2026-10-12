@@ -213,7 +213,16 @@ async def test_engine_is_lazy_and_the_driver_is_needed_only_when_used():
 # 5. auth ordering: 422 for unknown agent even with NO key; 401 for known+no key
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_trigger_ordering_without_auth(api_client):
+async def test_trigger_ordering_without_auth(api_client, monkeypatch):
+    # The valid case has to reach the handler's SUCCESS path, so the broker call is stubbed out. Left
+    # unstubbed, `.delay()` against no broker raises, and the endpoint answers its honest refusal —
+    # 503 + E_REDIS, which is asserted in tests/unit/api/test_agent_trigger_nonblocking.py. That refusal
+    # is CORRECT; this test is about the ORDER of auth vs validation and must not depend on a broker.
+    # (If this stub is ever removed, the 503-vs-202 assertion below is what fails first.)
+    import celery_app.tasks.agent_tasks as agent_tasks
+
+    monkeypatch.setattr(agent_tasks.run_agent_task, "delay", lambda *a, **k: None, raising=False)
+
     unknown_no_key = await api_client.post("/api/v1/agents/nonexistent/trigger")
     known_no_key = await api_client.post("/api/v1/agents/social_media/trigger")
     unknown_with_key = await api_client.post(

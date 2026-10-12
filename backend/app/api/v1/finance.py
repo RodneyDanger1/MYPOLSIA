@@ -225,7 +225,7 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -
             event_type=str(event.get("type") or "unknown"),
             raw_payload=event,
             customer_id=data_object.get("customer"),
-            amount_cents=int(amount) if isinstance(amount, (int, float)) else None,
+            amount_cents=int(amount) if isinstance(amount, int | float) else None,
             currency=data_object.get("currency"),
         )
     return {"received": True}

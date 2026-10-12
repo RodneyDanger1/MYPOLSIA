@@ -2,7 +2,9 @@
 (required by alembic/env.py and tests/integration/conftest.py)."""
 # Convenience re-export: `from app.models import Base` also works.  The canonical
 # import used by every shipped artifact is `from app.core.database import Base`.
-from app.core.database import Base as Base  # noqa: E402  (load-bearing re-export: importing app.models is what registers every table on Base.metadata, which alembic/env.py and tests/integration/conftest.py depend on — the `as Base` spelling marks it as an intentional re-export rather than a dead import)
+from app.core.database import (
+    Base as Base,  # noqa: E402  (load-bearing re-export: importing app.models is what registers every table on Base.metadata, which alembic/env.py and tests/integration/conftest.py depend on — the `as Base` spelling marks it as an intentional re-export rather than a dead import)
+)
 from app.models.ads import AdCampaign, AdMetric
 from app.models.company import CompanyConfig
 from app.models.competitor import Competitor

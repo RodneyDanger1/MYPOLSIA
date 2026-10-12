@@ -306,7 +306,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # ── 4. persist: run accounting, task outcome, activity ───────────────────
     status = "failed" if error else "completed"
     summary = result.get("summary") if isinstance(result, dict) else None
+    retryable = is_retryable(failure) if failure is not None else False
     attempts = 0
+    requeued = False
     async with session_factory() as db:
         run_row = await finish_agent_run(
             db,
@@ -350,16 +352,29 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 task_row.heartbeat_at = None
                 if status == "failed":
                     # attempts = failures recorded for this row; it drives the retry ladder
-                    # in run_agent_task (and is what makes a "failed" row claimable again).
+                    # in run_agent_task.
                     task_row.attempts = int(task_row.attempts or 0) + 1
                     attempts = int(task_row.attempts)
+                    if retryable and attempts <= settings.agent_max_retries:
+                        # A retry is about to be scheduled — and a Celery retry is delivered as a
+                        # NEW message for the same task_id, which must CLAIM the row again.  The
+                        # service's claim accepts only `pending` rows, so a retryable failure that
+                        # left the row `failed` would make its own retry un-runnable: re-delivery
+                        # finds nothing claimable, returns {"status": "skipped", "reason":
+                        # "E_TASK_NOT_RUNNABLE"}, and the eager runner even reports SUCCESS for it
+                        # (measured: probe_harness.py §5 before this fix).  So the row is requeued
+                        # here — `error_message` keeps the failure, `attempts` the count — and the
+                        # retry's claim counts the next execution.  A terminal failure (not
+                        # retryable, or the ladder exhausted) still ends `failed`.
+                        task_row.status = "pending"
+                        requeued = True
             await log_activity(
                 db,
                 agent_type=agent_type,
                 action="task_completed" if status == "completed" else "task_failed",
                 summary=summary or error or "No output",
                 level="success" if status == "completed" else "error",
-                detail={"task_id": task_id, "duration_secs": duration},
+                detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued},
             )
         await db.commit()
 
@@ -370,7 +385,8 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         "duration_secs": duration,
         "attempts": attempts,
         "error": error,
-        "retryable": is_retryable(failure) if failure is not None else False,
+        "retryable": retryable,
+        "requeued": requeued,  # True when this failure put the row back in the queue for its retry
         "_exception": failure,  # popped by the sync wrapper; never returned to Celery
     }
 

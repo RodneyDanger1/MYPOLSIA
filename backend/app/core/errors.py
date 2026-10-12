@@ -128,6 +128,9 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_RATE_LIMITED: 429,
     E_SANDBOX_BLOCKED: 403,
     E_POLICY_DENIED: 403,
+    # A broker/dependency outage is neither the caller's fault nor an unmapped internal error:
+    # 503 says "this service cannot take the work right now", which is exactly what happened.
+    E_REDIS: 503,
 }
 
 

@@ -12,6 +12,12 @@ export default defineConfig({
   // a backstop so a genuinely intermittent failure is still visible as "flaky" rather than hidden.
   expect: { timeout: 10_000 },
   reporter: [["html", { outputFolder: "playwright-report" }], ["list"]],
+  // Serial: every spec that seeds fixtures (social posts, prospects, ad campaigns) writes into the ONE
+  // shared dev SQLite file the backend serves from, and the /tasks spec drives a write through the real
+  // trigger endpoint.  With parallel workers a file's "empty state" read can race another file's
+  // just-seeded row, and a 4-core host already shared with other agents makes that worse, not better.
+  // One worker keeps each file's fixture lifecycle honest; the retries:1 backstop above stays.
+  workers: 1,
   use: {
     baseURL: process.env.BASE_URL ?? "http://localhost",
     extraHTTPHeaders: {
