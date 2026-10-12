@@ -94,10 +94,11 @@ Fill in the relevant sections of `.env` to activate each integration:
 Things this repository declares or advertises that are **not** yet true, recorded here instead of being
 quietly relaxed. Each one names its measurement.
 
-- **Backend unit coverage is 51.48%** (2,267 of 4,404 statements, `pytest tests/unit --cov=app`), against the
-  `fail_under = 75` this project originally declared. No run of this repository has ever met 75%, so the gate
-  has been **ratcheted to the measured floor (51)**: it now fails the moment coverage drops below what was
-  measured, and closing the gap to 75% is open work rather than a number that is quietly edited away.
+- **Backend unit coverage is 57.6%** (2,554 of 4,431 statements, `pytest tests/unit --cov=app` — it was
+  51.48% before the queue-safety, model-freeze and auth tests landed), against the `fail_under = 75` this
+  project originally declared. No run of this repository has ever met 75%, so the gate is a **ratchet at
+  the measured floor (57)**: it fails the moment coverage drops below what was measured and moves up as the
+  suite grows. Closing the gap to 75% is open work rather than a number that is quietly edited away.
 - **Two advertised capabilities have no producer wired in.** The policy firewall's per-channel send caps
   read `sends_today` from `channel_sends`, which currently has no writer anywhere in the tree (so the caps
   cannot fire), and the finance agents' summary reads snapshot/expense tables whose writers
