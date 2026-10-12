@@ -11,8 +11,14 @@ from app.config import settings
 def _matches(provided: str | None) -> bool:
     expected = settings.api_key or ""
     if not expected:
-        # No key configured: only allow when the caller sends nothing.
-        return provided is None
+        # No key configured: the service is OPEN (the lifespan warns loudly about this rather than
+        # refusing to start). A caller that sends an EMPTY value is sending no credential, so it must
+        # be treated as absent. This used to be `provided is None`, which rejected a blank header —
+        # and the shipped frontend ALWAYS sets the header (`"X-API-Key": NEXT_PUBLIC_API_KEY ?? ""`),
+        # so against an open backend every page's data load returned 401 and the UI rendered its
+        # error/empty states. Found by the e2e gate, which had never been run: the browser snapshot
+        # read `- main: Failed to load config` while curl (no header at all) got 200.
+        return not (provided or "").strip()
     return secrets.compare_digest(provided or "", expected)
 
 

@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 test.describe("Agents page", () => {
   test("lists all agents with Run Now button", async ({ page }) => {
     await page.goto("/agents");
-    await expect(page.getByText("Agents")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Run Now" }).first()).toBeVisible();
   });
 

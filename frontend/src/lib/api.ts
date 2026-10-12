@@ -77,7 +77,10 @@ async function apiFetch<T>(
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": API_KEY,
+          // Only send a credential when there IS one. An empty `X-API-Key` is not a credential, and a
+          // backend that is open (no API_KEY configured) rejects a blank value where it accepts no
+          // header at all — which locked the whole UI out until the e2e gate caught it.
+          ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
           ...init.headers,
         },
       });
