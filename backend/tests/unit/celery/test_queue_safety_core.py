@@ -190,7 +190,14 @@ def test_invariant_2_a_failed_run_records_error_and_counts_the_failure(
     assert row["error_message"] and E_POLICY_DENIED in row["error_message"]
     assert row["result_summary"] is None
     assert row["claimed_by"] is None and row["claimed_at"] is None and row["heartbeat_at"] is None
-    assert row["attempts"] == claimed_attempts + 1, "the failure path must count this failure"
+    # `attempts` counts EXECUTIONS and the claim is what increments it, so a failed execution leaves the
+    # number exactly where the claim put it. This previously asserted `claimed_attempts + 1` with the
+    # message "the failure path must count this failure" — the observed arithmetic of a double count that
+    # halved the retry ladder (the caller's failure path incremented a column the service had already
+    # incremented). Pinning it here is the guard against that regression coming back.
+    assert row["attempts"] == claimed_attempts, (
+        "the failure path must NOT add a second increment — the claim already counted this execution"
+    )
 
     runs = queue_db.query("SELECT * FROM agent_runs WHERE task_id = ?", (task_id,))
     assert len(runs) == 1 and runs[0]["status"] == "failed"
@@ -240,7 +247,7 @@ def test_invariant_2_a_retryable_failure_requeues_the_row_for_its_retry(
     assert row["error_message"] and "E_CLI_TIMEOUT" in row["error_message"]
     assert row["result_summary"] is None
     assert row["claimed_by"] is None and row["claimed_at"] is None and row["heartbeat_at"] is None
-    assert row["attempts"] == 2  # one claim + one recorded failure
+    assert row["attempts"] == 1  # one claim, one execution — the failure adds no second count
 
     # the retry: a fresh delivery, with a working agent this time
     failing.calls.clear()
@@ -254,7 +261,9 @@ def test_invariant_2_a_retryable_failure_requeues_the_row_for_its_retry(
     assert working.calls[0]["row_at_call"]["status"] == "in_progress"
     final = queue_db.row(task_id)
     assert final["status"] == "completed" and final["result_summary"] is not None
-    assert final["attempts"] == 3, "the retry's claim counts the second attempt"
+    assert final["attempts"] == 2, (
+        "each claim counts exactly one execution: the failed delivery and this retry"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

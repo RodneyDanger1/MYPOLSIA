@@ -25,10 +25,20 @@ from app.api.v1 import (
 )
 from app.config import settings
 from app.core.database import dispose_engine
-from app.core.errors import PolsiaError, http_status_for, to_http_detail
+from app.core.errors import E_AUTH, PolsiaError, http_status_for, to_http_detail
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
+
+
+def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
+    """Extra headers a named refusal must carry.
+
+    Auth is the one refusal with a protocol-level challenge: an E_AUTH response keeps the
+    `WWW-Authenticate: X-API-Key` header the previous bare-HTTPException path sent, so a client that
+    looks for it is not silently worse off for the refusal having become nameable.
+    """
+    return {"WWW-Authenticate": "X-API-Key"} if exc.code == E_AUTH else {}
 
 
 @asynccontextmanager
@@ -84,7 +94,7 @@ def create_app() -> FastAPI:
             logger.warning("request %s failed: %s", request_id, exc)
             return JSONResponse(
                 status_code=http_status_for(exc.code), content=to_http_detail(exc),
-                headers={"X-Request-ID": request_id},
+                headers={"X-Request-ID": request_id, **_refusal_headers(exc)},
             )
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-ID"] = request_id
@@ -103,6 +113,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
+            headers=_refusal_headers(exc),
         )
 
     api_v1 = APIRouter(prefix="/api/v1")

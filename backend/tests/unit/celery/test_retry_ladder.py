@@ -6,8 +6,15 @@ exponential backoff; anything else is terminal and is RAISED (a failed run must 
 task state, never a success-shaped dict the result backend stores as SUCCESS).
 
 `retry_countdown(attempts) = min(600, task_retry_backoff_seconds * 2**(attempts-1))`, where
-`attempts` is the row's counter after this failure — with the shipped defaults (20 s base,
-`agent_max_retries=2`) the first retry waits 40 s.
+`attempts` is the row's execution counter after this failure — the CLAIM increments it on every
+delivery, and only the claim does, so with the shipped defaults (20 s base, `agent_max_retries=2`)
+the first failure carries `attempts = 1` and the first retry waits 20 s, the second 40 s.
+
+(That sentence used to say "the first retry waits 40 s" because the caller's failure path added a
+SECOND increment to a column the service had already incremented: every failure was counted twice,
+so the ladder spent two of its slots on the first execution. Fixed in the failure path of
+`_execute_agent_task`; the assertions below now pin the corrected arithmetic, and the count is what
+fails if the double increment ever comes back.)
 
 The ladder is exercised two ways: the Celery task called directly (recording the real
 `retry` call), and through the real eager path (`apply()`), where Celery's eager retry
@@ -69,12 +76,13 @@ def test_invariant_5_a_retryable_failure_asks_for_a_retry_with_the_ladder_backof
     assert raised.value.code == E_CLI_TIMEOUT, "the original failure must propagate"
     assert len(retry_recorder) == 1, "a retryable failure must ask for exactly one retry"
     assert retry_recorder[0]["exc_code"] == E_CLI_TIMEOUT
-    assert retry_recorder[0]["countdown"] == retry_countdown(2) == 40.0, (
-        "the backoff is the ladder's, computed from the attempts the row now carries"
+    assert retry_recorder[0]["countdown"] == retry_countdown(1) == 20.0, (
+        "the backoff is the ladder's, computed from the attempts the row now carries — and the first "
+        "failed execution carries ONE attempt, because the claim is what counts executions"
     )
 
     row = queue_db.row(task_id)
-    assert row["attempts"] == 2, "one claim + one recorded failure"
+    assert row["attempts"] == 1, "the claim counted this execution; the failure adds nothing"
     assert row["status"] == "pending", "the row is requeued for the retry it just scheduled"
 
 
@@ -101,19 +109,24 @@ def test_invariant_5_a_non_retryable_failure_is_terminal_and_never_asks_for_a_re
 
     row = queue_db.row(task_id)
     assert row["status"] == "failed"
-    assert row["attempts"] == 2
+    assert row["attempts"] == 1, "one claim, one execution; a terminal failure adds no second count"
 
 
-def test_invariant_5_the_ladder_retries_once_and_the_second_failure_is_terminal(
+def test_invariant_5_the_ladder_retries_up_to_the_cap_and_then_goes_terminal(
     queue_db, install_run_spy, eager_delivery, retry_recorder
 ):
-    """INVARIANT 5c — end to end through Celery eager mode: retry #1 re-runs, failure #2 stops.
+    """INVARIANT 5c — end to end through Celery eager mode: retries re-run, the cap stops it.
 
     `apply()` runs the task in-process; when the body asks for a retry, Celery's eager path
     re-executes the task body with `retries` incremented — exactly the redelivery the ladder
-    depends on.  With an always-failing agent the ladder must run the agent exactly twice (the
-    first execution and its retry), then go terminal: `apply()` reports FAILURE, the retry
-    recorder holds exactly one request, and the row carries the second failure.
+    depends on.  With an always-failing agent and `agent_max_retries = 2`, the corrected arithmetic
+    gives: execution 1 (attempts 1, retry), execution 2 (attempts 2, retry), execution 3
+    (attempts 3 > cap — terminal).  So the agent runs THREE times, TWO retries are requested, and
+    `apply()` reports FAILURE.
+
+    This test previously pinned one retry and two executions, which was the double-counted
+    arithmetic: the failure path added an increment the claim had already added, so the first
+    failure consumed two of the ladder's slots.
 
     RED leg (observed before the requeue fix in the receipt): with a retryable failure writing
     `failed`, the redelivered body cannot claim its own row, so it returns
@@ -128,15 +141,19 @@ def test_invariant_5_the_ladder_retries_once_and_the_second_failure_is_terminal(
 
     result = eager_delivery(task_id)
 
-    assert len(spy.calls) == 2, "the retry must have re-run the agent (first attempt + retry)"
-    assert result.state == "FAILURE", "the second failure is terminal and must be a FAILURE"
-    assert len(retry_recorder) == 1, "the ladder asks for exactly one retry (the row's counter is spent)"
+    assert len(spy.calls) == 3, (
+        "the ladder must run the agent once per attempt up to the cap: first execution + 2 retries"
+    )
+    assert result.state == "FAILURE", "the failure past the cap is terminal and must be a FAILURE"
+    assert len(retry_recorder) == 2, "the ladder asks for exactly `agent_max_retries` retries"
 
     row = queue_db.row(task_id)
     assert row["status"] == "failed", "after the retry's failure the row is terminal"
-    assert row["attempts"] == 4, "two claims + two recorded failures"
+    assert row["attempts"] == 3, "three executions, each counted once by its claim"
     assert row["claimed_by"] is None and row["claimed_at"] is None and row["heartbeat_at"] is None
     assert E_CLI_TIMEOUT in (row["error_message"] or "")
 
     runs = queue_db.query("SELECT status FROM agent_runs WHERE task_id = ? ORDER BY id", (task_id,))
-    assert [r["status"] for r in runs] == ["failed", "failed"], "one run ledger row per execution"
+    assert [r["status"] for r in runs] == ["failed", "failed", "failed"], (
+        "one run ledger row per execution"
+    )

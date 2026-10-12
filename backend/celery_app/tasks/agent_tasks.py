@@ -85,8 +85,10 @@ def is_retryable(exc: BaseException | None) -> bool:
 def retry_countdown(attempts: int) -> float:
     """Exponential backoff for the Nth failed attempt, capped at 10 minutes.
 
-    `attempts` is the number of failures already recorded on the row, so the first retry
-    waits `task_retry_backoff_seconds`, the second twice that, and so on.
+    `attempts` counts EXECUTIONS of the row (the claim increments it on every delivery), so the first
+    failed execution passes 1 and waits `task_retry_backoff_seconds`, the second twice that, and so on.
+    The docstring here previously called it "the number of failures already recorded", which is what the
+    caller double-counted against — see the failure path in `_execute_agent_task`.
     """
     base = max(1, int(settings.task_retry_backoff_seconds))
     return min(600.0, float(base) * (2 ** max(0, attempts - 1)))
@@ -351,10 +353,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 task_row.claimed_at = None
                 task_row.heartbeat_at = None
                 if status == "failed":
-                    # attempts = failures recorded for this row; it drives the retry ladder
-                    # in run_agent_task.
-                    task_row.attempts = int(task_row.attempts or 0) + 1
-                    attempts = int(task_row.attempts)
+                    # `attempts` counts EXECUTIONS, and the claim already incremented it for this one
+                    # (task_service.claim_task). This site used to increment again, so a single failed
+                    # execution added 2 — which halved the retry ladder (`attempts <= agent_max_retries`
+                    # spent two of its three slots on the first failure) and skewed
+                    # `requeue_stale_claims`'s terminal rule, which compares the same column against
+                    # `task_max_attempts`. The measured arithmetic is pinned by
+                    # tests/unit/celery/test_queue_safety_core.py.
+                    attempts = int(task_row.attempts or 0)
                     if retryable and attempts <= settings.agent_max_retries:
                         # A retry is about to be scheduled — and a Celery retry is delivered as a
                         # NEW message for the same task_id, which must CLAIM the row again.  The
