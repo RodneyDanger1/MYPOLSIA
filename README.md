@@ -117,6 +117,53 @@ CLAUDE_CLI_MOCK=true pytest tests/unit/ -v --cov=app
 
 The `CLAUDE_CLI_MOCK=true` flag makes all agents return a mock response without invoking the CLI binary. This is also how CI works.
 
+### Running the stack without Docker (verified on this host)
+
+Docker is not required to exercise the app end to end. This is the path that was actually run:
+
+```bash
+cd backend
+export DATABASE_URL="sqlite+aiosqlite:///./polsia-dev.sqlite"
+../.venv/Scripts/python.exe -m alembic upgrade head          # shipped migrations, indexes included
+CLAUDE_CLI_MOCK=true SANDBOX_MODE=true API_KEY=dev-key \
+  ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+cd ../frontend
+NEXT_PUBLIC_API_KEY=dev-key NEXT_PUBLIC_API_URL=http://localhost npm run build
+npm start                                                     # serves .next/standalone — see below
+
+# the browser expects a reverse proxy at :80 (nginx in the container stack):
+#   /api/* and /ws/*  ->  :8000          everything else  ->  :3000
+```
+
+Three things that bite, each of them measured rather than assumed:
+
+* **`npm start` runs `scripts/start-standalone.mjs`, not `next start`.** The build uses
+  `output: standalone`, and `next start` refuses that configuration outright ("Use
+  `node .next/standalone/server.js` instead"). The script performs the same two copies the Dockerfile's
+  runner stage does (`static` and `public` into the standalone tree), refuses by name
+  (`E_FRONTEND_NOT_BUILT`) when there is no build, and binds `0.0.0.0` — the standalone server takes its
+  bind address from `HOSTNAME`, which on Windows is the machine name, so an unset override listens on one
+  interface only and `127.0.0.1` gets connection-refused.
+* **The frontend's API key must match the backend's.** `NEXT_PUBLIC_API_KEY` is inlined at BUILD time and
+  sent as `X-API-Key` on every request. With `API_KEY` unset the service is open (a blank header counts as
+  no credential); with `API_KEY=dev-key` anything else is 401. Mismatch them and every page renders its
+  empty/error state while `curl` — which sends no header — still looks healthy.
+* **SQLite covers the parts that do not need PostgreSQL.** Money columns, `FOR UPDATE SKIP LOCKED`, CHECK
+  constraints and the append-only trigger are PostgreSQL-only; `alembic upgrade head` on SQLite skips each
+  one with a printed reason.
+
+### End-to-end tests (Playwright)
+
+```bash
+cd e2e && npm install && npx playwright install chromium
+BASE_URL=http://localhost npx playwright test     # needs the stack above answering at :80
+```
+
+`e2e/_diag-browser.cjs` is a diagnostic, not a test (the runner only matches `*.spec.ts`): it prints what
+the browser actually saw — console errors, failed requests, every `/api/` status code and the rendered
+text — which is how a page that "renders" was shown to be rendering its failure state.
+
 ### Project layout
 
 ```

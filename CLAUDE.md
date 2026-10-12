@@ -54,6 +54,12 @@ API_KEY=dev-key              # X-API-Key header for dashboard API
 DATABASE_URL=sqlite+aiosqlite:///:memory:  # Unit tests use SQLite; integration tests use testcontainers
 ```
 
+**API-key semantics (measured, and easy to get wrong):** with `API_KEY` empty the service is OPEN and a
+blank `X-API-Key` counts as no credential — but a non-blank *wrong* key is still 401. The frontend sends
+`NEXT_PUBLIC_API_KEY` on every request and that value is **inlined at build time**, so the frontend build
+and the backend run must use the same key. A mismatch makes every page render its empty/error state while
+`curl` (which sends no header at all) still looks healthy — the e2e gate was what caught it.
+
 ## Test fixtures (backend/tests/conftest.py)
 
 | Fixture | What it does |

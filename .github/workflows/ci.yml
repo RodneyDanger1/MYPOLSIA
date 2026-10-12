@@ -70,5 +70,12 @@ jobs:
         run: npm ci || npm install
       - name: Lint
         run: npm run lint
+      - name: Type check
+        # `next lint` does not type-check, and the frontend job never runs `next build` (that lives in
+        # docker-build.yml) — so without this step a type error reaches CI only through the Docker path.
+        # This is exactly the gate that catches the class of bug that made `next build` fail here:
+        # `dashboard/page.tsx` fed `unknown` into a `string | number` prop, which meant the documented
+        # `docker compose up` could not build the frontend image even with every file present.
+        run: npx tsc --noEmit -p tsconfig.json
       - name: Unit tests
         run: npm test -- --watchAll=false
