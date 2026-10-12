@@ -17,6 +17,7 @@ empty database instead of 27 round trips (lane 06: 981.889 ms → 84.838 ms).
 """
 from __future__ import annotations
 
+import asyncio
 from enum import Enum
 
 from fastapi import APIRouter, Depends, Header, status
@@ -69,7 +70,14 @@ async def trigger_agent(
     try:
         from celery_app.tasks.agent_tasks import run_agent_task
 
-        run_agent_task.delay(task.id)
+        # `.delay()` is a BLOCKING call: with the Redis broker it runs redis-py's connection retry
+        # ladder, and called directly from an async handler that stalls the uvicorn event loop for the
+        # whole ladder — every concurrent request then hangs behind it. Measured by this repo's own e2e
+        # run: one "Run Now" click left GET /api/v1/config timing out at 20s while the backend log
+        # filled with `celery.backends.redis: Connection to Redis lost: Retry (7/20)`. `to_thread` keeps
+        # the loop free; the bounded broker transport (celery_app/celery_config.py) keeps the thread
+        # from waiting out a long ladder before the except branch below handles the outage.
+        await asyncio.to_thread(run_agent_task.delay, task.id)
     except Exception:  # broker unavailable: the task row still exists and is queued
         import logging
 

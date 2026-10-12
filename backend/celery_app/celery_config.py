@@ -64,6 +64,24 @@ task_reject_on_worker_lost = True
 #      `ad_metrics (campaign_id, date)`, which was the one missing.
 broker_connection_retry_on_startup = True  # a worker started before Redis must not exit
 
+# ── Bounded broker/result transports (measured defect) ────────────────────────────────────────────
+# With Redis absent, a single POST /agents/<type>/trigger produced twenty
+# `celery.backends.redis: Connection to Redis lost: Retry (n/20) in 1.00 second` lines — a ~20 s stall
+# per call, which is exactly the 20.0 s timeout the repo's own e2e run measured on GET /api/v1/config
+# while the API was otherwise idle. The caller already handles a broker outage honestly ("the task row
+# still exists and is queued"); what was missing was a bound, so the attempt is capped at ~1 s per socket
+# operation with at most one retry instead of a 20-step ladder. Mirrors app/core/redis_client.py.
+broker_transport_options = {
+    "socket_connect_timeout": 1.0,
+    "socket_timeout": 1.0,
+    "retry_policy": {"max_retries": 1, "interval_start": 0, "interval_step": 0.2, "interval_max": 0.2},
+}
+result_backend_transport_options = {
+    "socket_connect_timeout": 1.0,
+    "socket_timeout": 1.0,
+    "retry_policy": {"max_retries": 1, "interval_start": 0, "interval_step": 0.2, "interval_max": 0.2},
+}
+
 # Ceilings the upload never set (lane 04 §0: "no time/memory ceilings… a leaked CLI/Node
 # child is contained in one process").  These come from settings so a deployment can tune
 # them without editing code.

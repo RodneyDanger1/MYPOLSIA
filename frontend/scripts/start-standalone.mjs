@@ -45,11 +45,15 @@ if (await exists(path.join(root, "public"))) {
 }
 
 const port = process.env.PORT ?? "3000";
-const host = process.env.HOST;
-console.log(`starting standalone server on :${port}${host ? ` (host ${host})` : ""}`);
+// Bind all interfaces by default. The Dockerfile sets HOSTNAME=0.0.0.0 for exactly this reason: the
+// standalone server takes its bind address from HOSTNAME, and on Windows that variable is the MACHINE
+// NAME — so an unset override made it listen on 192.168.x.x alone and 127.0.0.1 (a local proxy, a
+// health check, anything fronting it) got connection-refused. Found by this repo's own e2e run.
+const host = process.env.HOST ?? "0.0.0.0";
+console.log(`starting standalone server on :${port} (host ${host})`);
 const child = spawn(process.execPath, [server], {
   cwd: standalone,
   stdio: "inherit",
-  env: { ...process.env, PORT: port, ...(host ? { HOSTNAME: host } : {}) },
+  env: { ...process.env, PORT: port, HOSTNAME: host },
 });
 child.on("exit", (code) => process.exit(code ?? 0));

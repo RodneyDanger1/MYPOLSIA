@@ -7,8 +7,11 @@ test.describe("Dashboard", () => {
   test("loads and shows metrics cards", async ({ page }) => {
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByText("Tasks Today")).toBeVisible();
-    await expect(page.getByText("MRR")).toBeVisible();
+    // `exact: true` is load-bearing: Playwright's getByText is CASE-INSENSITIVE and substring-based by
+    // default, so "Tasks Today" also matches the nine agent cards that read "· 0 tasks today" — 10
+    // elements once the grid had loaded and 1 before it, i.e. a failure that depended on load order.
+    await expect(page.getByText("Tasks Today", { exact: true })).toBeVisible();
+    await expect(page.getByText("MRR", { exact: true })).toBeVisible();
   });
 
   test("shows agent status grid", async ({ page }) => {
