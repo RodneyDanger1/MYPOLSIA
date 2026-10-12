@@ -38,3 +38,9 @@ chroma_data/
 Thumbs.db
 .vscode/
 .idea/
+
+# ── Playwright ───────────────────────────────────────────────────────────────
+# Failure artifacts (screenshots, traces, error contexts) and the HTML report are OUTPUT of a run,
+# not source: regenerated every time, and a trace bundle is megabytes of binary.
+e2e/test-results/
+e2e/playwright-report/
