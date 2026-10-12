@@ -1,0 +1,35 @@
+name: docker-build
+
+# Documented in README.md ("docker-build.yml — Build all images, health-check the stack") and
+# CLAUDE.md.  The upload shipped no .github/ directory.
+#
+# HONESTY NOTE: never executed here (no Docker on the authoring host).  This workflow is also the
+# ONLY thing that would have caught the two build-blocking absences in the upload — the missing
+# frontend/package-lock.json (`npm ci` requires it) and the missing frontend/public/ directory
+# (`COPY --from=builder /app/public ./public`).  Both are now present; `npm ci` is retried with
+# `npm install` so a stale lockfile cannot wedge the build silently.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build every image
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build
+      - name: Start the stack and health-check it
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost/api/v1/health; then exit 0; fi
+            sleep 5
+          done
+          echo "stack never became healthy" >&2
+          docker compose logs --tail=300
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

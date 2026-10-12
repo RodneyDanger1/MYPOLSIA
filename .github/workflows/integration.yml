@@ -1,0 +1,64 @@
+name: integration
+
+# Documented in README.md ("integration.yml — Integration tests (testcontainers), Playwright E2E
+# on push to main") and CLAUDE.md.  The upload shipped no .github/ directory.
+#
+# HONESTY NOTE: never executed here (no Docker on the authoring host).  The integration suite
+# skips itself cleanly when testcontainers is absent (tests/integration/conftest.py), which is
+# the behaviour this workflow relies on in CI.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CLAUDE_CLI_MOCK: "true"
+      SANDBOX_MODE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements (includes testcontainers)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Integration tests (real Postgres + Redis via testcontainers)
+        run: python -m pytest tests/integration -v -m integration
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Start the stack
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build
+      - name: Wait for the API to answer
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost/api/v1/health >/dev/null; then echo "api healthy"; exit 0; fi
+            sleep 5
+          done
+          echo "api never became healthy" >&2
+          docker compose logs --tail=200
+          exit 1
+      - name: Playwright
+        working-directory: e2e
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npx playwright test --reporter=list
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail=300
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

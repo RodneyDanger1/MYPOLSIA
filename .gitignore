@@ -1,0 +1,40 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+junit.xml
+coverage.xml
+.coverage
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+.eslintcache
+
+# ── Local state / data ────────────────────────────────────────────────────────
+# The vector store is rebuilt from the DB; it is state, not source.
+chroma_data/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# .env holds real API keys (Stripe, Twitter, SendGrid, Tavily, Ads). Only
+# .env.example is tracked; a committed .env leaks every integration at once.
+.env
+.env.local
+.env.*.local
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

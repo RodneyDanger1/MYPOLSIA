@@ -2,7 +2,10 @@ import type { Config } from "jest";
 
 const config: Config = {
   testEnvironment: "jsdom",
-  setupFilesAfterFramework: ["<rootDir>/src/__tests__/setup.ts"],
+  // Was `setupFilesAfterFramework`, which is not a Jest option (the real name is
+  // `setupFilesAfterEnv`), so `src/__tests__/setup.ts` — the file that imports
+  // `@testing-library/jest-dom` — was never loaded and every DOM matcher would have been missing.
+  setupFilesAfterEnv: ["<rootDir>/src/__tests__/setup.ts"],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },

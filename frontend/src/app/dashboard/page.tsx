@@ -3,6 +3,32 @@ import { AgentStatusGrid } from "@/components/dashboard/AgentStatusGrid";
 import { MetricsCard } from "@/components/dashboard/MetricsCard";
 import { api, type DashboardSummary } from "@/lib/api";
 
+/**
+ * KPI display helpers.
+ *
+ * `DashboardSummary.kpis` is `Record<string, unknown>` on purpose — the API carries whatever the
+ * company configured and the type must not pretend otherwise. Every read is therefore `unknown`, and
+ * feeding `unknown` straight into a `string | number` prop is a type error: it was exactly this, on
+ * the "Active Customers" card, that made `next build` fail, which means the documented frontend image
+ * could never have built. These helpers narrow it honestly — a displayable value is shown, a missing
+ * one becomes the em-dash fallback, and anything else is stringified rather than rendered as
+ * "[object Object]".
+ */
+function kpiText(value: unknown, fallback = "—"): string | number {
+  if (typeof value === "string" || typeof value === "number") return value;
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function kpiNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 async function getSummary(): Promise<DashboardSummary | null> {
   try {
     return await api.get<DashboardSummary>("/dashboard/summary");
@@ -15,6 +41,7 @@ export default async function DashboardPage() {
   const summary = await getSummary();
 
   const kpis = summary?.kpis ?? {};
+  const churn = kpiNumber(kpis.churn_rate);
 
   return (
     <div className="p-6 space-y-6">
@@ -29,17 +56,17 @@ export default async function DashboardPage() {
         />
         <MetricsCard
           title="MRR"
-          value={kpis.mrr_usd != null ? `$${kpis.mrr_usd}` : "—"}
+          value={kpis.mrr_usd == null ? "—" : `$${kpiText(kpis.mrr_usd)}`}
           trend="up"
         />
         <MetricsCard
           title="Active Customers"
-          value={kpis.active_customers ?? "—"}
+          value={kpiText(kpis.active_customers)}
         />
         <MetricsCard
           title="Churn Rate"
-          value={kpis.churn_rate != null ? `${kpis.churn_rate}%` : "—"}
-          trend={Number(kpis.churn_rate) > 5 ? "down" : "neutral"}
+          value={churn == null ? "—" : `${churn}%`}
+          trend={churn != null && churn > 5 ? "down" : "neutral"}
         />
       </div>
 

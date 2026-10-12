@@ -1,0 +1,590 @@
+"""The nine agents' output contracts (Pydantic v2) + the `--json-schema` bridge.
+
+Lifted from lane 05's `SCHEMAS.py` (draft-07 bridge, local validator, samples) and aligned with
+lane 03's per-agent contracts (`SPEC-AGENTS.md` §3), which are keyed off the DB columns each
+agent feeds: `competitors.*`, `social_posts.*`, `prospects.*` / `email_logs.*`, `ad_campaigns.*`,
+`revenue_snapshots.*`, `expense_records.*`.
+
+Two things make the schema the contract rather than decoration:
+
+  * the schema is sent to the CLI via `--json-schema` AND re-validated locally with the same
+    model, because the CLI's own validation is documented behaviour this host cannot execute
+    while the local validator is executable everywhere;
+  * a failure to satisfy it is a NAMED code (POLSIA-E110 / E_AGENT_BAD_OUTPUT), never a
+    silently-accepted half-object.
+
+`to_cli_schema()` down-converts Pydantic's draft 2020-12 to the draft-07 the CLI documents
+($defs -> definitions, $ref rewrite, `$schema`/root `title` removed); `format` is annotation-only
+for the CLI, so the formats we need (emails, dates) are enforced with patterns locally.
+
+The failure taxonomy (`FailureCode` + `REMEDIATION` + the `E_*` mapping) is re-exported here so
+one import gives a caller the schemas *and* the vocabulary for why an output was rejected.
+"""
+from __future__ import annotations
+
+from typing import Any, Literal, Optional, Union
+
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+# The failure taxonomy lives with the resolution ladder; re-exported for convenience.
+from app.agents.structured_output import (  # noqa: F401
+    FAILURE_TO_E_CODE,
+    REMEDIATION,
+    FailureCode,
+    e_code_for,
+)
+
+AGENT_TYPES = ("orchestrator", "business_planning", "competitor_research", "social_media",
+               "email_outreach", "customer_support", "ads_management", "code_generation",
+               "finance")
+# `deployment` is documented (CLAUDE.md:5, docs/ACCEPTANCE_TESTING.md:110,140-149) but has no
+# registry entry, model, table or route; adding it to AGENT_MAP would break
+# `GET /agents/status == 9` (contradiction row X-01). TaskSpec therefore accepts it as a task
+# type, and its schema exists, while the dispatcher does not ship an agent for it.
+ALL_AGENT_TYPES = AGENT_TYPES + ("deployment",)
+
+SCHEMA_VERSION = "1"
+
+
+# ---------------------------------------------------------------------------
+# common envelope
+# ---------------------------------------------------------------------------
+
+class AgentEnvelope(BaseModel):
+    """Every agent output carries these.
+
+    `status` lets the model REFUSE cleanly (`refused`) or report an honest partial instead of
+    emitting a malformed object; the conductor treats `refused` as a policy outcome, never as
+    success. `sandbox` / `drafted_not_sent` are set by the runtime (not the model) when a real
+    side effect was refused: they make "this did not happen" machine-checkable.
+    """
+
+    schema_version: Literal["1"] = SCHEMA_VERSION
+    summary: str = Field(min_length=1, max_length=4000)
+    status: Literal["ok", "partial", "refused"] = "ok"
+    notes: list[str] = Field(default_factory=list, max_length=20)
+    sandbox: bool = False
+    drafted_not_sent: bool = False
+
+
+# ---------------------------------------------------------------------------
+# 1. orchestrator — the morning plan as a DAG (+ the evening summary)
+# ---------------------------------------------------------------------------
+
+class TaskSpec(BaseModel):
+    """One planned task. `depends_on` references other tasks by TITLE (the planner resolves
+    titles to node ids, because a model cannot know content hashes)."""
+
+    title: str = Field(min_length=3, max_length=512)
+    agent_type: Literal[ALL_AGENT_TYPES]  # type: ignore[valid-type]
+    priority: int = Field(ge=1, le=5, default=3)
+    estimate_usd: float = Field(ge=0.0, le=25.0, default=0.10)
+    estimate_seconds: int = Field(ge=5, le=7200, default=120)
+    depends_on: list[str] = Field(default_factory=list, max_length=8)
+    side_effect: Literal["read", "internal_write", "external_reversible",
+                         "external_irreversible"] = "internal_write"
+    description: str = Field(default="", max_length=1000)
+    acceptance: str = Field(default="", max_length=500)
+
+
+class OrchestratorPlan(AgentEnvelope):
+    key_focus: str = Field(min_length=1, max_length=300)
+    tasks: list[TaskSpec] = Field(default_factory=list, max_length=12)
+    insights: list[str] = Field(default_factory=list, max_length=20)   # evening summary consumers
+    mode: Literal["morning", "evening"] = "morning"
+
+    @field_validator("tasks")
+    @classmethod
+    def dep_titles_must_be_unique(cls, v: list[TaskSpec]) -> list[TaskSpec]:
+        titles = [t.title for t in v]
+        if len(titles) != len(set(titles)):
+            raise ValueError("task titles must be unique (dependencies reference titles)")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# 2. business planning
+# ---------------------------------------------------------------------------
+
+class Recommendation(BaseModel):
+    """Lane 05 shape (title/rationale/impact/effort) + lane 03's area/action/expected_impact
+    keys, so both consumers find their fields."""
+
+    title: str = Field(min_length=3, max_length=300)
+    rationale: str = Field(min_length=10, max_length=2000)
+    impact: Literal["low", "medium", "high"] = "medium"
+    effort: Literal["low", "medium", "high"] = "medium"
+    area: Optional[str] = Field(default=None, max_length=100)
+    action: Optional[str] = Field(default=None, max_length=1000)
+    expected_impact: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BusinessPlan(AgentEnvelope):
+    recommendations: list[Recommendation] = Field(default_factory=list, max_length=10)
+    kpi_updates: dict[str, float] = Field(default_factory=dict)
+    focus_areas: list[str] = Field(default_factory=list, max_length=10)
+
+
+# ---------------------------------------------------------------------------
+# 3. competitor research  (-> competitors table)
+# ---------------------------------------------------------------------------
+
+class Competitor(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    website: Optional[str] = Field(default=None, max_length=512)
+    positioning: Optional[str] = Field(default=None, max_length=2000)
+    strengths: list[str] = Field(default_factory=list, max_length=10)
+    weaknesses: list[str] = Field(default_factory=list, max_length=10)
+    pricing_info: Optional[dict[str, Any]] = None
+    source_urls: list[str] = Field(default_factory=list, max_length=5)   # provenance
+    sources: list[str] = Field(default_factory=list, max_length=5)       # lane 03 name for the same thing
+
+    @model_validator(mode="after")
+    def _mirror_provenance(self) -> "Competitor":
+        if not self.source_urls and self.sources:
+            self.source_urls = list(self.sources)
+        if not self.sources and self.source_urls:
+            self.sources = list(self.source_urls)
+        return self
+
+
+class CompetitorReport(AgentEnvelope):
+    competitors: list[Competitor] = Field(default_factory=list, max_length=10)
+    findings: list[str] = Field(default_factory=list, max_length=15)
+    search_queries: list[str] = Field(default_factory=list, max_length=10)
+
+
+# ---------------------------------------------------------------------------
+# 4. social media  (-> social_posts / social_engagements)
+# ---------------------------------------------------------------------------
+
+class SocialPostDraft(BaseModel):
+    platform: Literal["twitter", "linkedin"] = "twitter"
+    content: str = Field(min_length=1, max_length=1000)
+    hashtags: list[str] = Field(default_factory=list, max_length=5)
+    scheduled_for: Optional[str] = None  # ISO-8601 or null = "as soon as approved"
+    reply_to_mention: Optional[str] = None
+
+
+class PostedItem(BaseModel):
+    """A post that really went out. Unreachable while SANDBOX_MODE=true: the agent records a
+    draft and leaves `posted` empty."""
+
+    content: str = Field(min_length=1, max_length=1000)
+    platform: Literal["twitter", "linkedin"] = "twitter"
+    tweet_id: Optional[str] = None
+    post_id: Optional[str] = None
+
+
+class ReplyItem(BaseModel):
+    mention_id: str = Field(min_length=1, max_length=255)
+    reply: str = Field(min_length=1, max_length=1000)
+    reply_id: Optional[str] = None       # None while sandboxed
+
+
+class SocialMediaOutput(AgentEnvelope):
+    action: Literal["draft", "post", "reply", "noop"] = "draft"
+    posts: list[SocialPostDraft] = Field(default_factory=list, max_length=5)
+    tweets: list[str] = Field(default_factory=list, max_length=10)      # specced key (mock parity)
+    drafts: list[str] = Field(default_factory=list, max_length=10)
+    posted: list[PostedItem] = Field(default_factory=list, max_length=5)
+    replies: list[ReplyItem] = Field(default_factory=list, max_length=10)
+    tweet: Optional[str] = Field(default=None, max_length=1000)
+
+    @field_validator("tweets", "drafts", mode="before")
+    @classmethod
+    def _flatten_to_strings(cls, v: Any) -> Any:
+        """Models sometimes hand back `[{"content": "..."}]`; keep the specced key a list of
+        strings without inventing content."""
+        if not isinstance(v, list):
+            return v
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                value = item.get("content") or item.get("text") or item.get("tweet")
+                if isinstance(value, str):
+                    out.append(value)
+        return out
+
+    @field_validator("posts")
+    @classmethod
+    def twitter_length(cls, v: list[SocialPostDraft]) -> list[SocialPostDraft]:
+        for p in v:
+            if p.platform == "twitter" and len(p.content) > 280:
+                raise ValueError("twitter content must be <= 280 chars")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# 5. email outreach  (-> prospects / email_campaigns / email_logs)
+# ---------------------------------------------------------------------------
+
+class ProspectDraft(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
+    first_name: Optional[str] = Field(default=None, max_length=100)
+    last_name: Optional[str] = Field(default=None, max_length=100)
+    company: Optional[str] = Field(default=None, max_length=255)
+    title: Optional[str] = Field(default=None, max_length=255)
+    source: str = Field(default="agent", max_length=100)
+
+
+class EmailDraft(BaseModel):
+    prospect_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
+    subject: str = Field(min_length=1, max_length=512)
+    body: str = Field(min_length=1, max_length=8000)
+    sequence_step: int = Field(ge=1, le=10, default=1)
+    campaign: Optional[str] = Field(default=None, max_length=255)        # lane 03 key
+    status: Literal["draft", "sent", "queued", "failed"] = "draft"       # sandbox => "draft"
+    sendgrid_id: Optional[str] = Field(default=None, max_length=255)     # None while sandboxed
+
+
+class EmailOutreachOutput(AgentEnvelope):
+    action: Literal["find", "draft", "send", "noop"] = "draft"
+    prospects: list[ProspectDraft] = Field(default_factory=list, max_length=50)
+    emails: list[EmailDraft] = Field(default_factory=list, max_length=25)
+    follow_ups_scheduled: int = Field(default=0, ge=0, le=1000)
+
+
+# ---------------------------------------------------------------------------
+# 6. customer support
+# ---------------------------------------------------------------------------
+
+class SupportReply(BaseModel):
+    model_config = {"populate_by_name": True}
+
+    message_ref: str = Field(min_length=1, max_length=255)   # IMAP UID / thread id
+    intent: Literal["question", "complaint", "refund_request", "bug", "praise", "other"]
+    sentiment: Literal["positive", "neutral", "negative"]
+    reply_body: str = Field(min_length=1, max_length=8000)
+    needs_human: bool = False
+    proposed_action: Literal["none", "send_reply", "refund", "escalate"] = "send_reply"
+    # lane 03's column-aligned keys
+    message_id: Optional[str] = Field(default=None, max_length=255)
+    from_address: Optional[str] = Field(default=None, alias="from", max_length=320)
+    subject: Optional[str] = Field(default=None, max_length=512)
+    body: Optional[str] = Field(default=None, max_length=8000)
+    status: Literal["draft", "sent", "failed"] = "draft"
+
+
+class CustomerSupportOutput(AgentEnvelope):
+    replies: list[SupportReply] = Field(default_factory=list, max_length=50)
+
+
+# ---------------------------------------------------------------------------
+# 7. ads management  (-> ad_campaigns / ad_metrics)
+# ---------------------------------------------------------------------------
+
+class AdsRecommendation(BaseModel):
+    platform: Literal["google_ads", "meta_ads"]
+    campaign_ref: str = Field(min_length=1, max_length=255)
+    action: Literal["pause", "resume", "scale_up", "scale_down", "new_campaign", "noop"]
+    rationale: str = Field(min_length=10, max_length=2000)
+    budget_change_usd: float = Field(ge=-10000.0, le=10000.0, default=0.0)
+    campaign_id: Optional[int] = None                     # lane 03 key
+    applied: bool = False                                 # real mutation only when unsandboxed
+
+
+class AdCampaignRow(BaseModel):
+    platform: Literal["google_ads", "meta_ads"]
+    external_id: Optional[str] = Field(default=None, max_length=255)
+    name: str = Field(min_length=1, max_length=255)
+    status: str = Field(default="active", max_length=50)
+    daily_budget_usd: float = Field(default=0.0, ge=0.0)
+    total_spent_usd: float = Field(default=0.0, ge=0.0)
+
+
+class AdMetricRow(BaseModel):
+    campaign_external_id: str = Field(min_length=1, max_length=255)
+    date: str = Field(min_length=8, max_length=32)
+    impressions: int = Field(default=0, ge=0)
+    clicks: int = Field(default=0, ge=0)
+    conversions: int = Field(default=0, ge=0)
+    spend_usd: float = Field(default=0.0, ge=0.0)
+    ctr: float = Field(default=0.0, ge=0.0)
+    cpc: float = Field(default=0.0, ge=0.0)
+    roas: float = Field(default=0.0, ge=0.0)
+
+
+class AdsOutput(AgentEnvelope):
+    recommendations: list[AdsRecommendation] = Field(default_factory=list, max_length=10)
+    metrics_snapshot: dict[str, float] = Field(default_factory=dict)
+    campaigns: list[AdCampaignRow] = Field(default_factory=list, max_length=50)
+    metrics: list[AdMetricRow] = Field(default_factory=list, max_length=200)
+
+
+# ---------------------------------------------------------------------------
+# 8. code generation  (-> GitHub PRs via allowlisted git only)
+# ---------------------------------------------------------------------------
+
+class CodeChange(BaseModel):
+    repo: str = Field(min_length=3, max_length=512)          # owner/name
+    branch: str = Field(min_length=1, max_length=255)
+    pr_title: str = Field(min_length=3, max_length=512)
+    pr_body: str = Field(min_length=1, max_length=20000)
+    files_changed: list[str] = Field(default_factory=list, max_length=100)
+    risk: Literal["low", "medium", "high"] = "medium"
+    tests_run: list[str] = Field(default_factory=list, max_length=20)
+
+
+class CommitRow(BaseModel):
+    sha: Optional[str] = Field(default=None, max_length=64)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class CodeGenOutput(AgentEnvelope):
+    action: Literal["plan", "implement", "open_pr", "noop"] = "plan"
+    changes: list[CodeChange] = Field(default_factory=list, max_length=3)
+    branch: Optional[str] = Field(default=None, max_length=255)
+    commits: list[CommitRow] = Field(default_factory=list, max_length=20)
+    pr_url: Optional[str] = Field(default=None, max_length=512)     # None while sandboxed
+    pr_number: Optional[int] = None
+    files_changed: int = Field(default=0, ge=0)
+    diff_summary: str = Field(default="", max_length=4000)
+
+
+# ---------------------------------------------------------------------------
+# 9. finance  (-> revenue_snapshots / expense_records / stripe_events)
+# ---------------------------------------------------------------------------
+
+class ExpenseDraft(BaseModel):
+    category: str = Field(min_length=1, max_length=100)
+    vendor: str = Field(min_length=1, max_length=255)
+    amount_cents: int = Field(ge=0)
+    currency: str = Field(default="usd", max_length=10)
+    date: Optional[str] = None                                # ISO date
+    description: Optional[str] = Field(default=None, max_length=2000)
+    external_ref: Optional[str] = Field(default=None, max_length=255)
+
+
+class RevenueSnapshotDraft(BaseModel):
+    snapshot_date: str = Field(min_length=8, max_length=32)
+    mrr_cents: int = Field(default=0, ge=0)
+    arr_cents: int = Field(default=0, ge=0)
+    active_subscribers: int = Field(default=0, ge=0)
+    churned_today: int = Field(default=0, ge=0)
+    new_today: int = Field(default=0, ge=0)
+    total_revenue_month_cents: int = Field(default=0, ge=0)
+    stripe_balance_cents: int = Field(default=0, ge=0)
+
+
+class FailedPayment(BaseModel):
+    event_id: Optional[str] = Field(default=None, max_length=255)
+    customer_id: Optional[str] = Field(default=None, max_length=255)
+    amount_cents: int = Field(default=0, ge=0)
+    currency: str = Field(default="usd", max_length=10)
+    #: The model's PROPOSAL that this charge should be refunded; the policy firewall decides
+    #: whether money actually moves (sandbox refuses it, and outside sandbox it needs approval).
+    refund_requested: bool = False
+
+
+class FinanceOutput(AgentEnvelope):
+    mrr_cents: int = Field(default=0, ge=0)
+    arr_cents: int = Field(default=0, ge=0)
+    active_subscribers: int = Field(default=0, ge=0)
+    churned_today: int = Field(default=0, ge=0)
+    new_today: int = Field(default=0, ge=0)
+    stripe_balance_cents: int = Field(default=0, ge=0)
+    total_revenue_month_cents: int = Field(default=0, ge=0)
+    snapshot_written: bool = False
+    snapshot: Optional[RevenueSnapshotDraft] = None
+    expenses: list[ExpenseDraft] = Field(default_factory=list, max_length=50)
+    failed_payments: list[FailedPayment] = Field(default_factory=list, max_length=100)
+    alerts: list[str] = Field(default_factory=list, max_length=10)
+    refunds_performed: int = Field(default=0, ge=0)     # >0 only when the firewall allowed it
+
+    @field_validator("arr_cents")
+    @classmethod
+    def arr_matches_mrr(cls, v: int, info) -> int:
+        # tolerance: 12x MRR within 2% (partial-month rounding is normal)
+        mrr = info.data.get("mrr_cents", 0)
+        if mrr and abs(v - 12 * mrr) > max(200, int(0.02 * 12 * mrr)):
+            raise ValueError("arr_cents must be approximately 12 * mrr_cents")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# 10. deployment — documented, deliberately NOT in the registry (see ALL_AGENT_TYPES note)
+# ---------------------------------------------------------------------------
+
+class DeploymentDraft(BaseModel):
+    service_ref: str = Field(min_length=1, max_length=255)
+    action: Literal["deploy", "rollback", "noop"] = "noop"
+    commit_ref: Optional[str] = Field(default=None, max_length=255)
+    status: Literal["triggered", "completed", "failed", "noop"] = "noop"
+    health_check_passed: Optional[bool] = None
+    deploy_id: Optional[str] = Field(default=None, max_length=255)
+
+
+class DeploymentOutput(AgentEnvelope):
+    deployments: list[DeploymentDraft] = Field(default_factory=list, max_length=5)
+
+
+# ---------------------------------------------------------------------------
+# registry + CLI-schema bridge
+# ---------------------------------------------------------------------------
+
+AGENT_SCHEMAS: dict[str, type[BaseModel]] = {
+    "orchestrator": OrchestratorPlan,
+    "business_planning": BusinessPlan,
+    "competitor_research": CompetitorReport,
+    "social_media": SocialMediaOutput,
+    "email_outreach": EmailOutreachOutput,
+    "customer_support": CustomerSupportOutput,
+    "ads_management": AdsOutput,
+    "code_generation": CodeGenOutput,
+    "finance": FinanceOutput,
+}
+
+#: The schema for a documented agent the registry does not ship (see the ALL_AGENT_TYPES note).
+UNREGISTERED_SCHEMAS: dict[str, type[BaseModel]] = {"deployment": DeploymentOutput}
+
+
+def schema_for(agent_type: str) -> type[BaseModel]:
+    model = AGENT_SCHEMAS.get(agent_type) or UNREGISTERED_SCHEMAS.get(agent_type)
+    if model is None:
+        from app.core.errors import E_AGENT_UNKNOWN, ERROR_HINTS, PolsiaError
+
+        raise PolsiaError(
+            E_AGENT_UNKNOWN,
+            f"no output schema for agent_type {agent_type!r}",
+            how_to_fix=ERROR_HINTS[E_AGENT_UNKNOWN],
+            context={"known": sorted(AGENT_SCHEMAS)},
+        )
+    return model
+
+
+def to_cli_schema(model: type[BaseModel]) -> dict:
+    """JSON Schema the CLI accepts on --json-schema (draft-07 compatible).
+
+    Pydantic v2 emits draft 2020-12 by default: we remove `$schema`, drop the root `title`, and
+    rewrite `$defs`/`#/$defs/...` to draft-07's `definitions`/`#/definitions/...`. `format`
+    keywords stay (the CLI treats them as annotations).
+    """
+    schema = model.model_json_schema()
+    schema.pop("$schema", None)
+    schema.pop("title", None)
+    defs = schema.pop("$defs", None)
+    if defs:
+        schema["definitions"] = defs
+
+        def _rewrite(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: (_rewrite(v).replace("#/$defs/", "#/definitions/")
+                            if k == "$ref" and isinstance(v, str) else _rewrite(v))
+                        for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_rewrite(x) for x in obj]
+            return obj
+
+        schema = _rewrite(schema)
+    return schema
+
+
+def cli_schema_for(agent_type: str) -> dict:
+    return to_cli_schema(schema_for(agent_type))
+
+
+def required_top_level_fields(agent_type: str) -> tuple[str, ...]:
+    return tuple(to_cli_schema(schema_for(agent_type)).get("required") or ())
+
+
+def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, Union[BaseModel, list[str]]]:
+    """Local validation. Returns (True, model) or (False, [error strings])."""
+    model = AGENT_SCHEMAS.get(agent_type)
+    if model is None:
+        return False, [f"unknown agent_type '{agent_type}'"]
+    try:
+        return True, model.model_validate(payload)
+    except ValidationError as exc:
+        return False, [f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors()]
+
+
+def placeholder_payload(agent_type: str, summary: str, note: str) -> dict:
+    """The schema's own empty shape, with an explicit note and `status='partial'`.
+
+    Used ONLY by the sanctioned `CLAUDE_CLI_MOCK` path when the mock response is not
+    schema-shaped (the repo's default mock response is prose — CLAUDE.md:102). It carries no
+    invented content: every list is empty, every count is zero, and `notes` says exactly why, so
+    a mocked run can never be mistaken for work that happened. Never reachable with a real CLI:
+    the real path raises `E_AGENT_BAD_OUTPUT` instead.
+    """
+    model = schema_for(agent_type)
+    payload: dict[str, Any] = {}
+    for name, fld in model.model_fields.items():
+        if name == "summary":
+            payload[name] = (summary or "no summary")[:4000]
+        elif name == "notes":
+            payload[name] = [note][:20]
+        elif name == "status":
+            payload[name] = "partial"
+        elif name == "schema_version":
+            payload[name] = SCHEMA_VERSION
+        elif name == "mode":
+            payload[name] = "morning"
+        else:
+            annotation = fld.annotation
+            default = fld.get_default(call_default_factory=True)
+            if default is not None and default is not ...:
+                payload[name] = default
+            elif "list" in str(annotation).lower():
+                payload[name] = []
+            elif "dict" in str(annotation).lower():
+                payload[name] = {}
+            elif "int" in str(annotation).lower():
+                payload[name] = 0
+            elif "bool" in str(annotation).lower():
+                payload[name] = False
+            elif "float" in str(annotation).lower():
+                payload[name] = 0.0
+            else:
+                payload[name] = ""
+    return payload
+
+
+__all__ = [
+    "AGENT_SCHEMAS",
+    "AGENT_TYPES",
+    "ALL_AGENT_TYPES",
+    "FAILURE_TO_E_CODE",
+    "REMEDIATION",
+    "SCHEMA_VERSION",
+    "UNREGISTERED_SCHEMAS",
+    "AdCampaignRow",
+    "AdMetricRow",
+    "AdsOutput",
+    "AdsRecommendation",
+    "AgentEnvelope",
+    "BusinessPlan",
+    "CodeChange",
+    "CodeGenOutput",
+    "CommitRow",
+    "Competitor",
+    "CompetitorReport",
+    "CustomerSupportOutput",
+    "DeploymentOutput",
+    "EmailDraft",
+    "EmailOutreachOutput",
+    "ExpenseDraft",
+    "FailureCode",
+    "FailedPayment",
+    "FinanceOutput",
+    "OrchestratorPlan",
+    "PostedItem",
+    "ProspectDraft",
+    "Recommendation",
+    "ReplyItem",
+    "RevenueSnapshotDraft",
+    "SocialMediaOutput",
+    "SocialPostDraft",
+    "SupportReply",
+    "TaskSpec",
+    "cli_schema_for",
+    "e_code_for",
+    "placeholder_payload",
+    "required_top_level_fields",
+    "schema_for",
+    "to_cli_schema",
+    "validate_agent_output",
+]

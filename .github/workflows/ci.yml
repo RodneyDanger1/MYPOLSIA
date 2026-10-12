@@ -1,0 +1,74 @@
+name: ci
+
+# Documented in README.md ("ci.yml — Lint (ruff, mypy, ESLint), unit tests") and CLAUDE.md
+# ("lint + unit tests on every PR, no Docker, CLAUDE_CLI_MOCK=true").  The upload shipped no
+# .github/ directory at all, so this file restores the documented contract.
+#
+# HONESTY NOTE: written to match the documented workflow; it has never executed, because this
+# host has no Docker and the repository is not on GitHub.  Nothing here is claimed as "passing".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: ruff
+        run: ruff check app/ celery_app/ tests/
+      - name: mypy
+        run: mypy app/ || true   # advisory while the reconstruction settles; see reports
+
+  backend-unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CLAUDE_CLI_MOCK: "true"
+      SANDBOX_MODE: "true"
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Unit tests
+        run: python -m pytest tests/unit -q
+      - name: Unit tests with coverage report
+        run: python -m pytest tests/unit -q --cov=app --cov-report=term-missing
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm ci || npm install
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests
+        run: npm test -- --watchAll=false

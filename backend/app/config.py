@@ -1,0 +1,121 @@
+"""Application settings (pydantic-settings).
+
+Field names are the lower-cased env-var names (pydantic-settings default), which is
+what every existing call site and test relies on.
+"""
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
+    )
+
+    # --- app ---
+    app_name: str = "Polsia"
+    environment: str = "development"
+    debug: bool = False
+    log_level: str = "INFO"
+    cors_origins: list[str] = ["http://localhost", "http://localhost:3000"]
+
+    # --- auth ---
+    api_key: str = "dev-key"
+
+    # --- database ---
+    database_url: str = "postgresql+asyncpg://polsia:polsia_password@localhost:5432/polsia"
+    db_echo: bool = False
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_pre_ping: bool = True
+    db_pool_recycle_seconds: int = 1800
+    db_statement_timeout_ms: int = 30_000
+    db_backlog_hours: int = 24
+
+    # --- redis / celery ---
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+    activity_channel: str = "polsia:activity"
+    celery_task_time_limit: int = 900
+    celery_soft_time_limit: int = 840
+    celery_max_tasks_per_child: int = 50
+    celery_worker_concurrency: int = 4
+
+    # --- daily cycles (UTC hours) ---
+    morning_cycle_hour: int = 6
+    evening_cycle_hour: int = 20
+    company_timezone: str = "UTC"
+
+    # --- task queue discipline ---
+    task_claim_lease_seconds: int = 900
+    task_max_attempts: int = 3
+    task_retry_backoff_seconds: int = 20
+    task_batch_size: int = 25
+    activity_retention_days: int = 90
+    activity_bulk_flush: int = 200
+
+    # --- chroma ---
+    chroma_persist_dir: str = "/app/data/chroma"
+    chroma_collection: str = "polsia_memory"
+
+    # --- claude CLI ---
+    claude_cli_path: str = "claude"
+    claude_cli_mock: bool = False
+    claude_cli_mock_response: str = '{"result": "Mock Claude response for testing"}'
+    claude_timeout_seconds: int = 300
+    claude_max_concurrency: int = 4
+    claude_max_argv_chars: int = 24_000
+    claude_prompt_via_stdin: bool = False
+    claude_max_turns: int = 1
+    claude_repair_attempts: int = 1
+    claude_resume_sessions: bool = False
+    sandbox_mode: bool = True
+
+    # --- agent budgets (cost control) ---
+    agent_run_cost_cap_usd: float = 2.0
+    agent_daily_cost_cap_usd: float = 25.0
+    agent_max_retries: int = 2
+    agent_retry_backoff_seconds: float = 1.5
+
+    # --- planner ---
+    planner_max_nodes: int = 12
+    planner_context_token_budget: int = 12_000
+
+    # --- logging ---
+    log_json: bool = False
+
+    # --- stripe ---
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_publishable_key: str = ""
+
+    # --- integrations (optional) ---
+    twitter_api_key: str = ""
+    twitter_api_secret: str = ""
+    twitter_access_token: str = ""
+    twitter_access_secret: str = ""
+    sendgrid_api_key: str = ""
+    sendgrid_from_email: str = ""
+    imap_host: str = ""
+    imap_user: str = ""
+    imap_password: str = ""
+    tavily_api_key: str = ""
+    github_token: str = ""
+    google_ads_developer_token: str = ""
+    google_ads_client_id: str = ""
+    google_ads_client_secret: str = ""
+    google_ads_refresh_token: str = ""
+    google_ads_customer_id: str = ""
+    meta_ads_access_token: str = ""
+    meta_ads_account_id: str = ""
+    render_api_key: str = ""
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# frontend/public/ was absent from the upload, which made the documented frontend image build
+# fail: frontend/Dockerfile runs `COPY --from=builder /app/public ./public` and a missing source
+# directory is a hard build error.  Next.js serves this file from /robots.txt.
+Sitemap: /sitemap.xml
