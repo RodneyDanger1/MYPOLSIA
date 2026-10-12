@@ -17,7 +17,7 @@ action first and the agent records a labelled draft instead.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from app.agents.side_effects import integration_call, named_refusal
 from app.config import settings
@@ -125,7 +125,7 @@ def _pygithub_open_pr(*, repo: str, branch: str, title: str, body: str, base: st
     return {"number": int(pr.number), "url": str(pr.html_url)}
 
 
-def refund_payment(*, payment_id: str, amount_cents: Optional[int] = None) -> dict:
+def refund_payment(*, payment_id: str, amount_cents: int | None = None) -> dict:
     """Issue a Stripe refund. Irreversible: approval-gated by the firewall."""
     missing = _missing_config(("STRIPE_SECRET_KEY", settings.stripe_secret_key))
     if missing:
@@ -139,7 +139,7 @@ def refund_payment(*, payment_id: str, amount_cents: Optional[int] = None) -> di
     )
 
 
-def _stripe_refund(*, payment_id: str, amount_cents: Optional[int]) -> Any:  # pragma: no cover
+def _stripe_refund(*, payment_id: str, amount_cents: int | None) -> Any:  # pragma: no cover
     import stripe
 
     stripe.api_key = settings.stripe_secret_key

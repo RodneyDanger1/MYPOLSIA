@@ -1,11 +1,11 @@
 """Root conftest — shared fixtures for all unit tests."""
 import json
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from unittest.mock import AsyncMock, MagicMock
-
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ─── Claude CLI mock (autouse — always active in unit tests) ──────────────────
 
@@ -73,9 +73,9 @@ def mock_chroma(mocker):
 
 @pytest_asyncio.fixture
 async def api_client(async_db_session, mock_redis):
-    from app.main import app
-    from app.core.database import get_db
     from app.config import settings
+    from app.core.database import get_db
+    from app.main import app
 
     # Override DB dependency
     app.dependency_overrides[get_db] = lambda: async_db_session

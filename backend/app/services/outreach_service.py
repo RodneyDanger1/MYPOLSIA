@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.outreach import EmailCampaign, EmailLog, Prospect
 from app.services.query_helpers import db_refusal, fetch_scalars
 

@@ -65,7 +65,7 @@ class EmailOutreachAgent(BasePolsiaAgent):
         sends_hour = int(counts.get("hour") or 0)
         receipts: list[dict[str, Any]] = []
 
-        for index, email in enumerate(list(payload.get("emails") or [])):
+        for _index, email in enumerate(list(payload.get("emails") or [])):
             to = str(email.get("prospect_email") or "")
             outcome = request_side_effect(
                 self.agent_type,

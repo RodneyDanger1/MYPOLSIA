@@ -1,6 +1,7 @@
 """Test Celery agent task dispatch (without real broker)."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.mark.asyncio

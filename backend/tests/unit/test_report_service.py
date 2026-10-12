@@ -1,6 +1,7 @@
 """Test report_service — daily report lifecycle."""
-import pytest
 from datetime import date
+
+import pytest
 
 from app.services.report_service import (
     get_daily_report,
@@ -61,7 +62,6 @@ async def test_save_evening_summary(async_db_session):
 
 @pytest.mark.asyncio
 async def test_get_daily_report_none_when_missing(async_db_session):
-    from datetime import timedelta
     future = date.today().replace(year=2099)
     result = await get_daily_report(async_db_session, future)
     assert result is None

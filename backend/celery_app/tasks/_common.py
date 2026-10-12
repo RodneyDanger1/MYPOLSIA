@@ -15,11 +15,12 @@ import asyncio
 import hashlib
 import logging
 import threading
+from collections.abc import Coroutine
 from datetime import datetime
-from typing import Any, Coroutine, TypeVar
+from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +28,6 @@ from app.core.timeutil import now_utc
 from app.models.task import Task
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
@@ -57,7 +56,7 @@ def get_process_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def run_async(coro: Coroutine[Any, Any, T]) -> T:
+def run_async[T](coro: Coroutine[Any, Any, T]) -> T:
     """Run `coro` on the process loop and block the Celery task until it returns.
 
     Exceptions propagate unchanged, so `self.retry`/error classification in the task

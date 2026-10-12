@@ -77,7 +77,7 @@ class SocialMediaAgent(BasePolsiaAgent):
         platform: str,
         content: str,
         context: dict[str, Any],
-    ) -> tuple[dict[str, Any], "dict[str, Any] | None"]:
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Attempt one external action through the firewall.
 
         Returns `(audit_receipt, published_item_or_None)`. `published_item` exists ONLY when the

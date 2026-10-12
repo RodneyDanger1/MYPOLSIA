@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import settings
@@ -134,7 +134,7 @@ def activity_payload(
         "action": action,
         "summary": summary,
         "level": level,
-        "created_at": (created_at or datetime.now(timezone.utc)).isoformat(),
+        "created_at": (created_at or datetime.now(UTC)).isoformat(),
         "detail": detail,
     }
 

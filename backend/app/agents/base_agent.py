@@ -26,6 +26,7 @@ fabricated success dict — the only success signal is a dict whose `summary` is
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -34,7 +35,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -99,7 +100,7 @@ def _run_coroutine_sync(coro):
     return box.get("value")
 
 
-def parse_json_object(text: str) -> Optional[Any]:
+def parse_json_object(text: str) -> Any | None:
     """Tolerant parse used by the prose-tolerant path: direct JSON, then a fenced block, then a
     trailing brace slice. Returns None when nothing parses (the caller decides what that means)."""
     if not text or not text.strip():
@@ -128,20 +129,20 @@ class BasePolsiaAgent(ABC):
     agent_type: str = "base"
     description: str = ""
     #: The pydantic model this agent's output must satisfy (app.schemas.agent_outputs).
-    output_schema: Optional[type[BaseModel]] = None
+    output_schema: type[BaseModel] | None = None
     #: The agent's real prompt: role, non-negotiable rules, allowed tools, output contract.
     role_prompt: str = ""
     #: Per-agent `--max-turns` override; None = settings.claude_max_turns.
-    max_turns: Optional[int] = None
+    max_turns: int | None = None
 
-    def __init__(self, cli_path: Optional[str] = None, timeout: Optional[int] = None) -> None:
+    def __init__(self, cli_path: str | None = None, timeout: int | None = None) -> None:
         self.cli_path = cli_path or claude_cli.cli_path()
         self.timeout = int(timeout or settings.claude_timeout_seconds)
-        self.session_id: Optional[str] = None
-        self.last_usage: Optional[accounting.RunUsage] = None
+        self.session_id: str | None = None
+        self.last_usage: accounting.RunUsage | None = None
         self.last_envelope: dict = {}
         self.last_attempts: int = 0
-        self.last_repair: Optional[str] = None
+        self.last_repair: str | None = None
         self.last_ladder: list[str] = []
         self._session_totals: dict[str, float] = {}
 
@@ -177,8 +178,8 @@ class BasePolsiaAgent(ABC):
         task: dict[str, Any],
         context: dict[str, Any],
         *,
-        memories: Optional[list[dict[str, Any]]] = None,
-        extra_context: Optional[str] = None,
+        memories: list[dict[str, Any]] | None = None,
+        extra_context: str | None = None,
     ) -> dict[str, Layer]:
         """The eight named layers, in the fixed order the assembler enforces.
 
@@ -190,7 +191,7 @@ class BasePolsiaAgent(ABC):
         company = (context or {}).get("company") or {}
         kpis = (context or {}).get("kpis") or {}
         goals = (context or {}).get("goals") or []
-        budget = (context or {}).get("budget") or {
+        (context or {}).get("budget") or {
             "day_limit": settings.agent_daily_cost_cap_usd,
             "spent": float((context or {}).get("day_spent_usd") or 0.0),
             "remaining": max(0.0, settings.agent_daily_cost_cap_usd - float((context or {}).get("day_spent_usd") or 0.0)),
@@ -283,8 +284,8 @@ class BasePolsiaAgent(ABC):
         task: dict[str, Any],
         context: dict[str, Any],
         *,
-        memories: Optional[list[dict[str, Any]]] = None,
-        extra_context: Optional[str] = None,
+        memories: list[dict[str, Any]] | None = None,
+        extra_context: str | None = None,
     ) -> AssembledContext:
         """Assemble the prompt with budgets derived from `settings.planner_context_token_budget`."""
         layers = self.layers_for(task, context, memories=memories, extra_context=extra_context)
@@ -326,7 +327,7 @@ class BasePolsiaAgent(ABC):
         self,
         prompt: str,
         *,
-        json_schema: Optional[dict] = None,
+        json_schema: dict | None = None,
         system_prompt_static: str = "",
         resume: bool = False,
         tool_less: bool = False,
@@ -356,7 +357,7 @@ class BasePolsiaAgent(ABC):
         self,
         prompt: str,
         *,
-        json_schema: Optional[dict] = None,
+        json_schema: dict | None = None,
         system_prompt_static: str = "",
         resume: bool = False,
         tool_less: bool = False,
@@ -383,10 +384,8 @@ class BasePolsiaAgent(ABC):
         if failure is None:
             return False
         env: dict = {}
-        try:
+        with contextlib.suppress(ValueError):
             env = structured_output.extract_envelope(result.stdout)
-        except ValueError:
-            pass
         return claude_cli.is_retryable_failure(
             structured_output.e_code_for(failure),
             subtype=str(env.get("subtype") or ""),
@@ -394,7 +393,7 @@ class BasePolsiaAgent(ABC):
             exit_code=result.exit_code,
         )
 
-    def _classify_invoke(self, result: claude_cli.InvokeResult) -> tuple[Optional[structured_output.FailureCode], str, dict]:
+    def _classify_invoke(self, result: claude_cli.InvokeResult) -> tuple[structured_output.FailureCode | None, str, dict]:
         """(failure code or None, detail, parsed envelope)."""
         if result.exit_code == claude_cli.SIGTERM_EXIT_CODE:
             return structured_output.FailureCode.CLI_TIMEOUT, "SIGTERM/143", {}
@@ -450,7 +449,7 @@ class BasePolsiaAgent(ABC):
         self,
         prompt: str,
         *,
-        schema: Optional[type[BaseModel]] = None,
+        schema: type[BaseModel] | None = None,
         schema_name: str = "",
         system_prompt_static: str = "",
     ) -> dict[str, Any]:
@@ -506,7 +505,7 @@ class BasePolsiaAgent(ABC):
             "coercions": _top_level_coercions(model),
         }
 
-        def dispatch(override: Optional[str]) -> tuple[str, int]:
+        def dispatch(override: str | None) -> tuple[str, int]:
             # A transport failure inside the ladder is terminal: it re-raises so the ORIGINAL
             # named code (E_CLI_MISSING / E_CLI_TIMEOUT / E_BUDGET_EXCEEDED) survives instead of
             # being flattened into a generic schema error.
@@ -542,9 +541,9 @@ class BasePolsiaAgent(ABC):
         task: dict[str, Any],
         context: dict[str, Any],
         *,
-        memories: Optional[list[dict[str, Any]]] = None,
-        extra_context: Optional[str] = None,
-        schema: Optional[type[BaseModel]] = None,
+        memories: list[dict[str, Any]] | None = None,
+        extra_context: str | None = None,
+        schema: type[BaseModel] | None = None,
     ) -> tuple[dict[str, Any], AssembledContext]:
         """Assemble the prompt, run the agent, return (validated payload, assembled context)."""
         assembled = self.assemble_prompt(task, context, memories=memories, extra_context=extra_context)
@@ -585,7 +584,7 @@ class BasePolsiaAgent(ABC):
             meta["cli_session_id"] = usage.session_id or self.session_id
         return meta
 
-    def attach_run_meta(self, result: dict[str, Any], *, assembled: Optional[AssembledContext] = None) -> dict[str, Any]:
+    def attach_run_meta(self, result: dict[str, Any], *, assembled: AssembledContext | None = None) -> dict[str, Any]:
         """Attach the captured usage/cost/session under the documented keys (additive: the agent's
         own payload keys are untouched)."""
         meta = self.usage_metadata()
@@ -598,7 +597,7 @@ class BasePolsiaAgent(ABC):
         return out
 
     # ------------------------------------------------------------------ timing
-    def timed_run(self, task: Optional[dict[str, Any]], context: Optional[dict[str, Any]]) -> dict[str, Any]:
+    def timed_run(self, task: dict[str, Any] | None, context: dict[str, Any] | None) -> dict[str, Any]:
         """run() + a float `duration_secs` key. Handles sync OR async run()."""
         started = time.perf_counter()
         result = self.run(task or {}, context or {})

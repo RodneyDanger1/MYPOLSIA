@@ -10,10 +10,22 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1 import ads, agents, config, dashboard, finance, health, memory, outreach, social, tasks, ws
+from app.api.v1 import (
+    ads,
+    agents,
+    config,
+    dashboard,
+    finance,
+    health,
+    memory,
+    outreach,
+    social,
+    tasks,
+    ws,
+)
 from app.config import settings
 from app.core.database import dispose_engine
-from app.core.errors import PolsiaError, to_http_detail, http_status_for
+from app.core.errors import PolsiaError, http_status_for, to_http_detail
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)

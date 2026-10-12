@@ -1,14 +1,33 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+# E501 is not enforced: the formatter owns line length and the sources are wrapped by hand.
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# B008 (function-call-in-default-argument) is a documented FALSE POSITIVE for FastAPI: `Depends(get_db)`
+# and `Query(...)` in a signature default ARE the framework's dependency-injection API. All 21 sites are
+# FastAPI parameter defaults in app/api/v1/; the `Annotated[...]` spelling is a style migration, not a
+# defect fix, so it is left as a follow-up instead of churning every handler signature in this pass.
+"app/api/v1/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = false
 ignore_missing_imports = true
-plugins = ["pydantic.mypy"]
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+# The sqlalchemy plugin is what lets mypy tell a mapped CLASS attribute (a Column object) from an
+# INSTANCE attribute (its value). Without it, every `row.id` reads as `Column[int]` and the run reports
+# ~20 phantom "Column[int] is not int" errors that hide the real findings.
+# The upload ships an `__init__.py` at the REPOSITORY ROOT, which makes mypy treat every parent
+# directory as a package: it then resolves `app/agents/integrations.py` TWICE (as
+# `Polsia.backend.app.agents.integrations` and as `app.agents.integrations`) and ABORTS the run with
+# "errors prevented further checking" — so `mypy app/` never checked a single line while reporting a
+# failure. Naming the package bases explicitly fixes the resolution without deleting an upload file.
+explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

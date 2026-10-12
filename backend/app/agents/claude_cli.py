@@ -27,6 +27,7 @@ This is the ONLY module that knows the CLI's flags.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import random
 import shlex
@@ -35,8 +36,8 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 from app.config import settings
 from app.core.errors import (
@@ -81,13 +82,13 @@ class ClaudeCLIError(PolsiaError):
 @dataclass
 class Invocation:
     argv: list[str]
-    stdin_text: Optional[str] = None
-    cwd: Optional[str] = None
+    stdin_text: str | None = None
+    cwd: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     timeout_s: int = 600
     transport: str = "argv"                 # argv | stdin | file-ref
-    prompt_file: Optional[str] = None       # written by the caller when transport == file-ref
-    system_prompt_file_content: Optional[str] = None
+    prompt_file: str | None = None       # written by the caller when transport == file-ref
+    system_prompt_file_content: str | None = None
     schema_name: str = ""                   # bookkeeping: which agent schema rides in the argv
 
     def estimated_command_line_chars(self) -> int:
@@ -103,7 +104,7 @@ def cli_path() -> str:
     return (os.getenv("CLAUDE_CLI_PATH") or settings.claude_cli_path or "claude").strip()
 
 
-def argv_budget(max_argv_chars: Optional[int] = None) -> int:
+def argv_budget(max_argv_chars: int | None = None) -> int:
     """The whole-command-line budget: configured cap intersected with the platform limit."""
     configured = settings.claude_max_argv_chars if max_argv_chars is None else max_argv_chars
     platform = WIN_CMDLINE_LIMIT if sys.platform.startswith("win") else LINUX_ARG_LIMIT
@@ -113,32 +114,32 @@ def argv_budget(max_argv_chars: Optional[int] = None) -> int:
 def build_invocation(
     *,
     prompt: str,
-    json_schema: Optional[dict] = None,
+    json_schema: dict | None = None,
     system_prompt_static: str = "",
     system_prompt_dynamic: str = "",
-    resume_session: Optional[str] = None,
+    resume_session: str | None = None,
     continue_session: bool = False,
     fork_session: bool = False,
-    new_session_id: Optional[str] = None,
+    new_session_id: str | None = None,
     allowed_tools: tuple[str, ...] = (),
     disallowed_tools: tuple[str, ...] = (),
     tools_available: str = "default",
     permission_mode: str = "dontAsk",
     add_dirs: tuple[str, ...] = (),
-    mcp_config_path: Optional[str] = None,
+    mcp_config_path: str | None = None,
     strict_mcp: bool = True,
-    model: Optional[str] = None,
-    fallback_models: Optional[tuple[str, ...]] = None,
-    max_turns: Optional[int] = None,
-    max_budget_usd: Optional[float] = None,
+    model: str | None = None,
+    fallback_models: tuple[str, ...] | None = None,
+    max_turns: int | None = None,
+    max_budget_usd: float | None = None,
     bare: bool = True,
     no_session_persistence: bool = False,
     use_sandbox: bool = False,
     system_prompt_snapshot_off: bool = False,
-    prompt_file: Optional[str] = None,
-    max_argv_chars: Optional[int] = None,
-    prompt_via_stdin: Optional[bool] = None,
-    timeout_s: Optional[int] = None,
+    prompt_file: str | None = None,
+    max_argv_chars: int | None = None,
+    prompt_via_stdin: bool | None = None,
+    timeout_s: int | None = None,
     schema_name: str = "",
 ) -> Invocation:
     """Build the exact argv for one headless call.
@@ -169,12 +170,12 @@ def build_invocation(
             context={"chars": len(prompt), "stdin_limit": STDIN_LIMIT},
         )
 
-    def _assemble(prompt_arg: str, transport: str, stdin_text: Optional[str]) -> Invocation:
+    def _assemble(prompt_arg: str, transport: str, stdin_text: str | None) -> Invocation:
         argv: list[str] = ["claude", "-p", prompt_arg, "--output-format", "json"]
         if json_schema is not None:
             argv += ["--json-schema", _compact_json(json_schema)]
 
-        sys_prompt_file: Optional[str] = None
+        sys_prompt_file: str | None = None
         if system_prompt_static:
             boundary = "\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n" if system_prompt_dynamic else ""
             sys_prompt_file = system_prompt_static + boundary + system_prompt_dynamic
@@ -271,7 +272,7 @@ def _compact_json(value: dict) -> str:
 # ── concurrency bound ────────────────────────────────────────────────────────────────────────
 
 _gate_lock = threading.Lock()
-_gate: Optional[threading.BoundedSemaphore] = None
+_gate: threading.BoundedSemaphore | None = None
 _gate_size = 0
 
 
@@ -306,9 +307,9 @@ class InvokeResult:
 def invoke(
     inv: Invocation,
     *,
-    executable: Optional[str] = None,
-    extra_env: Optional[dict[str, str]] = None,
-    spawn: Optional[Callable[[list[str], Optional[str], dict, int], tuple[str, int]]] = None,
+    executable: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    spawn: Callable[[list[str], str | None, dict, int], tuple[str, int]] | None = None,
 ) -> InvokeResult:
     """Run one invocation. Raises a named refusal for spawn-level problems; a *failed run*
     returns normally (the envelope on stdout carries the failure — D2).
@@ -371,34 +372,26 @@ def invoke(
         ) from exc
     finally:
         for path in tmp_files:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(path)
-            except OSError:
-                pass
 
 
-def _kill_process_tree(proc: "subprocess.Popen[str]") -> None:
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
     """Best-effort: the CLI may have spawned children; kill the group, then the child."""
     if proc.poll() is not None:
         return
     if sys.platform.startswith("win"):
-        try:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(  # noqa: S603 - fixed argv, no shell
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
                 check=False,
                 timeout=10,
             )
-        except (OSError, subprocess.SubprocessError):
-            pass
-    try:
+    with contextlib.suppress(OSError):
         proc.kill()
-    except OSError:
-        pass
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired, OSError, ValueError):
         proc.communicate(timeout=10)
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass
 
 
 # ── retry ladder ─────────────────────────────────────────────────────────────────────────────
@@ -407,7 +400,7 @@ TRANSIENT_SUBTYPE_MARKERS = ("rate_limit", "overloaded", "server_error", "api_er
 TRANSIENT_HTTP_STATUS = (408, 409, 425, 429, 500, 502, 503, 504)
 
 
-def is_retryable_failure(code: str, *, subtype: str = "", api_status: Optional[int] = None,
+def is_retryable_failure(code: str, *, subtype: str = "", api_status: int | None = None,
                          exit_code: int = 0) -> bool:
     """Which failures are worth a second attempt (settings.agent_max_retries).
 
@@ -426,13 +419,11 @@ def is_retryable_failure(code: str, *, subtype: str = "", api_status: Optional[i
     if api_status in TRANSIENT_HTTP_STATUS:
         return True
     haystack = f"{subtype} {exit_code}".lower()
-    if any(marker in haystack for marker in TRANSIENT_SUBTYPE_MARKERS):
-        return True
-    return False
+    return bool(any(marker in haystack for marker in TRANSIENT_SUBTYPE_MARKERS))
 
 
 def backoff_delay(attempt: int, *, base_s: float, cap_s: float = 30.0,
-                  rng: Optional[random.Random] = None) -> float:
+                  rng: random.Random | None = None) -> float:
     """Exponential backoff with full jitter: base * 2**attempt * U(0.5, 1.0), capped.
 
     Jitter matters here because the retry loop runs in every Celery worker at once; without it
@@ -446,11 +437,11 @@ def backoff_delay(attempt: int, *, base_s: float, cap_s: float = 30.0,
 def run_with_retries(
     dispatch: Callable[[], InvokeResult],
     *,
-    attempts: Optional[int] = None,
-    backoff_s: Optional[float] = None,
-    classify: Optional[Callable[[InvokeResult], bool]] = None,
+    attempts: int | None = None,
+    backoff_s: float | None = None,
+    classify: Callable[[InvokeResult], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
-    rng: Optional[random.Random] = None,
+    rng: random.Random | None = None,
 ) -> tuple[InvokeResult, int]:
     """Call `dispatch()` up to `attempts` times while `classify(result)` says 'retry'.
 
@@ -460,7 +451,7 @@ def run_with_retries(
     """
     total = 1 + max(0, int(settings.agent_max_retries if attempts is None else attempts))
     backoff = float(settings.agent_retry_backoff_seconds if backoff_s is None else backoff_s)
-    last: Optional[InvokeResult] = None
+    last: InvokeResult | None = None
     for attempt in range(total):
         try:
             last = dispatch()

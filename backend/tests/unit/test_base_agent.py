@@ -1,7 +1,5 @@
 """Test BasePolsiaAgent.call_claude() — subprocess mock."""
 import json
-import os
-import pytest
 from unittest.mock import patch
 
 from app.agents.base_agent import BasePolsiaAgent

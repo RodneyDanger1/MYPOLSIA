@@ -161,7 +161,7 @@ def test_beat_schedule_declares_every_documented_entry() -> None:
         f"missing schedule entries: {DOCUMENTED_SCHEDULE_ENTRIES - set(beat_schedule)}"
     )
     scheduled_tasks = {entry.get("task") for entry in beat_schedule.values()}
-    assert REQUIRED_SCHEDULED_TASKS <= scheduled_tasks, (
+    assert scheduled_tasks >= REQUIRED_SCHEDULED_TASKS, (
         "declared but never scheduled: "
         f"{REQUIRED_SCHEDULED_TASKS - scheduled_tasks} — the task exists and would never run"
     )
@@ -189,7 +189,7 @@ def test_beat_schedule_is_actually_loaded_by_the_app() -> None:
             "celery beat would start with an incomplete schedule — the declared entries are not wired"
         )
         effective_tasks = {entry.get("task") for entry in effective.values()}
-        assert REQUIRED_SCHEDULED_TASKS <= effective_tasks, (
+        assert effective_tasks >= REQUIRED_SCHEDULED_TASKS, (
             f"beat would start without: {REQUIRED_SCHEDULED_TASKS - effective_tasks}"
         )
 
@@ -290,8 +290,12 @@ def test_frozen_settings_are_present() -> None:
 # ── 6. named refusal shape ────────────────────────────────────────────────────────────────────
 def test_named_refusal_shape_and_status_mapping() -> None:
     from app.core.errors import (
-        E_AUTH, E_TASK_CLAIMED, E_TASK_NOT_RUNNABLE,
-        PolsiaError, http_status_for, to_http_detail,
+        E_AUTH,
+        E_TASK_CLAIMED,
+        E_TASK_NOT_RUNNABLE,
+        PolsiaError,
+        http_status_for,
+        to_http_detail,
     )
 
     detail = to_http_detail(PolsiaError(E_TASK_NOT_RUNNABLE, "nope", how_to_fix="reset it"))

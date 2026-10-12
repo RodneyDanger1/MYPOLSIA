@@ -21,10 +21,8 @@ Two documented caveats drive the design (CLI-CONTRACT.md §2.1, D1/D4):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
-
 
 # ---------------------------------------------------------------------------
 # Envelope -> usage record
@@ -213,7 +211,7 @@ def cli_budget_flag(allowance_usd: float, headroom: float = 0.9) -> str:
 def burn_rate(*, spilled_usd: float, day_limit_usd: float, elapsed_fraction: float) -> dict:
     """Burn-rate view for the dashboard, computed from ledger totals the caller supplies."""
     rate = spilled_usd / max(0.05, elapsed_fraction)
-    projection: Optional[float] = None if elapsed_fraction <= 0 else rate
+    projection: float | None = None if elapsed_fraction <= 0 else rate
     status = "ok"
     if projection is not None and projection > day_limit_usd:
         status = "over_budget_projection"

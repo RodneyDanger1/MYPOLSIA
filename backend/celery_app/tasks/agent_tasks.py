@@ -106,8 +106,13 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
 
     from app.agents.base_agent import RUN_META_KEYS
 
-    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
-    envelope_usage = result.get("usage_json") if isinstance(result.get("usage_json"), dict) else {}
+    # Read each key ONCE into a local: `result.get("usage") if isinstance(result.get("usage"), dict)`
+    # calls .get twice, so a non-deterministic mapping (a property, or a dict subclass) can pass the
+    # isinstance check on the first call and return something else on the second.
+    raw_usage = result.get("usage")
+    usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+    raw_envelope = result.get("usage_json")
+    envelope_usage: dict[str, Any] = raw_envelope if isinstance(raw_envelope, dict) else {}
 
     tokens_input = result.get("tokens_input", usage.get("input_tokens"))
     tokens_output = result.get("tokens_output", usage.get("output_tokens"))
@@ -220,6 +225,15 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         async with session_factory() as db:
             task = await claim_task(db, worker=me, task_id=task_id, lease_seconds=lease_seconds)
             await db.commit()
+            if task is None:  # claim_task returns None ONLY when no task_id was requested
+                # With an explicit task_id the service RAISES instead, so this is unreachable today — but
+                # mypy cannot know that, and a future change to the service would otherwise turn this line
+                # into an AttributeError deep in the worker. Fail with the named refusal instead.
+                raise PolsiaError(
+                    E_TASK_NOT_RUNNABLE,
+                    f"claim returned no task for {task_id}",
+                    context={"task_id": task_id},
+                )
             task_dict = {"id": task.id, "title": task.title, "description": task.description}
             agent_type = task.agent_type
     except PolsiaError as exc:
@@ -248,7 +262,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             try:
                 await asyncio.wait_for(stop_heartbeat.wait(), timeout=interval)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             try:
                 async with session_factory() as db:

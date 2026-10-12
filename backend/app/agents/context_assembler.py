@@ -30,9 +30,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Optional
-
 
 # ---------------------------------------------------------------------------
 
@@ -96,7 +95,7 @@ SAFETY_MARGIN = 0.15   # applied on top of the sum of layer budgets
 HARD_CEILING_TOKENS = 160_000  # refuse to emit a prompt estimated above this
 
 
-def budgets_for_total(total_tokens: int, weights: Optional[dict[str, int]] = None) -> dict[str, int]:
+def budgets_for_total(total_tokens: int, weights: dict[str, int] | None = None) -> dict[str, int]:
     """Scale the layer weights so their sum is the configured context budget.
 
     `settings.planner_context_token_budget` is the ONE knob an operator turns; the per-layer
@@ -175,7 +174,7 @@ def rank_memories(
     w_sim: float = 0.6,
     w_rec: float = 0.3,
     w_tag: float = 0.1,
-    budget_tokens: Optional[int] = None,
+    budget_tokens: int | None = None,
 ) -> list[MemoryItem]:
     """score = w_sim*similarity + w_rec*recency + w_tag*tag_overlap.
 
@@ -231,7 +230,7 @@ def _render_layer(layer: Layer) -> str:
 def assemble(
     layers: dict[str, Layer],
     *,
-    budgets: Optional[dict[str, int]] = None,
+    budgets: dict[str, int] | None = None,
     label: str = "",
 ) -> AssembledContext:
     """Build the prompt. Compression rule per layer, in order:
@@ -319,7 +318,7 @@ def split_for_cli(ctx: AssembledContext) -> dict[str, str]:
     }
 
 
-def business_state_text(kpis: dict, goals: Optional[list[str]], budget: dict) -> str:
+def business_state_text(kpis: dict, goals: list[str] | None, budget: dict) -> str:
     """The L3 body (kept beside the budgets so the shape and its cost travel together)."""
     lines = ["KPIs:"]
     for k, v in sorted(kpis.items()):

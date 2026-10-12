@@ -22,7 +22,7 @@ one import gives a caller the schemas *and* the vocabulary for why an output was
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, Union
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -43,7 +43,7 @@ AGENT_TYPES = ("orchestrator", "business_planning", "competitor_research", "soci
 # type, and its schema exists, while the dispatcher does not ship an agent for it.
 ALL_AGENT_TYPES = AGENT_TYPES + ("deployment",)
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION: Final[Literal["1"]] = "1"
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +114,9 @@ class Recommendation(BaseModel):
     rationale: str = Field(min_length=10, max_length=2000)
     impact: Literal["low", "medium", "high"] = "medium"
     effort: Literal["low", "medium", "high"] = "medium"
-    area: Optional[str] = Field(default=None, max_length=100)
-    action: Optional[str] = Field(default=None, max_length=1000)
-    expected_impact: Optional[str] = Field(default=None, max_length=1000)
+    area: str | None = Field(default=None, max_length=100)
+    action: str | None = Field(default=None, max_length=1000)
+    expected_impact: str | None = Field(default=None, max_length=1000)
 
 
 class BusinessPlan(AgentEnvelope):
@@ -131,16 +131,16 @@ class BusinessPlan(AgentEnvelope):
 
 class Competitor(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    website: Optional[str] = Field(default=None, max_length=512)
-    positioning: Optional[str] = Field(default=None, max_length=2000)
+    website: str | None = Field(default=None, max_length=512)
+    positioning: str | None = Field(default=None, max_length=2000)
     strengths: list[str] = Field(default_factory=list, max_length=10)
     weaknesses: list[str] = Field(default_factory=list, max_length=10)
-    pricing_info: Optional[dict[str, Any]] = None
+    pricing_info: dict[str, Any] | None = None
     source_urls: list[str] = Field(default_factory=list, max_length=5)   # provenance
     sources: list[str] = Field(default_factory=list, max_length=5)       # lane 03 name for the same thing
 
     @model_validator(mode="after")
-    def _mirror_provenance(self) -> "Competitor":
+    def _mirror_provenance(self) -> Competitor:
         if not self.source_urls and self.sources:
             self.source_urls = list(self.sources)
         if not self.sources and self.source_urls:
@@ -162,8 +162,8 @@ class SocialPostDraft(BaseModel):
     platform: Literal["twitter", "linkedin"] = "twitter"
     content: str = Field(min_length=1, max_length=1000)
     hashtags: list[str] = Field(default_factory=list, max_length=5)
-    scheduled_for: Optional[str] = None  # ISO-8601 or null = "as soon as approved"
-    reply_to_mention: Optional[str] = None
+    scheduled_for: str | None = None  # ISO-8601 or null = "as soon as approved"
+    reply_to_mention: str | None = None
 
 
 class PostedItem(BaseModel):
@@ -172,14 +172,14 @@ class PostedItem(BaseModel):
 
     content: str = Field(min_length=1, max_length=1000)
     platform: Literal["twitter", "linkedin"] = "twitter"
-    tweet_id: Optional[str] = None
-    post_id: Optional[str] = None
+    tweet_id: str | None = None
+    post_id: str | None = None
 
 
 class ReplyItem(BaseModel):
     mention_id: str = Field(min_length=1, max_length=255)
     reply: str = Field(min_length=1, max_length=1000)
-    reply_id: Optional[str] = None       # None while sandboxed
+    reply_id: str | None = None       # None while sandboxed
 
 
 class SocialMediaOutput(AgentEnvelope):
@@ -189,7 +189,7 @@ class SocialMediaOutput(AgentEnvelope):
     drafts: list[str] = Field(default_factory=list, max_length=10)
     posted: list[PostedItem] = Field(default_factory=list, max_length=5)
     replies: list[ReplyItem] = Field(default_factory=list, max_length=10)
-    tweet: Optional[str] = Field(default=None, max_length=1000)
+    tweet: str | None = Field(default=None, max_length=1000)
 
     @field_validator("tweets", "drafts", mode="before")
     @classmethod
@@ -223,10 +223,10 @@ class SocialMediaOutput(AgentEnvelope):
 
 class ProspectDraft(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
-    first_name: Optional[str] = Field(default=None, max_length=100)
-    last_name: Optional[str] = Field(default=None, max_length=100)
-    company: Optional[str] = Field(default=None, max_length=255)
-    title: Optional[str] = Field(default=None, max_length=255)
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
+    company: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, max_length=255)
     source: str = Field(default="agent", max_length=100)
 
 
@@ -235,9 +235,9 @@ class EmailDraft(BaseModel):
     subject: str = Field(min_length=1, max_length=512)
     body: str = Field(min_length=1, max_length=8000)
     sequence_step: int = Field(ge=1, le=10, default=1)
-    campaign: Optional[str] = Field(default=None, max_length=255)        # lane 03 key
+    campaign: str | None = Field(default=None, max_length=255)        # lane 03 key
     status: Literal["draft", "sent", "queued", "failed"] = "draft"       # sandbox => "draft"
-    sendgrid_id: Optional[str] = Field(default=None, max_length=255)     # None while sandboxed
+    sendgrid_id: str | None = Field(default=None, max_length=255)     # None while sandboxed
 
 
 class EmailOutreachOutput(AgentEnvelope):
@@ -261,10 +261,10 @@ class SupportReply(BaseModel):
     needs_human: bool = False
     proposed_action: Literal["none", "send_reply", "refund", "escalate"] = "send_reply"
     # lane 03's column-aligned keys
-    message_id: Optional[str] = Field(default=None, max_length=255)
-    from_address: Optional[str] = Field(default=None, alias="from", max_length=320)
-    subject: Optional[str] = Field(default=None, max_length=512)
-    body: Optional[str] = Field(default=None, max_length=8000)
+    message_id: str | None = Field(default=None, max_length=255)
+    from_address: str | None = Field(default=None, alias="from", max_length=320)
+    subject: str | None = Field(default=None, max_length=512)
+    body: str | None = Field(default=None, max_length=8000)
     status: Literal["draft", "sent", "failed"] = "draft"
 
 
@@ -282,13 +282,13 @@ class AdsRecommendation(BaseModel):
     action: Literal["pause", "resume", "scale_up", "scale_down", "new_campaign", "noop"]
     rationale: str = Field(min_length=10, max_length=2000)
     budget_change_usd: float = Field(ge=-10000.0, le=10000.0, default=0.0)
-    campaign_id: Optional[int] = None                     # lane 03 key
+    campaign_id: int | None = None                     # lane 03 key
     applied: bool = False                                 # real mutation only when unsandboxed
 
 
 class AdCampaignRow(BaseModel):
     platform: Literal["google_ads", "meta_ads"]
-    external_id: Optional[str] = Field(default=None, max_length=255)
+    external_id: str | None = Field(default=None, max_length=255)
     name: str = Field(min_length=1, max_length=255)
     status: str = Field(default="active", max_length=50)
     daily_budget_usd: float = Field(default=0.0, ge=0.0)
@@ -329,17 +329,17 @@ class CodeChange(BaseModel):
 
 
 class CommitRow(BaseModel):
-    sha: Optional[str] = Field(default=None, max_length=64)
+    sha: str | None = Field(default=None, max_length=64)
     message: str = Field(min_length=1, max_length=2000)
 
 
 class CodeGenOutput(AgentEnvelope):
     action: Literal["plan", "implement", "open_pr", "noop"] = "plan"
     changes: list[CodeChange] = Field(default_factory=list, max_length=3)
-    branch: Optional[str] = Field(default=None, max_length=255)
+    branch: str | None = Field(default=None, max_length=255)
     commits: list[CommitRow] = Field(default_factory=list, max_length=20)
-    pr_url: Optional[str] = Field(default=None, max_length=512)     # None while sandboxed
-    pr_number: Optional[int] = None
+    pr_url: str | None = Field(default=None, max_length=512)     # None while sandboxed
+    pr_number: int | None = None
     files_changed: int = Field(default=0, ge=0)
     diff_summary: str = Field(default="", max_length=4000)
 
@@ -353,9 +353,9 @@ class ExpenseDraft(BaseModel):
     vendor: str = Field(min_length=1, max_length=255)
     amount_cents: int = Field(ge=0)
     currency: str = Field(default="usd", max_length=10)
-    date: Optional[str] = None                                # ISO date
-    description: Optional[str] = Field(default=None, max_length=2000)
-    external_ref: Optional[str] = Field(default=None, max_length=255)
+    date: str | None = None                                # ISO date
+    description: str | None = Field(default=None, max_length=2000)
+    external_ref: str | None = Field(default=None, max_length=255)
 
 
 class RevenueSnapshotDraft(BaseModel):
@@ -370,8 +370,8 @@ class RevenueSnapshotDraft(BaseModel):
 
 
 class FailedPayment(BaseModel):
-    event_id: Optional[str] = Field(default=None, max_length=255)
-    customer_id: Optional[str] = Field(default=None, max_length=255)
+    event_id: str | None = Field(default=None, max_length=255)
+    customer_id: str | None = Field(default=None, max_length=255)
     amount_cents: int = Field(default=0, ge=0)
     currency: str = Field(default="usd", max_length=10)
     #: The model's PROPOSAL that this charge should be refunded; the policy firewall decides
@@ -388,7 +388,7 @@ class FinanceOutput(AgentEnvelope):
     stripe_balance_cents: int = Field(default=0, ge=0)
     total_revenue_month_cents: int = Field(default=0, ge=0)
     snapshot_written: bool = False
-    snapshot: Optional[RevenueSnapshotDraft] = None
+    snapshot: RevenueSnapshotDraft | None = None
     expenses: list[ExpenseDraft] = Field(default_factory=list, max_length=50)
     failed_payments: list[FailedPayment] = Field(default_factory=list, max_length=100)
     alerts: list[str] = Field(default_factory=list, max_length=10)
@@ -411,10 +411,10 @@ class FinanceOutput(AgentEnvelope):
 class DeploymentDraft(BaseModel):
     service_ref: str = Field(min_length=1, max_length=255)
     action: Literal["deploy", "rollback", "noop"] = "noop"
-    commit_ref: Optional[str] = Field(default=None, max_length=255)
+    commit_ref: str | None = Field(default=None, max_length=255)
     status: Literal["triggered", "completed", "failed", "noop"] = "noop"
-    health_check_passed: Optional[bool] = None
-    deploy_id: Optional[str] = Field(default=None, max_length=255)
+    health_check_passed: bool | None = None
+    deploy_id: str | None = Field(default=None, max_length=255)
 
 
 class DeploymentOutput(AgentEnvelope):
@@ -490,7 +490,7 @@ def required_top_level_fields(agent_type: str) -> tuple[str, ...]:
     return tuple(to_cli_schema(schema_for(agent_type)).get("required") or ())
 
 
-def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, Union[BaseModel, list[str]]]:
+def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, BaseModel | list[str]]:
     """Local validation. Returns (True, model) or (False, [error strings])."""
     model = AGENT_SCHEMAS.get(agent_type)
     if model is None:

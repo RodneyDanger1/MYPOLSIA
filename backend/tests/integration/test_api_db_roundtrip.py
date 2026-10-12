@@ -25,10 +25,8 @@ async def test_create_and_retrieve_task(int_client):
 
 @pytest.mark.asyncio
 async def test_config_round_trip(int_client):
-    auth = {"X-API-Key": "int-test-key"}
 
     # Seed company
-    from app.models.company import CompanyConfig
     # (done via fixture or direct insert in real integration tests)
 
     # Health check passes

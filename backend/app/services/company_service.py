@@ -47,7 +47,7 @@ CONTEXT_CACHE_TTL_SECONDS: float = 30.0
 
 # engine -> (expires_at, day_iso, tz, context).  A weak key so a disposed engine
 # (every unit test builds one) is collectable instead of pinned by this cache.
-_CONTEXT_CACHE: "weakref.WeakKeyDictionary[Any, tuple[float, str, str, dict[str, Any]]]" = (
+_CONTEXT_CACHE: weakref.WeakKeyDictionary[Any, tuple[float, str, str, dict[str, Any]]] = (
     weakref.WeakKeyDictionary()
 )
 

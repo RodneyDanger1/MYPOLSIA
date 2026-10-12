@@ -67,6 +67,7 @@ async def _morning_cycle() -> dict[str, Any]:
     from app.services.activity_service import log_activity
     from app.services.company_service import get_full_context
     from app.services.report_service import save_morning_plan
+
     # imported here, not at module scope: agent_tasks imports this module's package
     # through celery_app.worker, and a module-level import would be circular when
     # agent_tasks is the entry point.

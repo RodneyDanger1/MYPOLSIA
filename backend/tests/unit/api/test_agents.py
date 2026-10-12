@@ -1,6 +1,7 @@
 """Test POST /api/v1/agents/{type}/trigger and GET /api/v1/agents/status."""
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.mark.asyncio

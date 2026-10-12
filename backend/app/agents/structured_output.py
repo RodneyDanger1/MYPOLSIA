@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Iterable, Optional
+from enum import StrEnum
+from typing import Any
 
 from app.core.errors import (
     E_AGENT_BAD_OUTPUT,
@@ -40,12 +41,11 @@ from app.core.errors import (
     PolsiaError,
 )
 
-
 # ---------------------------------------------------------------------------
 # Failure taxonomy. Codes are stable; add new ones, never renumber.
 # ---------------------------------------------------------------------------
 
-class FailureCode(str, Enum):
+class FailureCode(StrEnum):
     OK = "POLSIA-E000"
     CLI_BINARY_MISSING = "POLSIA-E100"        # spawn failed: claude not found / not on PATH
     CLI_AUTH_FAILED = "POLSIA-E101"           # envelope error w/ auth signal; api_error_status 401/403
@@ -127,10 +127,10 @@ def e_code_for(code: FailureCode) -> str:
 class OutputResolution:
     """Result of resolving one CLI invocation into a validated payload."""
     ok: bool
-    payload: Optional[dict]
+    payload: dict | None
     code: FailureCode
     hint: str = ""
-    used_repair: Optional[str] = None     # name of the repair step that succeeded, if any
+    used_repair: str | None = None     # name of the repair step that succeeded, if any
     raw_result: str = ""
     partial: bool = False
     detail: str = ""
@@ -221,7 +221,7 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _SMART = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'"})
 
 
-def extract_json_from_text(text: str) -> Optional[Any]:
+def extract_json_from_text(text: str) -> Any | None:
     """Pull a JSON value out of free-form model text: fenced block, brace slice, or whole
     string; then kill trailing commas and smart quotes."""
     if not text:
@@ -315,10 +315,10 @@ def resolve_output(
     stdout: str,
     exit_code: int = 0,
     schema_name: str = "",
-    validator: Optional[Callable[[dict], Any]] = None,
+    validator: Callable[[dict], Any] | None = None,
     required_fields: Iterable[str] = (),
     tolerate_partial: bool = False,
-    coercions: Optional[dict[str, type]] = None,
+    coercions: dict[str, type] | None = None,
 ) -> OutputResolution:
     """Full ladder: envelope -> structured_output -> local validation -> repairs.
 
@@ -343,7 +343,7 @@ def resolve_output(
     # -- primary payload ------------------------------------------------------
     payload = env.get("structured_output")
     raw_result = str(env.get("result") or "")
-    used: Optional[str] = None
+    used: str | None = None
 
     if payload is None:
         parsed = extract_json_from_text(raw_result)
@@ -422,9 +422,9 @@ def prompt_repair_message(code: FailureCode, detail: str, schema_name: str) -> s
 
 def run_repair_ladder(
     *,
-    dispatch: Callable[[Optional[str]], tuple[str, int]],  # (prompt_override|None) -> (stdout, exit_code)
+    dispatch: Callable[[str | None], tuple[str, int]],  # (prompt_override|None) -> (stdout, exit_code)
     resolve_kwargs: dict,
-    policy: Optional[RepairPolicy] = None,
+    policy: RepairPolicy | None = None,
 ) -> OutputResolution:
     """Bounded ladder:
        R0 initial call
@@ -434,7 +434,7 @@ def run_repair_ladder(
     """
     policy = policy or policy_from_settings()
     history: list[str] = []
-    last: Optional[OutputResolution] = None
+    last: OutputResolution | None = None
 
     for attempt in range(policy.max_cli_reprompts + 1):
         override = None

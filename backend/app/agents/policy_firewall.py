@@ -31,8 +31,8 @@ import hmac
 import re
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+from typing import Any
 
 from app.core.errors import (
     E_POLICY_DENIED,
@@ -41,19 +41,18 @@ from app.core.errors import (
     PolsiaError,
 )
 
-
 # ---------------------------------------------------------------------------
 # Action classes and decision objects
 # ---------------------------------------------------------------------------
 
-class ActionClass(str, Enum):
+class ActionClass(StrEnum):
     READ = "read"
     INTERNAL_WRITE = "internal_write"
     EXTERNAL_REVERSIBLE = "external_reversible"
     EXTERNAL_IRREVERSIBLE = "external_irreversible"
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     REQUIRE_APPROVAL = "require_approval"
@@ -179,7 +178,7 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
 }
 
 
-def capability_for(agent_type: str) -> Optional[AgentCapability]:
+def capability_for(agent_type: str) -> AgentCapability | None:
     return AGENT_CAPABILITIES.get(agent_type)
 
 
@@ -277,7 +276,7 @@ def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
 
 
 def verify_approval(secret: bytes, token: str, *, action_fingerprint: str,
-                    now: Optional[float] = None, issued_to: str = "operator") -> bool:
+                    now: float | None = None, issued_to: str = "operator") -> bool:
     try:
         exp_s, sig = token.split(".", 1)
         exp = int(exp_s)
@@ -306,7 +305,7 @@ class ActionRequest:
     tool: str = ""                    # CLI tool name when the action is a tool call
     value_usd: float = 0.0            # monetary value at stake (spend, refund, budget change)
     payload: dict = field(default_factory=dict)
-    taint: Optional[RunTaint] = None
+    taint: RunTaint | None = None
     approval_token: str = ""
     sends_today: int = 0
     sends_this_hour: int = 0
@@ -321,7 +320,7 @@ APPROVAL_THRESHOLDS = {
 def decide(
     req: ActionRequest,
     *,
-    caps: Optional[RateCaps] = None,
+    caps: RateCaps | None = None,
     approval_secret: bytes = b"",
     kill_switch: bool = False,
     sandbox_mode: bool = True,
@@ -339,9 +338,13 @@ def decide(
       8. approval token verification (missing/invalid -> REQUIRE_APPROVAL)
     """
     caps = caps or RateCaps()
-    audit = {
+    audit: dict[str, Any] = {
         "agent": req.agent_type, "class": req.action_class.value, "channel": req.channel,
-        "value_usd": req.value_usd, "fingerprint": fingerprint(req.action_class.value, req.channel, req.payload),
+        "value_usd": req.value_usd,
+        # Annotation is load-bearing: `audit` holds a float (value_usd) and strings, so without it mypy
+        # infers `dict[str, float | str]` and then reports `audit["fingerprint"]` as `float | str` where
+        # `verify_approval` wants `str` — a narrowing artifact, not a runtime bug (fingerprint() -> str).
+        "fingerprint": fingerprint(req.action_class.value, req.channel, req.payload),
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if kill_switch:
@@ -452,10 +455,10 @@ def kill_grade_from_env() -> str:
 def enforce(
     req: ActionRequest,
     *,
-    caps: Optional[RateCaps] = None,
+    caps: RateCaps | None = None,
     approval_secret: bytes = b"",
-    sandbox_mode: Optional[bool] = None,
-    kill_switch: Optional[bool] = None,
+    sandbox_mode: bool | None = None,
+    kill_switch: bool | None = None,
 ) -> PolicyDecision:
     """`decide()` + the honest failure semantics.
 

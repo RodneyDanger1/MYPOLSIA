@@ -1,10 +1,10 @@
 """Integration test conftest — real Postgres + Redis via testcontainers."""
 import json
-import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
 @pytest.fixture(autouse=True)
@@ -39,8 +39,8 @@ def redis_url():
 @pytest_asyncio.fixture(scope="session")
 async def integration_db(postgres_url):
     """Create all tables and return async session factory."""
-    from app.core.database import Base
     import app.models  # noqa — ensure all models registered
+    from app.core.database import Base
 
     engine = create_async_engine(postgres_url, echo=False)
     async with engine.begin() as conn:
@@ -64,9 +64,9 @@ async def db(integration_db):
 @pytest_asyncio.fixture
 async def int_client(db, redis_url, monkeypatch):
     """FastAPI client connected to real Postgres + Redis."""
-    from app.main import app
-    from app.core.database import get_db
     from app.config import settings
+    from app.core.database import get_db
+    from app.main import app
 
     monkeypatch.setattr(settings, "redis_url", redis_url)
     monkeypatch.setattr(settings, "api_key", "int-test-key")

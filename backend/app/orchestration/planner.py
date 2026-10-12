@@ -27,9 +27,9 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Iterable, Optional
+from enum import StrEnum
 
 from app.agents.accounting import BudgetPolicy, BudgetStop, authorize
 from app.config import settings
@@ -40,14 +40,14 @@ from app.schemas.agent_outputs import ALL_AGENT_TYPES
 LAYER_ORDER_NOTE = "prompt layers: app.agents.context_assembler.LAYER_ORDER"
 
 
-class SideEffect(str, Enum):
+class SideEffect(StrEnum):
     READ = "read"                                       # web fetch, inbox read, metrics read
     INTERNAL_WRITE = "internal_write"                   # DB rows, drafts, memories
     EXTERNAL_REVERSIBLE = "external_reversible"         # schedule a post, queue an email
     EXTERNAL_IRREVERSIBLE = "external_irreversible"     # post, send, charge, refund, PR merge
 
 
-class NodeState(str, Enum):
+class NodeState(StrEnum):
     PENDING = "pending"
     READY = "ready"
     DISPATCHED = "dispatched"
@@ -137,8 +137,8 @@ def build_plan(
     date: str,
     spec_nodes: Iterable[dict],
     *,
-    warnings_out: Optional[list[str]] = None,
-    max_nodes: Optional[int] = None,
+    warnings_out: list[str] | None = None,
+    max_nodes: int | None = None,
 ) -> Plan:
     """spec_nodes: dicts shaped like the orchestrator LLM output
         {title, agent_type, priority, estimate_usd, estimate_seconds?, depends_on[list of titles],
@@ -220,8 +220,8 @@ def build_plan(
     if warnings_out is not None:
         warnings_out.extend(warn)
     plan.plan_hash = _plan_hash(plan)
-    setattr(plan, "_order", order)
-    setattr(plan, "_depth", depth)
+    plan._order = order
+    plan._depth = depth
     return plan
 
 
@@ -267,7 +267,7 @@ def critical_path(plan: Plan, weight: str = "est_duration_s") -> tuple[list[str]
     """Longest path through the DAG by the given weight. Returns (path node ids, total)."""
     order: list[str] = plan.order
     best: dict[str, float] = {}
-    prev: dict[str, Optional[str]] = {}
+    prev: dict[str, str | None] = {}
     for nid in order:
         node = plan.nodes[nid]
         w = float(getattr(node, weight))
@@ -327,7 +327,7 @@ def classify_new_work(plan: Plan, existing: dict[str, dict]) -> dict[str, str]:
     return decisions
 
 
-def existing_from_results(plan: Plan, node_states: dict[str, str], *, attempts: Optional[dict[str, int]] = None,
+def existing_from_results(plan: Plan, node_states: dict[str, str], *, attempts: dict[str, int] | None = None,
                           age_hours: float = 0.0) -> dict[str, dict]:
     """Turn a first run's terminal node states into the `existing` map a re-run classifies.
 
@@ -398,12 +398,12 @@ class ScheduleResult:
 def schedule(
     plan: Plan,
     *,
-    budget_usd: Optional[float] = None,
-    max_parallel: Optional[int] = None,
-    dedupe: Optional[dict[str, str]] = None,
-    budget_policy: Optional[BudgetPolicy] = None,
+    budget_usd: float | None = None,
+    max_parallel: int | None = None,
+    dedupe: dict[str, str] | None = None,
+    budget_policy: BudgetPolicy | None = None,
     day_spent_usd: float = 0.0,
-    agent_spent_usd: Optional[dict[str, float]] = None,
+    agent_spent_usd: dict[str, float] | None = None,
 ) -> ScheduleResult:
     """Event-driven list scheduler (greedy, priority-then-cost-then-id).
 
@@ -447,7 +447,7 @@ def schedule(
     denials = 0
 
     # 1. pre-mark dedupe decisions
-    for nid, node in plan.nodes.items():
+    for nid, _node in plan.nodes.items():
         action = dedupe.get(nid)
         if action == "skip_duplicate":
             states[nid] = NodeState.SKIPPED_DUPLICATE
@@ -461,7 +461,7 @@ def schedule(
     now = 0.0
     EPS = 1e-9
 
-    def _ready_or_terminal(nid: str) -> Optional[NodeState]:
+    def _ready_or_terminal(nid: str) -> NodeState | None:
         """None => not decidable yet (a dependency is undecided or still RUNNING); otherwise the
         state the node should take now (READY, BLOCKED_DEPENDENCY or DEFERRED_BUDGET).
 
@@ -604,11 +604,11 @@ def plan_rerun(
     plan: Plan,
     first_run: ScheduleResult,
     *,
-    budget_usd: Optional[float] = None,
-    max_parallel: Optional[int] = None,
-    budget_policy: Optional[BudgetPolicy] = None,
+    budget_usd: float | None = None,
+    max_parallel: int | None = None,
+    budget_policy: BudgetPolicy | None = None,
     day_spent_usd: float = 0.0,
-    agent_spent_usd: Optional[dict[str, float]] = None,
+    agent_spent_usd: dict[str, float] | None = None,
     age_hours: float = 0.0,
 ) -> tuple[dict[str, str], ScheduleResult]:
     """Re-schedule the SAME plan for the same day, given what the first run already did.

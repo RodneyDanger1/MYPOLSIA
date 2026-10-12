@@ -71,9 +71,9 @@ async def test_naive_local_midnight_window_miscounts(async_db_session):
     # 2026-10-11 02:00 UTC == 2026-10-10 22:00 in New York  -> YESTERDAY locally
     # 2026-10-11 20:00 UTC == 2026-10-11 16:00 in New York  -> today locally
     db.add(ActivityLog(agent_type="a", action="x", summary="yesterday-local",
-                       created_at=datetime(2026, 10, 11, 2, 0, tzinfo=timezone.utc)))
+                       created_at=datetime(2026, 10, 11, 2, 0, tzinfo=dt.UTC)))
     db.add(ActivityLog(agent_type="b", action="y", summary="today-local",
-                       created_at=datetime(2026, 10, 11, 20, 0, tzinfo=timezone.utc)))
+                       created_at=datetime(2026, 10, 11, 20, 0, tzinfo=dt.UTC)))
     await db.commit()
 
     original_start = datetime.combine(day, dt.time.min)          # naive LOCAL midnight
@@ -105,7 +105,7 @@ async def test_naive_local_midnight_window_miscounts(async_db_session):
     print(f"  corrected company-local count       = {corrected}")
     print(f"  UTC-day count                       = {utc_window}")
 
-    assert start == datetime(2026, 10, 11, 4, 0, tzinfo=timezone.utc)
+    assert start == datetime(2026, 10, 11, 4, 0, tzinfo=dt.UTC)
     assert corrected == 1, "company-local 2026-10-11 contains exactly the 20:00 UTC row"
     assert utc_window == 2, "a UTC day window contains both rows"
     assert original == 2, (
@@ -171,7 +171,7 @@ def test_metadata_attribute_name_is_reserved():
         "the real Task must keep the MetaData object at .metadata"
     )
     assert "metadata" in [c.name for c in Task.__table__.columns]
-    assert "metadata_json" in Task.__mapper__.attrs.keys()
+    assert "metadata_json" in Task.__mapper__.attrs
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
 """Test GET /api/v1/finance/* endpoints."""
-import pytest
 from datetime import date
-from unittest.mock import patch, MagicMock
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -54,8 +54,9 @@ async def test_finance_revenue_empty(api_client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_finance_revenue_returns_snapshots(api_client, auth_headers, async_db_session):
-    from app.models.finance import RevenueSnapshot
     from datetime import timedelta
+
+    from app.models.finance import RevenueSnapshot
 
     for i in range(3):
         snap = RevenueSnapshot(

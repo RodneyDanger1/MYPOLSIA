@@ -15,7 +15,7 @@ shifts by the UTC offset.  Always compute bounds as timezone-AWARE UTC.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -30,11 +30,11 @@ def company_tz(tz_name: str | None = None) -> ZoneInfo:
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def today_utc() -> date:
-    return datetime.now(timezone.utc).date()
+    return datetime.now(UTC).date()
 
 
 def today_in(tz_name: str | None = None) -> date:
@@ -45,12 +45,12 @@ def day_bounds(day: date, tz_name: str | None = None) -> tuple[datetime, datetim
     """[start, end) as timezone-aware UTC instants for the company's local day."""
     tz = company_tz(tz_name)
     start = datetime.combine(day, time.min, tzinfo=tz)
-    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+    return start.astimezone(UTC), (start + timedelta(days=1)).astimezone(UTC)
 
 
 def utc_day_bounds(day: date) -> tuple[datetime, datetime]:
     """[start, end) for a UTC calendar day (used when no company row exists)."""
-    start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    start = datetime.combine(day, time.min, tzinfo=UTC)
     return start, start + timedelta(days=1)
 
 
@@ -83,8 +83,8 @@ def dialect_name(target: object) -> str:
 def as_bound_instant(value: datetime, target: object) -> datetime:
     """Adapt an aware UTC instant to what the active dialect can compare against."""
     if dialect_name(target) == "sqlite":
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value.astimezone(timezone.utc)
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value.astimezone(UTC)
 
 
 def day_window(

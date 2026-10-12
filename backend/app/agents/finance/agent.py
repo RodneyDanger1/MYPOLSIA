@@ -25,8 +25,8 @@ from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import request_side_effect, side_effect_receipt
 from app.config import settings
-from app.schemas.agent_outputs import FinanceOutput
 from app.core.timeutil import today_utc
+from app.schemas.agent_outputs import FinanceOutput
 
 ROLE = """You are the Finance agent of an autonomous company. You own the numbers: revenue, spend
 and the alerts a founder must see.

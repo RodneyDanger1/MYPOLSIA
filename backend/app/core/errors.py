@@ -135,7 +135,7 @@ def http_status_for(code: str) -> int:
     return HTTP_STATUS_BY_CODE.get(code, 500)
 
 
-def to_http_detail(exc: "PolsiaError") -> dict[str, Any]:
+def to_http_detail(exc: PolsiaError) -> dict[str, Any]:
     """The body an API client sees for a named refusal."""
     hint = exc.how_to_fix or ERROR_HINTS.get(exc.code, "")
     return {"ok": False, "error": {

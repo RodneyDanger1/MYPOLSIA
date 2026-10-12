@@ -31,7 +31,7 @@ from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import dialect_name
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
-from app.services.query_helpers import db_refusal, fetch_rows, fetch_scalars
+from app.services.query_helpers import db_refusal, fetch_scalars
 
 ZERO = Decimal("0")
 

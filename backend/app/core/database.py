@@ -6,7 +6,7 @@ is not installed (unit-test venv). The engine is created LAZILY so that importin
 `app.core.database` never requires a database driver.
 """
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
@@ -92,7 +92,7 @@ async def dispose_engine() -> None:
 
 def utcnow() -> datetime:
     """Single source of truth for "now" (timezone-aware UTC)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:

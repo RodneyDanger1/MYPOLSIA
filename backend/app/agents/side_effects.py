@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from app.agents.policy_firewall import (
     ActionClass,
@@ -31,6 +31,22 @@ from app.agents.policy_firewall import (
     enforce,
 )
 from app.core.errors import E_INTEGRATION, ERROR_HINTS, PolsiaError
+
+
+def _resolve_sandbox_mode(sandbox_mode: bool | None) -> bool:
+    """Resolve "unspecified" to the configured default.
+
+    Passing `None` straight through to `decide()` OVERRODE its fail-safe `sandbox_mode: bool = True`
+    default: `decide(sandbox_mode=None)` makes every `if sandbox_mode:` check falsy, so an unspecified
+    mode silently behaved as sandbox OFF — the opposite of the default, and in the fail-open direction.
+    Resolving here keeps the firewall's own default meaningful.
+    """
+    # Local import on purpose: this module keeps `app.config` out of its import graph (same pattern
+    # further down). Without it this helper raises NameError the first time it runs with
+    # sandbox_mode=None — a bug the test that covers it caught immediately.
+    from app.config import settings
+
+    return settings.sandbox_mode if sandbox_mode is None else bool(sandbox_mode)
 
 
 def named_refusal(code: str, message: str, *, how_to_fix: str = "", **context: Any) -> dict:
@@ -57,7 +73,7 @@ class SideEffectOutcome:
     e_code: str = ""                 # E_* ("" when allowed)
     reason: str = ""
     audit: dict = field(default_factory=dict)
-    decision: Optional[PolicyDecision] = None
+    decision: PolicyDecision | None = None
 
     @property
     def draft(self) -> bool:
@@ -92,14 +108,14 @@ def request_side_effect(
     *,
     action: str = "",
     value_usd: float = 0.0,
-    payload: Optional[dict] = None,
+    payload: dict | None = None,
     sends_today: int = 0,
     sends_this_hour: int = 0,
-    taint: Optional[RunTaint] = None,
+    taint: RunTaint | None = None,
     approval_token: str = "",
     tool: str = "",
-    sandbox_mode: Optional[bool] = None,
-    caps: Optional[RateCaps] = None,
+    sandbox_mode: bool | None = None,
+    caps: RateCaps | None = None,
     approval_secret: bytes = b"",
 ) -> SideEffectOutcome:
     """Ask the firewall about one external action.
@@ -120,7 +136,10 @@ def request_side_effect(
         sends_today=sends_today,
         sends_this_hour=sends_this_hour,
     )
-    decision = enforce(req, caps=caps, approval_secret=approval_secret, sandbox_mode=sandbox_mode)
+    decision = enforce(
+        req, caps=caps, approval_secret=approval_secret,
+        sandbox_mode=_resolve_sandbox_mode(sandbox_mode),
+    )
     return SideEffectOutcome(
         allowed=decision.decision is Decision.ALLOW,
         sandboxed=decision.sandboxed,
@@ -192,11 +211,11 @@ def evaluate_side_effect(
     *,
     action: str = "",
     value_usd: float = 0.0,
-    payload: Optional[dict] = None,
+    payload: dict | None = None,
     sends_today: int = 0,
     sends_this_hour: int = 0,
-    sandbox_mode: Optional[bool] = None,
-    caps: Optional[RateCaps] = None,
+    sandbox_mode: bool | None = None,
+    caps: RateCaps | None = None,
     approval_secret: bytes = b"",
 ) -> PolicyDecision:
     """The firewall's ANSWER without enforcement.
@@ -218,12 +237,12 @@ def evaluate_side_effect(
         ),
         caps=caps,
         approval_secret=approval_secret,
-        sandbox_mode=sandbox_mode,
+        sandbox_mode=_resolve_sandbox_mode(sandbox_mode),
     )
 
 
-def side_effect_receipt(outcome: "SideEffectOutcome", *, action: str, ref: str = "",
-                        extra: Optional[dict] = None) -> dict:
+def side_effect_receipt(outcome: SideEffectOutcome, *, action: str, ref: str = "",
+                        extra: dict | None = None) -> dict:
     """One audit line for an attempted side effect (the shape `action_audit` stores)."""
     return {
         "action": action,

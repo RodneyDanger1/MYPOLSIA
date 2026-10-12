@@ -5,6 +5,7 @@ connects to `${WS_URL}/ws/activity`.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -32,12 +33,8 @@ async def activity_socket(websocket: WebSocket) -> None:
         logger.warning("activity websocket error", exc_info=True)
     finally:
         if pubsub is not None:
-            try:
+            with contextlib.suppress(Exception):  # best-effort teardown; never mask the real error
                 await pubsub.unsubscribe(events.ACTIVITY_CHANNEL)
                 await pubsub.close()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
+        with contextlib.suppress(Exception):  # best-effort teardown; never mask the real error
             await websocket.close()
-        except Exception:  # noqa: BLE001
-            pass
