@@ -1,0 +1,26 @@
+# Line endings are declared here, not left to each machine's core.autocrlf.
+#
+# Why it matters for THIS repo: the backend and frontend run inside Linux images (`backend/Dockerfile`
+# does `COPY . .`, and the Makefile/`backend/scripts/init_db.sh` execute there). With core.autocrlf=true
+# — the default on the Windows box this was prepared on — git rewrites those files to CRLF at checkout,
+# and a CRLF shell script inside a Linux container fails with `bash\r: No such file or directory`.
+# `eol=lf` wins over core.autocrlf on every platform, so a checkout anywhere is byte-identical here.
+#
+# The campaign's census records the EOL class of every file, and this is what keeps it LF-pure.
+* text=auto eol=lf
+
+# Binary — never touch, never normalise.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.sqlite binary
+*.sqlite3 binary
+*.zip binary
+
+# Generated lockfiles are text and stay LF like everything else.
+package-lock.json text eol=lf
