@@ -46,8 +46,9 @@ omit = ["tests/*", "alembic/*"]
 # 2026-10-11, first measurement: 51.48% (2,267 of 4,404 statements) against the upload's declared
 # `fail_under = 75`, which no run of this repository has ever met. A gate that cannot pass protects
 # nothing, so it was set to the measured floor; the suite then grew (queue safety core, model schema
-# freeze, auth refinements) and the same command now reports 57.6% (2,554 of 4,431). The floor moves
-# up with it. The unmet 75% target is named in the README ("Known gaps") rather than quietly
-# forgotten here.
-fail_under = 57
+# freeze, auth refinements) to 57.6% (2,554 of 4,431), and then again through waves 1–4 and T16–T19,
+# where the same command reports 73.0% (3,441 of 4,714 — 72.9953%, floored to 72). The floor moves up
+# with it. The unmet 75% target (now within ~2 points) is named in the README ("Known gaps") rather
+# than quietly forgotten here.
+fail_under = 72
 show_missing = true
