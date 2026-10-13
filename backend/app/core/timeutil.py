@@ -75,7 +75,17 @@ def day_bounds(day: date, tz_name: str | None = None) -> tuple[datetime, datetim
 
 
 def utc_day_bounds(day: date) -> tuple[datetime, datetime]:
-    """[start, end) for a UTC calendar day (used when no company row exists)."""
+    """[start, end) for a UTC calendar day (used when no company row exists).
+
+    ZERO PRODUCTION CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/grep_utc_day_bounds.txt).  The only caller is
+    tests/redteam/test_spec_invariants.py:95, which uses this as the naive-UTC CONTROL
+    against `day_bounds` (the local-day trap it demonstrates).  No app/, celery_app/ or
+    scripts/ code calls it: every real "today" window goes through `day_bounds` /
+    `day_window` (company-local, dialect-bound).  Do NOT reach for this to fix a day
+    query — a UTC day is not the company's day and it silently shifts the window by the
+    UTC offset.  Removal vs adoption is an owner decision (REQUESTS R25-1).
+    """
     start = datetime.combine(day, time.min, tzinfo=UTC)
     return start, start + timedelta(days=1)
 

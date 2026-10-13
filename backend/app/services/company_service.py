@@ -69,7 +69,14 @@ def invalidate_company_context() -> int:
 
 
 def cache_info() -> dict[str, Any]:
-    """Introspection for probes/ops: what is live, and for how much longer."""
+    """Introspection for probes/ops: what is live, and for how much longer.
+
+    ZERO CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/grep_cache_info.txt) — exported in `__all__`
+    but called by nothing: no app/, celery_app/ or scripts/ code, and no test reads it
+    either.  Intended as the ops/probe view of `_CONTEXT_CACHE` (entries, TTL, remaining
+    life).  Removal vs adoption is an owner decision (REQUESTS R25-1).
+    """
     now = time.monotonic()
     entries = []
     for expires, day, tz, _ctx in list(_CONTEXT_CACHE.values()):
@@ -90,6 +97,13 @@ async def get_company(db: AsyncSession) -> CompanyConfig | None:
 
 
 async def get_company_by_name(db: AsyncSession, name: str) -> CompanyConfig | None:
+    """Lookup by exact name.
+
+    ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
+    but called by nothing (production or tests); the app resolves the single company row
+    via `get_company`.  Removal vs adoption is an owner decision (REQUESTS R25-1).
+    """
     result = await db.execute(select(CompanyConfig).where(CompanyConfig.name == name).limit(1))
     return result.scalar_one_or_none()
 

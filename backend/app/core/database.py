@@ -69,7 +69,15 @@ def get_engine() -> AsyncEngine:
 
 
 def is_sqlite(engine: AsyncEngine | None = None) -> bool:
-    """True when the active engine is SQLite (drives the day-window binding)."""
+    """True when the active engine is SQLite (drives the day-window binding).
+
+    ZERO CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/grep_is_sqlite.txt) — nothing in app/,
+    celery_app/, scripts/ or tests/ calls it.  The "day-window binding" note describes
+    the intended role: the live binding path is `timeutil.dialect_name` /
+    `as_bound_instant`, which take the session/engine themselves.  Removal vs adoption
+    is an owner decision (REQUESTS R25-1).
+    """
     return (engine or get_engine()).dialect.name == "sqlite"
 
 

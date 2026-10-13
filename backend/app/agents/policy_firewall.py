@@ -183,6 +183,13 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
 
 
 def capability_for(agent_type: str) -> AgentCapability | None:
+    """Allowlist lookup by agent type.
+
+    ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
+    but called by nothing (production or tests); consumers read `AGENT_CAPABILITIES`
+    directly.  Removal vs adoption is an owner decision (REQUESTS R25-1).
+    """
     return AGENT_CAPABILITIES.get(agent_type)
 
 
@@ -277,7 +284,16 @@ def current_run_taint() -> RunTaint | None:
 
 
 def reset_run_taint() -> None:
-    """Clear the run taint (tests, or a caller that must not inherit a previous run's verdict)."""
+    """Clear the run taint (tests, or a caller that must not inherit a previous run's verdict).
+
+    TEST-SUPPORT reset; NO PRODUCTION CALLER (R25 bounded scan, 2026-10-13; raw grep
+    evidence: polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — only tests
+    call it (tests/unit/test_taint_chain.py, test_csinbox_prompt.py,
+    test_extra_context_layer.py reset the contextvar between cases).  The production
+    publish/read pair is `set_run_taint` (context_assembler.assemble) /
+    `current_run_taint` (side_effects).  Removal vs adoption is an owner decision
+    (REQUESTS R25-1).
+    """
     RUN_TAINT.set(None)
 
 
@@ -314,6 +330,24 @@ class ApprovalToken:
 
 def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
                    issued_to: str = "operator") -> ApprovalToken:
+    """Mint a single-use HMAC approval token for a gated action (TTL-bounded).
+
+    NO PRODUCTION ISSUER (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/grep_issue_approval.txt) — zero call sites in
+    app/, celery_app/ and scripts/; the only caller is
+    tests/unit/test_policy_firewall.py:145, which mints a token to exercise the
+    `verify_approval` ALLOW path.  Verification IS live (`decide()`, this file line 529,
+    reached via `enforce()` from `side_effects.request_side_effect`), but nothing in
+    production issues a token — nor does any production caller pass `approval_secret` /
+    `approval_token` (raw/supplementary_evidence.txt) — so the firewall's "approval
+    required but no approval channel configured" DENY is FINAL for gated actions today:
+    no gated action can come back ALLOW.
+
+    OWNER DECISION: building the issuance channel (an operator-facing mint + delivery
+    path) CHANGES THE SAFETY POSTURE — the gate is deliberately closed, not broken.
+    Do NOT wire an issuer as an incidental refactor; removal vs adoption is an owner
+    decision (REQUESTS R25-2).
+    """
     exp = int(time.time()) + ttl_s
     msg = f"{action_fingerprint}|{exp}|{issued_to}".encode()
     sig = hmac.new(secret, msg, hashlib.sha256).hexdigest()[:32]
@@ -621,6 +655,13 @@ def assert_sandboxed_side_effect_allowed(agent_type: str, action: str, *, decisi
 
     Agents call this before writing a real result id (tweet id, PR url, Stripe id) so a
     sandboxed run can never be reportable as a success that posted something.
+
+    ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — nothing imports or
+    calls it (production or tests).  The wired form of this guard is
+    `side_effects.assert_not_reporting_real_side_effect` (called at
+    social_media/agent.py:167).  Removal vs adoption is an owner decision
+    (REQUESTS R25-1).
     """
     from app.config import settings
 
