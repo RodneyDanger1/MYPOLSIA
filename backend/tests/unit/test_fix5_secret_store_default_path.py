@@ -75,7 +75,14 @@ def test_legacy_cwd_relative_store_is_read_when_the_anchored_one_does_not_exist(
     legacy.parent.mkdir()
     legacy.write_text('{"deepseek_api_key": "legacy-key-value"}', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    assert not ANCHORED.is_file(), "precondition: the anchored store must not exist"
+    # Hermetic seam (2026-10-13, found live in the docker pass): the anchored path is CONSTRUCTED
+    # absent under tmp_path, never merely assumed absent on the host.  A real stored key in
+    # backend/data/ (the owner entered one through the app) used to flip this precondition and
+    # red the suite on a machine that actually uses the product — the same seam the sibling
+    # `test_anchored_store_wins_over_a_legacy_file` already applies.
+    anchored_absent = tmp_path / "anchored-absent" / "deepseek_api_key.json"
+    monkeypatch.setattr(secret_store, "_anchored_default_key_file", lambda: anchored_absent)
+    assert not anchored_absent.is_file(), "precondition: the anchored store must not exist"
 
     with caplog.at_level(logging.WARNING, logger=secret_store.__name__):
         resolved = default_store()

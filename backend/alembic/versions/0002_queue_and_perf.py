@@ -60,16 +60,19 @@ def _sqlite_array(element, compiler, **kw):  # noqa: ANN001, ARG001
 
 
 # ── derived ad-metric expressions (data-perf §3.4, PORTABLE form) ────────────
-# `CAST(x AS REAL)` is accepted by SQLite and PostgreSQL; `x::numeric` is PostgreSQL
-# syntax that SQLAlchemy renders verbatim into SQLite DDL and crashes there (measured).
-_CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(clicks AS REAL) / impressions, 6) ELSE 0 END"
-_CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(spend_usd AS REAL) / clicks, 6) ELSE 0 END"
+# `round(<expr>, 6)` needs the PORTABLE form below (2026-10-13, live PostgreSQL finding): SQLite
+# accepts an inner `CAST(x AS REAL)` division, but PostgreSQL has no round(double precision, int) —
+# only round(numeric, int) — so the ROUND INPUT is cast to NUMERIC while the division stays REAL
+# (an inner NUMERIC cast would INTEGER-divide on SQLite). The earlier REAL-only form upgraded every
+# SQLite DB and died on the first real PostgreSQL one.
+_CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(CAST(clicks AS REAL) / impressions AS NUMERIC), 6) ELSE 0 END"
+_CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(CAST(spend_usd AS REAL) / clicks AS NUMERIC), 6) ELSE 0 END"
 # roas needs a revenue number: `ad_metrics` had none, so 0001's roas column could only
 # ever hold a value an agent invented.  `revenue_usd` (numeric, same unit as spend_usd)
 # is added here and `roas` is derived from it — existing rows get 0, which is the honest
 # value for a number that was never measured.
 _ROAS_EXPR = (
-    "CASE WHEN spend_usd > 0 THEN round(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL), 6) "
+    "CASE WHEN spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) "
     "ELSE 0 END"
 )
 _RUNNABLE_AT_EXPR = "COALESCE(scheduled_date, created_at)"

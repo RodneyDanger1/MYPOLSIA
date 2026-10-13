@@ -70,6 +70,17 @@ changed.  Old canonical sha256
 `41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce` ->
 `c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (docker live pass, 2026-10-13; PostgreSQL compatibility): the three
+`ad_metrics` GENERATED expressions moved from `round(CAST(x AS REAL) / y, 6)` to
+`round(CAST(CAST(x AS REAL) / y AS NUMERIC), 6)` — the division stays REAL (SQLite needs it; an
+inner NUMERIC cast would integer-divide there) while the round INPUT is NUMERIC (PostgreSQL has no
+`round(double precision, int)`; the old form upgraded every SQLite DB and died on the first real
+PostgreSQL one — found live in the Docker pass, alongside the legacy-store test-isolation fix in
+`test_fix5_secret_store_default_path.py`).  Old canonical sha256
+`c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e` ->
+`e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -88,7 +99,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e"
+DDL_SHA256 = "e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -147,9 +158,9 @@ FROZEN_COLUMNS = {
         # R31: the real NOT NULL column the shipped DDL holds, mapped after the money it derives from
         ('revenue_usd', 'NUMERIC(14, 4)', False, '0', '0', '', False),
         # R31: GENERATED on both engines (`COMPUTED: <expr>` marker) — writable Floats before
-        ('ctr', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN impressions > 0 THEN round(CAST(clicks AS REAL) / impressions, 6) ELSE 0 END', '', False),
-        ('cpc', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN clicks > 0 THEN round(CAST(spend_usd AS REAL) / clicks, 6) ELSE 0 END', '', False),
-        ('roas', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN spend_usd > 0 THEN round(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL), 6) ELSE 0 END', '', False),
+        ('ctr', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN impressions > 0 THEN round(CAST(CAST(clicks AS REAL) / impressions AS NUMERIC), 6) ELSE 0 END', '', False),
+        ('cpc', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN clicks > 0 THEN round(CAST(CAST(spend_usd AS REAL) / clicks AS NUMERIC), 6) ELSE 0 END', '', False),
+        ('roas', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) ELSE 0 END', '', False),
     ),
     'agent_runs': (
         ('id', 'INTEGER', False, '', '', '', False),

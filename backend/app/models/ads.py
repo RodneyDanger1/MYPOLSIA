@@ -29,10 +29,10 @@ from app.core.database import Base
 #: 0003:71/79 rebuilds the table in the same shape), so the ORM must declare them computed.
 #: `Computed(expr)` without `persisted` is the dialect-honest form (measured): SQLite renders the
 #: expression with its VIRTUAL default, PostgreSQL's dialect renders the STORED keyword it requires.
-_CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(clicks AS REAL) / impressions, 6) ELSE 0 END"
-_CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(spend_usd AS REAL) / clicks, 6) ELSE 0 END"
+_CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(CAST(clicks AS REAL) / impressions AS NUMERIC), 6) ELSE 0 END"
+_CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(CAST(spend_usd AS REAL) / clicks AS NUMERIC), 6) ELSE 0 END"
 _ROAS_EXPR = (
-    "CASE WHEN spend_usd > 0 THEN round(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL), 6) "
+    "CASE WHEN spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) "
     "ELSE 0 END"
 )
 
