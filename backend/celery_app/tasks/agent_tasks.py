@@ -236,6 +236,25 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
             from app.services.outreach_service import record_sent_emails
 
             return await record_sent_emails(db, result)
+        if agent_type == "customer_support":
+            # RD14 follow-up (its receipt §7 REQUESTS 1): CS replies send through the same
+            # SendGrid path as email_outreach, but nothing persisted them — the email channel's
+            # counter undercounted every CS reply.  Same producer, same gates: only
+            # status=="sent" WITH a provider id is written (a draft, a refusal or a sandbox
+            # downgrade adds no row), deduped by sendgrid_id.
+            from app.services.outreach_service import record_sent_emails
+
+            return await record_sent_emails(db, {"emails": [
+                {
+                    "prospect_email": str(r.get("from_address") or r.get("from") or "").strip(),
+                    "subject": f"Re: {r.get('subject') or 'your message'}",
+                    "body": str(r.get("reply_body") or ""),
+                    "status": r.get("status"),
+                    "sendgrid_id": r.get("sendgrid_id"),
+                }
+                for r in (result or {}).get("replies") or []
+                if str(r.get("from_address") or r.get("from") or "").strip()
+            ]})
         return {}
     except PolsiaError as exc:
         logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
@@ -339,7 +358,13 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     f"claim returned no task for {task_id}",
                     context={"task_id": task_id},
                 )
-            task_dict = {"id": task.id, "title": task.title, "description": task.description}
+            task_dict = {"id": task.id, "title": task.title, "description": task.description,
+                         # `metadata` (the `tasks.metadata` JSON column) is the per-task payload
+                         # channel — customer_support's attached inbox item travels here.  This
+                         # literal used to drop it, so no attached payload could ever reach an
+                         # agent's prompt (RD4 §4 note 3 / RD12).  Additive for every agent: the
+                         # prompt layers read only id/title/description/acceptance.
+                         "metadata": task.metadata_json}
             agent_type = task.agent_type
     except PolsiaError as exc:
         if exc.code in _SKIP_CLAIM_CODES:
