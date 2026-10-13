@@ -60,3 +60,6 @@ backend/data/deepseek_api_key.json
 backend/data/deepseek_api_key.json.*.tmp
 # The D7 Windows fallback store (app/core/chroma_client.resolve_persist_dir) is runtime state too.
 backend/data/chroma/
+
+# run-suite.sh writes one run log per invocation (e2e/run-<label>.txt) — runtime artifact.
+e2e/run-*.txt
