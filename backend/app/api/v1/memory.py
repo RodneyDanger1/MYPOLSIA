@@ -1,9 +1,15 @@
-"""GET/POST /api/v1/memory.
+"""GET/POST/DELETE /api/v1/memory.
 
 `?q=` is semantic search (ChromaDB) with a keyword fallback inside the service;
 `?category=&limit=` is the plain list.  Every refusal from `memory_service`
-(`E_VALIDATION` on an empty query, `E_STORAGE` when a write cannot be indexed,
-`E_DB` when nothing can be read) reaches the client as that named refusal.
+(`E_VALIDATION` on an empty query, `E_STORAGE` when a write cannot be indexed or a
+delete cannot remove the document, `E_NOT_FOUND` for an unknown id, `E_DB` when
+nothing can be read) reaches the client as that named refusal.
+
+`DELETE /{memory_id}` removes the sqlite row AND its ChromaDB document in the same
+request flow (order + refusal semantics: `memory_service.delete_memory`).  It
+answers with the removed entry's representation rather than a bare 204, so the
+caller can verify which document was removed.
 """
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.schemas.memory import MemoryCreate, MemoryEntryResponse, MemoryItem
-from app.services.memory_service import list_memories, search_memory, store_memory
+from app.services.memory_service import delete_memory, list_memories, search_memory, store_memory
 
 router = APIRouter(prefix="/memory", tags=["memory"], dependencies=[Depends(verify_api_key)])
 
@@ -45,4 +51,19 @@ async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db
             tags=payload.tags,
             metadata=payload.metadata,
         )
+    return MemoryEntryResponse.model_validate(entry)
+
+
+@router.delete("/{memory_id}", response_model=MemoryEntryResponse)
+async def remove_memory(memory_id: int, db: AsyncSession = Depends(get_db)) -> MemoryEntryResponse:
+    """Remove a memory from both stores (sqlite row + ChromaDB document).
+
+    Named `remove_memory`, not `delete_memory`, because the service function of
+    that name is imported into this namespace (same reason `tasks.py` suffixes its
+    handlers `_endpoint`).  The 200 body is the removed entry's representation:
+    it carries the `chroma_id` that was deleted, so the caller can check the exact
+    document rather than trusting an empty response.
+    """
+    with refusal_guard():
+        entry = await delete_memory(db, memory_id)
     return MemoryEntryResponse.model_validate(entry)

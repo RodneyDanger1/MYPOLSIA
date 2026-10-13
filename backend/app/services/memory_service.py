@@ -16,7 +16,13 @@ Failure policy — no silent partial success:
 * a collection whose client rejects `where` (TypeError) is retried without the
   category filter — the drop is recorded (`code=where_filter_dropped`, naming the
   query and the lost category) and every hit that retry returns is tagged
-  `fallback: "sql_unfiltered"`, so an unfiltered read cannot pass as filtered.
+  `fallback: "sql_unfiltered"`, so an unfiltered read cannot pass as filtered;
+* `delete_memory` removes the ChromaDB document FIRST and the row SECOND (the
+  mirror of the dual write, and the sweep's own order).  A chroma failure refuses
+  with `E_STORAGE` and keeps the row: both halves still exist, so the state stays
+  consistent and the delete can be retried.  The inverse order would strand a
+  searchable ghost whose row — and with it the `chroma_id` needed to find the
+  document — is already gone.
 """
 from __future__ import annotations
 
@@ -25,10 +31,11 @@ import uuid
 from typing import Any
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chroma_client import get_collection  # noqa: F401  (re-exported for patching)
-from app.core.errors import E_DB, E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.memory import MemoryEntry
 from app.services.query_helpers import fetch_scalars
 
@@ -244,4 +251,76 @@ async def get_memory(db: AsyncSession, memory_id: int) -> MemoryEntry | None:
     return result.scalar_one_or_none()
 
 
-__all__ = ["get_memory", "list_memories", "search_memory", "store_memory"]
+async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
+    """Remove a memory from BOTH stores — the sqlite row and its ChromaDB document.
+
+    Order is load-bearing (mirror of `store_memory`'s dual write; same order as
+    `e2e/_sweep-fixtures.py`):
+
+      1. read the row — a missing row is a named `E_NOT_FOUND` refusal, never a
+         silent success for a delete of something that is not there;
+      2. remove the ChromaDB document FIRST.  If that fails, the row is left
+         alone and the refusal is `E_STORAGE` (the same classification
+         `store_memory` uses for the vector store): both halves still exist, so
+         the state stays consistent and the delete can be re-run.  Deleting the
+         row first would make a chroma failure strand a searchable ghost — and
+         with the row gone, the `chroma_id` needed to remove the document would
+         be gone too;
+      3. delete the row and flush, so a 200 means BOTH halves were removed before
+         the response was built.
+
+    A row without a `chroma_id` (legacy data) has no document to strand, so step 2
+    is skipped.  `collection.delete(ids=[...])` is idempotent for an id that is
+    already absent, so a retry after a partially-applied earlier attempt is safe.
+
+    The returned entry is the representation of what was removed; its attributes
+    are still readable after the flush (a deleted instance is not expired).
+    """
+    entry = await get_memory(db, memory_id)
+    if entry is None:
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"memory {memory_id} does not exist",
+            how_to_fix=ERROR_HINTS[E_NOT_FOUND],
+            context={"memory_id": memory_id},
+        )
+
+    chroma_id = entry.chroma_id
+    if chroma_id:
+        try:
+            get_collection().delete(ids=[chroma_id])
+        except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
+            raise PolsiaError(
+                E_STORAGE,
+                f"memory {memory_id} was NOT deleted: its ChromaDB document {chroma_id!r} "
+                f"could not be removed ({type(exc).__name__}: {exc}) — the row is kept so the "
+                "two stores stay consistent",
+                how_to_fix="check CHROMA_PERSIST_DIR / the Chroma service, then retry the delete",
+                context={"memory_id": memory_id, "chroma_id": chroma_id},
+            ) from exc
+
+    await db.delete(entry)
+    try:
+        await db.flush()
+    except SQLAlchemyError as exc:
+        # The document is already gone; the row is not.  Reporting success would be a lie
+        # and staying quiet would hide the half-state — so the refusal says exactly what
+        # happened, and names the re-run that finishes the job (a chroma delete of an
+        # already-removed id is a no-op, so re-running this call is safe).
+        removed = (
+            f"its ChromaDB document {chroma_id!r} was already removed but the row could not "
+            "be deleted"
+            if chroma_id
+            else "the row could not be deleted"
+        )
+        raise PolsiaError(
+            E_DB,
+            f"memory {memory_id}: {removed} ({type(exc).__name__}: {exc}) — re-run the delete "
+            "to finish",
+            how_to_fix=ERROR_HINTS[E_DB],
+            context={"memory_id": memory_id, "chroma_id": chroma_id},
+        ) from exc
+    return entry
+
+
+__all__ = ["delete_memory", "get_memory", "list_memories", "search_memory", "store_memory"]
