@@ -42,6 +42,7 @@ from app.core.errors import (
     PolsiaError,
 )
 from celery_app.tasks._common import (
+    assert_budget_allows,
     create_task_deduped,
     dedupe_key,
     enqueue_created,
@@ -569,6 +570,7 @@ def run_ads_stripe_sync() -> dict[str, Any]:
 
 
 async def _ads_stripe_sync() -> dict[str, Any]:
+    from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
 
     bucket = sweep_bucket(6)
@@ -579,8 +581,17 @@ async def _ads_stripe_sync() -> dict[str, Any]:
     session_factory = get_session_factory()
     created: list[tuple[str, int]] = []
     duplicates: list[str] = []
+    denied: list[str] = []
     async with session_factory() as db:
         for agent_type, title in plan:
+            # D3: the day's measured spend gates dispatch (audit A1/L2-F01 — the planner's gate
+            # had no production caller; this is the same authorize decision on the real path).
+            try:
+                await assert_budget_allows(agent_type)
+            except BudgetStop as exc:
+                denied.append(f"{agent_type}: {exc.reason}")
+                logger.warning("ads/stripe sync: budget denied %s (%s)", agent_type, exc.reason)
+                continue
             key = dedupe_key(agent_type, bucket)
             task = await create_task_deduped(
                 db,
@@ -600,7 +611,12 @@ async def _ads_stripe_sync() -> dict[str, Any]:
     if created:
         # D2/T19 parity: a dead broker must not strand these rows `pending` (see enqueue_created).
         await enqueue_created([task_id for _, task_id in created], label="ads/stripe sync")
-    return {"status": "queued" if created else "duplicate", "queued": queued, "duplicates": duplicates}
+    return {
+        "status": "queued" if created else "duplicate",
+        "queued": queued,
+        "duplicates": duplicates,
+        "denied": denied,
+    }
 
 
 async def _create_and_enqueue(
@@ -612,7 +628,15 @@ async def _create_and_enqueue(
     description: str | None = None,
 ) -> dict[str, Any]:
     """Create today's sweep task once (dedupe key) and queue it on the broker."""
+    from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
+
+    # D3: measured-spend gate (audit A1/L2-F01) — a full day creates no new sweep row.
+    try:
+        await assert_budget_allows(agent_type)
+    except BudgetStop as exc:
+        logger.warning("sweep %s: budget denied (%s)", agent_type, exc.reason)
+        return {"status": "budget_denied", "reason": exc.reason}
 
     key = dedupe_key(agent_type, bucket)
     session_factory = get_session_factory()

@@ -1,0 +1,93 @@
+"""Dispatch-time budget gate (D3; audit A1 / lane-2 finding L2-F01).
+
+The DAG planner's `accounting.authorize` gate had no production caller; the scheduler paths now
+check the day's MEASURED spend (`agent_runs.cost_usd`, company-local day) against the declared
+settings caps BEFORE creating rows. These tests seed `agent_runs` directly on the queue harness
+(file-backed DB behind the app-wide session factory, driven on the Celery process loop).
+
+Audit reference: L2-F01 (`planner.py:519` was the only `authorize` call site;
+`daily_cycle.py` consumed the flat plan with no gate).
+
+RED leg (observed): the `await assert_budget_allows(agent_type)` call in `_create_and_enqueue`
+replaced with `pass` -> the over-cap and kill-switch tests come back `queued` with a row on
+disk; restore -> green.
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+
+from app.agents.accounting import budget_policy_from_settings
+
+
+def _policy():
+    """The policy the settings actually declare — never hardcoded in the test."""
+    return budget_policy_from_settings()
+
+
+def _seed_spend(queue_db, agent_type: str, amount_usd: str) -> None:
+    from app.core.database import utcnow
+    from app.models.task import AgentRun
+
+    async def _seed() -> None:
+        async with queue_db.factory() as db:
+            db.add(AgentRun(agent_type=agent_type, cost_usd=Decimal(amount_usd), started_at=utcnow()))
+            await db.commit()
+
+    queue_db.run(_seed())
+
+
+def _noop_delay(monkeypatch) -> None:
+    import celery_app.tasks.agent_tasks as agent_tasks
+
+    monkeypatch.setattr(agent_tasks.run_agent_task, "delay", lambda tid: None, raising=False)
+
+
+def test_a_fresh_day_dispatches_a_sweep_normally(queue_db, monkeypatch):
+    from celery_app.tasks.agent_tasks import _create_and_enqueue
+
+    _noop_delay(monkeypatch)
+
+    result = queue_db.run(_create_and_enqueue("customer_support", "D3 fresh-day sweep", bucket="d3-a"))
+
+    assert result["status"] == "queued", "measured spend 0 must not block a dispatch"
+    assert queue_db.count("tasks", "title = ?", ("D3 fresh-day sweep",)) == 1
+
+
+def test_a_full_day_denies_the_sweep_and_creates_no_row(queue_db, monkeypatch):
+    from celery_app.tasks.agent_tasks import _create_and_enqueue
+
+    _noop_delay(monkeypatch)
+    policy = _policy()
+    _seed_spend(queue_db, "social_media", str(policy.day_limit_usd))  # the day is full
+
+    result = queue_db.run(_create_and_enqueue("customer_support", "D3 over-cap sweep", bucket="d3-b"))
+
+    assert result["status"] == "budget_denied"
+    assert "insufficient budget" in result["reason"], "the reason carries the measured numbers"
+    assert queue_db.count("tasks", "title = ?", ("D3 over-cap sweep",)) == 0, "no row when denied"
+
+
+def test_the_kill_switch_freezes_dispatch_even_on_a_fresh_day(queue_db, monkeypatch):
+    from celery_app.tasks.agent_tasks import _create_and_enqueue
+
+    _noop_delay(monkeypatch)
+    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+
+    result = queue_db.run(_create_and_enqueue("customer_support", "D3 freeze sweep", bucket="d3-c"))
+
+    assert result["status"] == "budget_denied"
+    assert "kill switch" in result["reason"]
+    assert queue_db.count("tasks", "title = ?", ("D3 freeze sweep",)) == 0
+
+
+def test_ads_stripe_sync_reports_each_denied_entry_and_skips_its_row(queue_db, monkeypatch):
+    from celery_app.tasks.agent_tasks import _ads_stripe_sync
+
+    _noop_delay(monkeypatch)
+    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+
+    result = queue_db.run(_ads_stripe_sync())
+
+    assert len(result["denied"]) == 2, "both planned agents are named, not silently dropped"
+    assert all("kill switch" in reason for reason in result["denied"])
+    assert queue_db.count("tasks", "agent_type IN ('ads_management','finance')") == 0

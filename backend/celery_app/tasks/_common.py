@@ -202,8 +202,61 @@ async def enqueue_created(task_ids: list[int], *, label: str) -> None:
         ) from exc
 
 
+# ── dispatch budget gate ─────────────────────────────────────────────────────
+async def day_spend_by_agent(db: AsyncSession) -> tuple[float, dict[str, float]]:
+    """MEASURED spend for the company-local day: (total, per-agent) from `agent_runs.cost_usd`.
+
+    Money is exact at rest (A-T17/T18); an absent day is a measured 0, never a guess. The window
+    starts at the company-local midnight, bound through `as_bound_instant` for the SQLite dialect
+    (the same pattern the claim path uses).
+    """
+    from sqlalchemy import func as sa_func
+
+    from app.core.timeutil import as_bound_instant, day_bounds, today_in
+    from app.models.task import AgentRun
+
+    start, _end = day_bounds(today_in())
+    rows = (
+        await db.execute(
+            select(AgentRun.agent_type, sa_func.coalesce(sa_func.sum(AgentRun.cost_usd), 0))
+            .where(AgentRun.started_at >= as_bound_instant(start, db))
+            .group_by(AgentRun.agent_type)
+        )
+    ).all()
+    per_agent = {str(agent_type): float(total) for agent_type, total in rows}
+    return sum(per_agent.values()), per_agent
+
+
+async def assert_budget_allows(agent_type: str) -> None:
+    """Dispatch-time budget gate (D3; audit A1 / lane-2 L2-F01). Raises `BudgetStop` when the day is full.
+
+    The DAG planner's `authorize` gate had no production caller; this puts the same decision on
+    the paths that actually dispatch. The policy is what the settings DECLARE
+    (`agent_daily_cost_cap_usd` / `agent_run_cost_cap_usd` via `accounting.budget_policy_from_settings`;
+    kill switch frozen when `POLSIA_KILL_SWITCH` says freeze). The estimate is the policy's own
+    per-run cap — the flat plan carries no per-node estimate, so the gate uses the conservative
+    worst case rather than an invented small number.
+    """
+    from app.agents.accounting import authorize, budget_policy_from_settings
+    from app.agents.policy_firewall import kill_grade_from_env
+    from app.core.database import get_session_factory
+
+    policy = budget_policy_from_settings(kill_switch=kill_grade_from_env() == "freeze")
+    async with get_session_factory()() as db:
+        total, per_agent = await day_spend_by_agent(db)
+    authorize(  # raises BudgetStop; the caller decides skip-vs-fail
+        policy,
+        agent_type=agent_type,
+        est_cost_usd=policy.per_run_cap_usd,
+        day_spent_usd=total,
+        agent_spent_usd=per_agent.get(agent_type, 0.0),
+    )
+
+
 __all__ = [
+    "assert_budget_allows",
     "create_task_deduped",
+    "day_spend_by_agent",
     "dedupe_key",
     "enqueue_created",
     "get_process_loop",

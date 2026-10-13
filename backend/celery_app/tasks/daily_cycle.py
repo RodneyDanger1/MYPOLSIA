@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.core.timeutil import company_tz, now_utc, today_in
 from celery_app.tasks._common import (
+    assert_budget_allows,
     create_task_deduped,
     dedupe_key,
     enqueue_created,
@@ -112,6 +113,7 @@ def _morning_window(day: date, hour: int, tz: ZoneInfo) -> tuple[datetime, datet
 
 
 async def _morning_cycle() -> dict[str, Any]:
+    from app.agents.accounting import BudgetStop
     from app.agents.crew_factory import run_agent_for_task
     from app.core.database import get_session_factory
     from app.services.activity_service import log_activity
@@ -177,6 +179,14 @@ async def _morning_cycle() -> dict[str, Any]:
     # a worker can never pick up a row that does not exist yet (no producer/consumer race).
     async with session_factory() as db:
         for agent_type, title, bucket, priority in _FIXED_MORNING_WORK:
+            # D3: measured-spend gate per dispatch (audit A1/L2-F01); a denied entry is skipped
+            # WITH its reason — never silently dropped, never partially created.
+            try:
+                await assert_budget_allows(agent_type)
+            except BudgetStop as exc:
+                skipped.append(f"{agent_type}: budget — {exc.reason}")
+                logger.warning("morning cycle: budget denied %s (%s)", agent_type, exc.reason)
+                continue
             key = dedupe_key(agent_type, bucket)
             task = await create_task_deduped(
                 db,
@@ -207,6 +217,13 @@ async def _morning_cycle() -> dict[str, Any]:
             if not title or not agent_type:
                 skipped.append(f"malformed plan entry: {entry!r}")
                 logger.warning("morning plan: skipping malformed entry %r", entry)
+                continue
+            # D3: measured-spend gate per planned dispatch (audit A1/L2-F01).
+            try:
+                await assert_budget_allows(agent_type)
+            except BudgetStop as exc:
+                skipped.append(f"{agent_type}: budget — {exc.reason}")
+                logger.warning("morning plan: budget denied %s (%s)", agent_type, exc.reason)
                 continue
             # The priority coercion below used to be fully silent.  An ABSENT priority is the
             # output schema's own default (`TaskSpec.priority` — default=3,
