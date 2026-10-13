@@ -39,6 +39,7 @@ E_CLI_EXIT = "E_CLI_EXIT"                 # CLI exited non-zero
 E_CLI_JSON = "E_CLI_JSON"                 # CLI output was not the documented envelope
 E_AGENT_BAD_OUTPUT = "E_AGENT_BAD_OUTPUT"  # agent output failed schema validation
 E_PROMPT_TOO_LARGE = "E_PROMPT_TOO_LARGE"  # prompt exceeds the argv limit
+E_DEEPSEEK_KEY = "E_DEEPSEEK_KEY"          # no DeepSeek API key configured (RD8 runtime)
 
 # policy / budget
 E_SANDBOX_BLOCKED = "E_SANDBOX_BLOCKED"   # real side effect refused while sandboxed
@@ -106,6 +107,7 @@ ERROR_HINTS: dict[str, str] = {
     E_CLI_JSON: "check the CLI version supports --output-format json",
     E_AGENT_BAD_OUTPUT: "the repair ladder will retry; otherwise tighten the agent schema",
     E_PROMPT_TOO_LARGE: "enable CLAUDE_PROMPT_VIA_STDIN or lower the context budget",
+    E_DEEPSEEK_KEY: "enter your DeepSeek API key in Settings (or set DEEPSEEK_API_KEY) and retry",
     E_SANDBOX_BLOCKED: "set SANDBOX_MODE=false once credentials are configured",
     E_POLICY_DENIED: "the action needs an approval or a wider tool allowlist",
     E_BUDGET_EXCEEDED: "raise the agent/day cap or wait for the next window",
