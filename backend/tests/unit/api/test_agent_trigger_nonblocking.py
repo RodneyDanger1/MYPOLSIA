@@ -16,6 +16,17 @@ interaction this test does not depend on, recorded rather than chased.)
 RED legs, both observed: revert the handler to a bare `run_agent_task.delay(task.id)`, or monkeypatch
 `asyncio.to_thread` to call its target inline — either way the ticker observes **0** ticks and the
 `ticks >= 5` assertion fails, so the check can fail.
+
+T19 adds the two proofs the wave-4 receipt left open: the terminal row survives the request-session
+rollback (`test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back`) and the refusal is
+BOUNDED in wall time against the real transport configuration
+(`test_the_dead_broker_ladder_elapses_bounded` + `test_the_broker_transport_is_bounded_by_configuration`).
+Those two measure real seconds on purpose — the bound is the subject. Measured at T19: 12.758 s on
+the uvicorn path (W4 scratch), 12.981 s through this test's own API path, 6.29–6.61 s for a bare
+in-process `delay()` (probe) — the delta is the result-backend consumer's own bounded ladder. The
+bound is the RETRY CAP, measured: widening the socket timeouts alone left the refused-port ladder
+unchanged; defeating the retry cap (`max_retries` 1 -> 20, step 1.0 s) measured **129.5 s** through
+the API path and the 20 s ceiling died — that is what the ceiling exists to catch.
 """
 from __future__ import annotations
 
@@ -144,3 +155,101 @@ async def test_the_trigger_reports_queued_with_the_created_task_id(api_client, a
     assert body["status"] == "queued"
     assert body["task_id"] == 99
     assert "99" in body["message"]
+
+
+# ── T19: the terminal row, committed — and the refusal, bounded against the real transport ─────
+
+
+@pytest.mark.asyncio
+async def test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back(
+    api_client, auth_headers, async_db_session, monkeypatch
+):
+    """The response names a task id — after the request teardown, that row must still exist.
+
+    `get_db` rolls the request session back when the handler raises (its docstring; measured
+    behavior). The handler only FLUSHES the created row and its terminal state, so without the
+    explicit commit the id the 503 hands the caller points at nothing. Measured before the commit
+    (W4 scratch DB, re-read by W2): rows 1..15 exist and row 16 — the one the 503 named — does not.
+    The fixture's dependency override skips `get_db`, so this test applies the teardown rollback
+    by hand: a missing commit is discarded here and fails the test; a present one survives it.
+    """
+    from sqlalchemy import select
+
+    import celery_app.tasks.agent_tasks as agent_tasks
+    from app.models.task import Task
+
+    def dead_delay(*_args, **_kwargs):
+        raise ConnectionError("Error 61 connecting to localhost:6379. Connection refused.")
+
+    monkeypatch.setattr(agent_tasks.run_agent_task, "delay", dead_delay, raising=False)
+
+    response = await api_client.post(
+        "/api/v1/agents/social_media/trigger",
+        headers=auth_headers,
+        json={"task_title": "T19 persistence probe"},
+    )
+    assert response.status_code == 503
+    task_id = response.json()["error"]["context"]["task_id"]
+
+    # the request-teardown rollback a real `get_db` runs on the raising path
+    await async_db_session.rollback()
+
+    row = (
+        await async_db_session.execute(select(Task).where(Task.id == task_id))
+    ).scalar_one_or_none()
+    assert row is not None, "the id the 503 named must not point at a rolled-back ghost row"
+    assert row.status == "failed", "the row's terminal state is the reason it will never run"
+    assert "E_REDIS" in (row.error_message or ""), "the row must carry the refusal's name"
+
+
+@pytest.mark.asyncio
+async def test_the_dead_broker_ladder_elapses_bounded(api_client, auth_headers):
+    """The refusal AND the clock, against the real transport configuration (no stub, no monkeypatch).
+
+    The bound is configuration, not luck: `celery_app/celery_config.py` caps every broker/result
+    socket operation at 1.0 s with at most one retry. Measured at T19: 12.758 s on the uvicorn path
+    (W4 scratch line 137), 12.981 s through this exact API path (first run, 4-seat load), 6.29-6.61 s
+    for a bare in-process `delay()` (probe) — the delta is the result-backend consumer climbing its
+    own bounded ladder first. Which part of the config IS the bound was measured too: widening the
+    socket timeouts alone left the refused-port ladder unchanged (ECONNREFUSED is instant; measured
+    15.3 s total under 10.0 s timeouts, ceiling intact), while defeating the RETRY CAP
+    (`max_retries` 1 -> 20, step 1.0 s) measured **129.5 s** through this same path and killed the
+    ceiling — that is the failure this assertion exists to catch. The plan's draft `< 10 s` example
+    is BELOW the measured API-path bound — re-decided here against the measurements, per the
+    wave-4 conflict note.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    from celery_app.worker import app
+
+    parsed = urlparse(app.conf.broker_url or "")
+    with socket.socket() as probe:
+        probe.settimeout(1.0)
+        reachable = probe.connect_ex((parsed.hostname or "localhost", parsed.port or 6379)) == 0
+    if reachable:
+        pytest.skip("a live broker is reachable — the dead-broker bound is not measurable here")
+
+    started = time.perf_counter()
+    response = await api_client.post("/api/v1/agents/social_media/trigger", headers=auth_headers)
+    elapsed = time.perf_counter() - started
+
+    assert response.status_code == 503, "the dead broker is a named refusal, not a fake queue"
+    assert response.json()["error"]["code"] == "E_REDIS"
+    assert elapsed < 20.0, (
+        f"the dead-broker refusal took {elapsed:.1f}s — the bounded transport "
+        "(celery_config.py: 1.0 s socket bounds, one retry per transport) measured 12.8-13.0 s "
+        "on the API path; widened to 10.0 s socket bounds it measured 63.8 s (T19 probe table)"
+    )
+
+
+def test_the_broker_transport_is_bounded_by_configuration():
+    """Pin the CONFIG: the bound the test above measures is shipped, not incidental."""
+    from celery_app.worker import app
+
+    for name in ("broker_transport_options", "result_backend_transport_options"):
+        options = dict(getattr(app.conf, name) or {})
+        assert options.get("socket_connect_timeout") == 1.0, f"{name} lost its connect bound"
+        assert options.get("socket_timeout") == 1.0, f"{name} lost its operation bound"
+        retries = (options.get("retry_policy") or {}).get("max_retries")
+        assert retries is not None and retries <= 1, f"{name} gained retries: {retries}"

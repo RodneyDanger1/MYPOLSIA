@@ -68,9 +68,9 @@ broker_connection_retry_on_startup = True  # a worker started before Redis must 
 # With Redis absent, a single POST /agents/<type>/trigger produced twenty
 # `celery.backends.redis: Connection to Redis lost: Retry (n/20) in 1.00 second` lines — a ~20 s stall
 # per call, which is exactly the 20.0 s timeout the repo's own e2e run measured on GET /api/v1/config
-# while the API was otherwise idle. The caller already handles a broker outage honestly ("the task row
-# still exists and is queued"); what was missing was a bound, so the attempt is capped at ~1 s per socket
-# operation with at most one retry instead of a 20-step ladder. Mirrors app/core/redis_client.py.
+# while the API was otherwise idle. The caller already handles a broker outage honestly (records the
+# terminal failure and refuses with E_REDIS — see app/api/v1/agents.py); what was missing was a bound,
+# so the attempt is capped at ~1 s per socket operation with at most one retry instead of a 20-step ladder. Mirrors app/core/redis_client.py.
 broker_transport_options = {
     "socket_connect_timeout": 1.0,
     "socket_timeout": 1.0,

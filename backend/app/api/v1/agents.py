@@ -99,6 +99,13 @@ async def trigger_agent(
             "failed",
             error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
         )
+        # Load-bearing commit (T19): `create_task`/`update_task_status` only FLUSH, and `get_db`
+        # rolls the request session back on the exception raised right below — measured before
+        # this commit (W4 scratch, re-read by W2): the row the 503 names ("task #16 ...") was
+        # rolled back and never existed, so the ledger lost the attempt entirely while the
+        # caller held an id. The created row, its terminal state and its reason must survive
+        # the refusal: the caller saw an id, the ledger keeps it.
+        await db.commit()
         raise PolsiaError(
             E_REDIS,
             f"task #{task.id} was created but could not be handed to a worker",

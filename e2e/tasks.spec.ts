@@ -46,39 +46,48 @@ test.describe("Tasks page", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("POST /agents/social_media/trigger creates the task and /tasks shows its row", async ({ page, request }) => {
+  test("POST /agents/social_media/trigger on the Redis-less lab refuses honestly and /tasks shows the failed row", async ({ page, request }) => {
+    // This stack runs WITHOUT Redis on purpose (the outage path is what the lab exercises), so the
+    // trigger must answer with the named refusal: 503 + E_REDIS. The old 202/"queued" assertion here
+    // was the fake success T19 removed — nothing had accepted the delivery (c29073d + the T19 commit).
     const title = `${PREFIX} tasks-spec trigger ${Date.now()}`;
     let taskId: number | null = null;
     try {
       // Real write flow: the same endpoint the Agents page's "Run Now" button calls.
       const trig = await request.post(`${BACKEND_URL}/api/v1/agents/social_media/trigger`, {
         data: { task_title: title },
-        timeout: 90_000, // the broker-down enqueue ladder measured ~14s; give contention headroom
+        timeout: 90_000, // the broker-down enqueue ladder measured ~13s live; give contention headroom
       });
-      expect(trig.status()).toBe(202);
+      expect(trig.status()).toBe(503);
       const body = await trig.json();
-      expect(body.status).toBe("queued");
-      expect(body.task_id).toBeGreaterThan(0);
-      taskId = body.task_id;
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("E_REDIS");
+      expect(body.error.how_to_fix).toBeTruthy();
+      taskId = body.error.context.task_id;
+      expect(taskId).toBeGreaterThan(0);
 
-      // Independent read-back: the row is really in the DB, not just echoed in the response.
+      // Independent read-back: the terminal row really is in the DB — not rolled back into a
+      // dangling id (the T19 defect) and not left looking queued (the original defect).
       const read = await request.get(`${API_BASE}/api/v1/tasks/${taskId}`);
       expect(read.status()).toBe(200);
       const task = await read.json();
       expect(task.title).toBe(title);
       expect(task.agent_type).toBe("social_media");
+      expect(task.status).toBe("failed");
+      expect(task.error_message).toContain("E_REDIS");
 
       // And the page renders it — one row: title, agent type + priority line, status badge.
       await page.goto("/tasks");
       const titleNode = page.getByText(title, { exact: true }).first();
       await expect(
         titleNode,
-        `trigger created task #${taskId} ("${title}") but /tasks never renders it — ` +
+        `trigger named task #${taskId} ("${title}") but /tasks never renders it — ` +
           "the page is not rendering what the API serves (frozen build-time snapshot?)",
       ).toBeVisible();
       const row = titleNode.locator("xpath=ancestor::div[contains(@class,'bg-gray-800')]");
       await expect(row).toContainText("social media · Priority 3");
       await expect(row.getByText(/^(pending|in_progress|completed|failed)$/)).toBeVisible();
+      await expect(row).toContainText("failed");
     } finally {
       if (taskId !== null) {
         // No DELETE endpoint exists; remove the obviously-named fixture row directly.
