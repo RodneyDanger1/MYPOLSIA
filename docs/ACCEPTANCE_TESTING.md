@@ -100,7 +100,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 |---|---|---|
 | Orchestrator | Returns valid JSON `{summary, tasks[], key_focus}` | Unit (mocked CLI) |
 | Business Planning | Reads company context, returns recommendations | Unit (mocked CLI) |
-| Competitor Research | Calls Tavily (mocked), returns competitor profiles | Unit (mocked CLI) |
+| Competitor Research | Researches competitors via the agent runtime's web tools (mocked CLI), returns competitor profiles | Unit (mocked CLI) |
 | Social Media | Returns draft tweet content | Unit (mocked CLI) |
 | Email Outreach | Returns personalized email draft | Unit (mocked CLI) |
 | Customer Support | Returns reply draft for inbox item | Unit (mocked CLI) |

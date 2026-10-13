@@ -1,6 +1,6 @@
 # Polsia — AI Business Agent Platform
 
-An autonomous multi-agent system that runs your business on autopilot. Nine specialized AI agents handle social media, competitor research, email outreach, ads management, customer support, code generation, business planning, finance, and orchestration — all powered by Claude Code CLI in headless mode.
+An autonomous multi-agent system that runs your business on autopilot. Nine specialized AI agents handle social media, competitor research, email outreach, ads management, customer support, code generation, business planning, finance, and orchestration — on a DeepSeek-first runtime (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored server-side) with the Claude Code CLI as a fallback.
 
 ## Architecture
 
@@ -39,13 +39,13 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 | **Maintenance** | Task-lease sweep — requeues tasks whose worker died mid-run | Every 5 min |
 | **Maintenance** | Activity retention — deletes `activity_log` rows older than `activity_retention_days` (default 90) | Daily at 03:00 UTC |
 
-Each agent calls `claude -p "..." --output-format json` as a subprocess. No API key is needed — the Claude Code CLI authenticates via OAuth stored at `~/.claude`.
+Each agent runs on the provider-selectable runtime: DeepSeek-first (V4.1 Flash via the OpenAI-compatible API — enter the key in Settings or the dashboard banner; it is stored at `backend/data/deepseek_api_key.json`, masked, and changeable) with the Claude Code CLI (`claude -p "..." --output-format json`) as the fallback, which needs no API key — it authenticates via OAuth stored at `~/.claude`.
 
 ## Prerequisites
 
 - Docker + Docker Compose
-- [Claude Code CLI](https://docs.anthropic.com/claude-code) installed and authenticated (`claude login`)
-- (Optional for real operations) Stripe, Twitter, SendGrid, Tavily, Google Ads, Meta Ads accounts
+- A DeepSeek API key (entered in the app after first start — the default runtime), or the [Claude Code CLI](https://docs.anthropic.com/claude-code) installed and authenticated (`claude login`) for the fallback runtime
+- (Optional for real operations) Stripe, Twitter/X, SendGrid, Google Ads, Meta Ads accounts
 
 ## Quick Start
 
@@ -83,7 +83,7 @@ The stack is up when `http://localhost/api/v1/health` returns `{"status": "ok"}`
 | `SANDBOX_MODE` | `true` = no real posts/emails/charges (default) |
 | `CLAUDE_CLI_PATH` | Path to the `claude` binary. The setting's default is `claude` (found on `PATH`); the container image's ENV sets `/usr/local/bin/claude` (`backend/Dockerfile:25`) |
 
-The Claude CLI authenticates via the `~/.claude` directory on your host, which is mounted read-only into the containers. Run `claude login` on your host once before starting the stack.
+The fallback Claude CLI authenticates via the `~/.claude` directory on your host, which is mounted read-only into the containers (run `claude login` on your host once if you use it); the default DeepSeek runtime needs only its API key, entered in the app.
 
 ### Integrations
 
