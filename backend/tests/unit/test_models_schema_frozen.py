@@ -23,6 +23,21 @@ below.  Old canonical sha256 `0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075
 -> `8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79`.  Every pre-R17 row is
 byte-identical; the migration's CREATE TABLE is byte-equal to this ORM `create_all`
 (probe: `build/R17-inbox/raw/probe_ddl_parity.txt`).
+
+RE-PINNED DELIBERATELY (R31, 2026-10-13): `ad_metrics` was moved **onto** the shipped DDL.  The
+ORM declared `ctr/cpc/roas` as writable `FLOAT` columns and did not map `revenue_usd` at all,
+while migrations `0002`/`0003` hold the three ratios `NUMERIC(14, 6)` `GENERATED ALWAYS AS (...)`
+and `revenue_usd NUMERIC(14, 4) DEFAULT '0' NOT NULL` — so the `create_all` fixture accepted an
+insert the migrated schema rejects (R26 F2: `cannot INSERT into generated column "ctr"`).  This is
+NOT a new DB contract and deliberately NOT a new alembic revision: it is the ORM fixture
+converging on the schema the chain already ships.  Row changes: `ctr/cpc/roas` are now
+`('NUMERIC(14, 6)', True, '', 'COMPUTED: <expr>', '', False)` (the fourth field renders the
+generation expression — a generated column has no `server_default.arg`), and `revenue_usd`
+`('NUMERIC(14, 4)', False, '0', '0', '', False)` is inserted after `spend_usd` (the migrated
+column order).  Old canonical sha256
+`8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79` ->
+`43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -41,7 +56,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79"
+DDL_SHA256 = "43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -95,9 +110,12 @@ FROZEN_COLUMNS = {
         ('clicks', 'INTEGER', True, '0', '0', '', False),
         ('conversions', 'INTEGER', True, '0', '0', '', False),
         ('spend_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
-        ('ctr', 'FLOAT', True, '0', '0', '', False),
-        ('cpc', 'FLOAT', True, '0', '0', '', False),
-        ('roas', 'FLOAT', True, '0', '0', '', False),
+        # R31: the real NOT NULL column the shipped DDL holds, mapped after the money it derives from
+        ('revenue_usd', 'NUMERIC(14, 4)', False, '0', '0', '', False),
+        # R31: GENERATED on both engines (`COMPUTED: <expr>` marker) — writable Floats before
+        ('ctr', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN impressions > 0 THEN round(CAST(clicks AS REAL) / impressions, 6) ELSE 0 END', '', False),
+        ('cpc', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN clicks > 0 THEN round(CAST(spend_usd AS REAL) / clicks, 6) ELSE 0 END', '', False),
+        ('roas', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN spend_usd > 0 THEN round(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL), 6) ELSE 0 END', '', False),
     ),
     'agent_runs': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -348,7 +366,13 @@ def _orm_rows() -> dict[str, list[tuple[str, str, bool, str, str, str, bool]]]:
         rows = []
         for col in table.columns:
             py_default = "" if col.default is None else _render_python_default(col.default.arg)
-            sv_default = "" if col.server_default is None else str(col.server_default.arg)
+            if col.computed is not None:
+                # A generated column has no `server_default.arg` (measured: `Computed` carries no
+                # `.arg`), so its definition IS the generation expression — rendered with an
+                # explicit marker so a writable column can never be mistaken for a computed one.
+                sv_default = f"COMPUTED: {col.computed.sqltext}"
+            else:
+                sv_default = "" if col.server_default is None else str(col.server_default.arg)
             unique = bool(
                 col.unique or col.name in unique_idx_cols or col.name in unique_constraint_cols
             )

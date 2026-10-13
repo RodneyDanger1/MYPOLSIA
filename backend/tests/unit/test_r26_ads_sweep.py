@@ -479,8 +479,9 @@ async def test_head_schema_metrics_are_read_through_the_generated_columns(
     head_session,
 ) -> None:
     """`list_metrics` against the migrated ad_metrics (ctr/cpc/roas are GENERATED there, and
-    revenue_usd exists only in the DDL) — raw seed rows, because the mapped insert cannot write
-    those columns (see the B6 xfail below)."""
+    revenue_usd exists only in the DDL).  Raw seed rows here — the ORM's own insert into the same
+    schema is pinned separately (R31: `test_the_mapped_metric_insert_can_write_the_migrated_schema`
+    in this file and the acceptance pin in `test_r31_ads_schema_truth.py`)."""
     await create_campaign(head_session, "google_ads", "metrics-head")
     await head_session.execute(text(
         "INSERT INTO ad_metrics (campaign_id, date, impressions, clicks, conversions,"
@@ -492,7 +493,7 @@ async def test_head_schema_metrics_are_read_through_the_generated_columns(
 
     rows = await list_metrics(head_session, 1)
     assert [r.date for r in rows] == [date(2026, 1, 2), date(2026, 1, 1)]
-    assert rows[0].ctr == pytest.approx(0.25), "the generated column is what the reader sees"
+    assert rows[0].ctr == Decimal("0.250000"), "the generated column is what the reader sees"
     assert rows[0].spend_usd == Decimal("2.5000")
 
 
@@ -502,17 +503,18 @@ async def test_head_schema_unknown_campaign_still_refuses_by_name(head_session) 
     _assert_refusal(excinfo.value, E_NOT_FOUND)
 
 
-# ── cross-file defects (proven here, fixed elsewhere) ────────────────────────
+# ── cross-file defects: PROVEN in R26, FIXED in R31 (the proofs are now pins) ────────────────
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="KNOWN DEFECT / REQUIRED-FOLLOW-UP (app/schemas/social.py:43-52): status and the two money "
-    "columns are nullable in the frozen schema (models/ads.py:21-30) and on PostgreSQL CHECK(NULL) "
-    "passes, while AdCampaignResponse declares them required — one schema-legal NULL row makes the "
-    "whole endpoint answer an unnamed 500 (probe2 Q6). Not fixable in this lane's files.",
-)
 async def test_a_schema_legal_null_row_does_not_break_the_response_model(head_session) -> None:
+    """R26 F1 — was `xfail(strict=False)`; fixed in R31 (`app/schemas/social.py`).
+
+    R26's proof: `status`/`daily_budget_usd`/`total_spent_usd` are nullable in the frozen schema
+    (models/ads.py:21-30) and on PostgreSQL `CHECK(NULL)` passes, while `AdCampaignResponse`
+    declared them required — one schema-legal NULL row made the whole endpoint 500 (probe2 Q6).
+    R31 makes the response accept the row it can legally be handed: `None` means "not recorded",
+    never a fabricated 0.
+    """
     await head_session.execute(text(
         "INSERT INTO ad_campaigns (platform, name, status, daily_budget_usd, total_spent_usd,"
         " created_at) VALUES ('meta','legacy-null',NULL,NULL,NULL,"
@@ -521,19 +523,27 @@ async def test_a_schema_legal_null_row_does_not_break_the_response_model(head_se
     row = (await head_session.execute(
         select(AdCampaign).where(AdCampaign.name == "legacy-null")
     )).scalar_one()
-    AdCampaignResponse.model_validate(row)  # currently raises pydantic ValidationError
+    served = AdCampaignResponse.model_validate(row)
+    assert (served.status, served.daily_budget_usd, served.total_spent_usd) == (None, None, None)
+    assert served.model_dump()["daily_budget_usd"] is None, "null must survive serialisation"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="KNOWN DEFECT / REQUIRED-FOLLOW-UP (app/models/ads.py:47-54): ctr/cpc/roas are mapped as "
-    "plain writable Floats while BOTH engines hold them GENERATED (0002:233-242 drop+add; 0003:71 "
-    "rebuild), and revenue_usd (NOT NULL in the DDL) is not mapped at all — the ORM's own INSERT "
-    "cannot write a row into the shipped schema (measured: \"cannot INSERT into generated column "
-    "%r\" / probe3-output.txt) while the create_all unit schema accepts it. No writer exists yet, so "
-    "this is latent; the fix location is the model, not this lane's files.",
-)
 async def test_the_mapped_metric_insert_can_write_the_migrated_schema(head_session) -> None:
+    """R26 F2 — was `xfail(strict=False)`; fixed in R31 (`app/models/ads.py`).
+
+    R26's proof: `ctr/cpc/roas` were mapped as plain writable Floats while BOTH engines hold them
+    GENERATED (0002:233-242 drop+add; 0003:71 rebuild), and `revenue_usd` (NOT NULL in the DDL) was
+    not mapped at all — the ORM's own INSERT died with `cannot INSERT into generated column "ctr"`
+    (probe3), while the create_all unit schema accepted it.  This is the regression pin: the same
+    insert must now succeed on the migrated schema and read back the engine's values.
+    """
     await create_campaign(head_session, "google_ads", "orm-metric")
-    head_session.add(AdMetric(campaign_id=1, date=date(2026, 1, 2), impressions=10, clicks=2))
-    await head_session.flush()  # currently OperationalError: cannot INSERT into generated column "ctr"
+    metric = AdMetric(campaign_id=1, date=date(2026, 1, 2), impressions=10, clicks=2)
+    head_session.add(metric)
+    await head_session.flush()
+    stored = (await head_session.execute(
+        select(AdMetric).where(AdMetric.id == metric.id)
+    )).scalar_one()
+    assert stored.ctr == Decimal("0.200000")          # 2/10 — computed by the engine
+    assert stored.revenue_usd == Decimal("0.0000")    # the NOT NULL column's default
+    assert (stored.cpc, stored.roas) == (Decimal("0.000000"), Decimal("0.000000"))

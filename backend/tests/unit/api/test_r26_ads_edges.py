@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -267,18 +266,17 @@ async def test_head_schema_empty_table_is_an_empty_list(head_api_client) -> None
     assert resp.status_code == 200 and resp.json() == []
 
 
-# ── cross-file defect (proven at the HTTP boundary, fixed elsewhere) ─────────
+# ── cross-file defect: PROVEN at the HTTP boundary in R26, FIXED in R31 ──────
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="KNOWN DEFECT / REQUIRED-FOLLOW-UP (app/schemas/social.py:43-52): status/daily_budget_usd/"
-    "total_spent_usd are nullable on both engines (0001:167-179; CHECK(NULL) passes) but the response "
-    "model requires them, so ONE schema-legal NULL row turns the whole list into an unnamed 500 for "
-    "every row — the /ads page then shows 'Could not load campaigns' (probe2 Q6; response 500 has no "
-    "E_* code).  Not fixable in this lane's files.",
-)
 async def test_a_schema_legal_null_row_does_not_500_the_whole_endpoint(head_api_client) -> None:
+    """R26 F1 — was `xfail(strict=False)`; fixed in R31 (`app/schemas/social.py`).
+
+    R26's proof: `status`/`daily_budget_usd`/`total_spent_usd` are nullable on both engines
+    (0001:167-179; CHECK(NULL) passes) but the response model required them, so ONE schema-legal
+    NULL row turned the whole list into an unnamed 500 for every row (probe2 Q6).  R31 serves the
+    row: 200, with the three fields carried as `null` (never a fabricated value).
+    """
     client, session = head_api_client
     await _add(session, "google_ads", "fine")
     await session.execute(text(
@@ -291,23 +289,31 @@ async def test_a_schema_legal_null_row_does_not_500_the_whole_endpoint(head_api_
     assert resp.status_code != 500, (
         "a schema-legal row must not produce an unnamed 500; it must be served or refused by name"
     )
-    if resp.status_code == 200:
-        assert any(r["name"] == "legacy-null" for r in resp.json())
-    else:
-        assert resp.json()["error"]["code"], f"an unnamed failure body: {resp.text[:200]}"
+    assert resp.status_code == 200, f"expected the row to be served: {resp.text[:200]}"
+    rows = {r["name"]: r for r in resp.json()}
+    assert set(rows) == {"fine", "legacy-null"}
+    null_row = rows["legacy-null"]
+    assert (null_row["status"], null_row["daily_budget_usd"], null_row["total_spent_usd"]) == (
+        None, None, None,
+    )
+    assert rows["fine"]["status"] == "active", "the fix must not disturb recorded values"
 
 
-def test_the_null_row_defect_is_reproducible_from_the_response_model_alone() -> None:
-    """The root cause, without HTTP: the model requires what the schema allows to be NULL."""
-    import pydantic
+def test_the_response_model_serves_the_schema_legal_null_row() -> None:
+    """Was `test_the_null_row_defect_is_reproducible_from_the_response_model_alone` (R26) — renamed
+    and INVERTED in R31 because the defect it pinned is fixed.
 
+    R26 asserted the model RAISED `ValidationError` for a schema-legal NULL row; the fix makes the
+    same input validate, with `None` preserved through serialisation and no fabricated `0`.
+    """
     from app.schemas.social import AdCampaignResponse
 
-    with pytest.raises(pydantic.ValidationError) as excinfo:
-        AdCampaignResponse.model_validate({
-            "id": 1, "platform": "meta", "name": "legacy-null",
-            "status": None, "daily_budget_usd": None, "total_spent_usd": None,
-        })
-    assert {err["loc"][0] for err in json.loads(excinfo.value.json())} >= {
-        "status", "daily_budget_usd", "total_spent_usd"
-    }
+    served = AdCampaignResponse.model_validate({
+        "id": 1, "platform": "meta", "name": "legacy-null",
+        "status": None, "daily_budget_usd": None, "total_spent_usd": None,
+    })
+    assert (served.status, served.daily_budget_usd, served.total_spent_usd) == (None, None, None)
+    body = json.loads(served.model_dump_json())
+    assert {k: body[k] for k in ("status", "daily_budget_usd", "total_spent_usd")} == {
+        "status": None, "daily_budget_usd": None, "total_spent_usd": None,
+    }, "the fields are served as null, never omitted and never coerced to 0"

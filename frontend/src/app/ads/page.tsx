@@ -3,7 +3,16 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 
-type Campaign = { id: number; platform: string; name: string; status: string; daily_budget_usd: number; total_spent_usd: number };
+// status/daily_budget_usd/total_spent_usd are NULLABLE in the schema (a raw-SQL/ops row can hold
+// NULL) — null means "not recorded", and it is rendered as a dash, never as a fabricated $0.00.
+type Campaign = {
+  id: number;
+  platform: string;
+  name: string;
+  status: string | null;
+  daily_budget_usd: number | null;
+  total_spent_usd: number | null;
+};
 
 /**
  * Client component on purpose.
@@ -60,11 +69,11 @@ export default function AdsPage() {
           <div key={c.id} className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
             <div>
               <p className="text-white font-medium">{c.name}</p>
-              <p className="text-gray-400 text-sm capitalize">{c.platform} · {c.status}</p>
+              <p className="text-gray-400 text-sm capitalize">{c.platform} · {c.status ?? "—"}</p>
             </div>
             <div className="text-right">
-              <p className="text-white">${c.total_spent_usd.toFixed(2)} spent</p>
-              <p className="text-gray-400 text-sm">${c.daily_budget_usd}/day budget</p>
+              <p className="text-white">{c.total_spent_usd === null ? "—" : `$${c.total_spent_usd.toFixed(2)}`} spent</p>
+              <p className="text-gray-400 text-sm">{c.daily_budget_usd === null ? "—" : `$${c.daily_budget_usd}`}/day budget</p>
             </div>
           </div>
         ))}

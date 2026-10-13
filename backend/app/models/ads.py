@@ -4,10 +4,32 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import (
+    Computed,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+#: The derived-ratio expressions, copied verbatim from `alembic/versions/0002_queue_and_perf.py`
+#: (`_CTR_EXPR` / `_CPC_EXPR` / `_ROAS_EXPR`).  BOTH engines hold these three columns
+#: `GENERATED ALWAYS AS (<expr>)` (0002:233-245 drops the writable columns and re-adds them;
+#: 0003:71/79 rebuilds the table in the same shape), so the ORM must declare them computed.
+#: `Computed(expr)` without `persisted` is the dialect-honest form (measured): SQLite renders the
+#: expression with its VIRTUAL default, PostgreSQL's dialect renders the STORED keyword it requires.
+_CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(clicks AS REAL) / impressions, 6) ELSE 0 END"
+_CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(spend_usd AS REAL) / clicks, 6) ELSE 0 END"
+_ROAS_EXPR = (
+    "CASE WHEN spend_usd > 0 THEN round(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL), 6) "
+    "ELSE 0 END"
+)
 
 
 class AdCampaign(Base):
@@ -47,8 +69,19 @@ class AdMetric(Base):
     spend_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 4), server_default="0", default=0
     )
-    # ctr/cpc/roas are RATIOS, not money — they stay Float (per-column decision
-    # recorded in alembic/versions/0003_money_exact.py; 0002 derives them).
-    ctr: Mapped[float | None] = mapped_column(Float, server_default="0", default=0)
-    cpc: Mapped[float | None] = mapped_column(Float, server_default="0", default=0)
-    roas: Mapped[float | None] = mapped_column(Float, server_default="0", default=0)
+    # `revenue_usd` is the real money column both engines hold — `NOT NULL` (0002:203-207 adds it
+    # `nullable=False`; 0003:71 re-states `NUMERIC(14, 4) DEFAULT '0' NOT NULL`) — and the input
+    # `roas` is derived from.  It was unmapped, so no ORM insert could ever write the shipped
+    # schema without tripping the NOT NULL (R26 F2).
+    revenue_usd: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4), server_default="0", default=0, nullable=False
+    )
+    # ctr/cpc/roas are RATIOS, not money — `Numeric(14, 6)` is the type the shipped DDL holds them
+    # in (0002:244), and they are GENERATED: the ORM omits them from INSERT/UPDATE and reads the
+    # engine's value back (measured; an explicitly set value still reaches the INSERT and the
+    # engine refuses it with `cannot INSERT into generated column "ctr"`).  Declaring them
+    # writable Floats (pre-R31) made the create_all unit fixture accept an insert the migrated
+    # schema rejects — the fixture hid a production failure.
+    ctr: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), Computed(_CTR_EXPR))
+    cpc: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), Computed(_CPC_EXPR))
+    roas: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), Computed(_ROAS_EXPR))
