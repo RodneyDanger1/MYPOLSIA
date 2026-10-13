@@ -1,4 +1,14 @@
-"""Retry helpers (tenacity)."""
+"""Retry helpers (tenacity).
+
+UNWIRED (audit RD15 dead-code sweep, 2026-10-13): no module in this tree imports this file —
+grep evidence in `polsia-work/build/RD15-deadsweep/raw/retry_importers.txt`; it has had ZERO
+callers since it was added (reconstruction checkpoint `e7108bf`). The retry ladders that DO run
+are `claude_cli.run_with_retries` (agent dispatch, `base_agent.py:385`), celery's `self.retry`
+ladder (`celery_app/tasks/agent_tasks.py`), and redis-py's `Retry` (`app/core/redis_client.py`).
+Kept deliberately (additive lane policy): removal vs adoption is an owner decision (REQUESTS
+RD15-1) — do NOT wire this in without that call; it would add a fourth, competing retry ladder
+on live paths.
+"""
 from __future__ import annotations
 
 import logging
