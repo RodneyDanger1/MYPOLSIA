@@ -46,7 +46,7 @@ from app.core.errors import (
 )
 from app.core.timeutil import as_bound_instant, day_window, dialect_name, today_in
 from app.models.task import AgentRun, Task
-from app.services.query_helpers import agent_rollup_expr, fetch_rows
+from app.services.query_helpers import agent_rollup_expr, fetch_rows, fetch_scalar, fetch_scalars
 
 VALID_AGENT_TYPES: tuple[str, ...] = (
     "orchestrator",
@@ -160,8 +160,16 @@ async def create_task(
 
 
 async def get_task(db: AsyncSession, task_id: int) -> Task | None:
-    result = await db.execute(select(Task).where(Task.id == task_id))
-    return result.scalar_one_or_none()
+    """One task by id, or `None` when it does not exist; a driver failure is a named `E_DB`.
+
+    READ-ONLY-LANE NOTE (R28): this used to be a raw `db.execute`, so a database outage
+    answered `GET /api/v1/tasks/{id}` with a bare **500** carrying no code, while every other
+    read surface refuses by name through `query_helpers` (measured: R28
+    `raw/probe_tasks_db_failure.txt`; the same defect reached `list_tasks` below).  `fetch_scalar`
+    is that shared plumbing (`scalar_one_or_none`'s single-column result, with the `E_DB`
+    refusal), so both reads now refuse `E_DB`/503 with the fix hint.
+    """
+    return await fetch_scalar(db, select(Task).where(Task.id == task_id), what=f"task {task_id}")
 
 
 async def list_tasks(
@@ -172,15 +180,18 @@ async def list_tasks(
     offset: int = 0,
 ) -> list[Task]:
     """Newest first, index-friendly: explicit LIMIT/OFFSET and a deterministic
-    `(created_at DESC, id DESC)` order (ties cannot reorder the page)."""
+    `(created_at DESC, id DESC)` order (ties cannot reorder the page).
+
+    A driver failure is a named `E_DB` (via `fetch_scalars`), never an empty list and never a
+    bare 500 — see the note on `get_task` above (R28).
+    """
     stmt = select(Task)
     if status is not None:
         stmt = stmt.where(Task.status == status)
     if agent_type is not None:
         stmt = stmt.where(Task.agent_type == agent_type)
     stmt = stmt.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    return list(result.scalars().all())
+    return await fetch_scalars(db, stmt, what="tasks")
 
 
 async def update_task_status(

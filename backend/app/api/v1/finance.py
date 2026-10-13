@@ -6,9 +6,12 @@ header, **200** `{"received": true}` otherwise — with no `X-API-Key`, because 
 cannot send one, so auth is per route and never on this router.
 
 Signature verification never imports the SDK at import time: `stripe` is imported
-lazily and, when it is absent (it is not installed in this venv — measured), the
-stdlib HMAC-SHA256 check over `"{t}.{raw_body}"` with `hmac.compare_digest` is used,
-with a timestamp tolerance so a captured request cannot be replayed forever.
+lazily and, when it is absent, the stdlib HMAC-SHA256 check over `"{t}.{raw_body}"`
+with `hmac.compare_digest` is used, with a timestamp tolerance so a captured request
+cannot be replayed forever.  (Corrected R28: this venv HAS the SDK — `stripe` 11.3.0,
+measured 2026-10-13, `raw/probe_stripe_presence.txt` — the docstring used to claim it
+was absent.  The stdlib ladder is a real production path on a host without the SDK and
+is tested both directly and by forcing the absent-import state.)
 
 Persistence is idempotent at the statement level (`finance_service.record_stripe_event`):
 one `INSERT ... ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id`, so two
@@ -21,6 +24,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from typing import Any
 
@@ -169,7 +173,9 @@ def construct_stripe_event(
     Uses the stripe SDK when it is installed, otherwise the stdlib check, so the
     endpoint works (and is testable) without the SDK.  `import stripe` stays lazily
     inside the function: a module-level import would break the app on a host where
-    the SDK is absent (measured: it is absent in this venv).
+    the SDK is absent.  (R28: the SDK IS installed in this venv — 11.3.0, measured —
+    so the fallback is reached in tests by forcing the absent-import state; the older
+    "measured absent" note was stale.)
     """
     window = DEFAULT_SIGNATURE_TOLERANCE if tolerance is None else int(tolerance)
     try:
@@ -222,20 +228,44 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -
         )
 
     data_object = event.get("data", {}).get("object", {}) if isinstance(event.get("data"), dict) else {}
+    # A payload whose `data.object` is not an object has no readable fields at all; reading it
+    # as `{}` stores the event with NULL money ("not measured") instead of raising AttributeError
+    # into a 500 — a 500 makes Stripe retry the same poison payload forever (measured: R28
+    # raw/probe_webhook_shapes.txt).
+    if not isinstance(data_object, dict):
+        data_object = {}
     # `amount or amount_paid` collapsed a measured 0 (a trial / zero-amount charge) into
     # "absent" and stored NULL for it; only fall through to `amount_paid` when `amount`
     # is really missing (F-11: measured zero vs not measured).
     amount = data_object.get("amount")
     if amount is None:
         amount = data_object.get("amount_paid")
+    # A flag is not a count and a non-finite number is not a measurement (accounting.py:117,
+    # :126): `int(NaN)`/`int(inf)` used to 500 the delivery, and `True` used to be stored as a
+    # one-cent reading.  Neither can become cents, so the column stays NULL.
+    if isinstance(amount, bool) or not isinstance(amount, int | float) or not math.isfinite(amount):
+        amount_cents: int | None = None
+    else:
+        amount_cents = int(amount)
+    # `customer` is typed `string | object (expandable)` by Stripe; a dict bound to the
+    # String(255) column raised InterfaceError -> 500.  The id is recovered when the object
+    # carries one; anything else is honestly NULL (the raw payload keeps the full object).
+    customer = data_object.get("customer")
+    if isinstance(customer, dict):
+        customer = customer.get("id")
+    customer_id = customer if isinstance(customer, str) else None
+    # Same class of crash: `record_stripe_event` lower-cases the currency, so a non-text value
+    # (`.lower()` on an int) used to 500 the delivery.  Pass text or nothing.
+    currency = data_object.get("currency")
+    currency = currency if isinstance(currency, str) else None
     with refusal_guard():
         await record_stripe_event(
             db,
             stripe_event_id=event_id,
             event_type=str(event.get("type") or "unknown"),
             raw_payload=event,
-            customer_id=data_object.get("customer"),
-            amount_cents=int(amount) if isinstance(amount, int | float) else None,
-            currency=data_object.get("currency"),
+            customer_id=customer_id,
+            amount_cents=amount_cents,
+            currency=currency,
         )
     return {"received": True}
