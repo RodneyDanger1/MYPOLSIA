@@ -27,10 +27,12 @@ This is the ONLY module that knows the CLI's flags.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import random
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -59,6 +61,20 @@ SIGTERM_EXIT_CODE = 143             # our own timeout kill (docs: no result reco
 SAFE_PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "manual")
 BANNED_FLAGS = ("--dangerously-skip-permissions",)
 STDIN_POINTER = "Read the context from stdin and execute the task described there."
+
+
+# ── spill-file containment (D6; audit L3-03) ─────────────────────────────────────────────────
+# Every system-prompt spill file this process creates, so a normal crash (unhandled exception,
+# interpreter exit) still removes them. A hard force-kill (TerminateProcess / SIGKILL of the
+# parent) cannot run atexit handlers — that residual is named in the receipt, not hidden.
+_SPILL_TMP_FILES: set[str] = set()
+
+
+@atexit.register
+def _cleanup_spill_tmp_files() -> None:
+    for path in list(_SPILL_TMP_FILES):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 SAFE_ENV_PASSTHROUGH = (
     "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
@@ -329,6 +345,7 @@ def invoke(
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(inv.system_prompt_file_content)
         tmp_files.append(path)
+        _SPILL_TMP_FILES.add(path)  # atexit net (D6) in case of a crash before the finally
         argv = [path if a == SPILL_PLACEHOLDER else a for a in argv]
 
     try:
@@ -348,6 +365,9 @@ def invoke(
                 errors="replace",
                 cwd=inv.cwd,
                 env=env,
+                # POSIX: run in our OWN session so `_kill_process_tree` can kill the whole GROUP
+                # (the CLI's grandchildren included); without this the group is never ours (D6).
+                start_new_session=(os.name == "posix"),
             )
             try:
                 stdout, stderr = proc.communicate(input=inv.stdin_text, timeout=inv.timeout_s)
@@ -374,6 +394,7 @@ def invoke(
         for path in tmp_files:
             with contextlib.suppress(OSError):
                 os.unlink(path)
+            _SPILL_TMP_FILES.discard(path)
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
@@ -388,6 +409,11 @@ def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
                 check=False,
                 timeout=10,
             )
+    else:
+        # POSIX: the child runs in its own session (Popen start_new_session) — kill the GROUP so
+        # its grandchildren die with it. The docstring's promise, kept (D6; audit L3-02).
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     with contextlib.suppress(OSError):
         proc.kill()
     with contextlib.suppress(subprocess.TimeoutExpired, OSError, ValueError):

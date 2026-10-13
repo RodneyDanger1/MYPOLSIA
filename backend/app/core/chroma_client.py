@@ -5,12 +5,68 @@ inside the functions (CLAUDE.md: "Don't import chromadb ... at module level").
 """
 from __future__ import annotations
 
+import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from app.config import settings
 
+# app/core modules log through the stdlib root configuration (events/retry/timeutil convention).
+logger = logging.getLogger(__name__)
+
 _client: Any | None = None
 _collection: Any | None = None
+
+
+def _fallback_persist_dir() -> Path:
+    """`<repo>/backend/data/chroma`, anchored at THIS file — never at the process cwd.
+
+    The local, writable home for the vector store when the container default is unusable on this
+    host (D7; audit L3-01).  `backend/data/` is already the repo's runtime-state directory
+    (secret_store writes `backend/data/deepseek_api_key.json` there).
+    """
+    return Path(__file__).resolve().parents[2] / "data" / "chroma"
+
+
+def resolve_persist_dir(configured: str | None = None) -> str:
+    """Resolve the Chroma store path for THIS platform (D7; audit L3-01) — called by `get_client`.
+
+    `configured` defaults to `settings.chroma_persist_dir` (the consumer path; tests pass it
+    directly).  Frozen semantics (registry D7):
+
+      * POSIX hosts, and relative paths on any host: unchanged, no log;
+      * Windows + POSIX-absolute + `CHROMA_PERSIST_DIR` present in the process environment: the
+        operator's explicit choice — honored verbatim, one INFO.  docker-compose injects env_file
+        into the container env (the image keeps `/app/data/chroma`), and e2e/_sweep-fixtures.py
+        reads the same variable directly — this branch keeps that explicit-env contract intact;
+      * Windows + POSIX-absolute + env unset: one WARNING naming the drive-relative hazard, then
+        resolve to `<backend>/data/chroma` (created on demand, as chroma would create its store).
+
+    Windows has no silent third option: an un-set POSIX default resolves DRIVE-relative
+    (`/app/data/chroma` -> `C:\\app\\data\\chroma`, measured present on this host, audit L3-01)
+    and a store written under a different cwd is invisible to the next run.
+    """
+    path = settings.chroma_persist_dir if configured is None else configured
+    if os.name != "nt" or not str(path).startswith("/"):
+        return str(path)
+    if "CHROMA_PERSIST_DIR" in os.environ:
+        logger.info(
+            "chroma_persist_dir %r set explicitly via CHROMA_PERSIST_DIR — honored verbatim (D7)",
+            path,
+        )
+        return str(path)
+    fallback = _fallback_persist_dir()
+    logger.warning(
+        "chroma_persist_dir %r is POSIX-absolute on Windows: without an explicit "
+        "CHROMA_PERSIST_DIR it resolves DRIVE-RELATIVE (e.g. 'C:\\app\\data\\chroma') and a "
+        "store written under another cwd is invisible. Resolving to %r instead; set "
+        "CHROMA_PERSIST_DIR explicitly to keep a specific path (audit L3-01 / registry D7).",
+        path,
+        str(fallback),
+    )
+    fallback.mkdir(parents=True, exist_ok=True)
+    return str(fallback)
 
 
 def get_client() -> Any:
@@ -18,7 +74,7 @@ def get_client() -> Any:
     if _client is None:
         import chromadb  # lazy
 
-        _client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
+        _client = chromadb.PersistentClient(path=resolve_persist_dir())
     return _client
 
 

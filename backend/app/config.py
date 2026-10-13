@@ -5,7 +5,7 @@ what every existing call site and test relies on.
 """
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -75,10 +75,17 @@ class Settings(BaseSettings):
         return value
 
     # --- chroma ---
+    # POSIX-absolute because it is the CONTAINER path (backend/Dockerfile ENV); on Windows the
+    # consumer (app.core.chroma_client.resolve_persist_dir) resolves it to backend/data/chroma
+    # unless CHROMA_PERSIST_DIR is set explicitly — the default itself stays the container path
+    # (D7; audit L3-01).
     chroma_persist_dir: str = "/app/data/chroma"
     chroma_collection: str = "polsia_memory"
 
     # --- claude CLI ---
+    # `claude` = PATH lookup (dev machines); the container image pins /usr/local/bin/claude via its
+    # ENV (backend/Dockerfile:25) and a CLAUDE_CLI_PATH env var wins over this default at runtime
+    # (claude_cli.cli_path()) — one story across code, image and `.env.example` (audit L5-08).
     claude_cli_path: str = "claude"
     claude_cli_mock: bool = False
     claude_cli_mock_response: str = '{"result": "Mock Claude response for testing"}'
@@ -96,6 +103,18 @@ class Settings(BaseSettings):
     agent_daily_cost_cap_usd: float = 25.0
     agent_max_retries: int = 2
     agent_retry_backoff_seconds: float = 1.5
+
+    # --- kill switch (fleet dispatch gate; registry D4 — the switch was settings-dead) ---
+    # "" = run; "throttle" = agents with external actions pause (reads continue); "freeze" = all
+    # dispatch refused.  policy_firewall.kill_grade_from_env() reads POLSIA_KILL_SWITCH from the
+    # environment FIRST, then this field; crew_factory.dispatch_preflight() enforces it.  The
+    # POLSIA_-prefixed name is the documented switch; a `.env` line reaches pydantic but NOT
+    # os.environ outside docker, so it is accepted here by alias (KILL_SWITCH, the plain
+    # field-name convention, stays accepted too).
+    kill_switch: str = Field(
+        default="",
+        validation_alias=AliasChoices("POLSIA_KILL_SWITCH", "KILL_SWITCH"),
+    )
 
     # --- planner ---
     planner_max_nodes: int = 12
@@ -129,6 +148,22 @@ class Settings(BaseSettings):
     meta_ads_access_token: str = ""
     meta_ads_account_id: str = ""
     render_api_key: str = ""
+
+    # --- deepseek (the agent runtime's model provider) ---
+    # Read through app.services.secret_store: a key entered in the dashboard is stored
+    # at `deepseek_key_file` and WINS over this variable; this variable is the
+    # environment fallback (docker-compose `env_file:`, an exported shell, or
+    # backend/.env).  Neither value is ever logged or returned by the API — the status
+    # routes answer with a masked form only.
+    deepseek_api_key: str = ""
+    deepseek_key_file: str = "data/deepseek_api_key.json"
+    # Runtime client knobs — frozen for the DeepSeek runtime seat (RD8; REMAINDERS-NOTE 2026-10-13:
+    # "the app must run on the owner's DeepSeek key", V4.1 Flash via the OpenAI-compatible
+    # endpoint).  reasoning_effort: "none" = plain answers (the fast default).
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
+    deepseek_reasoning_effort: str = "none"
+    deepseek_timeout_seconds: int = 300
 
 
 @lru_cache
