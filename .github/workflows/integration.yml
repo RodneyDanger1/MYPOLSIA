@@ -51,6 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare .env — compose requires it (four services declare env_file)
+        # L4-05: the stack's first `up` below needs `.env` (env_file: .env is required:true by
+        # default) and a checkout never has one — it is gitignored.  README's quick start copies it
+        # for a developer; this is the same step for CI.
+        run: cp .env.example .env
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

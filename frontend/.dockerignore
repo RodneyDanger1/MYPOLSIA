@@ -1,0 +1,24 @@
+# Build-context hygiene for `context: ./frontend` (docker-compose.yml:124-126).  There was NO
+# .dockerignore anywhere in this repo, so the builder stage's `COPY . .` (frontend/Dockerfile:9) —
+# which runs AFTER the deps stage's `npm ci` — copied the HOST's node_modules over the container's
+# Linux install (measured on this host: the only @next/swc binary present is
+# @next/swc-win32-x64-msvc, i.e. the classic "Failed to load SWC binary" build) and the host's .next
+# over the build cache, plus hundreds of MB of build context.
+
+node_modules/
+.next/
+tsconfig.tsbuildinfo
+npm-debug.log*
+
+# NOT excluded on purpose: `public/` and `.next/static` — the runner stage copies both explicitly
+# (frontend/Dockerfile:19-21).  Everything else here is regenerated inside the image.
+#
+# `.env*` are not needed: NEXT_PUBLIC_* arrive as build ARGs/ENV (frontend/Dockerfile:12-13), and a
+# copied env file would only make the build depend on the host.
+.env
+.env.*
+
+# Host-side test/coverage output is not part of the image.
+coverage/
+test-results/
+playwright-report/

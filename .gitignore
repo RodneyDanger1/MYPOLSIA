@@ -25,6 +25,10 @@ chroma_data/
 *.sqlite
 *.sqlite3
 *.db
+# The e2e fixture writer's repo-relative default (e2e/_helpers.ts → .e2e-lab.sqlite); already matched
+# by `*.sqlite` above, named here so the intent is discoverable. Runtime state, never source: it is
+# the docker-free lab backend's DB, recreated by a local run (E2E_SQLITE points at it).
+.e2e-lab.sqlite
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # .env holds real API keys (Stripe, Twitter, SendGrid, Tavily, Ads). Only

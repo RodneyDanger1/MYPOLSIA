@@ -5,7 +5,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -101,11 +112,30 @@ class AgentRun(Base):
     tokens_input: Mapped[int | None] = mapped_column(Integer)
     tokens_output: Mapped[int | None] = mapped_column(Integer)
     usage_json: Mapped[dict[str, Any] | None] = mapped_column(json_type())
+    # lane 06 §3.6 (migration 0002): the execution number of a retried task, so runs of
+    # attempt 1 and attempt 3 are distinguishable.  Written by
+    # `task_service.create_agent_run(..., attempt=<tasks.attempts>)` — the claim
+    # (`claim_task`) is the one incrementer of that counter, so the number is stable once
+    # the task is claimed.  Left NULL for runs with no task (cycle/manual), which the
+    # partial unique below explicitly permits.
+    attempt: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         Index("ix_agent_runs_task_id", "task_id"),
         Index("ix_agent_runs_agent_type", "agent_type"),
         Index("ix_agent_runs_started_at", "started_at"),
+        # migration 0002:159-161, mapped here so `create_all` describes the same schema the
+        # chain ships (the frozen pin hashes `create_all` DDL; without this the partial
+        # unique is migration-only and the retry ledger's key is inert).  Partial in both
+        # dialects so rows without a task_id never collide.
+        Index(
+            "ux_agent_runs_task_attempt",
+            "task_id",
+            "attempt",
+            unique=True,
+            postgresql_where=text("task_id IS NOT NULL"),
+            sqlite_where=text("task_id IS NOT NULL"),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

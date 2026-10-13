@@ -22,6 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare .env — compose requires it (four services declare env_file)
+        # L4-05: `env_file: .env` is required:true by default (Compose's `required` attribute), so a
+        # missing file is a hard error when the service is created — and `.env` is gitignored
+        # (.gitignore), so a checkout NEVER has one: every compose command below would abort with
+        # `env file ... not found`.  README's quick start does exactly this copy for a developer; do
+        # it here so the CI path has the same file.  (Alternative: `env_file: [{path: .env,
+        # required: false}]`, Compose >= 2.24.0 — rejected as the primary fix because it would
+        # silently drop the whole stack's env in every environment that forgets the file.)
+        run: cp .env.example .env
       - name: Build every image
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build
       - name: Start the stack and health-check it

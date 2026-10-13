@@ -60,12 +60,20 @@ VALID_AGENT_TYPES: tuple[str, ...] = (
     "finance",
 )
 
+#: The `tasks.status` value set the writers assert.  RECONCILED with the SHIPPED
+#: `ck_tasks_status` CHECK (alembic/versions/0002_queue_and_perf.py:89-90:
+#: pending/in_progress/completed/failed/cancelled/awaiting_approval), so the tuple and the DDL
+#: cannot drift silently — `awaiting_approval` is in the CHECK because the approvals channel is
+#: a documented owner item, so the tuple mirrors the DDL, not the other way round (L1-09/L2-02:
+#: before this assertion existed the tuple was read by nothing and the two sets disagreed; an
+#: `Enum(native_enum=False)` escalation is a REQUESTS item, not a drive-by).
 VALID_TASK_STATUSES: tuple[str, ...] = (
     "pending",
     "in_progress",
     "completed",
     "failed",
     "cancelled",
+    "awaiting_approval",
 )
 
 
@@ -110,10 +118,24 @@ async def create_task(
     With `dedupe_key` the insert is idempotent: two callers racing the same key
     (the same day's plan, a retried sweep) get ONE row — the loser re-selects the
     winner's row instead of raising `IntegrityError` or creating a duplicate.
+
+    An unknown `status` is refused by NAME (`E_VALIDATION`) before any row is built — the
+    same value set the writer `update_task_status` asserts (L1-09/L2-02).  `agent_type`
+    keeps its historical `ValueError` contract (the tasks route converts it to
+    `E_AGENT_UNKNOWN`); `status` deliberately does NOT raise `ValueError`, because that same
+    route converts `ValueError` to an agent-type refusal and a typo'd status would wear the
+    wrong code.
     """
     if not is_valid_agent_type(agent_type):
         raise ValueError(
             f"Unknown agent type: {agent_type!r}. Valid: {', '.join(VALID_AGENT_TYPES)}"
+        )
+    if status not in VALID_TASK_STATUSES:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
         )
 
     values: dict[str, Any] = {
@@ -182,9 +204,20 @@ async def list_tasks(
     """Newest first, index-friendly: explicit LIMIT/OFFSET and a deterministic
     `(created_at DESC, id DESC)` order (ties cannot reorder the page).
 
-    A driver failure is a named `E_DB` (via `fetch_scalars`), never an empty list and never a
-    bare 500 — see the note on `get_task` above (R28).
+    An unknown `status` is a NAMED refusal, never an empty list standing in for a typo — the
+    rule `support_inbox_service.list_items` implements and whose docstring says `list_tasks`
+    carries too (L1-09 made that true): `?status=complete` answering `200 []` is
+    indistinguishable from "no completed tasks", and the frontend renders both as the empty
+    state.  A driver failure is a named `E_DB` (via `fetch_scalars`), never an empty list and
+    never a bare 500 — see the note on `get_task` above (R28).
     """
+    if status is not None and status not in VALID_TASK_STATUSES:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
+        )
     stmt = select(Task)
     if status is not None:
         stmt = stmt.where(Task.status == status)
@@ -205,7 +238,20 @@ async def update_task_status(
 
     `result_summary`/`error_message` are assigned only when not None, so a
     completion cannot wipe a previous error message (and vice versa).
+
+    An unknown `status` is refused by NAME (`E_VALIDATION`) BEFORE anything is mutated —
+    0002's own doctrine is that the value sets are "asserted by the code paths that write
+    them", and `ck_tasks_status` can only police that on PostgreSQL: on SQLite (every unit
+    test) a bogus value used to be stored, and on PG it answered a bare
+    `IntegrityError`/codeless 500 instead of a named caller error (L2-02).
     """
+    if status not in VALID_TASK_STATUSES:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
+        )
     task = await get_task(db, task_id)
     if task is None:
         return None
@@ -469,7 +515,9 @@ async def requeue_stale_claims(
     return len((await db.execute(stmt)).scalars().all())
 
 
-# ── reads the dashboard/agents screens depend on ─────────────────────────────
+# ── reads (get_agent_statuses is wired to /agents/status; the two lookups below are labelled)
+#    the "dashboard/agents screens depend on" claim that used to head this section was stale
+#    for get_tasks_today_summary — GET /dashboard/summary builds its own statement.
 
 
 async def get_tasks_today_summary(
@@ -478,6 +526,14 @@ async def get_tasks_today_summary(
     tz_name: str | None = None,
 ) -> dict[str, Any]:
     """Counts for the company-local day — ONE grouped aggregate.
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — nothing in app/,
+    celery_app/ or scripts/ calls it, and no test does either.  Intended purpose: the
+    company-local day rollup as a service-layer read; the shipped dashboard builds its OWN
+    statement (app/api/v1/dashboard.py:46-93), so the old "the dashboard/agents screens
+    depend on" note was false.  Removal vs adoption is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
 
     The window comes from `day_window(db, day, tz_name)` (company timezone,
     dialect-correct half-open bounds); the original built a naive local midnight
@@ -618,12 +674,18 @@ async def create_agent_run(
     tokens_output: int | None = None,
     cost_usd: Decimal | float | None = None,
     usage_json: dict[str, Any] | None = None,
+    attempt: int | None = None,
 ) -> AgentRun:
     """Start an agent run and flush it (so `.id` is usable by the caller).
 
     The original schema had `cost_usd`/`tokens_used` and populated neither, which
     made unit economics uncomputable; every field the CLI envelope carries
     (session id, token split, cost, raw usage) is persisted here.
+
+    `attempt` is the retried-task execution number (lane 06 §3.6, migration 0002):
+    the caller that HOLDS the claimed task passes `attempt=task.attempts` — the claim
+    incremented it, so the number is stable.  It stays `None` when the caller has no
+    task, which the partial unique `ux_agent_runs_task_attempt` permits.
     """
     run = AgentRun(
         agent_type=agent_type,
@@ -636,6 +698,7 @@ async def create_agent_run(
         tokens_output=tokens_output,
         cost_usd=_as_column_decimal(cost_usd),
         usage_json=usage_json,
+        attempt=attempt,
     )
     db.add(run)
     await db.flush()
@@ -702,8 +765,20 @@ def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
 
 
 async def get_agent_run(db: AsyncSession, run_id: int) -> AgentRun | None:
-    result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
-    return result.scalar_one_or_none()
+    """One run by id, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
+    `db.execute`).
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only caller is
+    `tests/unit/test_fs2_l2_06_query_helpers_discipline.py` (the L2-06 `E_DB` pin).  Intended
+    purpose: the single-run lookup a run-detail view or ops read would use; the shipped worker
+    addresses runs by the id `create_agent_run` returned and closes them through
+    `finish_agent_run`.  Removal vs adoption is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
+    """
+    return await fetch_scalar(
+        db, select(AgentRun).where(AgentRun.id == run_id), what=f"agent run {run_id}"
+    )
 
 
 __all__ = [

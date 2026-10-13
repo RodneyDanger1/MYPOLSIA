@@ -6,10 +6,16 @@ Measured facts this module encodes (lane 06, `DATA-PERF.md` §2.7 / §5.4):
   `mock_redis.publish.assert_called_once()` and the channel must contain
   `polsia:activity`, so there is exactly one `publish_activity` call site and no
   read path publishes anything.
-* **Bulk writes are a real path.**  `insert one-by-one` = 3,018 ms vs
-  `executemany` = 47 ms for 5,000 rows (raw executemany 33.8 ms) — a ×63.8
-  difference, which is why cycle summaries use `log_activities` (one executemany)
-  instead of a Python loop over `log_activity`.
+* **Bulk writes are a real path — but the shipped writers do not use it yet.**
+  `insert one-by-one` = 3,018 ms vs `executemany` = 47 ms for 5,000 rows (raw
+  executemany 33.8 ms) — a ×63.8 difference, and that measurement is why
+  `log_activities` implements the one-executemany path.  The cycle summaries
+  themselves still call the single-row `log_activity`
+  (`celery_app/tasks/daily_cycle.py:327,455`; `agent_tasks.py:515,540,588`), so the
+  helper currently has ZERO production callers: the earlier claim here — "which is
+  why cycle summaries use `log_activities`" — was false in the shipped tree.
+  Adopting it in the summary path, or removing it, is an owner decision (see the
+  label on the function; polsia-work/build/full-sweep/fix-5/REQUESTS.md §5).
 * **Ordering needs the id tie-break.**  `created_at` has one-second resolution on
   SQLite, so two rows written in the same transaction are otherwise returned in an
   arbitrary order (measured: `order_by(created_at.desc())` returned the wrong
@@ -79,6 +85,16 @@ async def log_activities(
     flush: bool = True,
 ) -> int:
     """Bulk-insert activity rows in ONE `executemany`.  Returns the row count.
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only caller is
+    `tests/unit/test_activity_service.py` (the row-count / `level=""` contract); every
+    shipped summary writer goes through the single-row `log_activity`.  Dead-but-correct
+    code with a measured motivation (module docstring, bullet 2): the batch shares one
+    `created_at`, maintains the `(created_at DESC, id DESC)` order contract and publishes
+    no per-row Redis event.  Wiring it into the cycle-summary path, or deleting it (with
+    its `__all__` entry and its test), is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §5).
 
     For cycle summaries: a run that produces hundreds of rows should pay one round
     trip, not one per row (3,018 ms -> 33.8 ms per 5,000 rows, lane 06).  The whole

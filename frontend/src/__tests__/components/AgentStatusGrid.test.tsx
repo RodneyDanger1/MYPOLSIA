@@ -72,4 +72,28 @@ describe("AgentStatusGrid", () => {
     const badge = screen.getByText("failed");
     expect(badge.className).toContain("text-red-400");
   });
+
+  it("names the failure instead of rendering an empty grid when the poll fails", () => {
+    mockUseAgentStatus.mockReturnValue({ statuses: [], loading: false, error: "E_NETWORK: request timed out" });
+    render(<AgentStatusGrid />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load agent status: E_NETWORK: request timed out",
+    );
+    // The empty array must NOT read as "no agents configured".
+    expect(screen.queryByText("idle")).toBeNull();
+    expect(screen.queryByText("Social")).toBeNull();
+  });
+
+  it("shows the failure, not the cards, when a failed poll left stale data behind", () => {
+    mockUseAgentStatus.mockReturnValue({
+      statuses: mockStatuses,
+      loading: false,
+      error: "E_HTTP_401: invalid API key",
+    });
+    render(<AgentStatusGrid />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("E_HTTP_401");
+    expect(screen.queryByText("Social")).toBeNull();
+  });
 });

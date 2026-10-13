@@ -1,7 +1,11 @@
-# CI override — mocks Claude CLI, no host volume mounts.
+# CI override — mocks Claude CLI, no host volume mounts (enforced below with `!override`).
 # nginx stays ENABLED here (RD16 follow-up to F4/RD10): the e2e job browses BASE_URL=http://localhost
 # from the runner, so something must listen on :80 — nginx is the app's real entry point (image:
 # nginx:alpine, config mounted from nginx/nginx.conf, ports inherited from the base compose file).
+#
+# Compose floor: `!override` requires Compose >= 2.24.4 (`!reset` >= 2.24.0).  GitHub's ubuntu-latest
+# runners ship Compose v2.2x+, so the tag is safe there; on an older Compose use the pre-2.24 escape
+# hatch instead — move the base file's `~/.claude` bind into a LOCAL docker-compose.override.yml.
 version: "3.9"
 
 services:
@@ -9,22 +13,30 @@ services:
     environment:
       CLAUDE_CLI_MOCK: "true"
       SANDBOX_MODE: "true"
-    volumes:
+    # `!override` REPLACES the base file's volume list for this service.  The old comment claimed a
+    # re-declared `volumes:` removed the host mount — it does not: service volumes merge by their
+    # container `target`, so every base entry survived and the CI container got a
+    # `~/.claude:/root/.claude:ro` bind whose source does not exist on a runner (Docker auto-creates
+    # an empty dir; inert only because CLAUDE_CLI_MOCK=true).  Every mount this service still needs is
+    # re-listed: /app/data/chroma.  The base `backend_data:/app/data` is intentionally NOT restored —
+    # CI containers are ephemeral and the job ends with `down -v`.
+    volumes: !override
       - chroma_data:/app/data/chroma
-    # Remove ~/.claude mount — not available in CI
 
   celery_worker:
     environment:
       CLAUDE_CLI_MOCK: "true"
       SANDBOX_MODE: "true"
-    volumes:
+    volumes: !override
       - chroma_data:/app/data/chroma
 
   celery_beat:
     environment:
       CLAUDE_CLI_MOCK: "true"
       SANDBOX_MODE: "true"
-    volumes:
+    # The base file mounts ~/.claude here too (docker-compose.yml:110) — both the finding card and the
+    # research note said only backend/celery_worker were affected; measured otherwise at HEAD.
+    volumes: !override
       - celery_beat_data:/app/celerybeat
 
   # NEXT_PUBLIC_* are INLINED INTO THE CLIENT BUNDLE AT BUILD TIME (frontend/Dockerfile ARGs; the

@@ -1,4 +1,7 @@
-"""ad_campaigns + ad_metrics (module name INFERRED - unreferenced)."""
+"""ad_campaigns + ad_metrics — consumed by app.services.ads_service (persist + reads) and
+app.services.finance_service's ad-spend reads; DDL-pinned by tests/unit/test_models_schema_frozen.py
+(M3: the old "(module name INFERRED - unreferenced)" header was stale — only models/competitor.py
+is genuinely unreferenced by services)."""
 from __future__ import annotations
 
 from datetime import date, datetime

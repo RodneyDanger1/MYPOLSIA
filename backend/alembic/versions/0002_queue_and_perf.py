@@ -179,6 +179,37 @@ def _skip(reason: str) -> None:
     print(f"[alembic 0002] SKIP ({_dialect_name()}): {reason}")
 
 
+def _money_preflight(bind) -> None:
+    """Refuse the money ALTERs on values `numeric(14, 4)` cannot hold (M7).  PostgreSQL-only.
+
+    The four ALTERs below convert Float columns with `USING round(x::numeric, 4)`, and
+    `numeric(14, 4)` holds |v| < 10^10 (10 integer digits): the manual's edges are "if the
+    number of digits to the left ... exceeds the declared precision, an error is raised"
+    and "an infinity can only be stored in an unconstrained numeric column".  A legacy row
+    with either aborts the ALTER mid-upgrade, leaving the operator to pick apart a failed
+    migration — so the check runs FIRST, counts offenders per column, and raises naming
+    table.column plus sample ids (`round(x::numeric, 4)` is the ALTER's own expression, so a
+    value that merely ROUNDS out of range is caught too; the `x <> x` term also names float
+    NaN explicitly rather than relying on numeric's NaN ordering).
+    """
+    offenders: list[str] = []
+    for table, column in _MONEY_COLUMNS:
+        rows = bind.exec_driver_sql(
+            f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL AND ("
+            f"abs(round({column}::numeric, 4)) >= 10000000000 OR {column} <> {column}) "
+            f"ORDER BY id LIMIT 5"
+        ).fetchall()
+        if rows:
+            sample = ", ".join(f"id={row[0]} value={row[1]!r}" for row in rows)
+            offenders.append(f"{table}.{column}: [{sample}]")
+    if offenders:
+        raise RuntimeError(
+            "alembic 0002: money pre-flight refuses this upgrade — numeric(14, 4) cannot "
+            "store these values (overflow / Infinity / NaN). Correct the rows, then re-run: "
+            + "; ".join(offenders)
+        )
+
+
 def upgrade() -> None:
     # ── 1. queue + accounting columns ───────────────────────────────────────
     op.add_column("tasks", sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True))
@@ -207,6 +238,8 @@ def upgrade() -> None:
 
     # ── 2. money: Float → Numeric(14,4), exact USING clauses (data-perf §3.3) ─
     if _is_pg():
+        # M7: name the rows numeric(14, 4) cannot hold BEFORE the ALTERs touch the columns.
+        _money_preflight(op.get_bind())
         for table, column in _MONEY_COLUMNS:
             op.execute(
                 f"ALTER TABLE {table} ALTER COLUMN {column} "

@@ -34,7 +34,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -50,22 +50,31 @@ DEFAULT_MOCK_RESPONSE = '{"result": "Mock Claude response for testing"}'
 TRUTHY = {"1", "true", "yes", "on", "t", "y"}
 
 #: The documented keys a finished run carries so the queue can write `agent_runs` columns.
+#: `agent_runs` (app/models/task.py:AgentRun) has exactly these accounting columns:
+#: `cli_session_id`, `tokens_input`, `tokens_output`, `tokens_used`, `cost_usd`, `usage_json`.
+#: Every OTHER key below has NO column and is recorded INSIDE `usage_json` by the worker's
+#: `_apply_run_usage` ("record the rest" loop) — the old comments named phantom columns
+#: (`cost_estimate_usd`, `model`, `num_turns`) that never existed (L3-12).
 RUN_META_KEYS = (
     "cli_session_id",      # agent_runs.cli_session_id
     "tokens_input",        # agent_runs.tokens_input
     "tokens_output",       # agent_runs.tokens_output
     "tokens_used",         # agent_runs.tokens_used  (input + output)
-    "cost_usd",            # agent_runs.cost_usd     (per-run delta, resume-safe)
-    "cost_estimate_usd",   # agent_runs.cost_estimate_usd (the CLI's own, cumulative per session)
+    "cost_usd",            # agent_runs.cost_usd     (per-run delta, resume-safe). L3-04: for a
+                           # token-measured provider (DeepSeek) this is the PINNED-TABLE estimate
+                           # over measured tokens, stamped `usage_json.cost_source=
+                           # "token_estimate"` + `pricing_version` — never a provider bill.
+    "cost_estimate_usd",   # usage_json only (the CLI's own estimate, cumulative per session)
     "usage_json",          # agent_runs.usage_json   (usage + modelUsage + envelope facts)
-    "num_turns",
-    "model",
-    "is_error",
-    "error_code",          # POLSIA-Exxx when the run failed
-    "cli_attempts",
-    "repaired_by",         # repair step that rescued the payload, if any
-    "context_tokens",      # assembled prompt size (budget audit)
-    "stable_prefix_hash",  # prompt-cache audit
+    "num_turns",           # usage_json only
+    "model",               # usage_json only (joined modelUsage, or the measured served model)
+    "is_error",            # usage_json only
+    "error_code",          # POLSIA-Exxx when the run failed — usage_json only
+    "cli_attempts",        # usage_json only
+    "repaired_by",         # repair step that rescued the payload, if any — usage_json only
+    "context_tokens",      # assembled prompt size (budget audit) — usage_json only
+    "stable_prefix_hash",  # prompt-cache audit — usage_json only
+    "context_warnings",    # assembler warnings (budget drops, L3-03 advisory screen hits)
 )
 
 
@@ -611,6 +620,13 @@ class BasePolsiaAgent(ABC):
                     usage.total_cost_usd, usage.session_id, self._session_totals
                 )
                 meta["cost_usd"] = round(delta, 6)
+            elif usage.token_cost_estimate_usd is not None:
+                # L3-04: the DeepSeek path measures tokens, not money. The pinned price table
+                # (`app.agents.pricing`) turns those tokens into the same budget unit the D3
+                # dispatch gate reads, so `agent_runs.cost_usd` stops being NULL — and
+                # `usage_json` carries `cost_source="token_estimate"` + the pricing pin, so the
+                # stored number can never be mistaken for a provider bill.
+                meta["cost_usd"] = round(usage.token_cost_estimate_usd, 6)
             meta["cli_session_id"] = usage.session_id or self.session_id
         return meta
 
@@ -621,6 +637,11 @@ class BasePolsiaAgent(ABC):
         if assembled is not None:
             meta["context_tokens"] = assembled.total_tokens
             meta["stable_prefix_hash"] = assembled.stable_prefix_hash
+            if assembled.warnings:
+                # L3-03: assembler warnings (budget drops, advisory card-shape hits) are part of
+                # the RUN RECORD — a graded heuristic hit must stay auditable, never silent.
+                # `_apply_run_usage` records this into `usage_json` (RUN_META_KEYS).
+                meta["context_warnings"] = list(assembled.warnings)
         out = dict(result)
         for key, value in meta.items():
             out.setdefault(key, value)
@@ -672,16 +693,32 @@ def task_title_terms(task: dict[str, Any]) -> list[str]:
 
 
 def _top_level_coercions(model: type[BaseModel]) -> dict[str, type]:
-    """Which top-level scalars the deterministic repair may coerce ('42' -> 42)."""
+    """Which top-level scalars the deterministic repair may coerce ('42' -> 42).
+
+    L3-11: the map is built from the annotation OBJECT (`typing.get_origin`/`get_args`), never
+    from its `str()` — a container's repr contains its ARGUMENTS' names, so the old substring
+    search marked `dict[str, float]` fields (`kpi_updates`, `metrics_snapshot`) as float
+    coercions. The next `dict[str, str]` field would have been rewritten by a type it never had.
+    An `Optional`-shaped union over exactly one scalar (`int | None`) still coerces; containers,
+    `Literal`s and multi-unions are skipped. `bool` is compared first (`is` beats `issubclass`,
+    which would fold bool into int).
+    """
     coercions: dict[str, type] = {}
     for name, fld in model.model_fields.items():
-        annotation = str(fld.annotation)
-        if "int" in annotation and "list" not in annotation:
-            coercions[name] = int
-        elif "float" in annotation:
-            coercions[name] = float
-        elif "bool" in annotation:
+        annotation = fld.annotation
+        if annotation is None:
+            continue
+        if get_origin(annotation) is not None:
+            args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            if len(args) != 1 or get_origin(args[0]) is not None:
+                continue  # container / Literal / multi-union: never a scalar coercion
+            annotation = args[0]
+        if annotation is bool:
             coercions[name] = bool
+        elif annotation is int:
+            coercions[name] = int
+        elif annotation is float:
+            coercions[name] = float
     return coercions
 
 

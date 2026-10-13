@@ -78,8 +78,21 @@ class OrchestratorAgent(BasePolsiaAgent):
     # ------------------------------------------------------------------ mode
     @staticmethod
     def plan_mode(task: dict[str, Any]) -> str:
-        """Which of the two prompts this run is. The cycle passes the title, so the title is the
-        authority; `daily_cycle.py` uses "Morning planning cycle" and "Evening reporting cycle"."""
+        """Which of the two prompts this run is.
+
+        L3-06: the CALLER knows — `daily_cycle` builds both task dicts and passes
+        `metadata={"cycle": "morning"|"evening"}` — so the declared cycle is read FIRST and is
+        the authority.  The word sniff over title/description stays only as the fallback for
+        ad-hoc tasks (it reads free text, and the shipped cycle titles still resolve correctly:
+        "Morning planning cycle" has no trigger word, "Evening reporting cycle" names itself).
+        Sniffing first meant a MORNING plan whose (model-authored) wording contained "close",
+        "report", "summary" or "insights" silently became an evening run and threw the plan away.
+        """
+        metadata = task.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        declared = str(metadata.get("cycle") or "").strip().lower()
+        if declared in ("morning", "evening"):
+            return declared
         text = f"{task.get('title') or ''} {task.get('description') or ''}".lower()
         if any(word in text for word in ("evening", "report", "close", "summary", "insights")):
             return "evening"
@@ -91,7 +104,14 @@ class OrchestratorAgent(BasePolsiaAgent):
 
         payload, assembled = self.collect_structured(task, context)
         payload["agent_type"] = self.agent_type
+        model_mode = str(payload.get("mode") or "").strip().lower()
         payload["mode"] = mode
+        if model_mode and model_mode != mode:
+            # L3-06: the model's own claim disagreed with the computed mode — recorded, never
+            # silently overwritten (the caller's declaration wins; the disagreement is evidence).
+            payload.setdefault("notes", []).append(
+                f"model declared mode={model_mode!r}; computed mode={mode!r} is authoritative"
+            )
 
         if mode == "morning":
             tasks = list(payload.get("tasks") or [])
@@ -106,7 +126,16 @@ class OrchestratorAgent(BasePolsiaAgent):
             payload["planned_task_count"] = len(tasks)
             payload["plan_titles"] = [t.get("title") for t in tasks]
         else:
+            discarded = [t for t in (payload.get("tasks") or []) if isinstance(t, dict)]
             payload["tasks"] = []
+            if discarded:
+                # L3-06: the evening branch exists to REPORT, not to plan — but a non-empty
+                # tasks[] it drops must not vanish without a trace (it used to: no error, no
+                # note). The titles are recorded so the loss is visible on the tasks board.
+                titles = [str(t.get("title") or "") for t in discarded][:8]
+                payload.setdefault("notes", []).append(
+                    f"evening mode discarded {len(discarded)} planned task(s): {titles}"
+                )
             payload.setdefault("insights", [])
         return self.attach_run_meta(payload, assembled=assembled)
 

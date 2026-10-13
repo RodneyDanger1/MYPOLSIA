@@ -147,7 +147,31 @@ def _pygithub_open_pr(*, repo: str, branch: str, title: str, body: str, base: st
 
 
 def refund_payment(*, payment_id: str, amount_cents: int | None = None) -> dict:
-    """Issue a Stripe refund. Irreversible: approval-gated by the firewall."""
+    """Issue a Stripe refund against a PaymentIntent.  Irreversible: approval-gated.
+
+    FAIL-CLOSED identifier guard (L3-10): Stripe's create-refund call identifies its target by
+    `payment_intent` (a `pi_…` id) or `charge`; an EVENT id (`evt_…`) is not a refundable
+    resource, and the finance agent's old shape passed its event id straight through as
+    `payment_intent` — so the only money-moving call in the product could never succeed.
+    Only `pi_`-prefixed ids reach the provider; anything else (`evt_…`, a fabricated id,
+    a bare integer string) is refused by NAME with `E_VALIDATION` and NO network call — the
+    value may be the provider's real id of the WRONG type, which is a caller error, not an
+    integration failure.  Adding a `ch_…`/`py_…` route is a deliberate follow-up (REQUESTS),
+    never a best-effort guess here.
+
+    `amount_cents` caps a partial refund; `None` refunds what is left on the PaymentIntent.
+    """
+    identifier = str(payment_id or "").strip()
+    if not identifier.startswith("pi_"):
+        return named_refusal(
+            E_VALIDATION,
+            f"refund_payment needs a Stripe PaymentIntent id (pi_…), got {identifier!r}",
+            how_to_fix=(
+                "read the failed charge's PaymentIntent id (pi_…) from Stripe — an event id "
+                "(evt_…) is provenance and can never refund a charge"
+            ),
+            payment_id=identifier,
+        )
     missing = _missing_config(("STRIPE_SECRET_KEY", settings.stripe_secret_key))
     if missing:
         return named_refusal(
@@ -156,7 +180,7 @@ def refund_payment(*, payment_id: str, amount_cents: int | None = None) -> dict:
         )
     return integration_call(
         "stripe", "Refund", agent_type="finance", install_hint=_STRIPE_HINT,
-        call=_stripe_refund, payment_id=payment_id, amount_cents=amount_cents,
+        call=_stripe_refund, payment_id=identifier, amount_cents=amount_cents,
     )
 
 

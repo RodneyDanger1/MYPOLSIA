@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { PREFIX, sqliteAll, sqliteRun } from "./_helpers";
+import { LAB_DB_SKIP_REASON, PREFIX, labDbAvailable, sqliteAll, sqliteRun } from "./_helpers";
 
 test.describe("Agents page", () => {
   test("lists all agents with Run Now button", async ({ page }) => {
@@ -9,6 +9,9 @@ test.describe("Agents page", () => {
   });
 
   test("trigger button shows queued confirmation", async ({ page }) => {
+    // The row read-back below is a SQLite fixture read; the CI stack is Postgres (E2E_SQLITE unset,
+    // no repo-local lab DB) — skip BY NAME there, never a raw open error.
+    test.skip(!labDbAvailable(), LAB_DB_SKIP_REASON);
     // This click is the suite's only task-row write that goes through the BROWSER: it POSTs
     // /api/v1/agents/ads_management/trigger (the agent list renders ordered by agent_type, so the
     // first "Run Now" is ads_management) and the backend titles the row "Manual ads_management

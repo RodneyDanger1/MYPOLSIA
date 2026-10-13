@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { API_BASE, PREFIX, sqliteRun } from "./_helpers";
+import { API_BASE, LAB_DB_SKIP_REASON, PREFIX, labDbAvailable, sqliteRun } from "./_helpers";
 
 async function shownCount(page: import("@playwright/test").Page): Promise<number> {
   const heading = page.getByRole("heading", { name: /^Outreach \(\d+\)$/ });
@@ -50,6 +50,9 @@ test.describe("Outreach page", () => {
   });
 
   test("renders a prospect row's name, company and status (seeded fixture)", async ({ page, request }) => {
+    // Fixture writes go straight into the docker-free lab's SQLite file; the CI stack is Postgres
+    // (E2E_SQLITE unset, no repo-local lab DB) — skip BY NAME there, never a raw open error.
+    test.skip(!labDbAvailable(), LAB_DB_SKIP_REASON);
     // No write API exists for prospects and the broker is down; seed one obviously-named row into the
     // same SQLite file the backend serves from, then assert it end-to-end through the page + API.
     const stamp = Date.now();

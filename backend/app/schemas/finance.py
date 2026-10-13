@@ -94,11 +94,19 @@ class FinanceSummaryResponse(BaseModel):
 
 
 class RevenueSnapshotResponse(ORMModel):
+    """`mrr_cents`/`arr_cents`/`active_subscribers` are NULLABLE in the frozen schema
+    (`models/finance.py`; `0001`'s `CREATE TABLE revenue_snapshots` carries `server_default`s but
+    no `NOT NULL`), so a raw-SQL/ops writer can leave them NULL — declaring them required turned
+    ONE such row into a bare, codeless 500 for the whole `/finance/revenue` list (L1-11).  `None`
+    is served as null ("not measured"), never a fabricated `0` (the house rule in api.ts: a null
+    money field is not a zero reading).
+    """
+
     id: int
     snapshot_date: date
-    mrr_cents: int
-    arr_cents: int
-    active_subscribers: int
+    mrr_cents: int | None = None
+    arr_cents: int | None = None
+    active_subscribers: int | None = None
     churned_today: int | None = None
     new_today: int | None = None
     total_revenue_month_cents: int | None = None
@@ -130,10 +138,31 @@ class StripeEventResponse(ORMModel):
 
 
 class StripeWebhookResponse(BaseModel):
+    """The declared shape of `POST /api/v1/finance/stripe/webhook`'s 200 body.
+
+    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — repo-wide (app/, tests/,
+    scripts/, frontend/src/, e2e/, docs/) the only occurrence is this definition: the webhook
+    route returns its own hand-built `{"received": True}` dict and declares no `response_model`
+    (app/api/v1/finance.py::stripe_webhook), so the documented and the actual response are two
+    copies of one fact.  Declaring `response_model=` on the route vs deleting the model is an
+    owner decision (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2) — not wired by this lane.
+    """
+
     received: bool = True
 
 
 class ExpenseCreate(BaseModel):
+    """Declared request shape for a "create expense" route that does not ship.
+
+    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — no route accepts it:
+    expenses enter the DB through the finance-agent path (`finance_service.record_expense` /
+    `persist_finance_run`) and `ExpenseRecordResponse` serves the only expense read.  Adding a
+    POST route that uses it vs deleting it is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2).
+    """
+
     category: str
     vendor: str
     amount_cents: int

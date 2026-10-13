@@ -1,9 +1,12 @@
-"""prospects + email_campaigns + email_logs (module name INFERRED - unreferenced)."""
+"""prospects + email_campaigns + email_logs — consumed by app.services.outreach_service,
+app.services.channel_service (send caps) and the worker persist path; DDL-pinned by
+tests/unit/test_models_schema_frozen.py (M3: the old "(module name INFERRED - unreferenced)"
+header was stale — only models/competitor.py is genuinely unreferenced by services)."""
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -66,4 +69,17 @@ class EmailLog(Base):
     follow_up_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        # migration 0005 (L2-08): the natural key `record_sent_emails` dedupes on — one
+        # provider message id = one real send.  Partial, so legacy rows without a
+        # `sendgrid_id` stay legal.  Mapped here so `create_all` matches the chain's schema.
+        Index(
+            "uq_email_logs_sendgrid_id",
+            "sendgrid_id",
+            unique=True,
+            postgresql_where=text("sendgrid_id IS NOT NULL"),
+            sqlite_where=text("sendgrid_id IS NOT NULL"),
+        ),
     )

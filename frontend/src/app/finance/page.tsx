@@ -4,6 +4,40 @@ import { useEffect, useState } from "react";
 import { MetricsCard } from "@/components/dashboard/MetricsCard";
 import { api, type FinanceSummary } from "@/lib/api";
 
+/**
+ * `ai_spend` — the additive block R24 wired into GET /finance/summary and the frontend never consumed.
+ * Declared HERE rather than in `lib/api.ts` (another seat owns that file this wave); field names are
+ * the schema's own (`backend/app/schemas/finance.py`), not the finding card's shorthand: the unmeasured
+ * marker is `unit_economics.unmeasured_spend_agents`, and `spent`/`remaining` are `float | None` — so
+ * the card's suggested `spent.toFixed(2)` would throw on an unmeasured day.
+ */
+type AiSpend = {
+  limit: number;
+  spent: number | null;
+  remaining: number | null;
+  burn_rate: {
+    spent_usd: number;
+    day_limit_usd: number;
+    elapsed_fraction: number;
+    projected_day_total_usd: number | null;
+    status: string;
+  } | null;
+  unit_economics: {
+    total_spend_usd: number;
+    total_completed: number;
+    cost_per_completed_task_usd: number | null;
+    per_agent: Record<
+      string,
+      { spend_usd: number; completed: number; cost_per_completed_task_usd: number | null }
+    >;
+    note: string;
+    unmeasured_spend_agents: string[];
+  } | null;
+};
+
+/** The summary as the page needs it: the seven declared fields plus the additive block. */
+type FinanceSummaryWithAiSpend = FinanceSummary & { ai_spend?: AiSpend | null };
+
 function formatCents(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -20,6 +54,24 @@ function formatCentsOrDash(cents: number | null | undefined): string {
 
 function formatUsdOrDash(usd: number | null | undefined): string {
   return usd == null ? "—" : `$${usd.toFixed(2)}`;
+}
+
+/**
+ * "AI spend today" (R24's `ai_spend` block) under the page's own null law: an absent block or an
+ * unmeasured day — `spent: null`, which the backend serves when rows exist but no cost was reported —
+ * renders "—", and only a measured zero renders `$0.00`. `spent`/`remaining` are nullable on the wire,
+ * so this must never call `.toFixed()` on them directly.
+ */
+function formatAiSpend(spend: AiSpend | null | undefined): string {
+  if (!spend || spend.spent == null) return "—";
+  return `${formatUsdOrDash(spend.spent)} of ${formatUsdOrDash(spend.limit)}`;
+}
+
+/** An agent whose day spend was NOT measurable is NAMED in the block, never priced at a fabricated
+ *  $0.00 per task — so it is surfaced here as a note, not folded into the card's number. */
+function aiSpendNote(spend: AiSpend | null | undefined): string | undefined {
+  const unmeasured = spend?.unit_economics?.unmeasured_spend_agents ?? [];
+  return unmeasured.length > 0 ? `unmeasured spend: ${unmeasured.join(", ")}` : undefined;
 }
 
 /**
@@ -41,13 +93,13 @@ function formatUsdOrDash(usd: number | null | undefined): string {
  */
 
 export default function FinancePage() {
-  const [data, setData] = useState<FinanceSummary | null>(null);
+  const [data, setData] = useState<FinanceSummaryWithAiSpend | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .get<FinanceSummary>("/finance/summary")
+      .get<FinanceSummaryWithAiSpend>("/finance/summary")
       .then((rows) => {
         if (!cancelled) setData(rows);
       })
@@ -101,6 +153,15 @@ export default function FinancePage() {
         <MetricsCard
           title="Expenses (Month)"
           value={formatCentsOrDash(data?.total_expenses_month_cents)}
+          trend="neutral"
+        />
+        {/* R24's ai_spend block — the spend the daily dispatch cap is computed from. Absent block or
+            unmeasured day -> "—"; a measured 0.00 -> "$0.00". Unmeasured agents are named, never
+            priced at a fabricated per-task cost. */}
+        <MetricsCard
+          title="AI spend today"
+          value={formatAiSpend(data?.ai_spend)}
+          subtitle={aiSpendNote(data?.ai_spend)}
           trend="neutral"
         />
       </div>

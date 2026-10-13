@@ -386,7 +386,19 @@ class FailedPayment(BaseModel):
     event_id: str | None = Field(
         default=None,
         max_length=255,
-        description="Stripe event id — only ever the provider's real id; absent means this charge cannot be acted on",
+        description=(
+            "Stripe event id — PROVENANCE for the webhook delivery only, never the refund "
+            "target: Stripe refunds are created against a PaymentIntent (pi_…), not an event"
+        ),
+    )
+    payment_intent_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Stripe PaymentIntent id (pi_…) — the identifier a refund call needs; absent (or "
+            "not pi_-prefixed) means no refund can be requested for this charge, and the "
+            "refund adapter refuses it by name"
+        ),
     )
     customer_id: str | None = Field(default=None, max_length=255)
     amount_cents: int = Field(default=0, ge=0)
@@ -515,9 +527,21 @@ def required_top_level_fields(agent_type: str) -> tuple[str, ...]:
 
 
 def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, BaseModel | list[str]]:
-    """Local validation. Returns (True, model) or (False, [error strings])."""
-    model = AGENT_SCHEMAS.get(agent_type)
-    if model is None:
+    """Local validation. Returns (True, model) or (False, [error strings]).
+
+    L1-06: the model validated here is the SAME one the CLI bridge sends — `schema_for`, incl.
+    the documented-but-unregistered `deployment` schema.  The module docstring's whole point is
+    that "the schema is sent to the CLI via --json-schema AND re-validated locally with the same
+    model"; before this, `cli_schema_for('deployment')` emitted a schema whose own validator
+    answered "unknown agent_type", so the bridge and the validator could disagree about which
+    agents exist.  An agent_type with no schema at all still answers the same unknown-agent
+    string this function has always returned — `(False, ...)`, never a raise.
+    """
+    from app.core.errors import PolsiaError
+
+    try:
+        model = schema_for(agent_type)
+    except PolsiaError:
         return False, [f"unknown agent_type '{agent_type}'"]
     try:
         return True, model.model_validate(payload)

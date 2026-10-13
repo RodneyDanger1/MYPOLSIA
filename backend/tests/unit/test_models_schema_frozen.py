@@ -38,6 +38,21 @@ column order).  Old canonical sha256
 `8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79` ->
 `43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (PHASE-3 fixer-2, 2026-10-13; L2-03 + L2-08): the ORM now maps the three
+partial uniques the chain already/now ships, so `create_all` and the migrations describe ONE
+schema (L2-03's gap: `agent_runs.attempt` + `ux_agent_runs_task_attempt` were migration-only,
+making the retry key inert; L2-08: the run-artifact dedupes got their real keys in the new
+`0005_natural_keys_and_check_validation.py`).  Row changes: `agent_runs` gains
+`('attempt', 'INTEGER', True, '', '', 'ux_agent_runs_task_attempt', False)` after `usage_json` and
+`task_id`'s index field gains the same name; `social_posts.platform` / `tweet_id` and
+`email_logs.sendgrid_id` gain their index names (the single-column `sendgrid_id` therefore reads
+`unique=True`).  Index set: + `('ux_agent_runs_task_attempt', ('task_id','attempt'), True)`,
++ `('uq_social_posts_platform_tweet_id', ('platform','tweet_id'), True)`,
++ `('uq_email_logs_sendgrid_id', ('sendgrid_id',), True)`.  Old canonical sha256
+`43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9` ->
+`41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -56,7 +71,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9"
+DDL_SHA256 = "41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -119,7 +134,7 @@ FROZEN_COLUMNS = {
     ),
     'agent_runs': (
         ('id', 'INTEGER', False, '', '', '', False),
-        ('task_id', 'INTEGER', True, '', '', 'ix_agent_runs_task_id', False),
+        ('task_id', 'INTEGER', True, '', '', 'ix_agent_runs_task_id,ux_agent_runs_task_attempt', False),
         ('agent_type', 'VARCHAR(100)', False, '', '', 'ix_agent_runs_agent_type', False),
         ('run_type', 'VARCHAR(100)', True, "'task'", 'task', '', False),
         ('status', 'VARCHAR(50)', True, "'running'", 'running', '', False),
@@ -135,6 +150,8 @@ FROZEN_COLUMNS = {
         ('tokens_input', 'INTEGER', True, '', '', '', False),
         ('tokens_output', 'INTEGER', True, '', '', '', False),
         ('usage_json', 'JSON', True, '', '', '', False),
+        # PHASE-3 L2-03: the retry ledger's execution number, mapped onto the 0002 column
+        ('attempt', 'INTEGER', True, '', '', 'ux_agent_runs_task_attempt', False),
     ),
     'company_config': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -198,7 +215,9 @@ FROZEN_COLUMNS = {
         ('sequence_step', 'INTEGER', True, '1', '1', '', False),
         ('subject', 'VARCHAR(512)', True, '', '', '', False),
         ('body', 'TEXT', True, '', '', '', False),
-        ('sendgrid_id', 'VARCHAR(255)', True, '', '', '', False),
+        # PHASE-3 L2-08: migration 0005's partial unique (unnamed-column autoindex is not used
+        # because the index is partial), mapped so create_all carries the same natural key
+        ('sendgrid_id', 'VARCHAR(255)', True, '', '', 'uq_email_logs_sendgrid_id', True),
         ('status', 'VARCHAR(50)', True, "'sent'", 'sent', '', False),
         ('sent_at', 'DATETIME', True, '', '', '', False),
         ('opened_at', 'DATETIME', True, '', '', '', False),
@@ -261,10 +280,10 @@ FROZEN_COLUMNS = {
     ),
     'social_posts': (
         ('id', 'INTEGER', False, '', '', '', False),
-        ('platform', 'VARCHAR(50)', True, "'twitter'", 'twitter', '', False),
+        ('platform', 'VARCHAR(50)', True, "'twitter'", 'twitter', 'uq_social_posts_platform_tweet_id', False),
         ('content', 'TEXT', False, '', '', '', False),
         ('status', 'VARCHAR(50)', True, "'draft'", 'draft', '', False),
-        ('tweet_id', 'VARCHAR(100)', True, '', '', '', False),
+        ('tweet_id', 'VARCHAR(100)', True, '', '', 'uq_social_posts_platform_tweet_id', False),
         ('scheduled_for', 'DATETIME', True, '', '', '', False),
         ('published_at', 'DATETIME', True, '', '', '', False),
         ('engagement', 'JSON', True, '', '', '', False),
@@ -334,6 +353,10 @@ FROZEN_INDEXES = {
     ('ix_tasks_created_at', ('created_at',), False),
     ('ix_tasks_dedupe_key', ('dedupe_key',), True),
     ('ix_tasks_pending_queue', ('status', 'priority', 'scheduled_date'), False),
+    # PHASE-3: the three partial uniques mapped onto the shipped chain (L2-03 + L2-08)
+    ('uq_email_logs_sendgrid_id', ('sendgrid_id',), True),
+    ('uq_social_posts_platform_tweet_id', ('platform', 'tweet_id'), True),
+    ('ux_agent_runs_task_attempt', ('task_id', 'attempt'), True),
 }
 
 

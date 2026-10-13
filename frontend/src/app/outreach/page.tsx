@@ -5,8 +5,10 @@ import { api } from "@/lib/api";
 
 // `created_at` is nullable on the wire (`ProspectResponse.created_at` in `app/schemas/social.py` is
 // `datetime | None`), so the column below renders the "date unknown" placeholder for a null — the
-// same idiom the memory page uses.
-type Prospect = { id: number; email: string; first_name: string | null; company: string | null; status: string; created_at: string | null };
+// same idiom the memory page uses.  `status` is `str | None` server-side as well (the
+// `prospects.status` column is nullable — 0001 has `server_default='new'` but no `NOT NULL`), so the
+// cell renders the dash for a null instead of an empty one.
+type Prospect = { id: number; email: string; first_name: string | null; company: string | null; status: string | null; created_at: string | null };
 
 const STATUS_STYLE: Record<string, string> = {
   new: "text-blue-400", contacted: "text-yellow-400", replied: "text-green-400",
@@ -74,7 +76,7 @@ export default function OutreachPage() {
                 <td className="py-2 pr-4 text-white">{p.email}</td>
                 <td className="py-2 pr-4 text-gray-300">{p.first_name ?? "—"}</td>
                 <td className="py-2 pr-4 text-gray-300">{p.company ?? "—"}</td>
-                <td className={`py-2 pr-4 capitalize ${STATUS_STYLE[p.status] ?? "text-gray-400"}`}>{p.status}</td>
+                <td className={`py-2 pr-4 capitalize ${p.status ? (STATUS_STYLE[p.status] ?? "text-gray-400") : "text-gray-400"}`}>{p.status ?? "—"}</td>
                 <td className="py-2 text-gray-400">
                   {p.created_at ? new Date(p.created_at).toLocaleDateString() : "date unknown"}
                 </td>

@@ -174,6 +174,13 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # L1-08: the custom headers this app emits must be READABLE by a cross-origin browser
+        # client.  Without `expose_headers` only CORS-safelisted response headers are readable
+        # from JS, so the shipped error page's advice ("the backend log for this request
+        # (X-Request-ID) has the server side") and the machine-readable refusal code were
+        # invisible on exactly the split-origin client the default `cors_origins`
+        # (http://localhost:3000) describes — same-origin nginx deployments never needed them.
+        expose_headers=["X-Polsia-Error-Code", "X-Request-ID", "X-Response-Time-ms"],
     )
 
     @application.middleware("http")
@@ -232,7 +239,16 @@ def create_app() -> FastAPI:
             "%s on %s %s: %s", envelope["error"]["code"], request.method, request.url.path,
             envelope["error"]["message"],
         )
-        return JSONResponse(status_code=exc.status_code, content=envelope, headers=exc.headers)
+        # L1-04: the header `_refusal_headers` attaches for a `PolsiaError` must travel on this
+        # path too.  The coded raises in tasks.py/config.py carry no `headers=` of their own, so
+        # before this line the same refusal answered WITH the machine-readable code header when
+        # it passed through `refusal_guard` and WITHOUT it when it was raised one layer earlier
+        # — the exact split `_refusal_headers` exists to make impossible.  `setdefault` keeps an
+        # explicit header (the in-route `refusal_guard` shape sets it via `as_http_exception`)
+        # untouched, so every coded refusal carries exactly one value: the body's code.
+        headers = dict(exc.headers or {})
+        headers.setdefault("X-Polsia-Error-Code", envelope["error"]["code"])
+        return JSONResponse(status_code=exc.status_code, content=envelope, headers=headers)
 
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(health.router)     # no auth

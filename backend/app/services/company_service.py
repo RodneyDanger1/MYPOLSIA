@@ -92,20 +92,26 @@ def cache_info() -> dict[str, Any]:
 
 
 async def get_company(db: AsyncSession) -> CompanyConfig | None:
-    result = await db.execute(select(CompanyConfig).order_by(CompanyConfig.id).limit(1))
-    return result.scalar_one_or_none()
+    """The single company row, or `None`; a failed read is a named `E_DB` (L2-06 — was a
+    raw `db.execute`, so `GET/PUT /config` answered a codeless 500 on an outage)."""
+    return await fetch_scalar(
+        db, select(CompanyConfig).order_by(CompanyConfig.id).limit(1), what="company config"
+    )
 
 
 async def get_company_by_name(db: AsyncSession, name: str) -> CompanyConfig | None:
-    """Lookup by exact name.
+    """Lookup by exact name; a failed read is a named `E_DB` (L2-06, same class as above).
 
     ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
     polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
     but called by nothing (production or tests); the app resolves the single company row
     via `get_company`.  Removal vs adoption is an owner decision (REQUESTS R25-1).
     """
-    result = await db.execute(select(CompanyConfig).where(CompanyConfig.name == name).limit(1))
-    return result.scalar_one_or_none()
+    return await fetch_scalar(
+        db,
+        select(CompanyConfig).where(CompanyConfig.name == name).limit(1),
+        what=f"company {name!r}",
+    )
 
 
 async def get_daily_cycle_hour(db: AsyncSession) -> int | None:

@@ -436,9 +436,15 @@ def is_retryable_failure(code: str, *, subtype: str = "", api_status: int | None
     NOT retryable, deliberately:
       * `E_CLI_MISSING` — a deploy problem; retrying burns the day's budget for nothing;
       * `E_CLI_JSON` — a hook polluted stdout; the fix is `--bare`, not a retry;
-      * `E_CLI_TIMEOUT` — our wall clock already expired on this exact prompt; the documented
-        remediation is a smaller task or a higher timeout, and a retry would hold the worker slot
-        and pay for the same hang again (the hint on the refusal says so).
+      * `E_CLI_TIMEOUT` — in THIS (envelope) shape, i.e. exit 143: our wall clock already expired
+        on this exact prompt; the documented remediation is a smaller task or a higher timeout.
+
+    The raised shape of the same code is a DIFFERENT contract (L3-13): a `PolsiaError` with
+    `E_CLI_TIMEOUT` thrown by `invoke()` (or the DeepSeek runtime's `httpx.TimeoutException`
+    branch) IS retried by `run_with_retries` up to `agent_max_retries` with jittered backoff —
+    the hang may be transient provider pressure. Worst case one hang costs
+    (1 + `agent_max_retries`) x the configured timeout of a worker slot;
+    `ERROR_HINTS[E_CLI_TIMEOUT]` states the same.
     """
     if code == E_CLI_TIMEOUT:
         return False
@@ -471,9 +477,13 @@ def run_with_retries(
 ) -> tuple[InvokeResult, int]:
     """Call `dispatch()` up to `attempts` times while `classify(result)` says 'retry'.
 
-    Returns `(last_result, attempts_used)`. A spawn-level refusal (E_CLI_MISSING/TIMEOUT) is
-    re-raised by `dispatch`; timeouts and transient exit codes are retried, everything else
-    returns immediately so the caller can map it to a named code without paying for the ladder.
+    Returns `(last_result, attempts_used)`. A spawn-level refusal (E_CLI_MISSING) is re-raised by
+    `dispatch`; a RAISED `E_CLI_TIMEOUT` (the CLI wall clock, or the DeepSeek runtime's
+    `httpx.TimeoutException` branch — both raise the same code) is RETRIED here with jittered
+    backoff up to `settings.agent_max_retries`, because the hang may be transient provider
+    pressure; the ENVELOPE shape for the same condition (exit 143 ->
+    `is_retryable_failure`) is classified non-retryable instead. Everything else returns
+    immediately so the caller can map it to a named code without paying for the ladder.
     """
     total = 1 + max(0, int(settings.agent_max_retries if attempts is None else attempts))
     backoff = float(settings.agent_retry_backoff_seconds if backoff_s is None else backoff_s)

@@ -20,6 +20,13 @@ stored value always wins.  The hour is **company-local** (interpreted via
 configured hour's `[H:00, H+1:00)` local window; an invalid stored value is a named
 `E_CONFIG` refusal, never a silent fallback.
 
+Timing (L4-11).  The evening entry fires **hourly** on the same pattern and self-gates on the
+company-local `settings.evening_cycle_hour` (the frozen company schema carries no evening hour —
+see `_resolve_evening_hour`).  It used to fire on a UTC crontab hour while writing the report for
+the company-LOCAL day (`today_in()`), so for any non-UTC company the "evening" summary was filed
+against the wrong (or a partial) local day; the hour now means the same timezone the day window
+does, and a change in Settings takes effect without a beat restart.
+
 Trade-off recorded (lane 04 D5): the finance snapshot is now queued with the rest instead of
 running before the orchestrator.  The cycle therefore no longer blocks on it (the defect
 being fixed), and today's plan sees the *previous* snapshot; the fresh snapshot lands
@@ -35,7 +42,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.core.timeutil import company_tz, now_utc, today_in
+from app.core.timeutil import company_tz, now_utc
 from celery_app.tasks._common import (
     assert_budget_allows,
     create_task_deduped,
@@ -74,7 +81,7 @@ def run_morning_cycle() -> dict[str, Any]:
 
 @app.task(name="celery_app.tasks.daily_cycle.run_evening_cycle")
 def run_evening_cycle() -> dict[str, Any]:
-    """20:00 (settings.evening_cycle_hour, UTC) — day summary for the company's day."""
+    """Hourly Beat tick — self-gates on the company-local Evening Cycle Hour, then summarises."""
     return run_async(_evening_cycle())
 
 
@@ -106,10 +113,36 @@ async def _resolve_morning_hour(db) -> tuple[int, str]:
 
 
 def _morning_window(day: date, hour: int, tz: ZoneInfo) -> tuple[datetime, datetime]:
-    """The `[H:00, H+1:00)` company-local window as timezone-aware UTC instants."""
+    """The `[H:00, H+1:00)` company-local window as timezone-aware UTC instants.
+
+    Shared by BOTH cycles (the name is historical): the morning cycle gates on it, and since
+    L4-11 the evening cycle gates on the same shape at its own company-local hour.
+    """
     start_local = datetime.combine(day, time(hour=hour), tzinfo=tz)
     end_local = start_local + timedelta(hours=1)
     return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+def _resolve_evening_hour() -> tuple[int, str]:
+    """The hour the evening cycle runs at (company-local), and which source supplied it.
+
+    Same validation shape as `_resolve_morning_hour` — an invalid value is a named `E_CONFIG`
+    refusal, never a silent default. The frozen company schema carries no evening hour
+    (`company_config.daily_cycle_hour` is the morning's), so `settings.evening_cycle_hour` is
+    the single source today; a company-level evening hour is an owner decision (REQUESTS).
+    """
+    from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+
+    hour, source = settings.evening_cycle_hour, "settings"
+    if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
+        raise PolsiaError(
+            E_CONFIG,
+            f"evening cycle hour {hour!r} (from {source}) is not a valid hour: "
+            "the accepted range is an integer 0-23",
+            how_to_fix=ERROR_HINTS[E_CONFIG],
+            context={"value": hour, "source": source},
+        )
+    return hour, source
 
 
 async def _morning_cycle() -> dict[str, Any]:
@@ -162,6 +195,10 @@ async def _morning_cycle() -> dict[str, Any]:
         {
             "title": "Morning planning cycle",
             "description": f"Generate today's task plan for {day.isoformat()}",
+            # L3-06: the caller declares the cycle — the agent reads this FIRST and only falls
+            # back to sniffing title/description for ad-hoc tasks. A model-authored plan entry
+            # whose wording contains "close"/"report"/"summary" can no longer flip this run.
+            "metadata": {"cycle": "morning"},
         },
         context,
     )
@@ -341,7 +378,36 @@ async def _evening_cycle() -> dict[str, Any]:
     from app.services.report_service import save_evening_summary
 
     session_factory = get_session_factory()
-    day = today_in()
+
+    # The self-gate (L4-11): the beat entry fires hourly, so decide HERE whether this tick is the
+    # company's evening hour — BEFORE any model call. The hour is company-local (the same
+    # timezone the day window below uses), so the report is filed against the local day that is
+    # ending, not against whatever the UTC clock says. An invalid configured hour has already
+    # raised E_CONFIG inside _resolve_evening_hour.
+    now = now_utc()
+    tz = company_tz()
+    hour, source = _resolve_evening_hour()
+    day = now.astimezone(tz).date()  # the company's local day: what "the day's summary" means
+    start, end = _morning_window(day, hour, tz)
+    window = {
+        "hour": hour,
+        "source": source,
+        "tz": tz.key,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+    if not (start <= now < end):
+        logger.info(
+            "evening cycle skipped (outside_evening_window): now=%s window=[%s, %s) "
+            "hour=%s source=%s tz=%s",
+            now.isoformat(),
+            start.isoformat(),
+            end.isoformat(),
+            hour,
+            source,
+            tz.key,
+        )
+        return {"status": "skipped", "reason": "outside_evening_window", "window": window}
 
     async with session_factory() as db:
         context = await get_full_context(db)
@@ -365,6 +431,8 @@ async def _evening_cycle() -> dict[str, Any]:
         {
             "title": "Evening reporting cycle",
             "description": f"Generate evening summary for {day.isoformat()}",
+            # L3-06: the caller declares the cycle; the agent reads this FIRST.
+            "metadata": {"cycle": "evening"},
         },
         context,
     )
@@ -406,4 +474,5 @@ async def _evening_cycle() -> dict[str, Any]:
         "tasks_failed": failed,
         "counts": counts,
         "summary": summary_text,
+        "window": window,  # L4-11: which company-local hour this tick matched (audit parity with the morning cycle)
     }

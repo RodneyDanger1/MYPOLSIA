@@ -181,6 +181,10 @@ def test_the_other_four_service_signatures_are_frozen():
             "tokens_output",
             "cost_usd",
             "usage_json",
+            # PHASE-3 fixer-2 (L2-03): the retried-task execution number, re-pinned
+            # deliberately — the celery call site passes it by this exact name once
+            # FIXER-3's edit lands (`attempt=task.attempts` at agent_tasks.py:398).
+            "attempt",
         ],
         "finish_agent_run": [
             "db",

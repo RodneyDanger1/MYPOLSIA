@@ -336,9 +336,19 @@ async def test_verify_never_sends_the_key_anywhere_but_the_authorization_header(
 
 
 def test_default_store_path_is_the_documented_data_area(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RE-PINNED by fix-5 / L1-07 — the DEFAULT path is now ANCHORED at the backend dir.
+
+    The old assertion pinned the cwd-relative literal (`Path("data/deepseek_api_key.json")`),
+    which is the defect: launched from the repo root the store landed at `<repo>/data/…` — a
+    path no `.gitignore` rule covers — while `.gitignore`, the compose volume and the docs all
+    assume `backend/data/…`.  The documented data area is unchanged; only its resolution is
+    anchored (the D7 treatment `chroma_client._fallback_persist_dir` already applies).
+    """
     monkeypatch.delenv(secret_store.KEY_FILE_ENV_VAR, raising=False)
     monkeypatch.setattr(secret_store.settings, "deepseek_key_file", "", raising=False)
 
     resolved = secret_store._resolve_key_file()
-    assert resolved == Path("data/deepseek_api_key.json")
+    assert resolved == (
+        Path(secret_store.__file__).resolve().parents[2] / "data" / "deepseek_api_key.json"
+    )
     assert os.path.basename(str(resolved)) == "deepseek_api_key.json"

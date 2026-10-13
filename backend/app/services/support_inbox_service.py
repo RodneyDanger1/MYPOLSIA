@@ -40,6 +40,7 @@ from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant, dialect_name
 from app.models.support import SupportInboxItem
 from app.models.task import Task
+from app.services.query_helpers import fetch_scalars
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ async def list_items(
         .limit(limit)
         .offset(offset)
     )
-    return list((await db.execute(stmt)).scalars().all())
+    return await fetch_scalars(db, stmt, what="support inbox items")
 
 
 async def attach_pending(db: AsyncSession) -> list[dict[str, Any]]:

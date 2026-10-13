@@ -11,6 +11,11 @@ Sandbox semantics: while `SANDBOX_MODE=true` every send is REFUSED (`E_SANDBOX_B
 email is recorded with `status="draft"` and `sendgrid_id=null` plus the `sandbox`/`drafted_not_sent`
 markers; the same is true for the un-subscribe-safe follow-up scheduling. Only an operator with
 `SANDBOX_MODE=false` reaches `integrations.send_email`, which either sends or refuses by name.
+
+Run-action semantics (L3-02): only `action="send"` attempts a send; `"find"` (prospects only),
+`"draft"` (emails written, nothing sent) and `"noop"` runs record every email as a labelled draft
+and never touch the firewall or the provider. The channel caps keep their check-and-consume
+semantics inside a batch (in-run `performed` counter, L3-05).
 """
 from __future__ import annotations
 
@@ -20,8 +25,9 @@ from typing import Any
 from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
-from app.agents.side_effects import request_side_effect, side_effect_receipt
+from app.agents.side_effects import capped_item_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
+from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.schemas.agent_outputs import EmailOutreachOutput
 
 logger = logging.getLogger(__name__)
@@ -69,19 +75,50 @@ class EmailOutreachAgent(BasePolsiaAgent):
         sends_today = counts.get("today")
         sends_hour = counts.get("hour")
         receipts: list[dict[str, Any]] = []
+        # L3-02: only "send" attempts an external send. "find" (prospects only), "draft" (emails
+        # written, nothing sent) and "noop" record each email as the labelled draft the sandbox
+        # branch already produces — no firewall call, no provider, no cap slot consumed.
+        sending = action == "send"
+        # L3-05: what THIS run has really performed on the email channel (successful provider
+        # sends only). The caps are check-and-consume; the snapshot is read once per run, so the
+        # firewall must see snapshot + performed or one batch overshoots the day/hour cap.
+        performed = 0
 
         for _index, email in enumerate(list(payload.get("emails") or [])):
+            if not sending:
+                email["status"] = "draft"
+                email["sendgrid_id"] = None
+                payload["drafted_not_sent"] = True
+                continue
             to = str(email.get("prospect_email") or "")
-            outcome = request_side_effect(
-                self.agent_type,
-                ActionClass.EXTERNAL_REVERSIBLE,
-                "email",
-                action=action,
-                payload={"action": action, "subject": str(email.get("subject") or "")[:200],
-                         "to_domain": to.split("@")[-1] if "@" in to else ""},
-                sends_today=sends_today,
-                sends_this_hour=sends_hour,
-            )
+            sends_today_now = None if sends_today is None else sends_today + performed
+            sends_hour_now = None if sends_hour is None else sends_hour + performed
+            try:
+                outcome = request_side_effect(
+                    self.agent_type,
+                    ActionClass.EXTERNAL_REVERSIBLE,
+                    "email",
+                    action=action,
+                    payload={"action": action, "subject": str(email.get("subject") or "")[:200],
+                             "to_domain": to.split("@")[-1] if "@" in to else ""},
+                    sends_today=sends_today_now,
+                    sends_this_hour=sends_hour_now,
+                )
+            except PolsiaError as exc:
+                # A cap denial with nothing performed yet stays fatal; after this run performed a
+                # real send it is recorded and the email stays a draft (see
+                # `capped_item_refusal`). Anything that is not a cap denial re-raises unchanged.
+                if exc.code != E_RATE_LIMITED or performed == 0:
+                    raise
+                receipt, refusal = capped_item_refusal(
+                    exc, agent_type=self.agent_type, action=action, ref=to, channel="email",
+                )
+                receipts.append(receipt)
+                payload.setdefault("refusals", []).append(refusal)
+                email["status"] = "draft"
+                email["sendgrid_id"] = None
+                payload["drafted_not_sent"] = True
+                continue
             receipt = side_effect_receipt(outcome, action=action, ref=to)
             if outcome.allowed:                                  # only outside sandbox
                 result = integrations.send_email(
@@ -90,6 +127,7 @@ class EmailOutreachAgent(BasePolsiaAgent):
                 receipt["integration"] = result
                 if result.get("ok"):
                     email["status"] = "sent"
+                    performed += 1
                     # RD30/RD14: the cap's dedupe key is the provider's OWN per-message id — the
                     # SAME capture as the CS producer (customer_support/agent.py) so the two
                     # cannot drift apart again. A status code is not an id: the old

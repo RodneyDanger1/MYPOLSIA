@@ -27,7 +27,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 
 | Agent | Responsibility | Schedule |
 |-------|---------------|----------|
-| **Orchestrator** | Writes morning plan + evening summary | Morning: hourly, self-gated to the configured company-local hour (default 06:00) — Evening: 20:00 UTC |
+| **Orchestrator** | Writes morning plan + evening summary | Morning: hourly, self-gated to the configured company-local hour (default 06:00) — Evening: hourly, self-gated to the configured company-local hour (default 20:00) |
 | **Business Planning** | Strategy, KPIs, growth recommendations | Via the morning plan (no beat entry) |
 | **Competitor Research** | Web search, profile updates | Via the morning plan (no beat entry) |
 | **Social Media** | Draft + post tweets | Every 2h |

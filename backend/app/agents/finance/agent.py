@@ -64,8 +64,12 @@ Rules:
   records the real write.
 - `expenses` entries are single real costs with category, vendor and amount in cents; never roll up
   guessed infrastructure spend.
-- `failed_payments` lists the failed charges you actually saw, with their event id and amount; a
-  failed charge without the provider's real event id cannot be refunded and will be refused.
+- `failed_payments` lists the failed charges you actually saw, each with the charge's amount and
+  its `payment_intent_id` (the Stripe PaymentIntent id, `pi_…`).  Keep `event_id` when you know it
+  as PROVENANCE only: a refund is created against a PaymentIntent, never against an event, so a
+  request whose `payment_intent_id` is missing (or is not a `pi_…` id) is refused by name and no
+  refund is sent.  Set `refund_requested=true` only for a charge you saw fail and want refunded —
+  it is your PROPOSAL; the policy firewall still decides whether the refund is sent.
 - `alerts` are the things a human must act on today: a failed charge above the usual size, a churn
   spike, a balance that cannot cover the payroll window. If nothing is wrong, return an empty list
   rather than inventing concern.
@@ -127,40 +131,53 @@ class FinanceAgent(BasePolsiaAgent):
             refundable = bool(item.get("refund_requested"))
             if not refundable:
                 continue
+            # L3-10: the refund call needs the PaymentIntent id (`pi_…`) — Stripe creates a
+            # refund against a PaymentIntent/charge, and the event id this used to pass as
+            # `payment_intent` could only ever answer a provider error.  `event_id` rides along
+            # as provenance in the side-effect payload; the ADAPTER's prefix guard is the
+            # single fail-closed enforcement point for the id's type.
+            ref = str(item.get("payment_intent_id") or "").strip()
             event_id = item.get("event_id")
-            if not event_id:
+            if not ref:
                 # `str(item.get("event_id") or f"failed_payment:{index}")` used to fabricate a
                 # payment id that then fed `integrations.refund_payment(payment_id=ref)`: a
                 # refund must NEVER be requested against a made-up id — refuse by name and
-                # build no request at all.
+                # build no request at all.  Same refusal when the id present is an event id:
+                # it is the wrong RESOURCE TYPE for a refund (see the adapter's guard).
                 payload.setdefault("refusals", []).append({
                     "ok": False,
                     "error": {
                         "code": E_VALIDATION,
                         "message": (
-                            f"failed payment #{index} has no provider event_id; "
-                            "cannot request a refund for it"
+                            f"failed payment #{index} cannot be refunded: no "
+                            "payment_intent_id (the Stripe pi_… id a refund needs)"
                         ),
                         "how_to_fix": (
-                            "read the failed charge's real event id from Stripe before "
-                            "requesting a refund"
+                            "read the failed charge's PaymentIntent id (pi_…) from Stripe "
+                            "before requesting a refund; an event id is provenance and can "
+                            "never refund a charge"
                         ),
-                        "context": {"index": index},
+                        "context": {"index": index, "event_id": event_id},
                     },
                 })
                 continue
-            ref = str(event_id)
             outcome = request_side_effect(
                 self.agent_type,
                 ActionClass.EXTERNAL_IRREVERSIBLE,
                 "stripe",
                 action="refund",
                 value_usd=float(item.get("amount_cents") or 0) / 100.0,
-                payload={"action": "refund", "ref": ref},
+                payload={"action": "refund", "ref": ref, "event_id": event_id},
             )
             receipt = side_effect_receipt(outcome, action="refund", ref=ref)
             if outcome.allowed:                                   # approval token verified
-                result = integrations.refund_payment(payment_id=ref)
+                result = integrations.refund_payment(
+                    payment_id=ref,
+                    # `or None`: a missing/0 amount means the model measured no cap, and Stripe
+                    # then refunds what is left on the PaymentIntent — an explicit 0 would be
+                    # sent as `amount=0` and rejected.
+                    amount_cents=item.get("amount_cents") or None,
+                )
                 receipt["integration"] = result
                 if result.get("ok"):
                     payload["refunds_performed"] = int(payload.get("refunds_performed") or 0) + 1

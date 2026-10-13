@@ -210,8 +210,13 @@ export type Task = {
   id: number;
   title: string;
   agent_type: string;
-  status: string;
-  priority: number;
+  /** `str | None` server-side (`TaskResponse.status`; the tasks column is nullable — `0001`'s
+   *  `CREATE TABLE tasks` carries `server_default='pending'` but no `NOT NULL`), so a null is a
+   *  real wire value: the page renders its gray "unknown" badge for it, never an empty chip. */
+  status: string | null;
+  /** Same nullable contract as `status` (`server_default='3'`, no `NOT NULL`) — the page shows
+   *  the em dash for a null, never a fabricated `3`. */
+  priority: number | null;
   /** Same nullable contract as `ActivityEvent.created_at` — `TimestampedORM.created_at` is
    *  `datetime | None` (`app/schemas/common.py`). */
   created_at: string | null;

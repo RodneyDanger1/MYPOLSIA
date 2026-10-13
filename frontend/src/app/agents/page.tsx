@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useAgentStatus } from "@/hooks/useAgentStatus";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 const AGENT_DESCRIPTIONS: Record<string, string> = {
   orchestrator: "Generates daily task plans and evening summaries",
@@ -15,10 +15,19 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   finance: "Monitors Stripe revenue, expenses, and alerts",
 };
 
+/** A refusal shows its own code + fix hint; anything else its message (the repo's house idiom). */
+function errorText(e: unknown): string {
+  if (e instanceof ApiError) return e.display;
+  return e instanceof Error ? e.message : String(e);
+}
+
 export default function AgentsPage() {
-  const { statuses, loading } = useAgentStatus();
+  const { statuses, loading, error } = useAgentStatus();
   const [triggering, setTriggering] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // The trigger banner has two states on purpose: a queued confirmation and a refusal used to look
+  // identical (a refusal rendered in the success-styled indigo box), so E_REDIS read as "all good".
+  const [messageIsError, setMessageIsError] = useState(false);
 
   const trigger = async (agentType: string) => {
     setTriggering(agentType);
@@ -26,8 +35,10 @@ export default function AgentsPage() {
     try {
       const result = await api.post<{ message: string }>(`/agents/${agentType}/trigger`);
       setMessage(result.message);
+      setMessageIsError(false);
     } catch (e) {
-      setMessage(String(e));
+      setMessage(errorText(e));
+      setMessageIsError(true);
     } finally {
       setTriggering(null);
     }
@@ -38,7 +49,14 @@ export default function AgentsPage() {
       <h1 className="text-2xl font-bold text-white">Agents</h1>
 
       {message && (
-        <div className="bg-indigo-900/50 border border-indigo-500 rounded-lg px-4 py-3 text-indigo-200 text-sm">
+        <div
+          role={messageIsError ? "alert" : "status"}
+          className={
+            messageIsError
+              ? "bg-red-900/40 border border-red-500 rounded-lg px-4 py-3 text-red-300 text-sm"
+              : "bg-indigo-900/50 border border-indigo-500 rounded-lg px-4 py-3 text-indigo-200 text-sm"
+          }
+        >
           {message}
         </div>
       )}
@@ -49,6 +67,12 @@ export default function AgentsPage() {
             <div key={i} className="h-20 bg-gray-800 rounded-lg animate-pulse" />
           ))}
         </div>
+      ) : error ? (
+        // The hook reports the poll's failure; without this branch an outage rendered as an empty
+        // agents list — a plausible "no agents configured" state with the reason dropped.
+        <p className="text-red-400 text-sm" role="alert">
+          Could not load agent status: {error}
+        </p>
       ) : (
         <div className="space-y-3">
           {statuses.map((s) => (

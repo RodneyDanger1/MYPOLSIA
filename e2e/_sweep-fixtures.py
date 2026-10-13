@@ -27,7 +27,10 @@ starts later opens the store fresh).  A sweep that deletes 0 documents never tou
 
 Run by `playwright.config.ts`'s globalTeardown (via `_helpers.ts`'s default export) after the last
 test, and by hand with the backend venv python (chromadb lives there):
-    C:/Users/Riley/Desktop/Polsia/.venv/Scripts/python.exe e2e/_sweep-fixtures.py
+    <repo>/.venv/Scripts/python.exe e2e/_sweep-fixtures.py    (override the interpreter: E2E_PYTHON)
+    E2E_SQLITE=... must point at the DB the BACKEND serves from; unset, the default is the
+    repo-relative, gitignored <repo>/.e2e-lab.sqlite, and a missing file is a named no-op (CI's
+    stack is Postgres, where this suite's fixtures are skipped by name).
 
 Exit codes: 0 = swept (or nothing to sweep); 1 = tagged memory rows exist but their documents could
 not be confirmed/removed — the rows were kept, and the run must not report success.  (Exit 0 can
@@ -43,8 +46,13 @@ import time
 import urllib.request
 
 PREFIX = "[e2e-fixture]"
-# Same env var + default as e2e/_helpers.ts (SQLITE_PATH), so both halves agree on the one DB file.
-DB = os.environ.get("E2E_SQLITE", "C:/Users/Riley/Desktop/polsia-work/build/e2e.sqlite")
+# Same env var + default as e2e/_helpers.ts (SQLITE_PATH), so both halves agree on the one DB file:
+# explicit E2E_SQLITE wins, else the repo-relative, gitignored lab DB beside the repo root — never a
+# machine-specific absolute path (another checkout has neither the file nor its parent directory, and
+# `sqlite3.connect` would CREATE an empty DB there and then die on its missing schema).
+DB = os.environ.get("E2E_SQLITE") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".e2e-lab.sqlite"
+)
 def _default_chroma_dir() -> str:
     """Mirror the backend's D7 resolver (app/core/chroma_client.resolve_persist_dir).
 
@@ -214,9 +222,29 @@ def sweep_chroma(memory_rows: list[tuple]) -> tuple[bool, str, int]:
 
 
 def main() -> int:
+    if not os.path.exists(DB):
+        # Nothing this suite could have seeded exists: the fixture writer targets the SQLite lab DB,
+        # and the CI stack is Postgres (E2E_SQLITE unset there). A NAMED no-op, not a failure — the
+        # throw-on-failure contract below still covers every run that actually wrote something.
+        print(
+            f"SWEEP db={DB} is not present — nothing to sweep "
+            "(fixtures need the SQLite lab: set E2E_SQLITE to the DB the backend serves from)."
+        )
+        return 0
     con = sqlite3.connect(DB)
     con.execute("PRAGMA busy_timeout = 10000")
-    counts_before = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in TABLES}
+    try:
+        counts_before = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in TABLES}
+    except sqlite3.Error as exc:
+        # The file exists but is not the backend's schema (a stray empty DB, a wrong pointer): refuse
+        # loudly instead of reporting a clean sweep over a file this suite never wrote to.
+        print(
+            f"SWEEP REFUSED: {DB} exists but its schema is not the backend's "
+            f"({type(exc).__name__}: {exc}) — point E2E_SQLITE at the DB the backend serves from; "
+            "nothing was deleted."
+        )
+        con.close()
+        return 1
     memory_rows = con.execute(
         "SELECT id, chroma_id, title FROM memory_entries WHERE title LIKE ?", (f"{PREFIX}%",)
     ).fetchall()

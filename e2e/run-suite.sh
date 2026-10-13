@@ -21,6 +21,10 @@
 #                       any server and does not restart the backend for you.
 #      E2E_RESTART_MARKER=<path>  override the restart-marker path (default:
 #                       <chroma store>/.e2e-backend-restart-required, where the sweep writes it).
+#      E2E_SQLITE=<path>  the SQLite lab DB the fixture-seeding specs write to. Unset, the default is
+#                       the repo-relative, gitignored <repo>/.e2e-lab.sqlite; when that file does not
+#                       exist those specs SKIP BY NAME (the CI stack is Postgres). Point it at the DB
+#                       the local lab backend serves from to run them.
 #
 # Exit codes: 0 = suite green (or: a dry run says the real run would proceed); 2 = usage; 3 = the
 #             R-W4-2 restart guard refused (a stale backend would serve this run — its message names

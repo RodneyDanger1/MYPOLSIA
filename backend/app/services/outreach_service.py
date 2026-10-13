@@ -10,12 +10,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.timeutil import dialect_name
 from app.models.outreach import EmailCampaign, EmailLog, Prospect
 from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
 
@@ -62,6 +65,16 @@ async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospe
 
 
 async def list_campaigns(db: AsyncSession, limit: int = 50) -> list[EmailCampaign]:
+    """Newest-first `email_campaigns` read.
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
+    `tests/unit/test_r27_social_outreach_sweep.py`.  NOTE the wired namesake: what
+    `GET /api/v1/ads` serves is `ads_service.list_campaigns` (ad campaigns) — this function
+    reads `email_campaigns` and no code path calls it.  Intended purpose: an outreach-campaign
+    list read for a campaigns page.  Removal vs adoption is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
+    """
     return await fetch_scalars(
         db,
         select(EmailCampaign).order_by(EmailCampaign.id.desc()).limit(limit),
@@ -70,6 +83,15 @@ async def list_campaigns(db: AsyncSession, limit: int = 50) -> list[EmailCampaig
 
 
 async def list_email_logs(db: AsyncSession, limit: int = 100) -> list[EmailLog]:
+    """Newest-first send-log read.
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
+    `tests/unit/test_r27_social_outreach_sweep.py`; the shipped email path is the agent ->
+    worker -> `record_sent_emails` chain and no route serves the send log today.  Intended
+    purpose: the outreach send-log read.  Removal vs adoption is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
+    """
     return await fetch_scalars(
         db,
         select(EmailLog).order_by(EmailLog.id.desc()).limit(limit),
@@ -114,8 +136,12 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
     with `status == "sent"` AND a non-empty `sendgrid_id` are recorded — anything else was
     refused, drafted or failed, and a log row for it would fake a send. `prospect_id` is a
     required FK, so the prospect is found (or created) first. Deduped by `sendgrid_id` so a
-    retried run cannot double-count. `flush` only — the worker owns the commit. Never raises:
-    any failure comes back in the report's `error` field.
+    retried run cannot double-count — and since migration 0005 that key is a REAL partial unique
+    index, so two writers that both miss the SELECT cannot both insert: the write is one
+    `INSERT ... ON CONFLICT DO NOTHING RETURNING id` (the `record_stripe_event` shape) whose
+    empty RETURNING means the raced row already exists and is counted as `duplicates_skipped`.
+    `flush` only — the worker owns the commit. Never raises: any failure comes back in the
+    report's `error` field.
 
     RD30 (M5): a performed send whose `prospect_email` cannot become a prospect row (no usable
     address) is ITEM-SCOPED — it is skipped with a named warning and a `skipped_malformed` entry
@@ -133,6 +159,7 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
         "duplicates_skipped": 0,
         "error": None,
     }
+    insert_fn = pg_insert if dialect_name(db) == "postgresql" else sqlite_insert
     try:
         for index, item in enumerate((result or {}).get("emails") or []):
             if not isinstance(item, dict):
@@ -180,17 +207,34 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                 continue
             if created:
                 report["prospects_created"] += 1
-            db.add(
-                EmailLog(
-                    prospect_id=prospect.id,
-                    subject=str(item.get("subject") or ""),
-                    body=str(item.get("body") or ""),
-                    sendgrid_id=sendgrid_id,
-                    status="sent",
-                    sent_at=utcnow(),
+            # ONE statement (the `record_stripe_event` shape): the natural key is a REAL
+            # partial unique index (migration 0005), so a concurrent writer that missed the
+            # SELECT above cannot double-insert — the conflict resolves atomically in the
+            # database and `RETURNING id` comes back empty.  No savepoint: a savepoint released
+            # as the OUTERMOST transaction commits on SQLite (pysqlite legacy control), which
+            # would break the "flush only — the worker owns the commit" contract.
+            created_id = (
+                await db.execute(
+                    insert_fn(EmailLog)
+                    .values(
+                        prospect_id=prospect.id,
+                        subject=str(item.get("subject") or ""),
+                        body=str(item.get("body") or ""),
+                        sendgrid_id=sendgrid_id,
+                        status="sent",
+                        sent_at=utcnow(),
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["sendgrid_id"],
+                        index_where=text("sendgrid_id IS NOT NULL"),
+                    )
+                    .returning(EmailLog.id)
                 )
-            )
-            await db.flush()
+            ).scalars().one_or_none()
+            if created_id is None:
+                # The raced row is the natural key's row: it IS this send, recorded once.
+                report["duplicates_skipped"] += 1
+                continue
             report["emails_written"] += 1
     except PolsiaError as exc:
         report["ok"] = False

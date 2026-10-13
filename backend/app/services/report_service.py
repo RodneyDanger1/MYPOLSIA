@@ -20,6 +20,24 @@ from app.models.report import DailyReport
 from app.services.query_helpers import fetch_scalar
 
 
+class _Unset:
+    """A "not supplied" marker distinct from every real value (M5).
+
+    `save_evening_summary` used to assign its optional fields unconditionally, so a
+    re-run with default arguments erased what an earlier run had written — `None` cannot
+    mean both "not supplied" and "set to null".  The sentinel makes the two states
+    distinct; an explicit `None` still clears the field (that is the replacement path).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+
 async def get_daily_report(db: AsyncSession, report_date: date) -> DailyReport | None:
     """The day's report, or `None`; a driver failure is a named `E_DB` (R32).
 
@@ -67,18 +85,30 @@ async def save_morning_plan(
 async def save_evening_summary(
     db: AsyncSession,
     report_date: date,
-    summary: str | None = None,
-    insights: list[str] | None = None,
+    summary: str | None | _Unset = _UNSET,
+    insights: list[str] | None | _Unset = _UNSET,
     tasks_completed: int = 0,
     tasks_failed: int = 0,
-    metrics_snapshot: dict[str, Any] | None = None,
+    metrics_snapshot: dict[str, Any] | None | _Unset = _UNSET,
 ) -> DailyReport:
+    """Idempotent per date; each OPTIONAL field is written only when supplied (M5).
+
+    A re-run with default arguments must not erase what a previous run wrote, so
+    `summary`/`insights`/`metrics_snapshot` default to the `_Unset` sentinel: not
+    supplied -> left as-is; an explicit `None` still clears the field (the replacement
+    path).  The two task counters keep their documented `0` default — the daily cycle
+    supplies measured counts, and whether a re-run should EVER replace rather than merge
+    the counters is the recorded REQUESTS item, not this function's call.
+    """
     report = await get_or_create_daily_report(db, report_date)
-    report.evening_summary = summary
-    report.insights = list(insights or [])
+    if not isinstance(summary, _Unset):
+        report.evening_summary = summary
+    if not isinstance(insights, _Unset):
+        report.insights = list(insights or [])
     report.tasks_completed = tasks_completed
     report.tasks_failed = tasks_failed
-    report.metrics_snapshot = metrics_snapshot or {}
+    if not isinstance(metrics_snapshot, _Unset):
+        report.metrics_snapshot = metrics_snapshot or {}
     report.updated_at = utcnow()
     await db.flush()
     return report

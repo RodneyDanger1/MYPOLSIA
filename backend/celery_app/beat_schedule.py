@@ -14,7 +14,9 @@ Rule used here:
 * the morning cycle: **hourly, expires 1 h** — since T2 it fires every hour and self-gates inside
   the task on the company-local hour (`company_config.daily_cycle_hour`, `settings.morning_cycle_hour`
   as the fallback); a tick older than its own hour is superseded by the next check;
-* the evening cycle: **1 h** — a summary delivered after midnight local reports the wrong day;
+* the evening cycle: **hourly, expires 1 h** — since L4-11 it fires every hour and self-gates on
+  the company-local hour (`settings.evening_cycle_hour`); a tick older than its own hour is
+  superseded by the next check;
 * periodic sweeps: **one full period** (2 h / 3 h / 6 h) — a tick never survives into the
   next tick of the same job, so a backlog collapses instead of replaying;
 * the 03:00 retention cleanup: **3 h** — a pure cleanup may run late, but it must not
@@ -31,8 +33,6 @@ atomically, so even a re-delivery cannot double-run a row.
 """
 from celery.schedules import crontab
 
-from app.config import settings
-
 beat_schedule = {
     # Morning orchestration cycle — hourly since T2: the task gates itself on the COMPANY-LOCAL
     # hour (company_config.daily_cycle_hour, settings.morning_cycle_hour as the fallback), so the
@@ -43,10 +43,13 @@ beat_schedule = {
         "schedule": crontab(minute=0),
         "options": {"queue": "scheduler", "expires": 3600},
     },
-    # Evening reporting cycle
+    # Evening reporting cycle — hourly since L4-11: the task self-gates on the COMPANY-LOCAL
+    # hour (settings.evening_cycle_hour), so the entry no longer pins a UTC crontab hour while
+    # the report is filed for the company-local day; the 23 non-matching ticks self-gate out in
+    # milliseconds and a change in Settings takes effect without a beat restart (the T2 pattern).
     "evening-cycle": {
         "task": "celery_app.tasks.daily_cycle.run_evening_cycle",
-        "schedule": crontab(hour=settings.evening_cycle_hour, minute=0),
+        "schedule": crontab(minute=0),
         "options": {"queue": "scheduler", "expires": 3600},
     },
     # Every 2h: check social mentions

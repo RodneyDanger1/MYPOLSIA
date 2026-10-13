@@ -72,7 +72,7 @@ class FailureCode(StrEnum):
 
 REMEDIATION: dict[FailureCode, str] = {
     FailureCode.CLI_BINARY_MISSING: "Deploy: install Claude Code CLI in the worker image and set CLAUDE_CLI_PATH; fail the health check, do not retry.",
-    FailureCode.CLI_AUTH_FAILED: "Refresh ~/.claude OAuth on the host (claude login) or switch to ANTHROPIC_API_KEY; do not retry until auth check passes.",
+    FailureCode.CLI_AUTH_FAILED: "Run `claude login` on the host so ~/.claude holds a valid OAuth session (that directory is what the worker's `claude` process reads), or point CLAUDE_CONFIG_DIR at a logged-in config directory; do not retry until the auth check passes. NOTE: an API key is NOT passed to the child process — the runtime's environment allowlist excludes it, so an API key is not a supported fix here.",
     FailureCode.CLI_TIMEOUT: "Lower the task's scope or raise CLAUDE_TIMEOUT_SECONDS; check for a waiting permission prompt (deny-all mode) before retrying.",
     FailureCode.CLI_NONZERO_EXIT: "Inspect raw stdout/stderr; retry once at most.",
     FailureCode.CLI_STDOUT_NOT_JSON: "A hook/plugin printed to stdout; force --bare in production invocations and re-run.",

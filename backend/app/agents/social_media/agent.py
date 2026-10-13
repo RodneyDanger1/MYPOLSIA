@@ -14,6 +14,13 @@ reply is REFUSED by the policy firewall (`E_SANDBOX_BLOCKED`) and recorded as a 
 `SANDBOX_MODE=false` — with TWITTER_* credentials configured — does the same code path reach
 `integrations.post_tweet`, and if the integration is missing it returns a named `E_INTEGRATION`
 refusal rather than a fabricated id.
+
+Run-action semantics (L3-01): the run's own `action` field is the consent record the ROLE prompt
+sells — `"draft"` means "write posts, publish nothing yet" and `"noop"` means nothing worth
+saying; only `"post"` attempts the posts and only `"post"`/`"reply"` attempt the replies. A
+disclaimed run performs no firewall call and consumes no cap slot. The firewall, the channel caps
+(in-run `performed` counter included, L3-05) and the taint machinery all stay in the path for the
+actions that ARE claimed.
 """
 from __future__ import annotations
 
@@ -24,10 +31,12 @@ from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import (
     assert_not_reporting_real_side_effect,
+    capped_item_refusal,
     request_side_effect,
     side_effect_receipt,
 )
 from app.config import settings
+from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.schemas.agent_outputs import SocialMediaOutput
 
 ROLE = """You are the Social Media agent of an autonomous company: you run the company's public
@@ -85,23 +94,47 @@ class SocialMediaAgent(BasePolsiaAgent):
         platform: str,
         content: str,
         context: dict[str, Any],
+        performed: int = 0,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Attempt one external action through the firewall.
 
         Returns `(audit_receipt, published_item_or_None)`. `published_item` exists ONLY when the
         firewall allowed the action AND the provider integration succeeded — the single path by
         which a real id can enter the output.
+
+        `performed` is what THIS run has already really performed on this channel (L3-05): the
+        channel caps are check-and-consume and the snapshot in `context` is read ONCE per run, so
+        every item used to see the same stale count and one batch could overshoot a cap by its
+        whole ceiling. `None` (no local record) stays `None` — unknown must reach the firewall as
+        unknown so it refuses by name (fail closed).
         """
         sends_today, sends_hour = self._channel_counts(context, platform)
-        outcome = request_side_effect(
-            self.agent_type,
-            ActionClass.EXTERNAL_REVERSIBLE,
-            platform,
-            action=action,
-            payload={"action": action, "content": content[:200], "ref": ref},
-            sends_today=sends_today,
-            sends_this_hour=sends_hour,
-        )
+        sends_today_now = None if sends_today is None else sends_today + performed
+        sends_hour_now = None if sends_hour is None else sends_hour + performed
+        try:
+            outcome = request_side_effect(
+                self.agent_type,
+                ActionClass.EXTERNAL_REVERSIBLE,
+                platform,
+                action=action,
+                payload={"action": action, "content": content[:200], "ref": ref},
+                sends_today=sends_today_now,
+                sends_this_hour=sends_hour_now,
+            )
+        except PolsiaError as exc:
+            # A cap denial with NOTHING performed this run stays fatal (the run should not have
+            # been dispatched into a capped channel); a cap denial AFTER this run performed a
+            # real send is recorded and the item stays a draft — see `capped_item_refusal` for
+            # why (the performed work must persist; the retryable refusal must not re-run the
+            # batch). Anything that is not a cap denial re-raises unchanged.
+            if exc.code != E_RATE_LIMITED or performed == 0:
+                raise
+            capped_receipt, refusal = capped_item_refusal(
+                exc, agent_type=self.agent_type, action=action, ref=ref, channel=platform,
+            )
+            payload.setdefault("refusals", []).append(refusal)
+            payload["drafted_not_sent"] = True
+            return capped_receipt, None
         receipt: dict[str, Any] = side_effect_receipt(outcome, action=action, ref=ref,
                                                       extra={"platform": platform})
         if outcome.allowed:                                     # only reachable outside sandbox
@@ -134,26 +167,53 @@ class SocialMediaAgent(BasePolsiaAgent):
         replies = list(payload.get("replies") or [])
         receipts: list[dict[str, Any]] = []
         published: list[dict[str, Any]] = []
+        published_replies: list[dict[str, Any]] = []
+        # L3-05: what THIS run has really performed, per channel. Incremented only after a
+        # performed AND successful provider call; `None` snapshots stay `None`.
+        performed_by_channel: dict[str, int] = {}
+        # L3-01: the run's own `action` is the consent record the ROLE prompt sells ("draft" =
+        # write posts, publish nothing yet; "noop" = nothing worth saying) and the schema encodes
+        # (`SocialMediaOutput.action`). Dispatch on it: a disclaimed run attempts NOTHING (no
+        # firewall call, no cap slot), while "post"/"reply" still traverses the firewall, the
+        # channel caps and the taint machinery exactly as before.
+        will_publish_replies = action in ("post", "reply")
 
-        for index, post in enumerate(posts):
+        for index, post in enumerate(posts if action == "post" else []):
             platform = str(post.get("platform") or "twitter")
             content = str(post.get("content") or "")
             receipt, published_item = self._publish(
                 payload, action=action, ref=f"post:{index}", platform=platform,
                 content=content, context=context,
+                performed=performed_by_channel.get(platform, 0),
             )
             receipts.append(receipt)
             if published_item is not None:
                 published.append(published_item)
+                performed_by_channel[platform] = performed_by_channel.get(platform, 0) + 1
 
         for index, reply in enumerate(replies):
+            if not will_publish_replies:
+                # L3-01/L3-07: this run disclaimed the reply ("draft"/"noop") — nothing was
+                # attempted, and the runtime-owned `reply_id` stays None (it must never carry
+                # the model's invented string; the schema comment promises None while unwritten).
+                reply["reply_id"] = None
+                continue
             mention_id = str(reply.get("mention_id") or f"mention:{index}")
-            receipt, _ = self._publish(
+            receipt, published_item = self._publish(
                 payload, action="reply", ref=mention_id, platform="twitter",
                 content=str(reply.get("reply") or ""), context=context,
+                performed=performed_by_channel.get("twitter", 0),
             )
             receipts.append(receipt)
-            reply["reply_id"] = reply.get("reply_id") if not settings.sandbox_mode else None
+            if published_item is not None:
+                performed_by_channel["twitter"] = performed_by_channel.get("twitter", 0) + 1
+                published_replies.append(published_item)
+            # L3-07: `reply_id` carries the PROVIDER's id for the created reply (the schema's own
+            # comment says so). The old line kept whatever the model wrote — a platform id no
+            # platform ever issued, in a payload that reaches `agent_runs.output` — while the
+            # provider's id (already returned by `_publish`) was discarded. Fill it from the
+            # published item, or None when nothing was published (sandbox / refusal / failure).
+            reply["reply_id"] = None if settings.sandbox_mode else (published_item or {}).get("tweet_id")
 
         # The specced `tweets` key mirrors what was written, sandboxed or not.
         if not payload.get("tweets"):
@@ -163,14 +223,19 @@ class SocialMediaAgent(BasePolsiaAgent):
         payload["posted"] = published
         payload["side_effects"] = receipts
         payload.setdefault("refusals", [])
-        first_posted = (published or [{}])[0]
-        assert_not_reporting_real_side_effect(
-            first_posted, agent_type=self.agent_type, keys=("tweet_id", "post_id")
-        )
+        # L3-07: the sandbox guard runs over EVERY published item — posts AND replies — not just
+        # `posts[0]`. A fabricated reply id was structurally invisible to the old call.
+        for item in [*published, *published_replies]:
+            assert_not_reporting_real_side_effect(
+                item, agent_type=self.agent_type, keys=("tweet_id", "post_id")
+            )
         if settings.sandbox_mode:
             payload["sandbox"] = True
             payload["drafted_not_sent"] = True
         elif not receipts:
+            # L3-01: a draft/noop run disclaimed every external action — nothing was attempted,
+            # and the payload says so (the sandbox branch's marker, for the gate's branch).
+            payload["drafted_not_sent"] = True
             payload.setdefault("notes", []).append("no external action was attempted this run")
         payload["action"] = action
         return self.attach_run_meta(payload, assembled=assembled)

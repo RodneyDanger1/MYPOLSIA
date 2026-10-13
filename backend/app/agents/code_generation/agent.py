@@ -15,6 +15,10 @@ Two walls protect this agent (DESIGN-AGENT-RUNTIME §6.3):
     single-use approval token even with sandbox mode off. In sandbox (the default) the PR is
     REFUSED (`E_SANDBOX_BLOCKED`) and recorded as a labelled draft: branch + commit plan +
     PR body, `pr_url=null`, `pr_number=null`.
+
+Run-action semantics (L3-01): a PR is attempted only when the run's own `action` is `"open_pr"`
+(a `plan`/`noop` run that filled `changes[]` no longer attempts one), and the github channel caps
+are check-and-consume inside the batch (in-run `performed` counter, L3-05).
 """
 from __future__ import annotations
 
@@ -23,8 +27,9 @@ from typing import Any
 from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
-from app.agents.side_effects import request_side_effect, side_effect_receipt
+from app.agents.side_effects import capped_item_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
+from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.schemas.agent_outputs import CodeGenOutput
 
 ROLE = """You are the Code Generation agent of an autonomous company. You implement small,
@@ -70,8 +75,15 @@ class CodeGenerationAgent(BasePolsiaAgent):
         receipts: list[dict[str, Any]] = []
         company = (context or {}).get("company") or {}
         default_repo = str(company.get("github_repo") or "")
+        # L3-05: what THIS run has really performed on the github channel (successful provider
+        # calls only); the firewall must see snapshot + performed, not the stale pre-run count.
+        performed = 0
 
-        if action == "open_pr" or payload.get("changes"):
+        # L3-01 (code_generation variant): the run's own `action` decides whether a PR is
+        # attempted — only "open_pr" claims it. The old condition also fired on a filled
+        # `changes[]` regardless of action, so a `plan`/`noop` run (or one whose changes[] the
+        # model wrote while disclaiming) still attempted an external irreversible action.
+        if action == "open_pr":
             for index, change in enumerate(payload.get("changes") or []):
                 repo = str(change.get("repo") or default_repo or "")
                 branch = str(change.get("branch") or payload.get("branch") or "")
@@ -84,16 +96,36 @@ class CodeGenerationAgent(BasePolsiaAgent):
                 # int | None: None = "no local record of sends" -> the firewall refuses (fail
                 # closed); it must never be collapsed to 0 here.
                 counts = ((context or {}).get("channel_sends") or {}).get("github") or {}
-                outcome = request_side_effect(
-                    self.agent_type,
-                    ActionClass.EXTERNAL_IRREVERSIBLE,
-                    "github",
-                    action="open_pr",
-                    payload={"action": "open_pr", "repo": repo, "branch": branch,
-                             "pr_title": pr_title},
-                    sends_today=counts.get("today"),
-                    sends_this_hour=counts.get("hour"),
-                )
+                sends_today = counts.get("today")
+                sends_hour = counts.get("hour")
+                sends_today_now = None if sends_today is None else sends_today + performed
+                sends_hour_now = None if sends_hour is None else sends_hour + performed
+                try:
+                    outcome = request_side_effect(
+                        self.agent_type,
+                        ActionClass.EXTERNAL_IRREVERSIBLE,
+                        "github",
+                        action="open_pr",
+                        payload={"action": "open_pr", "repo": repo, "branch": branch,
+                                 "pr_title": pr_title},
+                        sends_today=sends_today_now,
+                        sends_this_hour=sends_hour_now,
+                    )
+                except PolsiaError as exc:
+                    # Cap denial with nothing performed yet stays fatal; after this run opened a
+                    # PR it is recorded and the change stays unapplied (see `capped_item_refusal`).
+                    if exc.code != E_RATE_LIMITED or performed == 0:
+                        raise
+                    receipt, refusal = capped_item_refusal(
+                        exc, agent_type=self.agent_type, action="open_pr",
+                        ref=f"{repo}#{branch}", channel="github",
+                    )
+                    receipts.append(receipt)
+                    payload.setdefault("refusals", []).append(refusal)
+                    payload["pr_url"] = None
+                    payload["pr_number"] = None
+                    payload["drafted_not_sent"] = True
+                    continue
                 receipt = side_effect_receipt(outcome, action="open_pr", ref=f"{repo}#{branch}")
                 if outcome.allowed:                              # approval token verified
                     result = integrations.open_pull_request(
@@ -105,6 +137,7 @@ class CodeGenerationAgent(BasePolsiaAgent):
                         opened = result.get("result") or {}
                         payload["pr_url"] = opened.get("url")
                         payload["pr_number"] = opened.get("number")
+                        performed += 1
                     else:
                         payload.setdefault("refusals", []).append(result)
                 else:

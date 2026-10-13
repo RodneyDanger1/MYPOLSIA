@@ -14,9 +14,14 @@ onboarding.
 WHERE IT LIVES
 --------------
 `settings.deepseek_key_file` (env override `DEEPSEEK_KEY_FILE`), default
-`data/deepseek_api_key.json` resolved against the backend process working directory:
-`backend/data/deepseek_api_key.json` locally, `/app/data/deepseek_api_key.json` in
-the image (`backend/Dockerfile` sets `WORKDIR /app`).  The file is JSON, written
+`data/deepseek_api_key.json` ANCHORED at this module — `<backend>/data/deepseek_api_key.json`
+locally, and the same directory in the image, whose `WORKDIR /app` makes the anchor resolve
+to `/app/data/deepseek_api_key.json` (`backend/Dockerfile`).  An explicitly configured path
+(env or Settings field) is honoured verbatim — cwd-relative when it is relative, exactly as
+before; only the UNCONFIGURED default never depends on the process cwd (L1-07: a launch from
+another cwd used to write the owner's key to a path no `.gitignore` rule covers, and the
+compose volume keyed on `backend/data` silently stopped being the store — the same hazard D7
+already anchored `chroma_client._fallback_persist_dir` for).  The file is JSON, written
 temp-file-then-`os.replace` (`O_CREAT|O_TRUNC`, mode 0600), and `chmod 0600` is
 applied best-effort — on Windows `os.chmod` only toggles the read-only bit and the
 file inherits the ACL of the user directory it lives under; that is stated, not
@@ -83,9 +88,9 @@ logger = logging.getLogger(__name__)
 #: The environment variable the frozen interface names as the fallback source.
 DEEPSEEK_ENV_VAR = "DEEPSEEK_API_KEY"
 
-#: Where the stored value persists when no explicit path is configured. Relative to
-#: the backend process's cwd on purpose: `backend/data/…` in the repo, `/app/data/…`
-#: in the Docker image, with no per-environment branch in this code.
+#: Where the stored value persists when no explicit path is configured.  ANCHORED at this
+#: file (`_anchored_default_key_file()` -> `<backend>/data/…`; `backend/data/…` in the repo,
+#: `/app/data/…` in the Docker image), never at the process cwd — see `_resolve_key_file`.
 DEFAULT_KEY_FILE = "data/deepseek_api_key.json"
 
 #: Override for the store path; also a `Settings` field (pydantic-settings reads the
@@ -102,11 +107,13 @@ _SOURCE_STORED: Literal["stored"] = "stored"
 _SOURCE_ENV: Literal["env"] = "env"
 _SOURCE_NONE: Literal["none"] = "none"
 
-#: RD13 sweep find: `ERROR_HINTS` (app/core/errors.py) has NO `E_STORAGE` entry, so the two
+#: RD13 sweep find: `ERROR_HINTS` (app/core/errors.py) once had NO `E_STORAGE` entry, so the two
 #: OSError handlers below used to raise `KeyError: 'E_STORAGE'` instead of the documented named
-#: refusal — a raw crash on the unreadable-file path, and a generic 500 on a failed clear().
-#: `.get` with a real hint keeps the refusal honest today AND picks up the canonical entry the
-#: moment it lands in the core table. (REQUIRED-FOLLOW-UP: add E_STORAGE to ERROR_HINTS.)
+#: refusal — a raw crash on the unreadable-file path, and a generic 500 on a failed clear().  The
+#: canonical entry exists now (`errors.py: E_STORAGE = "repair or remove the local secret store
+#: file (backend/data/deepseek_api_key.json) and retry"`, the same path this module's anchored
+#: default resolves to), so the fallback below is inert belt-and-braces; the `.get` stays because
+#: a lookup that cannot `KeyError` here is exactly what it is for.
 _STORAGE_HINT = ERROR_HINTS.get(
     E_STORAGE,
     "check the file's permissions, or delete the store file and re-enter the key in Settings",
@@ -125,14 +132,47 @@ _FILE_CACHE: dict[str, str | None] = {}
 _WRITE_LOCK = threading.Lock()
 
 
+def _anchored_default_key_file() -> Path:
+    """`<backend>/data/deepseek_api_key.json`, anchored at THIS file — never at the process cwd.
+
+    The anchor is `Path(__file__).resolve().parents[2]` (app/services/secret_store.py ->
+    `backend/`), the same treatment `chroma_client._fallback_persist_dir` applies to its store
+    (D7).  In the Docker image the same expression resolves to `/app` (`WORKDIR /app`), so the
+    container spelling of the documented default is unchanged.
+    """
+    return Path(__file__).resolve().parents[2] / DEFAULT_KEY_FILE
+
+
 def _resolve_key_file() -> Path:
-    """The active store path: explicit override > Settings field > documented default."""
-    raw = (
-        os.environ.get(KEY_FILE_ENV_VAR)
-        or getattr(settings, "deepseek_key_file", "")
-        or DEFAULT_KEY_FILE
-    )
-    return Path(raw).expanduser()
+    """The active store path: explicit override > Settings field > repo-anchored default.
+
+    An explicit `DEEPSEEK_KEY_FILE` (env or Settings field) that is not the documented default
+    is honoured verbatim — `expanduser()`d, relative to the cwd it is resolved from, exactly as
+    before (L1-07 keeps override semantics byte-identical).  Only the documented default value
+    is repo-anchored, so `python -m uvicorn app.main:app` from the repo ROOT — the launch that
+    used to write the key to `<repo>/data/…`, a path no `.gitignore` rule covers — now lands at
+    `backend/data/deepseek_api_key.json`.  Compatibility: a store an earlier wrong-cwd launch
+    wrote at the cwd-relative default is still read while the anchored store does not exist,
+    with ONE warning naming both paths; once the anchored file exists it always wins.
+    """
+    raw = os.environ.get(KEY_FILE_ENV_VAR) or getattr(settings, "deepseek_key_file", "")
+    if raw and str(raw) != DEFAULT_KEY_FILE:
+        return Path(raw).expanduser()
+    anchored = _anchored_default_key_file()
+    legacy = Path(DEFAULT_KEY_FILE).expanduser()
+    if (
+        not anchored.is_file()
+        and legacy.is_file()
+        and os.path.normcase(str(legacy.resolve())) != os.path.normcase(str(anchored.resolve()))
+    ):
+        logger.warning(
+            "the DeepSeek key store was found at the cwd-relative legacy path %s while the "
+            "anchored default %s does not exist; reading the legacy file — move it to %s (or "
+            "set %s) so the store keeps working from any cwd (L1-07)",
+            legacy, anchored, anchored, KEY_FILE_ENV_VAR,
+        )
+        return legacy
+    return anchored
 
 
 def _env_key() -> str:
@@ -273,6 +313,13 @@ def set_deepseek_api_key(value: str) -> None:
             handle = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 os.write(handle, payload.encode("utf-8"))
+                # M1 (research-B): "durably" means the bytes must survive a CRASH.  os.replace
+                # gives atomicity (never a torn file) but NOT durability — the page cache can
+                # still lose the contents.  fsync the temp file BEFORE the replace (on Windows
+                # os.fsync calls _commit).  Scope, stated honestly: the POSIX recipe also
+                # fsyncs the directory (the rename itself); Windows has no portable directory
+                # fsync, so that half is not represented here.
+                os.fsync(handle)
             finally:
                 os.close(handle)
             os.replace(temp, path)

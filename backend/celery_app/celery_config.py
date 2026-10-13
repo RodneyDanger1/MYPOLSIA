@@ -13,6 +13,8 @@ Both registries were broken in the uploaded repo (measured, lane 03 D-13/D-14):
   `beat_schedule` assignment below.  Lane 03 D-14: "`celery_config.py` must set
   `beat_schedule = beat_schedule`".
 """
+from kombu import Queue
+
 from app.config import settings
 from celery_app.beat_schedule import beat_schedule as _beat_schedule
 
@@ -111,6 +113,24 @@ task_routes = {
     "celery_app.tasks.agent_tasks.*": {"queue": "agents"},
     "celery_app.tasks.maintenance.*": {"queue": "maintenance"},
 }
+
+# ── consumption: declare the queues so ANY worker consumes them (L4-01) ───────────────────────
+# `task_routes` only decides where a message is PUBLISHED; what a worker CONSUMES comes from its
+# own selection. With no `-Q` on the launch command (docker-compose.yml:95) the worker consumes
+# `task_queues` when it is declared, and `task_default_queue` alone (`celery`) when it is not —
+# measured on this repo's own app object: declared ['celery'], `consume_from` {'celery'}, while
+# 9/9 tasks route to agents/scheduler/maintenance. In the documented compose topology every
+# scheduled cycle, sweep and menu-triggered run was therefore published into queues nobody ever
+# read (`POST /agents/{type}/trigger` answered 202 "queued" and the row stayed `pending` for
+# good). Declaring the four queues fixes that in CODE, which also covers `docker compose run`,
+# CI and hand-started workers — a `-Q` on one command would not. `celery` stays in the tuple so
+# a future unrouted task is not silently unconsumed again.
+task_queues = (
+    Queue("scheduler"),
+    Queue("agents"),
+    Queue("maintenance"),
+    Queue("celery"),
+)
 
 # Result backend settings
 result_expires = 86400  # 24h

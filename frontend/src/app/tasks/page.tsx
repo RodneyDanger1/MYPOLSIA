@@ -68,7 +68,7 @@ export default function TasksPage() {
             <div>
               <p className="text-white font-medium">{t.title}</p>
               <p className="text-gray-400 text-sm capitalize">
-                {t.agent_type.replace(/_/g, " ")} · Priority {t.priority}
+                {t.agent_type.replace(/_/g, " ")} · Priority {t.priority ?? "—"}
               </p>
               <p className="text-gray-500 text-xs mt-1">
                 {/* `created_at` is nullable on the wire (api.ts): the placeholder below, not the
@@ -76,10 +76,13 @@ export default function TasksPage() {
                 {t.created_at ? new Date(t.created_at).toLocaleString() : "date unknown"}
               </p>
             </div>
+            {/* `status` is nullable on the wire (api.ts / TaskResponse.status): a null row is
+                served, not 500'd — so the badge falls back to the same gray "unknown" chip an
+                unrecognised status gets, never an empty chip. */}
             <span
-              className={`flex-shrink-0 px-2 py-1 rounded text-xs font-medium ${STATUS_STYLE[t.status] ?? "bg-gray-700 text-gray-400"}`}
+              className={`flex-shrink-0 px-2 py-1 rounded text-xs font-medium ${STATUS_STYLE[t.status ?? ""] ?? "bg-gray-700 text-gray-400"}`}
             >
-              {t.status}
+              {t.status ?? "unknown"}
             </span>
           </div>
         ))}

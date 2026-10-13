@@ -23,9 +23,19 @@ Failure policy — no silent partial success:
   consistent and the delete can be retried.  The inverse order would strand a
   searchable ghost whose row — and with it the `chroma_id` needed to find the
   document — is already gone.
+
+THREADING (L1-03): every chroma call is BLOCKING — `get_collection` opens the on-disk
+store, `add`/`query` run the embedding model in-process, `delete` hits the index.  Called
+directly from these async functions they run ON the event loop, freezing every other
+request (upstream e2e measured a >30 s first-call cold load that produced a proxy 502
+while the row still landed).  Each call is therefore offloaded with `asyncio.to_thread`
+— the same discipline `daily_cycle` applies to the blocking CLI.  The calls keep their
+shapes (keyword arguments, `get_collection` still referenced from THIS namespace), so the
+shipped tests' patch targets are unchanged.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -37,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.chroma_client import get_collection  # noqa: F401  (re-exported for patching)
 from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.memory import MemoryEntry
-from app.services.query_helpers import fetch_scalars
+from app.services.query_helpers import fetch_scalar, fetch_scalars
 
 MAX_FALLBACK_LIMIT = 200
 
@@ -100,8 +110,10 @@ async def store_memory(
             {k: v for k, v in metadata.items() if isinstance(v, str | int | float | bool)}
         )
     try:
-        collection = get_collection()
-        collection.add(
+        # L1-03: the store open and the index write are blocking — off the loop.
+        collection = await asyncio.to_thread(get_collection)
+        await asyncio.to_thread(
+            collection.add,
             documents=[content],
             metadatas=[chroma_metadata],
             ids=[chroma_id],
@@ -174,13 +186,14 @@ async def search_memory(
 
     where_dropped = False
     try:
-        collection = get_collection()
+        # L1-03: the store open and the query (embedding + HNSW) are blocking — off the loop.
+        collection = await asyncio.to_thread(get_collection)
         where = _build_where(category, None)
         kwargs: dict[str, Any] = {"query_texts": [query], "n_results": n_results}
         if where:
             kwargs["where"] = where
         try:
-            raw = collection.query(**kwargs)
+            raw = await asyncio.to_thread(collection.query, **kwargs)
         except TypeError:
             # A collection whose client rejects `where` still answers the plain query — but the
             # category filter is LOST, so the drop is recorded and every hit from this retry is
@@ -193,7 +206,9 @@ async def search_memory(
                 category,
                 where,
             )
-            raw = collection.query(query_texts=[query], n_results=n_results)
+            raw = await asyncio.to_thread(
+                collection.query, query_texts=[query], n_results=n_results
+            )
     except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
         hits = await _sql_fallback(db, query, n_results, category)
         if hits:
@@ -247,8 +262,11 @@ async def list_memories(
 
 
 async def get_memory(db: AsyncSession, memory_id: int) -> MemoryEntry | None:
-    result = await db.execute(select(MemoryEntry).where(MemoryEntry.id == memory_id))
-    return result.scalar_one_or_none()
+    """One entry by id, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
+    `db.execute`, so `DELETE /memory/{id}` answered a codeless 500 on an outage)."""
+    return await fetch_scalar(
+        db, select(MemoryEntry).where(MemoryEntry.id == memory_id), what=f"memory {memory_id}"
+    )
 
 
 async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
@@ -288,7 +306,9 @@ async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
     chroma_id = entry.chroma_id
     if chroma_id:
         try:
-            get_collection().delete(ids=[chroma_id])
+            # L1-03: the store open and the document delete are blocking — off the loop.
+            collection = await asyncio.to_thread(get_collection)
+            await asyncio.to_thread(collection.delete, ids=[chroma_id])
         except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
             raise PolsiaError(
                 E_STORAGE,

@@ -389,13 +389,48 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             return {"status": "skipped", "task_id": task_id, "reason": exc.code}
         raise
 
+    # ── 1b. dispatch budget gate at the choke point (L4-09 / D3) ─────────────
+    # `assert_budget_allows` gated only the four SCHEDULER dispatch sites, and this wrapper is
+    # the one place BOTH the scheduler fan-outs and the API "Run Now" trigger funnel into — so a
+    # manual trigger used to be a real run (provider call, ledger row, persisted cost) that
+    # silently bypassed the daily cap. The gate needs `agent_type`, which is known only after
+    # the claim; a denial is recorded on the row (terminal `failed` + the measured reason, like
+    # the dead-broker path) and returned as a NAMED skip — never a silent no-op, never a retry
+    # (`E_BUDGET_EXCEEDED` is a terminal business refusal).
+    from app.agents.accounting import BudgetStop
+
+    try:
+        await assert_budget_allows(agent_type)
+    except BudgetStop as exc:
+        logger.warning("run_agent_task(%s): budget denied (%s)", task_id, exc.reason)
+        async with session_factory() as db:
+            task_row = await update_task_status(
+                db, task_id, "failed", error_message=f"budget: {exc.reason}"
+            )
+            if task_row is not None:
+                task_row.claimed_by = None
+                task_row.claimed_at = None
+                task_row.heartbeat_at = None
+            await db.commit()
+        return {
+            "status": "skipped",
+            "task_id": task_id,
+            "agent_type": agent_type,
+            "reason": f"budget: {exc.reason}",
+        }
+
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
     async with session_factory() as db:
         context = await get_full_context(db)
         # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
         # producer (agents hold no database session). Copy-on-write, own channels only.
         context = await _with_channel_sends(db, agent_type, context)
-        run = await create_agent_run(db, agent_type, task_id=task_id, input_context=context)
+        # L2-03 seam: `tasks.attempts` — incremented by the claim — is the execution number this
+        # run is; it lands on `agent_runs.attempt` so a retried run is distinguishable from its
+        # predecessors (migration 0002's `ux_agent_runs_task_attempt` is only live once this is
+        # written). The frozen keyword is `attempt` (task_service.create_agent_run).
+        run = await create_agent_run(db, agent_type, task_id=task_id, input_context=context,
+                                     attempt=int(task.attempts or 0))
         await db.commit()
         run_id = run.id
 

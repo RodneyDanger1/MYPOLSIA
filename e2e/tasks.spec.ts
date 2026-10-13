@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { API_BASE, BACKEND_URL, PREFIX, sqliteRun } from "./_helpers";
+import { API_BASE, BACKEND_URL, LAB_DB_SKIP_REASON, PREFIX, labDbAvailable, sqliteRun } from "./_helpers";
 
 test.describe("Tasks page", () => {
   test("renders the heading and a row set consistent with GET /api/v1/tasks", async ({ page, request }) => {
@@ -47,6 +47,9 @@ test.describe("Tasks page", () => {
   });
 
   test("POST /agents/social_media/trigger on the Redis-less lab refuses honestly and /tasks shows the failed row", async ({ page, request }) => {
+    // The row's read-back and cleanup are SQLite fixture operations; the CI stack is Postgres
+    // (E2E_SQLITE unset, no repo-local lab DB) — skip BY NAME there, never a raw open error.
+    test.skip(!labDbAvailable(), LAB_DB_SKIP_REASON);
     // This stack runs WITHOUT Redis on purpose (the outage path is what the lab exercises), so the
     // trigger must answer with the named refusal: 503 + E_REDIS. The old 202/"queued" assertion here
     // was the fake success T19 removed — nothing had accepted the delivery (c29073d + the T19 commit).

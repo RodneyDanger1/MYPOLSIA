@@ -24,7 +24,25 @@ type Memory = {
   title: string;
   content: string;
   created_at: string | null;
+  /** The service's DEGRADATION MARKER, carried on the wire as `MemoryItem.fallback`: `"sql_like"`
+   *  means the vector store was unreachable and this hit came from an ILIKE keyword scan;
+   *  `"sql_unfiltered"` means the collection rejected `where` and the category filter was dropped.
+   *  A null/absent marker means the hit came from the real similarity search — the badge below is
+   *  the only thing that lets the operator tell the two apart (a keyword scan must not pass as a
+   *  semantic match). */
+  fallback?: string | null;
 };
+
+/** Honest label for a degraded hit.  An unknown marker is shown as-is rather than hidden: the
+ *  contract is an open string, so a new marker must stay visible, not silently dropped. */
+const FALLBACK_LABEL: Record<string, string> = {
+  sql_like: "keyword match — memory index unavailable",
+  sql_unfiltered: "keyword match — category filter dropped",
+};
+
+function fallbackLabel(marker: string): string {
+  return FALLBACK_LABEL[marker] ?? `degraded result (${marker})`;
+}
 
 /**
  * The search call's options.  `timeoutMs` is `apiFetch`'s real option (lib/api.ts reads it off the
@@ -114,6 +132,16 @@ export default function MemoryPage() {
               <span className="text-xs bg-indigo-600/30 text-indigo-300 px-2 py-0.5 rounded">
                 {m.category}
               </span>
+              {/* The degradation marker, rendered where the results are: a keyword scan must not
+                  look like a semantic match.  Same `role="status"` idiom as the warming notice. */}
+              {m.fallback && (
+                <span
+                  role="status"
+                  className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded"
+                >
+                  {fallbackLabel(m.fallback)}
+                </span>
+              )}
               <span className="text-gray-500 text-xs">
                 {m.created_at ? new Date(m.created_at).toLocaleDateString() : "date unknown"}
               </span>

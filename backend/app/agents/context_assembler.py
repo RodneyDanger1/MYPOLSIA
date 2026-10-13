@@ -182,6 +182,9 @@ def compute_run_taint(blocks: Iterable[tuple[str, str]]) -> RunTaint:
 
 # ---------------------------------------------------------------------------
 # Secret / forbidden-content screen. Runs on the ASSEMBLED prompt (final gate).
+# Two tiers (L3-03): FATAL = credential SHAPES (key/token/private-key block) — any hit aborts;
+# ADVISORY = graded number heuristics (a Luhn-valid, issuer-prefixed card candidate) — a hit is
+# recorded in `warnings`, never fatal. `screen_prompt` returns both; `assemble` classifies.
 # ---------------------------------------------------------------------------
 
 _FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -193,8 +196,54 @@ _FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("stripe_secret", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{20,}")),
     ("private_key_block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("oauth_refresh_file", re.compile(r'"refreshToken"\s*:')),
-    ("card_number", re.compile(r"\b(?:\d[ -]?){13,19}\b")),  # conservative: flagged, never auto-dropped
 )
+
+#: ADVISORY tier (L3-03): heuristics whose hits are WARNED, never fatal. Digits alone are not a
+#: credential — ISO/IEC 7812's PAN is IIN + account number + a single Luhn check digit, and Luhn
+#: "was designed to protect against accidental errors, not malicious attacks". Treating any
+#: 13-19-digit run as fatal killed whole runs over order ids, invoice numbers and epoch
+#: timestamps in ordinary business text (measured); a hit here is an annotation on the run, not
+#: a refusal. Detection is graded, Presidio-shaped: a weak candidate window, then the issuer
+#: prefix groups and the Luhn check decide.
+_ADVISORY_PATTERNS: tuple[str, ...] = ("card_number",)
+
+#: 12-19 digits, single space/dash separators allowed (ISO/IEC 7812: 12-19 digits; Amex 15,
+#: Visa 13/16/19). Runs longer than 19 digits (USPS-style 22-digit tracking numbers) are NOT
+#: widened into the window — their modified Luhn makes them false-positive fuel.
+_PAN_CANDIDATE_RE = re.compile(r"\b(?:\d[ -]?){11,18}\d\b")
+#: Issuer identification groups — Presidio's weak "All Credit Cards" first group.
+_PAN_PREFIX_RE = re.compile(r"^(?:4\d{3}|5[0-5]\d{2}|6\d{3}|1\d{3}|3\d{3})")
+
+
+def _luhn_checksum_ok(digits: str) -> bool:
+    """The ISO/IEC 7812-1 check digit (Luhn), computed from the check digit leftwards."""
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        value = ord(char) - ord("0")
+        if index % 2 == 1:                      # every second digit left of the check digit
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
+def card_number_hit(text: str) -> bool:
+    """Does `text` carry a Luhn-valid, issuer-prefixed PAN candidate (12-19 digits)?
+
+    The Presidio shape: weak candidate regex -> prefix group -> check digit. `4242424242424241`
+    (Stripe's documented `incorrect_number` recipe — a Luhn-FAILING card-shaped number) is normal
+    input and must NOT hit; `4242424242424242` must.
+    """
+    for candidate in _PAN_CANDIDATE_RE.finditer(text):
+        digits = re.sub(r"[ -]", "", candidate.group(0))
+        if not 12 <= len(digits) <= 19:
+            continue
+        if not _PAN_PREFIX_RE.match(digits):
+            continue
+        if _luhn_checksum_ok(digits):
+            return True
+    return False
 
 # Things that must never be assembled into any agent prompt, even truncated.
 NEVER_INCLUDE = (
@@ -208,8 +257,16 @@ NEVER_INCLUDE = (
 
 
 def screen_prompt(text: str) -> list[str]:
-    """Return the list of forbidden-pattern names found. Caller MUST raise."""
-    return [name for name, pat in _FORBIDDEN_PATTERNS if pat.search(text)]
+    """Return the forbidden-pattern names found — FATAL and ADVISORY together.
+
+    The caller classifies: a fatal hit (a credential SHAPE — key/ token / private-key block)
+    must raise (`assemble`); an advisory hit (a graded card-shape heuristic, see
+    `_ADVISORY_PATTERNS`) is recorded as a warning and never aborts the run (L3-03).
+    """
+    hits = [name for name, pat in _FORBIDDEN_PATTERNS if pat.search(text)]
+    if card_number_hit(text):
+        hits.append("card_number")
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +393,10 @@ def assemble(
     the `RUN_TAINT` contextvar so the side-effect firewall escalates.  Only VOLATILE layers are
     wrapped, so the cacheable stable prefix and its hash are untouched.
 
-    The assembled artefact is screened for secrets; a hit raises `SecretLeak` and aborts the run.
+    The assembled artefact is screened for secrets: a FATAL hit — a credential shape such as a
+    key or a private-key block — raises `SecretLeak` and aborts the run; a graded ADVISORY hit
+    (a Luhn-valid, issuer-prefixed card-shaped number) is recorded in `warnings` and never
+    aborts (L3-03).
     """
     budgets = {**DEFAULT_BUDGETS, **(budgets or {})}
     warnings: list[str] = []
@@ -416,8 +476,16 @@ def assemble(
     full = (stable_prefix + "\n\n" + volatile_suffix).strip()
 
     hits = screen_prompt(full)
-    if hits:
-        raise SecretLeak(f"forbidden content in assembled prompt ({label}): {hits}")
+    fatal = [name for name in hits if name not in _ADVISORY_PATTERNS]
+    if fatal:
+        raise SecretLeak(f"forbidden content in assembled prompt ({label}): {fatal}")
+    for name in hits:
+        # L3-03: a graded heuristic hit is an ANNOTATION, never a refusal — and never silent:
+        # `warnings` rides into the run record (`attach_run_meta` -> usage_json), so an advisory
+        # stays auditable without killing a run over an order number.
+        warnings.append(
+            f"advisory {name}: possible card-shaped number (issuer prefix + Luhn); not fatal"
+        )
 
     return AssembledContext(
         stable_prefix=stable_prefix,
@@ -479,6 +547,7 @@ __all__ = [
     "assemble",
     "budgets_for_total",
     "business_state_text",
+    "card_number_hit",
     "compute_run_taint",
     "measure_tokens",
     "memory_identity",

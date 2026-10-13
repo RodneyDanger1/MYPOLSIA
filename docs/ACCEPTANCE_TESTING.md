@@ -92,7 +92,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Task lifecycle | Create → pending → in_progress → completed/failed | Unit: `test_task_service.py` |
 | Activity broadcast | `log_activity()` writes to DB + publishes to Redis channel | Unit: `test_activity_service.py` |
 | Morning cycle | Hourly Beat job, self-gated to the configured company-local hour (default 06:00); enqueues 5-8 tasks for the day | Integration |
-| Evening cycle | 20:00 Beat job saves evening summary to `daily_reports` | Integration |
+| Evening cycle | Hourly Beat job, self-gated to the configured company-local hour (default 20:00); saves the evening summary for the company-local day to `daily_reports` | Integration |
 
 ### Individual agents (all sandbox-safe)
 

@@ -102,7 +102,7 @@ ERROR_HINTS: dict[str, str] = {
     E_NOT_FOUND: "check the id, or seed the row first (make seed)",
     E_AGENT_UNKNOWN: "use an agent_type from crew_factory.AGENT_MAP",
     E_CLI_MISSING: "install the Claude Code CLI and/or set CLAUDE_CLI_PATH",
-    E_CLI_TIMEOUT: "raise CLAUDE_TIMEOUT_SECONDS or shrink the prompt",
+    E_CLI_TIMEOUT: "raise CLAUDE_TIMEOUT_SECONDS (DEEPSEEK_TIMEOUT_SECONDS on the DeepSeek runtime) or shrink the prompt; a timed-out attempt is retried up to AGENT_MAX_RETRIES times (jittered backoff), each retry costing the full timeout again",
     E_CLI_EXIT: "run the CLI by hand with the same prompt and read its stderr",
     E_CLI_JSON: "check the CLI version supports --output-format json",
     E_AGENT_BAD_OUTPUT: "the repair ladder will retry; otherwise tighten the agent schema",

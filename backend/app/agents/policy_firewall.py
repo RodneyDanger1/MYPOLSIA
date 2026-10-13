@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import math
 import re
 import time
@@ -43,6 +44,8 @@ from app.core.errors import (
     E_SANDBOX_BLOCKED,
     PolsiaError,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Action classes and decision objects
@@ -455,7 +458,10 @@ def decide(
     Order of checks (first DENY wins; REQUIRE_APPROVAL is sticky and checked after the denies):
       1. kill switch (E118)
       2. agent capability exists; action class permitted; channel permitted
-      3. tool allowlist (when a tool call is the action)
+      3. tool allowlist (when a tool call is the action — i.e. the caller supplied `req.tool`;
+         today no production caller does: the CLI session's own argv gates enforce tools inside
+         the subprocess and the DeepSeek runtime requests none, so this leg is a correctly-shaped
+         gate awaiting a wiring decision rather than live enforcement)
       4. sandbox mode: external actions are recorded as dry-runs, nothing is sent
       5. rate caps (E117; E114 when a configured cap's count is unknown)
       6. taint/approval/value: irreversible or tainted or >= $25 requires a human (E115)
@@ -497,7 +503,24 @@ def decide(
                               "POLSIA-E114", audit=audit)
 
     if req.tool:
-        allowed = any(_tool_match(req.tool, pat) for pat in cap.allowed_tools)
+        # Claude Code permission-rule parity (L3-08). DENY rules keep the wider glob semantics
+        # (`"*"` and `mcp__*` are legal denies); an ALLOW rule that is an unanchored glob (`"*"`,
+        # `"B*"`, `"mcp__*"`) is SKIPPED WITH A WARNING — it never auto-approves anything, and a
+        # `mcp__`-with-parentheses rule is skipped the same way. Fail closed: skipping shrinks
+        # the allowlist, never widens it.
+        usable_allow: list[str] = []
+        for pattern in cap.allowed_tools:
+            if _allow_rule_usable(pattern):
+                usable_allow.append(pattern)
+            else:
+                logger.warning(
+                    "code=tool_allowlist_unanchored_glob: allow rule %r for %s is skipped "
+                    "(unanchored globs never auto-approve; anchor it with a literal "
+                    "mcp__<server>__ prefix or name the tool exactly)",
+                    pattern,
+                    req.agent_type,
+                )
+        allowed = any(_tool_match(req.tool, pat) for pat in usable_allow)
         denied = any(_tool_match(req.tool, pat) for pat in cap.denied_tools)
         if denied or not allowed:
             return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "POLSIA-E114", audit=audit)
@@ -569,10 +592,39 @@ def decide(
     return PolicyDecision(Decision.ALLOW, "permitted", "POLSIA-E000", audit=audit)
 
 
+def _allow_rule_usable(pattern: str) -> bool:
+    """May an ALLOW rule auto-approve?  (Claude Code permission-rule parity, L3-08.)
+
+    The CLI's documented rule language: DENY rules accept globs in the tool-name position, but
+    ALLOW rules accept a tool-name glob ONLY after a literal `mcp__<server>__` prefix — an
+    unanchored allow glob (`"*"`, `"B*"`, `"mcp__*"`) is "skipped with a warning and doesn't
+    auto-approve anything", and any `mcp__` rule with parentheses is skipped too.  Exact tool
+    names and `Tool(specifier)` patterns are always usable.
+    """
+    if pattern.startswith("mcp__") and "(" in pattern:
+        return False                      # Claude Code skips any mcp__ rule with parentheses
+    if "(" in pattern:
+        return pattern.endswith(")")      # Tool(specifier) form
+    if "*" not in pattern:
+        return True                       # exact tool name / bare mcp__<server>
+    # A glob in the tool-name position: only legal after a literal mcp__<server>__ prefix.
+    return pattern.startswith("mcp__") and "__" in pattern[5:]
+
+
 def _tool_match(tool: str, pattern: str) -> bool:
-    """Claude Code permission-rule semantics, simplified: 'Bash(git diff *)' prefix matching
-    with the mandatory space before '*' (docs: without the space, `Bash(git diff*)` would also
-    match `git diff-index`)."""
+    """Claude Code permission-rule semantics, completed (L3-08).
+
+    * `"*"` matches every tool;
+    * `'Bash(git diff *)'` prefix matching with the mandatory space before '*' (docs: without the
+      space, `Bash(git diff*)` would also match `git diff-index`);
+    * `mcp__<server>` matches that server's tools (`tool == pattern or tool.startswith(server + "__")`);
+    * a prefix glob (`mcp__github__create*`) matches by `startswith` — the same meaning the CLI
+      implements, so firewall-side and CLI-side tool policy agree about what `mcp__github__*` is;
+    * otherwise exact equality (fail closed for shapes this matcher does not understand).
+
+    The old three-shape version fell through to `tool == pattern` for globs, so `"mcp__*"` — the
+    deny entry every capability carries — matched only the literal string `"mcp__*"`.
+    """
     if pattern in ("*",):
         return True
     if pattern.endswith(")") and "(" in pattern:
@@ -583,9 +635,19 @@ def _tool_match(tool: str, pattern: str) -> bool:
         if tool == name:
             return True
         arg = tool[len(name) + 1:-1] if tool.startswith(name + "(") else ""
-        if inner.endswith(" *"):
-            return arg.startswith(inner[:-2])
+        if inner.endswith("*"):
+            # Trailing-star semantics per the docs: `Bash(git diff *)` — with the mandatory
+            # space — matches `git diff HEAD` but NOT `Bash(git diff-index)` (the space is a
+            # word boundary); without the space, `Bash(git diff*)` IS a raw prefix (it would
+            # match `git diff-index`). The old `inner[:-2]` dropped the space, so the with-space
+            # form wrongly matched `git diff-index` — firewall and CLI disagreed about it.
+            return arg.startswith(inner[:-1])
         return arg == inner
+    if pattern.startswith("mcp__") and "*" not in pattern:
+        # The bare server form: `mcp__github` is every tool on that server.
+        return tool == pattern or tool.startswith(pattern + "__")
+    if pattern.endswith("*"):
+        return tool.startswith(pattern[:-1])
     return tool == pattern
 
 

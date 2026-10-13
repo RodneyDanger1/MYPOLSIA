@@ -46,6 +46,16 @@ class RunUsage:
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
     total_cost_usd: float | None = None   # the envelope's cumulative-for-session estimate
+    #: The provider's TOKEN-DERIVED cost estimate (L3-04; DeepSeek emits `cost_estimate_usd`,
+    #: never `total_cost_usd`). Kept as its own field so the two can never be confused: this is
+    #: arithmetic over measured tokens using a pinned price table, not a provider bill.
+    token_cost_estimate_usd: float | None = None
+    #: Which measurement `cost_usd` would come from: "cli_estimate" (the CLI's own money),
+    #: "token_estimate" (the pinned table over measured tokens) or "" (nothing measured). It is
+    #: persisted inside `usage_json` so a stored cost is always attributable.
+    cost_source: str = ""
+    #: The price-table pin behind a token estimate (`pricing.PRICING_VERSION`), "" when none.
+    pricing_version: str = ""
     duration_ms: int | None = None
     num_turns: int | None = None
     is_error: bool = False
@@ -94,6 +104,12 @@ class RunUsage:
                 },
                 "modelUsage": self.models,
                 "total_cost_usd": self.total_cost_usd,
+                # L3-04: the token-derived estimate rides under its OWN key (never
+                # `cost_estimate_usd`, which means the CLI's own money in this schema), stamped
+                # with the source and the price-table pin that produced it.
+                "token_cost_estimate_usd": self.token_cost_estimate_usd,
+                "cost_source": self.cost_source or None,
+                "pricing_version": self.pricing_version or None,
                 "duration_ms": self.duration_ms,
                 "num_turns": self.num_turns,
                 "session_id": self.session_id,
@@ -146,21 +162,44 @@ def usage_from_envelope(env: dict) -> RunUsage:
     Every measurement is read with an explicit `is None` guard — no `or 0`: an envelope that
     omits the key (or sends `null`) reports `None` ("unknown"), while a key present with value 0
     reports a measured zero.
+
+    L3-12: the DeepSeek envelope carries the SERVED model as a single `model` string and no
+    `modelUsage`; a run must be attributable to the model that answered, so a measured non-empty
+    string is recorded as a one-entry map (absent/empty stays absent — never invented).
+
+    L3-04: the DeepSeek envelope's `cost_estimate_usd` (token-derived, distinct from
+    `total_cost_usd`) is read into its own field and its source is stamped.
     """
     usage = env.get("usage") or {}
     model_usage = env.get("modelUsage") or env.get("model_usage") or {}
+    models = dict(model_usage)
+    if not models:
+        served_model = env.get("model")
+        if isinstance(served_model, str) and served_model.strip():
+            models = {served_model.strip(): {}}
+    total_cost = _float_or_none(env.get("total_cost_usd"))
+    token_cost = _float_or_none(env.get("cost_estimate_usd"))
+    if total_cost is not None:
+        cost_source = "cli_estimate"
+    elif token_cost is not None:
+        cost_source = "token_estimate"
+    else:
+        cost_source = ""
     return RunUsage(
         input_tokens=_int_or_none(usage.get("input_tokens")),
         output_tokens=_int_or_none(usage.get("output_tokens")),
         cache_read_tokens=_int_or_none(usage.get("cache_read_input_tokens")),
         cache_creation_tokens=_int_or_none(usage.get("cache_creation_input_tokens")),
-        total_cost_usd=_float_or_none(env.get("total_cost_usd")),
+        total_cost_usd=total_cost,
+        token_cost_estimate_usd=token_cost,
+        cost_source=cost_source,
+        pricing_version=str(env.get("pricing_version") or ""),
         duration_ms=_int_or_none(env.get("duration_ms")),
         num_turns=_int_or_none(env.get("num_turns")),
         is_error=bool(env.get("is_error")),
         subtype=str(env.get("subtype") or ""),
         session_id=str(env.get("session_id") or ""),
-        models=dict(model_usage),
+        models=models,
         permission_denials=len(env.get("permission_denials") or []),
         terminal_reason=str(env.get("terminal_reason") or ""),
     )

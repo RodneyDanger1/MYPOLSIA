@@ -287,6 +287,56 @@ def side_effect_receipt(outcome: SideEffectOutcome, *, action: str, ref: str = "
     }
 
 
+def capped_item_refusal(
+    exc: PolsiaError,
+    *,
+    agent_type: str,
+    action: str,
+    ref: str,
+    channel: str,
+) -> tuple[dict, dict]:
+    """Receipt + refusal pair for one item a CHANNEL CAP refused mid-batch (L3-05).
+
+    WHY this exists: the channel caps are check-and-consume — the agents forward
+    `snapshot + performed` (what THIS run has already really performed) to the firewall, so a
+    batch can now hit its channel cap part-way through.  `enforce()` RAISES the named refusal for
+    a rate denial, and for the FIRST attempted item of a run that is exactly right: nothing was
+    performed, so the run may fail loudly.  But once this run HAS performed at least one real
+    send, letting the raise escape would (a) discard the performed work — only a completed run
+    persists its artifacts — and (b) re-execute the batch on the retry (`E_RATE_LIMITED` is
+    retryable), performing yet another real send against the stale pre-run snapshot.  So the
+    loops record this pair instead: the item never reaches the provider, and the refusal is
+    recorded BY NAME in `refusals[]` — never swallowed.
+
+    Callers gate on `exc.code == E_RATE_LIMITED` (a cap denial) and re-raise anything else; this
+    function only shapes the record, it never decides.  The receipt mirrors
+    `side_effect_receipt(..., performed=False)` for a refused item.
+    """
+    context = dict(exc.context or {})
+    receipt = {
+        "action": action,
+        "ref": ref,
+        "performed": False,
+        "decision": str(context.get("decision") or "deny"),
+        "policy_code": str(context.get("policy_code") or ""),
+        "e_code": exc.code,
+        "reason": exc.message,
+        "agent": agent_type,
+        "channel": channel,
+        **{k: v for k, v in context.items() if k not in ("decision", "policy_code")},
+    }
+    refusal = {
+        "ok": False,
+        "error": {
+            "code": exc.code,
+            "message": exc.message,
+            "how_to_fix": exc.how_to_fix or ERROR_HINTS.get(exc.code, ""),
+            "context": context,
+        },
+    }
+    return receipt, refusal
+
+
 def assert_not_reporting_real_side_effect(payload: dict, *, agent_type: str, keys: tuple[str, ...]) -> None:
     """Fail loudly if sandbox mode is on and the payload still claims a real provider id.
 
@@ -310,6 +360,7 @@ def assert_not_reporting_real_side_effect(payload: dict, *, agent_type: str, key
 __all__ = [
     "SideEffectOutcome",
     "assert_not_reporting_real_side_effect",
+    "capped_item_refusal",
     "evaluate_side_effect",
     "integration_call",
     "named_refusal",

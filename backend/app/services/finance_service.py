@@ -39,7 +39,7 @@ from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, tod
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.task import AgentRun
-from app.services.query_helpers import db_refusal, fetch_scalars
+from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
 
 
 def money(value: Any) -> Decimal | None:
@@ -65,19 +65,38 @@ def _month_bounds(month: date | None) -> tuple[date, date]:
 
     The original had no upper bound (`date >= month_start`), which counts a
     future-dated row into "this month" and can never be a bounded index range.
+
+    The DEFAULT month is the COMPANY-local one (`today_in`), never the process clock:
+    for a non-UTC `COMPANY_TIMEZONE` the process date can sit in a different calendar
+    month for |UTC offset| hours around every boundary, so reading the process-local
+    date made the "Expenses (Month)" total count the wrong month — the same company-local
+    rule `get_ai_spend_summary` applies to its day window below (L2-01; measured RED with
+    the process clock at 2026-10-31 and `Asia/Tokyo`).
     """
-    start = (month or date.today()).replace(day=1)
+    start = (month or today_in()).replace(day=1)
     end = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
     return start, end
 
 
 async def get_latest_revenue_snapshot(db: AsyncSession) -> RevenueSnapshot | None:
-    result = await db.execute(
+    """Newest snapshot, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
+    `db.execute`, so a database outage answered a codeless 500).
+
+    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
+    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only caller is
+    `tests/unit/test_fs2_l2_06_query_helpers_discipline.py` (the L2-06 `E_DB` pin); the
+    shipped summary embeds its own latest-snapshot scalar subquery, so no route needs a
+    second round trip for it.  Intended purpose: a single-row snapshot lookup for a detail
+    view or ops read.  Removal vs adoption is an owner decision
+    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
+    """
+    return await fetch_scalar(
+        db,
         select(RevenueSnapshot)
         .order_by(RevenueSnapshot.snapshot_date.desc(), RevenueSnapshot.id.desc())
-        .limit(1)
+        .limit(1),
+        what="latest revenue snapshot",
     )
-    return result.scalar_one_or_none()
 
 
 async def list_revenue_snapshots(db: AsyncSession, limit: int = 30) -> list[RevenueSnapshot]:
@@ -336,6 +355,20 @@ async def upsert_revenue_snapshot(
 
 
 async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
+    """Validate + insert one expense row.
+
+    `amount_cents` must be a positive integer (a named `E_VALIDATION` otherwise — the
+    payload path counts the skip, never writes a fake row).  The CURRENCY rule is the same
+    one `record_stripe_event` applies, because the two writers share a CHECK family
+    (`ck_expense_records_currency` / `ck_stripe_events_currency`, 0002:107-108:
+    `currency = lower(currency)`, enforced on PostgreSQL): a text currency is normalised
+    (`strip().lower()`, blank -> `None`) HERE, the single crossing point for both the
+    payload path (`persist_finance_run` -> `_expense_kwargs`) and direct callers — before
+    this, a model emitting `"USD"` stored `"USD"` on SQLite (no CHECK there; L2-09 probe)
+    and on PostgreSQL would have aborted the whole finance persist batch as an
+    `IntegrityError` blamed on the database.  A non-text currency is refused by NAME
+    instead of dying in `.lower()`.
+    """
     amount = values.get("amount_cents")
     if amount is None or int(amount) <= 0:
         raise PolsiaError(
@@ -344,6 +377,18 @@ async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
             how_to_fix=ERROR_HINTS[E_VALIDATION],
             context={"amount_cents": amount},
         )
+    currency = values.get("currency")
+    if currency is not None:
+        if not isinstance(currency, str):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"expense currency must be text, got {type(currency).__name__}",
+                how_to_fix=ERROR_HINTS[E_VALIDATION],
+                context={"currency": repr(currency)[:100]},
+            )
+        # `or None` mirrors `record_stripe_event`'s `currency.lower() if currency else None`:
+        # a blank is "not recorded", never an empty-string currency.
+        values["currency"] = currency.strip().lower() or None
     expense = ExpenseRecord(**values)
     db.add(expense)
     await db.flush()

@@ -64,7 +64,9 @@ def alembic_db(monkeypatch, tmp_path):
 def test_0004_upgrade_downgrade_reupgrade_moves_only_its_own_rows(alembic_db):
     cfg, db_path = alembic_db
 
-    command.upgrade(cfg, "head")
+    # Scoped to THIS revision explicitly (not "head"): 0005 exists now, and a round trip about
+    # 0004's own rows must not silently test 0005's moves instead (same reasons as the fixture).
+    command.upgrade(cfg, "0004")
     at_head = _snapshot(db_path)
     assert _scalar(db_path, "SELECT version_num FROM alembic_version") == "0004"
     assert ("table", TABLE) in at_head
@@ -90,13 +92,13 @@ def test_0004_upgrade_downgrade_reupgrade_moves_only_its_own_rows(alembic_db):
         "every surviving table/index must stay byte-identical through the downgrade"
     )
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0004")
     assert _snapshot(db_path) == at_head, "re-upgrade must restore the same DDL byte-for-byte"
 
 
 def test_0004_creates_the_pinned_columns_constraints_and_fk(alembic_db):
     cfg, db_path = alembic_db
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0004")
 
     con = sqlite3.connect(db_path.as_posix())
     try:

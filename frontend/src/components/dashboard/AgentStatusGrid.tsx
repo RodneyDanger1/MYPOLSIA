@@ -20,7 +20,7 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 export function AgentStatusGrid() {
-  const { statuses, loading } = useAgentStatus();
+  const { statuses, loading, error } = useAgentStatus();
 
   if (loading) {
     return (
@@ -29,6 +29,17 @@ export function AgentStatusGrid() {
           <div key={i} className="h-20 bg-gray-700 rounded-lg animate-pulse" />
         ))}
       </div>
+    );
+  }
+
+  // A failed poll leaves `statuses` empty and `loading` false; dropping the hook's `error` made that
+  // empty array render as a plausible "no agents configured" panel. The failure is named here
+  // instead — and only here: stale cards under an error banner would be worse than either alone.
+  if (error) {
+    return (
+      <p className="text-red-400 text-sm" role="alert">
+        Could not load agent status: {error}
+      </p>
     );
   }
 

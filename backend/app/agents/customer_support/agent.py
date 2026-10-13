@@ -26,13 +26,14 @@ from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import (
+    capped_item_refusal,
     evaluate_side_effect,
     named_refusal,
     request_side_effect,
     side_effect_receipt,
 )
 from app.config import settings
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_RATE_LIMITED, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.schemas.agent_outputs import CustomerSupportOutput
 
 ROLE = """You are the Customer Support agent of an autonomous company. You read the support inbox
@@ -168,6 +169,10 @@ class CustomerSupportAgent(BasePolsiaAgent):
         sends_today = counts.get("today")
         sends_hour = counts.get("hour")
         receipts: list[dict[str, Any]] = []
+        # L3-05: what THIS run has really performed on the email channel (successful provider
+        # sends only); the caps are check-and-consume, so the firewall must see snapshot +
+        # performed — not the stale pre-run count for every reply in the batch.
+        performed = 0
 
         for index, reply in enumerate(list(payload.get("replies") or [])):
             ref = str(reply.get("message_ref") or reply.get("message_id") or "").strip()
@@ -213,16 +218,33 @@ class CustomerSupportAgent(BasePolsiaAgent):
                 })
                 continue
             action_class = ActionClass.EXTERNAL_REVERSIBLE
-            outcome = request_side_effect(
-                self.agent_type,
-                action_class,
-                "email",
-                action=proposed,
-                value_usd=0.0,
-                payload={"action": proposed, "ref": ref},
-                sends_today=sends_today,
-                sends_this_hour=sends_hour,
-            )
+            sends_today_now = None if sends_today is None else sends_today + performed
+            sends_hour_now = None if sends_hour is None else sends_hour + performed
+            try:
+                outcome = request_side_effect(
+                    self.agent_type,
+                    action_class,
+                    "email",
+                    action=proposed,
+                    value_usd=0.0,
+                    payload={"action": proposed, "ref": ref},
+                    sends_today=sends_today_now,
+                    sends_this_hour=sends_hour_now,
+                )
+            except PolsiaError as exc:
+                # A cap denial with nothing performed yet stays fatal; after this run already
+                # sent a reply it is recorded and the reply stays a draft (see
+                # `capped_item_refusal`). Anything else re-raises unchanged.
+                if exc.code != E_RATE_LIMITED or performed == 0:
+                    raise
+                receipt, refusal = capped_item_refusal(
+                    exc, agent_type=self.agent_type, action=proposed, ref=ref, channel="email",
+                )
+                receipts.append(receipt)
+                payload.setdefault("refusals", []).append(refusal)
+                reply["status"] = "draft"
+                payload["drafted_not_sent"] = True
+                continue
             receipt = side_effect_receipt(outcome, action=proposed, ref=ref)
             if outcome.allowed:                                   # only outside sandbox
                 result = integrations.send_email(
@@ -233,6 +255,7 @@ class CustomerSupportAgent(BasePolsiaAgent):
                 receipt["integration"] = result
                 if result.get("ok"):
                     reply["status"] = "sent"
+                    performed += 1
                     # RD14 follow-up: the email cap's producer (`record_sent_emails`, called by
                     # the worker for this agent — see `agent_tasks._persist_run_artifacts`) dedupes
                     # on the provider's OWN per-message id; without it a CS reply would never count

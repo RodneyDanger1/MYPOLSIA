@@ -109,7 +109,13 @@ async def test_persist_snapshot_is_idempotent_by_date_and_expenses_write(async_d
 
 @pytest.mark.asyncio
 async def test_failed_payment_without_event_id_refuses_refund(monkeypatch):
-    """(e) T7: a fabricated `failed_payment:<i>` id must never reach a refund request."""
+    """(e) T7, re-pinned by fix-5 / L3-10: a fabricated id must never reach a refund request.
+
+    The refusal now names the identifier a refund actually needs — `payment_intent_id`
+    (`pi_…`), because a Stripe refund is created against a PaymentIntent and an event id can
+    never be the refund target.  The T7 invariant is unchanged: nothing fabricated, no
+    request built, nothing performed.
+    """
     monkeypatch.setenv(
         "CLAUDE_CLI_MOCK_RESPONSE",
         json.dumps({
@@ -126,7 +132,8 @@ async def test_failed_payment_without_event_id_refuses_refund(monkeypatch):
     error = refusals[0]["error"]
     assert error["code"] == E_VALIDATION
     assert error["message"] == (
-        "failed payment #0 has no provider event_id; cannot request a refund for it"
+        "failed payment #0 cannot be refunded: no payment_intent_id "
+        "(the Stripe pi_… id a refund needs)"
     )
     # No refund request was built: no side-effect receipt exists and the fabricated id
     # appears nowhere in the serialised output.

@@ -64,3 +64,33 @@ def test_worker_concurrency_is_owned_by_the_launch_command_not_the_app_conf() ->
         "worker_concurrency must stay launch-command-owned (docker-compose.yml:95 "
         "`--concurrency=4`); see the cross-reference comment in celery_config.py"
     )
+
+
+# ── L4-01: what a `-Q`-less worker CONSUMES ───────────────────────────────────────────────────
+# `task_routes` only decides where a message is PUBLISHED; consumption comes from `task_queues`
+# (or `-Q`). Before this pin, the launched worker (docker-compose.yml:95, no `-Q`) consumed
+# `task_default_queue` alone — measured `consume_from == {'celery'}` while 9/9 tasks routed to
+# `agents`/`scheduler`/`maintenance`: the entire automation was published into queues nobody read.
+# RED leg: delete the `task_queues` tuple from celery_config.py -> this test fails on the missing
+# queue names (and every routed/beat queue assertion below).
+
+
+def test_a_worker_without_Q_consumes_every_routed_and_scheduled_queue() -> None:
+    consumed = set(app.amqp.queues.consume_from)
+    assert {"scheduler", "agents", "maintenance", "celery"} <= consumed, (
+        f"a -Q-less worker consumes {sorted(consumed)}; the routed queues must be in there"
+    )
+
+    routed = {route["queue"] for route in app.conf.task_routes.values()}
+    assert routed <= consumed, "every routed queue must be consumed by the shipped worker"
+
+    beat_queues = {
+        entry["options"]["queue"] for entry in app.conf.beat_schedule.values() if entry.get("options")
+    }
+    assert beat_queues <= consumed, "every beat entry's queue must be consumed by the shipped worker"
+
+
+def test_the_declared_queue_objects_survive_to_the_conf() -> None:
+    declared = {q.name for q in celery_config.task_queues}
+    assert declared == {"scheduler", "agents", "maintenance", "celery"}
+    assert {q.name for q in app.conf.task_queues} == declared

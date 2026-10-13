@@ -42,7 +42,11 @@ https://api-docs.deepseek.com/api/create-chat-completion):
 
 Honesty rules (repo-wide): every failure is a NAMED refusal, a truncated response is never a
 success, and no envelope key is fabricated — absent measurements stay absent (NULL-vs-zero rule
-in `accounting._int_or_none`); no cost is invented because DeepSeek returns tokens, not money.
+in `accounting._int_or_none`). The provider returns tokens, not money: the cost key this runtime
+emits (`cost_estimate_usd`, L3-04) is computed from the measured token counts through the PINNED
+price table in `app.agents.pricing` (`pricing_version` rides the envelope), never presented as a
+provider bill — `total_cost_usd` is deliberately never fabricated (that key means the CLI's own
+money measurement).
 
 RD13 hardening (all inside the same frozen contract): unknown HTTP statuses classify by family
 (>=500 -> `error_server_error`, retried; everything else -> `error_invalid_request`, NOT retried)
@@ -68,7 +72,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.agents import claude_cli
+from app.agents import claude_cli, pricing
 from app.config import settings
 from app.core.errors import (
     E_CLI_JSON,
@@ -86,6 +90,12 @@ DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
 DEEPSEEK_DEFAULT_REASONING_EFFORT = "none"
 DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300
+#: The output bound (L3-04): the HTTP analogue of the CLI's `--max-budget-usd` — the run is
+#: bounded at the CALL, not only at the dispatch gate. 8192 output tokens is ~6k words, far
+#: above any of this product's JSON payloads; the worst-case output charge at flash peak rates
+#: is 8192/1e6 * $1.20 ~= $0.0098. A response cut at the bound is reported as `error_max_tokens`
+#: (never a success). Overridable via `deepseek_max_tokens` once that Settings field lands.
+DEEPSEEK_DEFAULT_MAX_TOKENS = 8192
 CHAT_COMPLETIONS_PATH = "/chat/completions"
 
 #: reasoning_effort canonical values + the documented aliases (docs: minimal->low, medium/xhigh->high).
@@ -353,6 +363,22 @@ def _timeout_seconds() -> int:
     return timeout if timeout > 0 else DEEPSEEK_DEFAULT_TIMEOUT_SECONDS
 
 
+def _max_tokens() -> int:
+    """The per-call output bound (L3-04): settings override when present, else the default.
+
+    Same forward-safe `_setting` pattern as the other `deepseek_*` knobs: nothing breaks while
+    the Settings field is absent, and the same call reads the configured value once it lands.
+    A non-positive / non-integer override falls back to the default — a 0 here would mean
+    "unbounded" to some providers, the opposite of the bound's purpose.
+    """
+    value = _setting("deepseek_max_tokens", DEEPSEEK_DEFAULT_MAX_TOKENS)
+    try:
+        bound = int(value)
+    except (TypeError, ValueError):
+        bound = DEEPSEEK_DEFAULT_MAX_TOKENS
+    return bound if bound > 0 else DEEPSEEK_DEFAULT_MAX_TOKENS
+
+
 def _base_url() -> str:
     """The configured base URL, validated UP FRONT (RD13).
 
@@ -413,6 +439,10 @@ def _build_body(plan: InvocationPlan, *, model: str, messages: list[dict[str, An
         "model": model,
         "messages": messages,
         "stream": False,
+        # L3-04: the output bound — the request is capped at the call, so one runaway
+        # generation cannot spend more than bound x output-rate (the dispatch gate then sees
+        # a MEASURED cost instead of a NULL column).
+        "max_tokens": _max_tokens(),
     }
     if effort == "none":
         # Deterministic agent JSON runs want no hidden reasoning pass; `none` IS the switch.
@@ -640,11 +670,29 @@ def invoke(
 
     usage_scalar = payload.get("usage")
     usage_raw = usage_scalar if isinstance(usage_scalar, dict) else {}
+    prompt_tokens = _usage_int(usage_raw, "prompt_tokens")
+    completion_tokens = _usage_int(usage_raw, "completion_tokens")
+    cache_hit_tokens = _usage_int(usage_raw, "prompt_cache_hit_tokens")
+    cache_miss_tokens = _usage_int(usage_raw, "prompt_cache_miss_tokens")
     envelope_usage = {
-        "input_tokens": _usage_int(usage_raw, "prompt_tokens"),
-        "output_tokens": _usage_int(usage_raw, "completion_tokens"),
-        "cache_read_input_tokens": _usage_int(usage_raw, "prompt_cache_hit_tokens"),
+        "input_tokens": prompt_tokens,
+        "output_tokens": completion_tokens,
+        # as MEASURED — None stays None (the envelope never carries a fabricated token count)
+        "cache_read_input_tokens": cache_hit_tokens,
     }
+    # The PRICING split (L3-04) — separate from the envelope's measured fields. The provider
+    # documents `prompt_tokens == prompt_cache_hit_tokens + prompt_cache_miss_tokens`; when a
+    # shape is unreported the split is completed the CONSERVATIVE way (the miss rate is always
+    # the more expensive side), because a strict NULL here would restore exactly the
+    # unmeasured-cost defect this estimate exists to remove:
+    #   * hit side unreported -> bill the whole prompt at the miss rate;
+    #   * miss side unreported -> miss = prompt - hit (only when consistent).
+    price_hit_tokens, price_miss_tokens = cache_hit_tokens, cache_miss_tokens
+    if prompt_tokens is not None and price_hit_tokens is None:
+        price_hit_tokens, price_miss_tokens = 0, prompt_tokens
+    elif price_miss_tokens is None and price_hit_tokens is not None and prompt_tokens is not None:
+        derived_miss = prompt_tokens - price_hit_tokens
+        price_miss_tokens = derived_miss if derived_miss >= 0 else None
 
     incomplete = _INCOMPLETE_FINISH_REASONS.get(finish_reason)
     if incomplete is not None:
@@ -669,6 +717,14 @@ def invoke(
     stored_messages = messages
     session_id = _store_exchange(plan.resume_session_id, stored_messages, content)
 
+    model_served = str(payload.get("model") or model_id)
+    cost_estimate = pricing.estimate_cost_usd(
+        model_served,
+        cache_hit_tokens=price_hit_tokens,
+        cache_miss_tokens=price_miss_tokens,
+        output_tokens=completion_tokens,
+    )
+
     envelope: dict[str, Any] = {
         "type": "result",
         "subtype": "success",
@@ -678,10 +734,16 @@ def invoke(
         "num_turns": 1,
         "duration_ms": int((time.monotonic() - started) * 1000),
         "usage": envelope_usage,
-        "model": str(payload.get("model") or model_id),
+        "model": model_served,
         "stop_reason": finish_reason or "stop",
         "provider": "deepseek",
     }
+    if cost_estimate is not None:
+        # L3-04: a DISTINCT key — computed from the measured tokens through the pinned table,
+        # never `total_cost_usd` (which means the CLI's own money measurement). `accounting`
+        # reads it, stamps `cost_source=token_estimate` and the version when persisting.
+        envelope["cost_estimate_usd"] = round(cost_estimate, 8)
+        envelope["pricing_version"] = pricing.PRICING_VERSION
     if plan.json_schema is not None:
         try:
             candidate = json.loads(content)
@@ -704,6 +766,7 @@ def invoke(
 __all__ = [
     "CHAT_COMPLETIONS_PATH",
     "DEEPSEEK_DEFAULT_BASE_URL",
+    "DEEPSEEK_DEFAULT_MAX_TOKENS",
     "DEEPSEEK_DEFAULT_MODEL",
     "DEEPSEEK_DEFAULT_REASONING_EFFORT",
     "DEEPSEEK_DEFAULT_TIMEOUT_SECONDS",

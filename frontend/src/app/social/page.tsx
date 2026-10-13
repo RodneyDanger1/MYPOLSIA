@@ -6,7 +6,10 @@ import { api } from "@/lib/api";
 // `engagement` is `dict[str, Any] | None` server-side (`SocialPostResponse.engagement` in
 // `app/schemas/social.py`), so each counter is as untyped on the wire as the dashboard's `kpis`:
 // the type says `unknown` and `engagementValue` below narrows it for display.
-type Post = { id: number; content: string; status: string; published_at: string | null; engagement: Record<string, unknown> | null };
+// `status` is `str | None` server-side: the `social_posts.status` column is nullable (0001 carries
+// `server_default='draft'` but no `NOT NULL`), so a null is a real served value — the row below
+// renders the gray "unknown" for it rather than an empty chip.
+type Post = { id: number; content: string; status: string | null; published_at: string | null; engagement: Record<string, unknown> | null };
 
 /**
  * Same narrowing the dashboard's `kpiText` applies to `kpis`: a displayable counter is shown as it
@@ -74,7 +77,7 @@ export default function SocialPage() {
           <div key={p.id} className="bg-gray-800 rounded-lg p-4">
             <p className="text-white">{p.content}</p>
             <div className="flex gap-4 mt-2 text-sm text-gray-400">
-              <span className={`capitalize ${p.status === "published" ? "text-green-400" : "text-yellow-400"}`}>{p.status}</span>
+              <span className={`capitalize ${p.status === "published" ? "text-green-400" : p.status ? "text-yellow-400" : "text-gray-400"}`}>{p.status ?? "unknown"}</span>
               {p.published_at && <span>{new Date(p.published_at).toLocaleDateString()}</span>}
               {/* A null engagement is "no counters recorded yet", not an error: the em dash is the
                   same "not measured" placeholder the finance cards use for a null reading. */}

@@ -18,9 +18,14 @@ from typing import Any
 from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
-from app.agents.side_effects import named_refusal, request_side_effect, side_effect_receipt
+from app.agents.side_effects import (
+    capped_item_refusal,
+    named_refusal,
+    request_side_effect,
+    side_effect_receipt,
+)
 from app.config import settings
-from app.core.errors import E_VALIDATION
+from app.core.errors import E_RATE_LIMITED, E_VALIDATION, PolsiaError
 from app.schemas.agent_outputs import AdsOutput
 
 ROLE = """You are the Ads Management agent of an autonomous company. You run paid acquisition on
@@ -59,6 +64,9 @@ class AdsManagementAgent(BasePolsiaAgent):
         payload, assembled = self.collect_structured(task, context)
         payload["agent_type"] = self.agent_type
         receipts: list[dict[str, Any]] = []
+        # L3-05: what THIS run has really performed, per platform (successful provider calls
+        # only); the caps are check-and-consume, so the firewall must see snapshot + performed.
+        performed_by_platform: dict[str, int] = {}
 
         for index, rec in enumerate(list(payload.get("recommendations") or [])):
             platform = str(rec.get("platform") or "google_ads")
@@ -83,17 +91,38 @@ class AdsManagementAgent(BasePolsiaAgent):
             # int | None: None = "no local record of sends" -> the firewall refuses (fail
             # closed); it must never be collapsed to 0 here.
             counts = ((context or {}).get("channel_sends") or {}).get(platform) or {}
-            outcome = request_side_effect(
-                self.agent_type,
-                ActionClass.EXTERNAL_REVERSIBLE,
-                platform,
-                action=action,
-                value_usd=abs(delta),
-                payload={"action": action, "campaign_ref": campaign_ref,
-                         "budget_change_usd": delta},
-                sends_today=counts.get("today"),
-                sends_this_hour=counts.get("hour"),
-            )
+            performed = performed_by_platform.get(platform, 0)
+            sends_today = counts.get("today")
+            sends_hour = counts.get("hour")
+            sends_today_now = None if sends_today is None else sends_today + performed
+            sends_hour_now = None if sends_hour is None else sends_hour + performed
+            try:
+                outcome = request_side_effect(
+                    self.agent_type,
+                    ActionClass.EXTERNAL_REVERSIBLE,
+                    platform,
+                    action=action,
+                    value_usd=abs(delta),
+                    payload={"action": action, "campaign_ref": campaign_ref,
+                             "budget_change_usd": delta},
+                    sends_today=sends_today_now,
+                    sends_this_hour=sends_hour_now,
+                )
+            except PolsiaError as exc:
+                # A cap denial with nothing performed yet stays fatal; after this run already
+                # applied a change it is recorded and the recommendation stays unapplied (see
+                # `capped_item_refusal`). Anything else re-raises unchanged.
+                if exc.code != E_RATE_LIMITED or performed == 0:
+                    raise
+                receipt, refusal = capped_item_refusal(
+                    exc, agent_type=self.agent_type, action=action, ref=campaign_ref,
+                    channel=platform,
+                )
+                receipts.append(receipt)
+                payload.setdefault("refusals", []).append(refusal)
+                rec["applied"] = False
+                payload["drafted_not_sent"] = True
+                continue
             receipt = side_effect_receipt(outcome, action=action, ref=campaign_ref,
                                           extra={"platform": platform, "budget_change_usd": delta})
             if outcome.allowed:                                   # only outside sandbox
@@ -102,7 +131,9 @@ class AdsManagementAgent(BasePolsiaAgent):
                 )
                 receipt["integration"] = result
                 rec["applied"] = bool(result.get("ok"))
-                if not result.get("ok"):
+                if result.get("ok"):
+                    performed_by_platform[platform] = performed + 1
+                else:
                     payload.setdefault("refusals", []).append(result)
             else:
                 rec["applied"] = False

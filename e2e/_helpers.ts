@@ -20,9 +20,29 @@ import { request as playwrightRequest } from "@playwright/test";
 
 export const PREFIX = "[e2e-fixture]";
 
-/** The SQLite file the e2e backend serves from (docker-free local stack; see polsia-work/build). */
+/**
+ * The SQLite file the e2e backend serves from — the docker-free local lab's DB.
+ *
+ * Repo-relative and gitignored (`.e2e-lab.sqlite`; the `*.sqlite` rule covers it) on purpose: the old
+ * default was ONE machine's absolute path, so on any other checkout (another user, a CI runner)
+ * `new DatabaseSync` threw before a single assertion ran. The dependency is explicit now — set
+ * `E2E_SQLITE` (or put the lab DB at this path) and the fixture-seeding specs run; leave it unset and
+ * they SKIP BY NAME (`LAB_DB_SKIP_REASON`) instead of erroring, which is what CI needs since its
+ * stack is Postgres and a native SQLite fixture write would be invisible to the backend under test.
+ */
 export const SQLITE_PATH =
-  process.env.E2E_SQLITE ?? "C:/Users/Riley/Desktop/polsia-work/build/e2e.sqlite";
+  process.env.E2E_SQLITE ?? path.resolve(__dirname, "..", ".e2e-lab.sqlite");
+
+/** The named reason the fixture-seeding specs skip when the SQLite lab is not there. */
+export const LAB_DB_SKIP_REASON =
+  `fixtures need the SQLite lab (docker-free local stack): E2E_SQLITE is unset and ${SQLITE_PATH} ` +
+  "does not exist — the CI stack is Postgres (.github/workflows/integration.yml), where native " +
+  "SQLite fixture writes would never be served";
+
+/** True when a lab DB is actually there to write to; specs gate their SQLite seeding on it. */
+export function labDbAvailable(): boolean {
+  return existsSync(SQLITE_PATH);
+}
 
 /**
  * Fixture WRITES go straight to the backend.  POST /agents/{type}/trigger can take ~14s when the
@@ -41,6 +61,16 @@ export const BACKEND_URL = process.env.E2E_BACKEND_URL ?? "http://localhost:8000
 export const API_BASE = process.env.E2E_API_BASE ?? "http://localhost";
 
 function openDb() {
+  // Measured (node:sqlite, Node 26): `new DatabaseSync(p)` CREATES an empty DB whenever the directory
+  // exists, so a missing lab DB would silently accept fixture writes nobody serves; it throws only when
+  // a parent directory is missing. Check first and fail with the reason instead of a raw sqlite error.
+  if (!existsSync(SQLITE_PATH)) {
+    throw new Error(
+      `e2e fixtures need the SQLite lab DB at ${SQLITE_PATH} — set E2E_SQLITE to the DB the backend ` +
+        "serves from. The CI stack is Postgres (.github/workflows/integration.yml), where a native " +
+        "SQLite fixture write would never be served; the seeding specs skip there by name.",
+    );
+  }
   const db = new DatabaseSync(SQLITE_PATH);
   // The backend may hold the file while a request is in flight; wait instead of failing on busy.
   db.exec("PRAGMA busy_timeout = 5000");
@@ -116,7 +146,14 @@ export function sweepFixtures(): void {
   }
 }
 
-/** The venv python the sweep needs (chromadb lives there); override with E2E_PYTHON. */
+/**
+ * The python the suite-end sweep runs under; override with E2E_PYTHON.
+ *
+ * The repo venv is preferred (chromadb lives there), but its absence is NOT fatal: on a CI checkout
+ * python comes from `actions/setup-python`, i.e. from PATH, and the old throw here failed a run in
+ * which every test had already passed. A python that cannot be started at all still fails LOUD — in
+ * `sweepFixtures`, where `spawnSync` reports it and the teardown refuses to claim success.
+ */
 function pythonInterpreter(): string {
   const override = process.env.E2E_PYTHON;
   if (override) return override;
@@ -125,14 +162,7 @@ function pythonInterpreter(): string {
     path.join(root, ".venv", "Scripts", "python.exe"), // Windows
     path.join(root, ".venv", "bin", "python"), // POSIX
   ];
-  const found = candidates.find((candidate) => existsSync(candidate));
-  if (!found) {
-    throw new Error(
-      `suite-end sweep needs the backend venv python (chromadb lives there); tried ` +
-        `${candidates.join(", ")} — set E2E_PYTHON to override`,
-    );
-  }
-  return found;
+  return candidates.find((candidate) => existsSync(candidate)) ?? "python";
 }
 
 /** Playwright's globalTeardown hook (see `sweepFixtures` above for why it exists). */

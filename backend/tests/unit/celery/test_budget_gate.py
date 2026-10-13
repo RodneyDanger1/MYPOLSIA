@@ -91,3 +91,39 @@ def test_ads_stripe_sync_reports_each_denied_entry_and_skips_its_row(queue_db, m
     assert len(result["denied"]) == 2, "both planned agents are named, not silently dropped"
     assert all("kill switch" in reason for reason in result["denied"])
     assert queue_db.count("tasks", "agent_type IN ('ads_management','finance')") == 0
+
+
+# ── L4-09: the manual-trigger path passes the SAME choke point as the scheduler ───────────────
+# `POST /agents/{type}/trigger` answers 202 and dispatches `run_agent_task`; nothing on that path
+# called `assert_budget_allows`, so a Run Now click past the daily cap spent real money with no
+# record. The gate now sits in `_execute_agent_task` (after the claim, before the run ledger
+# row). RED leg: remove the gate -> the over-cap test below comes back `completed` with an
+# agent_runs row on disk.
+
+
+def test_an_over_cap_manual_run_is_skipped_and_recorded(queue_db, monkeypatch):
+    from celery_app.tasks.agent_tasks import _execute_agent_task
+
+    policy = _policy()
+    _seed_spend(queue_db, "social_media", str(policy.day_limit_usd))  # the day is full
+    task_id = queue_db.create_task(title="L4-09 over-cap manual run", agent_type="finance")
+
+    outcome = queue_db.run(_execute_agent_task(task_id))
+
+    assert outcome["status"] == "skipped"
+    assert "insufficient budget" in outcome["reason"], "the skip names the measured reason"
+    assert queue_db.count("agent_runs", "agent_type = ?", ("finance",)) == 0, "no run ledger row"
+    row = queue_db.row(task_id)
+    assert row["status"] == "failed" and "budget:" in (row["error_message"] or "")
+    assert row["claimed_by"] is None
+
+
+def test_a_manual_run_on_a_fresh_day_still_completes(queue_db, monkeypatch, install_run_spy):
+    from celery_app.tasks.agent_tasks import _execute_agent_task
+
+    install_run_spy(delegate=False)
+    task_id = queue_db.create_task(title="L4-09 fresh manual run", agent_type="finance")
+
+    outcome = queue_db.run(_execute_agent_task(task_id))
+
+    assert outcome["status"] == "completed", "measured spend 0 must not block a manual run"
