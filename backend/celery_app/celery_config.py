@@ -16,6 +16,12 @@ Both registries were broken in the uploaded repo (measured, lane 03 D-13/D-14):
 from app.config import settings
 from celery_app.beat_schedule import beat_schedule as _beat_schedule
 
+# ── transport settings carried from app.config (R22 pins this in tests/unit/celery) ─────────
+# WHY via settings rather than literals: pydantic-settings' field names ARE the lower-cased env
+# names (`CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, … — app/config.py:12-15, case-insensitive),
+# so a compose/`.env` override lands in `settings` first and `config_from_object` carries the
+# OVERRIDDEN value.  Verified: CELERY_BROKER_URL=redis://env-probe:6379/9 reaches `app.conf`
+# (build/R22-limits-obs/raw/probe_env_override.txt).  A literal here would silently defeat that.
 broker_url = settings.celery_broker_url
 result_backend = settings.celery_result_backend
 
@@ -26,7 +32,8 @@ timezone = "UTC"
 enable_utc = True
 
 # ── task registry ────────────────────────────────────────────────────────────
-# The seven shipped tasks live in exactly these three modules (SPEC-AGENTS §7).
+# The seven shipped tasks live in exactly these three modules (SPEC-AGENTS §7); the task-lease
+# sweep (T1) and the publish-health tick (R22) were added to the same three modules.
 # `imports` is read by `app.loader.import_default_modules()` in every worker/beat
 # process, which executes the `@app.task` decorators; `include` is the same list in
 # the form the Celery CLI documents.  Both are set deliberately — the failure mode we
@@ -84,10 +91,19 @@ result_backend_transport_options = {
 
 # Ceilings the upload never set (lane 04 §0: "no time/memory ceilings… a leaked CLI/Node
 # child is contained in one process").  These come from settings so a deployment can tune
-# them without editing code.
+# them without editing code — and the tuning route is env-first (same reason as broker_url
+# above): CELERY_TASK_TIME_LIMIT / CELERY_SOFT_TIME_LIMIT / CELERY_MAX_TASKS_PER_CHILD.
 task_time_limit = settings.celery_task_time_limit            # hard kill
 task_soft_time_limit = settings.celery_soft_time_limit       # SoftTimeLimitExceeded first
 worker_max_tasks_per_child = settings.celery_max_tasks_per_child
+
+# NOT carried here, on purpose: `worker_concurrency`.  Concurrency belongs to the launch command —
+# docker-compose.yml:95 runs `celery -A celery_app.worker worker --loglevel=info --concurrency=4`
+# and docker-compose.ci.yml overrides env/volumes only, so CI inherits that command.  A CLI
+# `--concurrency` overrides `app.conf` even if this were wired, so the wiring would be inert;
+# `settings.celery_worker_concurrency` (app/config.py:45-50) is the same "advertised, launch
+# command owns it" story.  An operator changes concurrency in the compose command, not here.
+worker_concurrency = None  # explicit so app.conf cannot inherit a celery default (R22 pin)
 
 # Routing (unchanged — these three routes did load in the upload)
 task_routes = {

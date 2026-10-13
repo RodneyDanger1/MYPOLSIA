@@ -1,10 +1,12 @@
 """FastAPI application wiring (uvicorn app.main:app)."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
@@ -21,6 +23,7 @@ from app.api.v1 import (
     finance,
     health,
     memory,
+    ops,
     outreach,
     social,
     support,
@@ -32,7 +35,45 @@ from app.core.database import dispose_engine
 from app.core.errors import E_AUTH, ERROR_HINTS, PolsiaError, http_status_for, to_http_detail
 from app.core.redis_client import close_redis
 
-logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
+
+class _JsonFormatter(logging.Formatter):
+    """One JSON object per log record — stdlib only (python-json-logger is not a dependency).
+
+    WHY: `settings.log_json` (LOG_JSON) was declared and dead — `.env.example` carried the knob
+    with a note that nothing read it.  Fields: ts (the record's own time, UTC), level, logger,
+    message (already %-formatted), plus `exception` when a traceback is attached.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+def _configure_logging() -> None:
+    """Root logging: plain text by default, one JSON object per record under LOG_JSON.
+
+    The `log_json=False` branch is the exact `basicConfig(level=…)` call this module always ran,
+    so text-mode logging is byte-identical.  uvicorn configures its OWN loggers
+    (uvicorn.error/uvicorn.access) with its own handlers, so this shapes the application's root
+    logger either way; the JSON branch is for deployments that ship app logs to a collector.
+    """
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    if not settings.log_json:
+        logging.basicConfig(level=level)
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonFormatter())
+    logging.basicConfig(level=level, handlers=[handler])
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +156,7 @@ def create_app() -> FastAPI:
         description="Autonomous multi-agent AI business platform",
         version="1.0.0",
         lifespan=lifespan,
+        debug=settings.debug,  # R22: the setting was declared and dead; default False = unchanged
     )
     application.add_middleware(
         CORSMiddleware,
@@ -194,6 +236,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(outreach.router)
     api_v1.include_router(ads.router)
     api_v1.include_router(support.router)   # R17: the customer-support inbox ingest (owner's API)
+    api_v1.include_router(ops.router)       # R22: activity publish breaker stats + reset (owner)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

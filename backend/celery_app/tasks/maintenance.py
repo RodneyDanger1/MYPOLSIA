@@ -1,4 +1,4 @@
-"""Maintenance tasks — retention cleanup and the task-lease sweep.
+"""Maintenance tasks — retention cleanup, the task-lease sweep, and the publish-health tick.
 
 The uploaded `cleanup_old_activity` could never run: no beat entry, no caller (D-15), and
 its cutoff used `datetime.utcnow()` (naive, deprecated in 3.12) against a `timestamptz`
@@ -14,6 +14,14 @@ was tested, and had NO caller anywhere in the tree — a worker that dies mid-ru
 claim live until the lease expires, and nothing ever expired it, so the recovery was inert
 (T1). This module drives that service through the process loop on a 5-minute beat entry
 (`celery_app/beat_schedule.py`), strictly inside the default 900 s claim lease.
+
+`check_activity_publish_health` is the third job (R22). The activity breaker counts failures and
+skips and exposes them via `events.publish_stats()`, but that function had ZERO production
+readers — the "a skip is never silent" contract was visible to tests only. The tick puts the
+stats into the worker's log every 15 min. PROCESS BOUNDARY, stated not hidden: the counters are
+module globals in `app.core.events`, so this tick reports the WORKER process's state (where
+agent-task activity publishes happen); the API process's counters are served by
+GET /api/v1/ops/events/stats (owner auth).
 """
 from __future__ import annotations
 
@@ -22,6 +30,7 @@ from datetime import timedelta
 from typing import Any
 
 from app.config import settings
+from app.core.events import publish_stats
 from app.core.timeutil import as_bound_instant, now_utc
 from app.services.task_service import requeue_stale_claims
 from celery_app.tasks._common import run_async
@@ -128,3 +137,22 @@ async def _requeue_stale_claims_in_session() -> dict[str, Any]:
 
     logger.info("task-lease sweep: recovered %s of %s in-flight claim(s)", requeued, scanned)
     return {"status": "completed", "requeued": requeued, "scanned": scanned}
+
+
+@app.task(name="celery_app.tasks.maintenance.check_activity_publish_health")
+def check_activity_publish_health() -> dict[str, Any]:
+    """Every 15 min — a publish outage stays on the worker's log until it is cleared.
+
+    WARNING (with the full stats dict) while anything is non-clean: any failure, any skipped
+    publish, or an open breaker.  `logger.debug` when clean, so a healthy fleet does not pay one
+    line per tick.  The counters are cumulative since worker start (or the last
+    `POST /api/v1/ops/events/reset`), so the warning repeats until an operator resets after
+    fixing the incident — that repetition is the point: a skip is never silent.
+    """
+    stats = publish_stats()
+    dirty = bool(stats["failures"]) or bool(stats["skipped_while_open"]) or bool(stats["breaker_open"])
+    if dirty:
+        logger.warning("activity publish breaker is not clean: %s", stats)
+    else:
+        logger.debug("activity publish breaker clean: %s", stats)
+    return {"status": "completed", "clean": not dirty, "stats": stats}

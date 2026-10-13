@@ -60,6 +60,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # (documented by app/api/v1/support.py and tests/unit/api/test_support_inbox.py).
     ("POST", "/api/v1/support/inbox"),
     ("GET", "/api/v1/support/inbox"),
+    # R22: the activity publish breaker's operator surface — read the counters, reset after an
+    # incident (documented by app/api/v1/ops.py and tests/unit/api/test_r22_ops_events.py).
+    ("GET", "/api/v1/ops/events/stats"),
+    ("POST", "/api/v1/ops/events/reset"),
 ]
 
 DOCUMENTED_AGENTS = {

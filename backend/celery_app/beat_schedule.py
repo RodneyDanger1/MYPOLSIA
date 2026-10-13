@@ -1,4 +1,4 @@
-"""Beat schedule — the 7 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 8 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -22,7 +22,9 @@ Rule used here:
 * the task-lease sweep: **every 5 min, expires 4 min (below the interval)** — its period
   is set against the 900 s claim lease rather than the wall clock (a dead worker's claim
   must not stay unreachable for a whole cycle), so a tick older than its own slot
-  collapses into the next one.
+  collapses into the next one;
+* the publish-health tick: **every 15 min, expires 15 min** — a health snapshot delivered
+  after its own slot describes a moment that has passed; the next tick re-takes it.
 
 Expired messages are dropped by the broker before dispatch; `run_agent_task` still claims
 atomically, so even a re-delivery cannot double-run a row.
@@ -81,5 +83,16 @@ beat_schedule = {
         "task": "celery_app.tasks.maintenance.requeue_stale_task_claims",
         "schedule": 300.0,
         "options": {"queue": "maintenance", "expires": 240},
+    },
+    # Every 15 min: is the activity publish breaker clean?  NEW entry — R22.  It exists because
+    # `events.publish_stats()` had zero production readers: a Redis outage that silently skipped
+    # activity publishes was counted but never SHOWN anywhere.  The tick writes the full stats
+    # dict to the worker's log (WARNING while anything is non-clean) — see
+    # `celery_app.tasks.maintenance.check_activity_publish_health` for the process-boundary note
+    # (breaker counters are per process; the API process's are served by GET /api/v1/ops/events/stats).
+    "activity-publish-healthcheck": {
+        "task": "celery_app.tasks.maintenance.check_activity_publish_health",
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "maintenance", "expires": 900},
     },
 }
