@@ -1,5 +1,6 @@
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { AgentStatusGrid } from "@/components/dashboard/AgentStatusGrid";
+import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
 import { MetricsCard } from "@/components/dashboard/MetricsCard";
 import { api, type DashboardSummary } from "@/lib/api";
 
@@ -46,6 +47,9 @@ export default async function DashboardPage() {
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+
+      {/* Onboarding: visible only while no DeepSeek key is configured (RD9). */}
+      <DeepSeekKeyOnboarding />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

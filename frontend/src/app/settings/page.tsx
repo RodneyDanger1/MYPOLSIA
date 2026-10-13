@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 
 type Config = {
   name: string;
@@ -84,6 +85,10 @@ export default function SettingsPage() {
         {field("Timezone", "timezone")}
         {field("Morning Cycle Hour (company-local)", "daily_cycle_hour", "number")}
       </div>
+
+      {/* DeepSeek key lifecycle: save / change / remove / verify. Independent of the
+          company-profile form below (it has its own endpoints and its own save button). */}
+      <DeepSeekKeySection />
 
       <button
         onClick={save}

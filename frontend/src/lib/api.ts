@@ -158,6 +158,25 @@ export const api = {
     apiFetch<T>(path, { ...init, method: "POST", body: JSON.stringify(body ?? {}) }),
   put: <T>(path: string, body?: unknown, init?: RequestInit) =>
     apiFetch<T>(path, { ...init, method: "PUT", body: JSON.stringify(body ?? {}) }),
+  delete: <T>(path: string, init?: RequestInit) =>
+    apiFetch<T>(path, { ...init, method: "DELETE" }),
+};
+
+/** GET/PUT/DELETE /config/deepseek-key (RD9). Masked status only — the raw key has no
+ *  representation in this type because the API never returns it; `masked` is a display
+ *  form like `sk-…1234`, and `source` says where the live key comes from. */
+export type DeepSeekKeyStatus = {
+  configured: boolean;
+  source: "stored" | "env" | "none";
+  masked: string;
+};
+
+/** POST /config/deepseek-key/verify — the outcome of a REAL `GET https://api.deepseek.com/models`
+ *  probe. `ok: false` carries the genuine reason (HTTP status, timeout, transport error); the UI
+ *  must show `detail` as-is rather than inventing a friendlier verdict. */
+export type DeepSeekVerifyResult = {
+  ok: boolean;
+  detail: string;
 };
 
 export type ActivityEvent = {
