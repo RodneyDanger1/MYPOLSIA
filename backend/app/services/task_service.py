@@ -260,6 +260,92 @@ async def update_task_status(
     return task
 
 
+#: The `tasks.metadata` key the owner's minted approval token travels under (T02/T02b).  The
+#: READER is `celery_app.tasks.agent_tasks.approval_token_from_metadata`, whose own
+#: `APPROVAL_TOKEN_KEY` names the same string — the producer writes the key here, the consumer
+#: names it there (the same producer/consumer split `metadata.failed_payments` uses:
+#: `finance/agent.py`'s `FAILED_PAYMENTS_KEY` reads what `daily_cycle.py` writes literally).
+APPROVAL_TOKEN_METADATA_KEY = "approval_token"
+
+
+async def attach_approval_token(db: AsyncSession, task_id: int, token: str) -> Task:
+    """Deliver the owner's approval token onto a PARKED task and re-queue it (T02b, D1).
+
+    The missing second half of the approvals loop (wave-W1 REQUESTS §1, option (b)): the
+    firewall's `verify_approval` ALLOW path already consumed `tasks.metadata["approval_token"]`
+    (the worker publishes the run's `RunApproval` from exactly that key), but nothing over HTTP
+    could WRITE it — `TaskCreate` carries no `metadata`, so the loop's producer had no route.
+    `POST /api/v1/approvals` (its optional `task_id`) calls this.
+
+    Guardrails, each BEFORE any mutation — a refusal leaves the row byte-identical:
+      * a missing row is `E_NOT_FOUND` (404 at the API boundary);
+      * a row NOT `awaiting_approval` is refused by NAME (`E_VALIDATION`, 422, the current status
+        in the context): a token is meaningful only for the fingerprint a PARKED run recorded,
+        and writing one onto any other row would be a silent metadata overwrite;
+      * a non-object `metadata` blob is refused, never replaced — the merge IS the promise.
+
+    The re-queue mirrors EXACTLY how the parking side wrote the row
+    (`celery_app.tasks.agent_tasks._execute_agent_task`, the `awaiting_approval` branch): the
+    dispatcher's claim (`claim_task`) accepts only `status='pending'` inside the runnable window,
+    with `claimed_by`/`claimed_at`/`heartbeat_at` cleared — the same fields the parking run
+    cleared when it walked away.  `scheduled_date` is deliberately untouched: the dispatcher's
+    own window rule decides when the row becomes claimable.
+    """
+    if not isinstance(token, str) or not token.strip():
+        raise PolsiaError(
+            E_VALIDATION,
+            f"refusing to attach an empty approval token to task {task_id}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"task_id": task_id},
+        )
+    task = await get_task(db, task_id)
+    if task is None:
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"task {task_id} does not exist; there is nothing to attach the token to",
+            how_to_fix=ERROR_HINTS[E_NOT_FOUND],
+            context={"task_id": task_id},
+        )
+    current_status = str(task.status or "")
+    if current_status != TaskStatus.AWAITING_APPROVAL:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"task {task_id} is {current_status or 'unknown'!r}, not 'awaiting_approval'; an "
+            "approval token can only be delivered to a task the approvals channel parked "
+            "(nothing was written)",
+            how_to_fix=(
+                "mint without task_id if the token is for another task, or inspect this task's "
+                "status first (GET /api/v1/tasks/{task_id}); the row was left untouched"
+            ),
+            context={
+                "task_id": task_id,
+                "status": current_status,
+                "expected": TaskStatus.AWAITING_APPROVAL.value,
+            },
+        )
+    existing = task.metadata_json
+    if existing is not None and not isinstance(existing, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"task {task_id} carries a non-object metadata blob ({type(existing).__name__}); "
+            "refusing to replace it — merging the token would destroy the existing payload",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"task_id": task_id, "metadata_type": type(existing).__name__},
+        )
+    merged = dict(existing or {})
+    merged[APPROVAL_TOKEN_METADATA_KEY] = token.strip()
+    task.metadata_json = merged
+    # The re-queue: the same fields the parking side wrote (status + cleared claim), so the
+    # dispatcher's claim sees a runnable row whose metadata carries the token.
+    task.status = TaskStatus.PENDING
+    task.claimed_by = None
+    task.claimed_at = None
+    task.heartbeat_at = None
+    task.updated_at = utcnow()
+    await db.flush()
+    return task
+
+
 # ── the queue: claim / heartbeat / release / requeue ─────────────────────────
 
 
@@ -721,8 +807,10 @@ def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
 
 
 __all__ = [
+    "APPROVAL_TOKEN_METADATA_KEY",
     "VALID_AGENT_TYPES",
     "VALID_TASK_STATUSES",
+    "attach_approval_token",
     "claim_task",
     "create_agent_run",
     "create_task",

@@ -870,6 +870,7 @@ def run_ads_stripe_sync() -> dict[str, Any]:
 async def _ads_stripe_sync() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
+    from app.services.finance_service import recent_failed_payments
 
     bucket = sweep_bucket(6)
     plan = (
@@ -891,6 +892,17 @@ async def _ads_stripe_sync() -> dict[str, Any]:
                 logger.warning("ads/stripe sync: budget denied %s (%s)", agent_type, exc.reason)
                 continue
             key = dedupe_key(agent_type, bucket)
+            # T14b (wave-W3 REQUESTS §4): mirror the morning cycle's attach (`daily_cycle.py`)
+            # for THIS 6-hourly finance dispatch — the run "Check for failed Stripe payments and
+            # update revenue snapshot" must SEE the records its refund path needs (a real `pi_…`
+            # id). Only the finance task is attached, and only when the read is non-empty: an
+            # empty read creates the row this site always created (metadata untouched, and the
+            # agent's consumer degrades to no extra context — never an empty attachment).
+            metadata: dict[str, Any] | None = None
+            if agent_type == "finance":
+                failed_payments = await recent_failed_payments(db)
+                if failed_payments:
+                    metadata = {"failed_payments": failed_payments}
             task = await create_task_deduped(
                 db,
                 title=title,
@@ -898,6 +910,7 @@ async def _ads_stripe_sync() -> dict[str, Any]:
                 dedupe_key=key,
                 source="scheduler",
                 priority=3,
+                metadata=metadata,
             )
             if task is None:
                 duplicates.append(key)

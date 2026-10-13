@@ -17,6 +17,14 @@ Sandbox semantics: reading the inbox and drafting are allowed; SENDING is refuse
 (`E_SANDBOX_BLOCKED`) and every reply is recorded with `status="draft"`. A refund request never
 becomes a refund on its own: the refund action class is irreversible, so it is approval-gated even
 outside sandbox (`proposed_action="refund"` + `needs_human=true`).
+
+Per-run reply budget (T18b/D22): the live product documents "One run answers up to 10 unanswered
+emails and uses one credit" (`polsia-behavior-dossier.md` §8).  That bound has no home in
+`RateCaps` (day/hour windows only, and the `email` channel is SHARED with email_outreach — W2
+R-W2-1), so this agent enforces it directly: each reply that reaches the SEND path consumes one of
+`MAX_REPLIES_PER_RUN` slots, and a reply beyond the budget is skipped BY NAME — never attempted,
+its named refusal lands in `refusals[]`, and the run summary carries `replies_skipped_by_budget`.
+Every `RateCaps` value stays exactly as it was (D22).
 """
 from __future__ import annotations
 
@@ -50,6 +58,8 @@ Rules:
   (always with `needs_human=true` — refunds are irreversible and approval-gated), "escalate" when
   a human must own it, "none" when no reply is appropriate.
 - Keep replies under 200 words, sign as the company, and never promise a fix you cannot verify.
+- Answer at most 10 messages in one run. If more than 10 need an answer, cover the most urgent
+  ones first — the remaining messages stay unanswered for the next run.
 - `message_ref` must be the reference from the message you were given; never renumber messages.
 
 Any send goes through the policy firewall and the email channel's caps. While the company runs in
@@ -60,6 +70,15 @@ state in the reply body that it has been sent, and never claim a refund was issu
 INBOX_ITEM_KEY = "inbox_item"
 #: The task-metadata key carrying a REFERENCE to an inbox item whose body is not attached.
 INBOX_ITEM_ID_KEY = "inbox_item_id"
+
+#: The documented per-run reply budget (T18b/D22): "One run answers up to 10 unanswered emails and
+#: uses one credit" (`polsia-behavior-dossier.md` §8).  Enforced in `run()`'s reply loop — a reply
+#: that would be an 11th send attempt is SKIPPED BY NAME, never attempted (the loop's guard below,
+#: plus the `replies_skipped_by_budget` count on the run summary).  Deliberately NOT a `RateCaps`
+#: value: those are day/hour windows and the `email` channel is shared with email_outreach
+#: (wave-W2 R-W2-1), so a per-run CS-only bound has no home there; every shipped `RateCaps`
+#: default stays untouched (D22: "keep our other defaults").
+MAX_REPLIES_PER_RUN = 10
 
 
 def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
@@ -173,6 +192,11 @@ class CustomerSupportAgent(BasePolsiaAgent):
         # sends only); the caps are check-and-consume, so the firewall must see snapshot +
         # performed — not the stale pre-run count for every reply in the batch.
         performed = 0
+        # T18b/D22: how many replies THIS run has already taken to the send path.  The documented
+        # per-run budget (`MAX_REPLIES_PER_RUN`) bounds that number; the `none`/`refund`/missing-ref
+        # branches above perform no email action and therefore consume no slot.
+        attempted = 0
+        skipped_by_budget = 0
 
         for index, reply in enumerate(list(payload.get("replies") or [])):
             ref = str(reply.get("message_ref") or reply.get("message_id") or "").strip()
@@ -217,6 +241,30 @@ class CustomerSupportAgent(BasePolsiaAgent):
                                           "escalate_to": "finance"}},
                 })
                 continue
+            if attempted >= MAX_REPLIES_PER_RUN:
+                # T18b/D22 — the documented per-run budget: the reply beyond it is REFUSED, not
+                # attempted (no firewall call, no provider call).  Recorded BY NAME (index/ref/
+                # budget/attempt count) in `refusals[]` — the same channel every other item-level
+                # refusal in this loop uses — and counted on the run summary below; the reply stays
+                # a draft and remains unanswered for the next run.
+                reply["status"] = "draft"
+                skipped_by_budget += 1
+                payload.setdefault("refusals", []).append(named_refusal(
+                    E_RATE_LIMITED,
+                    f"reply #{index} ({ref}) skipped: the per-run reply budget of "
+                    f"{MAX_REPLIES_PER_RUN} is exhausted ({attempted} replies already attempted "
+                    "in this run); it is left unanswered for the next run",
+                    how_to_fix=(
+                        "the budget is per RUN: run the agent again (the next run gets a fresh "
+                        "budget) — the remaining replies stay unanswered until then"
+                    ),
+                    index=index,
+                    ref=ref,
+                    budget=MAX_REPLIES_PER_RUN,
+                    attempted=attempted,
+                ))
+                continue
+            attempted += 1
             action_class = ActionClass.EXTERNAL_REVERSIBLE
             sends_today_now = None if sends_today is None else sends_today + performed
             sends_hour_now = None if sends_hour is None else sends_hour + performed
@@ -284,6 +332,18 @@ class CustomerSupportAgent(BasePolsiaAgent):
         payload["side_effects"] = receipts
         payload.setdefault("refusals", [])
         payload.setdefault("replies", [])
+        if skipped_by_budget:
+            # T18b: the run-summary record of the budget's refusals — a COUNT (plus the named
+            # per-reply entries appended above) and a note appended to the summary text, so the
+            # skips are visible to a human reading the run as well as to a machine.  Never silent.
+            payload["replies_skipped_by_budget"] = skipped_by_budget
+            note = (
+                f"{skipped_by_budget} reply(ies) skipped: the per-run reply budget of "
+                f"{MAX_REPLIES_PER_RUN} was exhausted"
+            )
+            if isinstance(payload.get("summary"), str) and payload["summary"].strip():
+                payload["summary"] = f"{payload['summary']} — {note}"
+            payload["drafted_not_sent"] = True
         if settings.sandbox_mode:
             payload["sandbox"] = True
             payload["drafted_not_sent"] = True
@@ -293,4 +353,11 @@ class CustomerSupportAgent(BasePolsiaAgent):
         return self.attach_run_meta(payload, assembled=assembled)
 
 
-__all__ = ["INBOX_ITEM_ID_KEY", "INBOX_ITEM_KEY", "ROLE", "CustomerSupportAgent", "inbox_item_extra_context"]
+__all__ = [
+    "INBOX_ITEM_ID_KEY",
+    "INBOX_ITEM_KEY",
+    "MAX_REPLIES_PER_RUN",
+    "ROLE",
+    "CustomerSupportAgent",
+    "inbox_item_extra_context",
+]

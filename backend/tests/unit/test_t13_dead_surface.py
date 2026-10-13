@@ -71,10 +71,18 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     assert set(outreach_service.__all__) == {
         "create_prospect", "list_prospects", "record_sent_emails"
     }
+    # T02b (wave-W5) DELIBERATELY extended `task_service.__all__` with the approval-token
+    # delivery pair — `attach_approval_token` (the re-queue write the mint route calls) and its
+    # producer-side key constant (`APPROVAL_TOKEN_METADATA_KEY`, read by
+    # `agent_tasks.approval_token_from_metadata`).  This pin moves WITH the shipped surface on
+    # purpose: the surface may grow only when the growth is recorded (wave-W1's pin-update
+    # doctrine), which is exactly what happened here — the old→new delta is in the wave-W5
+    # receipt §"Deliberate pin updates".
     assert {
-        "claim_task", "create_agent_run", "create_task", "finish_agent_run", "get_agent_statuses",
-        "get_task", "heartbeat_task", "is_valid_agent_type", "list_tasks", "release_claim",
-        "requeue_stale_claims", "update_task_status", "VALID_AGENT_TYPES", "VALID_TASK_STATUSES",
+        "APPROVAL_TOKEN_METADATA_KEY", "VALID_AGENT_TYPES", "VALID_TASK_STATUSES",
+        "attach_approval_token", "claim_task", "create_agent_run", "create_task", "finish_agent_run",
+        "get_agent_statuses", "get_task", "heartbeat_task", "is_valid_agent_type", "list_tasks",
+        "release_claim", "requeue_stale_claims", "update_task_status",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__

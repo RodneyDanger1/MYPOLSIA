@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from enum import Enum
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +66,19 @@ async def trigger_agent(
     agent_name = agent_type.value
     title = (payload.task_title if payload else None) or f"Manual {agent_name} run"
     with refusal_guard():
+        # T14b (wave-W3 REQUESTS §4): the manual finance run must SEE the failed-payment records
+        # (its refund path needs a real `pi_…` id), exactly as the morning cycle's fixed finance
+        # task does (`daily_cycle._morning_cycle`).  Agents hold no DB session, so the task's own
+        # `metadata` is the delivery channel; the attach happens ONLY for finance and ONLY when
+        # records exist — an empty read attaches NOTHING (the row is exactly what it was before,
+        # and the agent's consumer degrades to no extra context).
+        metadata: dict[str, Any] | None = None
+        if agent_name == "finance":
+            from app.services.finance_service import recent_failed_payments
+
+            failed_payments = await recent_failed_payments(db)
+            if failed_payments:
+                metadata = {"failed_payments": failed_payments}
         task = await create_task(
             db,
             title=title,
@@ -72,6 +86,7 @@ async def trigger_agent(
             description=payload.description if payload else None,
             priority=payload.priority if payload else 3,
             source="manual",
+            metadata=metadata,
         )
     try:
         from celery_app.tasks.agent_tasks import run_agent_task
