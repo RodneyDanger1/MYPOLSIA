@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Polsia is a self-hosted, autonomous AI platform that runs a company's operations 24/7. Ten specialized agents (Orchestrator, Business Planning, Competitor Research, Social Media, Ads, Email Outreach, Customer Support, Code Generation, Finance, Deployment) run on a Celery + Redis task queue with a FastAPI backend and Next.js dashboard. Agents call the Claude Code CLI as a subprocess — no Anthropic API key is used.
+Polsia is a self-hosted, autonomous AI platform that runs a company's operations 24/7. Nine specialized agents (Orchestrator, Business Planning, Competitor Research, Social Media, Ads, Email Outreach, Customer Support, Code Generation, Finance) run on a Celery + Redis task queue with a FastAPI backend and Next.js dashboard. The agent runtime is DeepSeek-first (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored in `backend/data/deepseek_api_key.json`) with the Claude Code CLI as a fallback.
 
 ## Running tests
 
@@ -43,7 +43,7 @@ make test        # unit + integration (via Docker)
 
 ## Architecture in one paragraph
 
-FastAPI (async, Python 3.11) serves the REST API and WebSocket. Celery workers pull tasks from Redis and run agents. Each agent inherits `BasePolsiaAgent` and calls `claude -p "..." --output-format json` as a subprocess. Results are written to PostgreSQL (SQLAlchemy async ORM, 16 tables) and semantic insights are dual-written to ChromaDB. Redis pub/sub broadcasts activity events to the WebSocket, which the Next.js dashboard consumes in real-time. `CLAUDE_CLI_MOCK=true` makes all agents return a stub response — used in all tests and CI.
+FastAPI (async, Python 3.12) serves the REST API and WebSocket. Celery workers pull tasks from Redis and run agents. Each agent inherits `BasePolsiaAgent`; the runtime is provider-selectable — DeepSeek-first (`app/agents/deepseek_runtime.py`, OpenAI-compatible endpoint) with the Claude Code CLI (`claude -p "..." --output-format json`) as fallback. Results are written to PostgreSQL (SQLAlchemy async ORM, 18 tables) and semantic insights are dual-written to ChromaDB. Redis pub/sub broadcasts activity events to the WebSocket, which the Next.js dashboard consumes in real-time. `CLAUDE_CLI_MOCK=true` makes all agents return a stub response — used in all tests and CI.
 
 ## Critical env vars for development
 
@@ -97,7 +97,7 @@ All ORM models use `JSON` instead of `JSONB` or `ARRAY(String)` — this makes t
 
 ```bash
 # Create a new migration (inside the backend container or with the right DATABASE_URL):
-alembic revision --autogenerate -m "add deployments table"
+alembic revision --autogenerate -m "add column"
 alembic upgrade head
 ```
 
