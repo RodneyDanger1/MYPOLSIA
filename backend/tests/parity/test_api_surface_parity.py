@@ -48,6 +48,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
     ("/api/v1/config", ("GET",)),
     ("/api/v1/config", ("PUT",)),
+    ("/api/v1/config/deepseek-key", ("DELETE",)),               # DeepSeek key lifecycle (masked; owner-managed)
+    ("/api/v1/config/deepseek-key", ("GET",)),
+    ("/api/v1/config/deepseek-key", ("PUT",)),
+    ("/api/v1/config/deepseek-key/verify", ("POST",)),
     ("/api/v1/dashboard/activity", ("GET",)),
     ("/api/v1/dashboard/reports/daily", ("GET",)),
     ("/api/v1/dashboard/summary", ("GET",)),

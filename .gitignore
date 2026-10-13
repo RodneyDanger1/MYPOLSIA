@@ -51,3 +51,12 @@ e2e/playwright-report/
 # leaving one committable. Pinned to that directory on purpose: a bare `.hermes-tmp.*` would
 # hide any same-named file anywhere in the tree, not just this harness's scratch file.
 backend/tests/unit/celery/.hermes-tmp.*
+
+# ── DeepSeek key store ────────────────────────────────────────────────────────
+# The owner's DeepSeek API key persists here when it is saved from the dashboard
+# (app/services/secret_store.py; the write-temp sibling ends in `.tmp`). Runtime state,
+# never source: a committed key file hands the key to everyone with repo access.
+backend/data/deepseek_api_key.json
+backend/data/deepseek_api_key.json.*.tmp
+# The D7 Windows fallback store (app/core/chroma_client.resolve_persist_dir) is runtime state too.
+backend/data/chroma/
