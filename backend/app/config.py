@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # `celery -A celery_app.worker worker --loglevel=info --concurrency=4`.  Kept, not deleted —
     # the removal-vs-label decision is recorded in polsia-work/build/R20-minors REQUESTS.
     celery_worker_concurrency: int = 4
+    # R23 note (celery_worker_concurrency), read-verified: docker-compose.yml:95 is exactly the
+    # command quoted above and the beat service (docker-compose.yml:120) passes no `--concurrency`
+    # flag at all; a sibling pointer in celery_app/celery_config.py records the same split (R22).
 
     # --- daily cycles (morning hour: company-local, task-gated; evening hour: UTC, beat crontab) ---
     morning_cycle_hour: int = 6
@@ -131,6 +134,14 @@ class Settings(BaseSettings):
     # --- stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
+    # no read of `stripe_publishable_key` in app/, celery_app/, scripts/, tests/, frontend/, compose
+    # or the Makefile; every other hit is this declaration, its `.env.example` lines or a README
+    # advertisement).  Intended for a CLIENT-side Stripe flow (Stripe.js/Checkout — a publishable
+    # key is, by design, the half that ships to the browser); none exists.  The consumed half of
+    # this section is `stripe_secret_key` (app/agents/integrations.py:166) and
+    # `stripe_webhook_secret` (app/api/v1/finance.py:190).  Kept, not deleted — keep-vs-remove is
+    # an owner decision (polsia-work/build/R23-labels REQUESTS).
     stripe_publishable_key: str = ""
 
     # --- integrations (optional) ---
@@ -140,18 +151,48 @@ class Settings(BaseSettings):
     twitter_access_secret: str = ""
     sendgrid_api_key: str = ""
     sendgrid_from_email: str = ""
+    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
+    # no read of `imap_host`/`imap_user`/`imap_password` in app/, celery_app/, scripts/, tests/,
+    # frontend/, compose or the Makefile; every remaining mention is a comment, docstring, label or
+    # README/docs prose).  Intended as the mail-POLL ingest for the support
+    # inbox: the R17 service names "a future IMAP poller" as an alternative submitter
+    # (app/services/support_inbox_service.py:8) while the inbox is in fact filled via
+    # `POST /api/v1/support/inbox`, and the customer_support agent fetches nothing itself
+    # ("no tools, no IMAP path" — app/agents/customer_support/agent.py:85).  Kept, not deleted —
+    # keep-vs-remove is an owner decision (polsia-work/build/R23-labels REQUESTS).
     imap_host: str = ""
     imap_user: str = ""
     imap_password: str = ""
+    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
+    # no code path reads `tavily_api_key`; every other mention is a label/advertisement, the optional
+    # dependency rows (check_deps.py; `tavily-python` pinned in requirements.txt, never imported), or
+    # the docs/ACCEPTANCE_TESTING.md spec row for a future test).  Intended as the web-search
+    # provider for competitor research (README:95); that agent reaches the web through the CLI's own
+    # WebSearch/WebFetch tools instead (app/agents/competitor_research/agent.py:3-4).  Kept, not
+    # deleted — keep-vs-remove is an owner decision (polsia-work/build/R23-labels REQUESTS).
     tavily_api_key: str = ""
     github_token: str = ""
     google_ads_developer_token: str = ""
     google_ads_client_id: str = ""
+    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
+    # nothing reads `google_ads_client_secret`, while the four sibling GOOGLE_ADS_* settings are
+    # name-checked by app/agents/integrations.py:182-187 — and that adapter refuses past the check
+    # anyway: "needs an account-scoped API client that this deployment does not ship").  Intended
+    # as the OAuth client secret of that not-yet-built client (Google's OAuth flow pairs it with
+    # the client id).  Kept, not deleted — keep-vs-remove is an owner decision
+    # (polsia-work/build/R23-labels REQUESTS).
     google_ads_client_secret: str = ""
     google_ads_refresh_token: str = ""
     google_ads_customer_id: str = ""
     meta_ads_access_token: str = ""
     meta_ads_account_id: str = ""
+    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
+    # nothing reads `render_api_key` — only this declaration, the `.env.example` block, the README
+    # advertisements and docs/ACCEPTANCE_TESTING.md mention it).  Intended for the
+    # advertised-but-never-built tenth "Deployment" agent (Render is a PaaS): `deployment` exists
+    # only as an UNREGISTERED schema — app/schemas/agent_outputs.py:40-44/432-465 — and
+    # `GET /agents/status` asserts nine agents.  Kept, not deleted — keep-vs-remove is an owner
+    # decision (polsia-work/build/R23-labels REQUESTS).
     render_api_key: str = ""
 
     # --- deepseek (the agent runtime's model provider) ---
