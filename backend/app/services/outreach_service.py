@@ -7,6 +7,7 @@ caller can act on it.  Reads are newest-first on `(created_at DESC, id DESC)`.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -17,6 +18,8 @@ from app.core.database import utcnow
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.outreach import EmailCampaign, EmailLog, Prospect
 from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
+
+logger = logging.getLogger(__name__)
 
 
 async def list_prospects(
@@ -113,6 +116,15 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
     required FK, so the prospect is found (or created) first. Deduped by `sendgrid_id` so a
     retried run cannot double-count. `flush` only — the worker owns the commit. Never raises:
     any failure comes back in the report's `error` field.
+
+    RD30 (M5): a performed send whose `prospect_email` cannot become a prospect row (no usable
+    address) is ITEM-SCOPED — it is skipped with a named warning and a `skipped_malformed` entry
+    in the report (present only when there is something to list) and the batch CONTINUES, so the
+    performed sends after it are still counted. The refusal fires before any flush, so the
+    session is provably healthy. Every other item failure (E_DB, a refused read, the
+    vanished-duplicate race) stays batch-fatal: a session that may be poisoned must not be
+    driven on. When at least one item was skipped the report is `ok=False` with the first
+    skip's named error — visible in the run output and the worker's existing warning path.
     """
     report: dict[str, Any] = {
         "ok": True,
@@ -122,7 +134,7 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
         "error": None,
     }
     try:
-        for item in (result or {}).get("emails") or []:
+        for index, item in enumerate((result or {}).get("emails") or []):
             if not isinstance(item, dict):
                 continue
             sendgrid_id = str(item.get("sendgrid_id") or "").strip()
@@ -137,9 +149,35 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
             if existing is not None:
                 report["duplicates_skipped"] += 1
                 continue
-            prospect, created = await _find_or_create_prospect(
-                db, str(item.get("prospect_email") or "").strip()
-            )
+            address = str(item.get("prospect_email") or "").strip()
+            try:
+                prospect, created = await _find_or_create_prospect(db, address)
+            except PolsiaError as exc:
+                if exc.code != E_VALIDATION or "is not a usable address" not in exc.message:
+                    # E_DB / a refused read / the vanished-duplicate race: batch-fatal, as ever —
+                    # a session that may be poisoned must not be driven on.
+                    raise
+                # RD30 (M5): item-scoped continuation. `email_logs.prospect_id` is a required FK
+                # and this address cannot become a prospect, so there is no honest row for the
+                # item — but the refusal fires BEFORE any flush (the session is provably
+                # healthy), and aborting here would permanently undercount every performed send
+                # after it. Skip BY NAME; the later valid rows still count (one commit, as ever).
+                logger.warning(
+                    "code=email_log_skipped_malformed_address: item %d (sendgrid_id=%s) cannot "
+                    "be linked to a prospect: %s",
+                    index, sendgrid_id, exc.message,
+                )
+                report.setdefault("skipped_malformed", []).append({
+                    "index": index,
+                    "prospect_email": address,
+                    "sendgrid_id": sendgrid_id,
+                    "code": exc.code,
+                    "message": exc.message,
+                })
+                if report["ok"]:                   # the first skip names the report's error
+                    report["ok"] = False
+                    report["error"] = {"code": exc.code, "message": exc.message}
+                continue
             if created:
                 report["prospects_created"] += 1
             db.add(

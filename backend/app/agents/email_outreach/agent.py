@@ -14,6 +14,7 @@ markers; the same is true for the un-subscribe-safe follow-up scheduling. Only a
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.agents import integrations
@@ -22,6 +23,8 @@ from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import request_side_effect, side_effect_receipt
 from app.config import settings
 from app.schemas.agent_outputs import EmailOutreachOutput
+
+logger = logging.getLogger(__name__)
 
 ROLE = """You are the Email Outreach agent of an autonomous company. You find prospects that fit
 the company's ideal customer profile and write the first email of a sequence.
@@ -87,8 +90,28 @@ class EmailOutreachAgent(BasePolsiaAgent):
                 receipt["integration"] = result
                 if result.get("ok"):
                     email["status"] = "sent"
-                    email["sendgrid_id"] = str((result.get("result") or {}).get("message_id")
-                                               or (result.get("result") or {}).get("status_code") or "")
+                    # RD30/RD14: the cap's dedupe key is the provider's OWN per-message id — the
+                    # SAME capture as the CS producer (customer_support/agent.py) so the two
+                    # cannot drift apart again. A status code is not an id: the old
+                    # `message_id or status_code` fallback keyed every no-header send on "202",
+                    # so distinct real sends collapsed onto ONE counted row (R27 M3, measured).
+                    sendgrid_id = str((result.get("result") or {}).get("message_id") or "")
+                    email["sendgrid_id"] = sendgrid_id
+                    if not sendgrid_id:
+                        # Performed but provably uncountable: name the gap — never fake a key
+                        # (record_sent_emails refuses items without a real provider id) and
+                        # never stay silent about the undercount it causes.
+                        logger.warning(
+                            "code=email_sent_without_provider_id: prospect=%s performed but "
+                            "the provider returned no X-Message-Id; record_sent_emails will "
+                            "not count this send (email cap undercount is named, not silent)",
+                            to,
+                        )
+                        payload.setdefault("uncounted_sends", []).append({
+                            "reason": "no_provider_id",
+                            "prospect_email": to,
+                            "provider_status": (result.get("result") or {}).get("status_code"),
+                        })
                 else:
                     email["status"] = "failed"
                     payload.setdefault("refusals", []).append(result)

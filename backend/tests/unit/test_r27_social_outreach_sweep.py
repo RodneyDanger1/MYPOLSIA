@@ -680,18 +680,17 @@ async def test_record_sent_emails_re_raises_when_the_duplicate_row_vanishes(
     assert await _count(db, EmailLog) == 0
 
 
-async def test_record_sent_emails_aborts_the_batch_at_a_malformed_address(
+async def test_record_sent_emails_continues_past_a_malformed_address_and_names_the_skip(
     async_db_session, monkeypatch,
 ):
-    """MEASURED RESIDUAL — REQUIRED-FOLLOW-UP: one malformed address stops the WHOLE batch.
+    """R30 re-pin (was: "aborts_the_batch_at_a_malformed_address" — the measured M5 residual).
 
-    The first item is written, the malformed second item raises `E_VALIDATION`, and the THIRD item
-    (a genuinely performed send with a provider id) is never reached — so a batch of N real sends
-    can permanently undercount by the items after the bad one, and the email cap reads a count
-    below reality (the same class RD14 closed for the collapse case; not silent — the report is
-    `ok=False` — but uncounted). The session is NOT poisoned by this refusal (no flush was
-    attempted: the address check refuses before it), so continuing item-scoped is possible; the
-    fix belongs with the counting contract, not in this lane's frozen surface. Pinned as measured.
+    One malformed address no longer stops the WHOLE batch. The malformed item cannot be linked
+    (`email_logs.prospect_id` is a required FK), so it is skipped BY NAME (a `skipped_malformed`
+    entry + the report's `error`, `ok=False`) and the items AFTER it are still counted — a batch
+    of N real sends can no longer permanently undercount by the items after the bad one. The
+    refusal fires before any flush was attempted, so the session is not poisoned; the closing
+    count proves the continuation ran on a healthy session.
     """
     monkeypatch.setattr(outreach_service, "utcnow", lambda: NOW)
     db = async_db_session
@@ -700,12 +699,21 @@ async def test_record_sent_emails_aborts_the_batch_at_a_malformed_address(
         {"status": "sent", "sendgrid_id": "sg-bad", "prospect_email": "no-at-sign"},
         _outreach_email(3, "sg-after"),
     ]})
-    assert report["ok"] is False
+    assert report["ok"] is False                      # the skip is still flagged, never silent
     assert report["error"]["code"] == E_VALIDATION
-    assert report["emails_written"] == 1                  # the 3rd performed send went UNCOUNTED
-    assert await _count(db, EmailLog) == 1
+    assert report["emails_written"] == 2              # ..., but the 3rd performed send IS counted
+    assert report["skipped_malformed"] == [{
+        "index": 1,
+        "prospect_email": "no-at-sign",
+        "sendgrid_id": "sg-bad",
+        "code": E_VALIDATION,
+        "message": "prospect email 'no-at-sign' is not a usable address",
+    }]
+    assert sorted(
+        log.sendgrid_id for log in (await db.execute(select(EmailLog))).scalars()
+    ) == ["sg-after", "sg-first"]
     # the refusal did not poison the session: the caller can keep working on it
-    assert (await db.execute(select(func.count()).select_from(Prospect))).scalar() == 1
+    assert (await db.execute(select(func.count()).select_from(Prospect))).scalar() == 2
 
 
 async def test_record_sent_emails_reports_a_named_PolsiaError_without_raising(
@@ -771,16 +779,17 @@ async def test_email_rows_written_by_the_producer_drive_the_day_cap_to_refusal(
     assert await _count(db, EmailLog) == 50
 
 
-async def test_known_residual_no_provider_id_collapses_distinct_sends(async_db_session,
+async def test_no_provider_id_sends_are_never_folded_onto_a_fake_key(async_db_session,
                                                                      monkeypatch):
-    """KNOWN RESIDUAL (RD14's class, surviving sibling) — REQUIRED-FOLLOW-UP, pinned as measured.
+    """R30 re-pin (was: "test_known_residual_no_provider_id_collapses_distinct_sends").
 
-    When SendGrid's response carries no `X-Message-Id`, `email_outreach/agent.py:90-91` falls back
-    to `status_code`, so every such send's `sendgrid_id` is `"202"` and the producer (whose dedupe
-    key is the provider id) collapses DISTINCT sends onto ONE `email_logs` row — the email cap
-    then counts 1 for N real sends (RD14's exact defect class, whose fix is in the agent's
-    fallback / the adapter, neither of which is this lane's file). This test pins the measured
-    behavior so a future fix trips it deliberately; it is NOT an endorsement.
+    The RD14 sibling defect is FIXED. Measured before R30: with no `X-Message-Id` the agent fell
+    back to the HTTP status code, so two DISTINCT real sends both keyed on `"202"` and the
+    producer collapsed them onto ONE counted row (the email cap counted 1 for 2 real sends).
+    Now both sends carry `sendgrid_id=""` — a status code is not an id — the agent NAMES each gap
+    (`uncounted_sends`, never silent), and the producer records NOTHING for them: `0` is the
+    honest count for "performed but provably uncountable", not a fabricated 1. (The with-id path
+    — "2 distinct real ids -> 2 rows" — is pinned in test_send_cap_producer_e2e and R30's file.)
     """
     monkeypatch.setattr(app_config.settings, "company_timezone", "UTC")
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
@@ -797,11 +806,16 @@ async def test_known_residual_no_provider_id_collapses_distinct_sends(async_db_s
                                                                                "hour": 0}}}))
 
     assert len(fake.sent_message_ids) == 2                       # two real provider sends happened
-    assert [s["emails"][0]["sendgrid_id"] for s in sends] == ["202", "202"]
+    assert [s["emails"][0]["sendgrid_id"] for s in sends] == ["", ""]     # WAS ["202", "202"]
     for out in sends:
-        await outreach_service.record_sent_emails(db, out)
-
-    logs = list((await db.execute(select(EmailLog))).scalars())
-    assert len(logs) == 1                                        # ...but only one counted row
+        # the performed-but-uncountable gap is NAMED on the run output, never silent
+        assert out["uncounted_sends"] == [{
+            "reason": "no_provider_id",
+            "prospect_email": out["emails"][0]["prospect_email"],
+            "provider_status": 202,
+        }]
+        report = await outreach_service.record_sent_emails(db, out)
+        assert report["emails_written"] == 0 and report["ok"] is True
+    assert await _count(db, EmailLog) == 0                       # WAS 1 (the collapsed row)
     assert await channel_sends_snapshot(db, ["email"], now=NOW) == {
-        "email": {"today": 1, "hour": 1}}
+        "email": {"today": 0, "hour": 0}}
