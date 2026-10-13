@@ -44,3 +44,10 @@ Thumbs.db
 # not source: regenerated every time, and a trace bundle is megabytes of binary.
 e2e/test-results/
 e2e/playwright-report/
+
+# ── Tooling temp files ────────────────────────────────────────────────────────
+# A lane's harness left `backend/tests/unit/celery/.hermes-tmp.6tLhJe` untracked (A2 R15 /
+# A-H9) before it was deleted; it was never tracked and nothing stopped a future run from
+# leaving one committable. Pinned to that directory on purpose: a bare `.hermes-tmp.*` would
+# hide any same-named file anywhere in the tree, not just this harness's scratch file.
+backend/tests/unit/celery/.hermes-tmp.*
