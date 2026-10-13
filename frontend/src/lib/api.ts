@@ -39,14 +39,37 @@ export class ApiError extends Error {
   }
 }
 
-function isRefusal(body: unknown): body is { ok: false; error: ApiRefusal } {
-  return (
-    !!body &&
-    typeof body === "object" &&
-    (body as { ok?: unknown }).ok === false &&
-    typeof (body as { error?: unknown }).error === "object" &&
-    (body as { error: ApiRefusal }).error !== null
-  );
+/** The named refusal carried by a response, in EITHER wire shape the backend emits (D5; audit L5-01).
+ *
+ *  The app's PolsiaError handler emits the envelope `{ok: false, error: {code, message, how_to_fix}}`;
+ *  FastAPI's default handler serializes `HTTPException(detail={code, ...})` — the shape `refusal_guard`
+ *  and direct raises produce — as `{"detail": {code, ...}}`. Before this, only the envelope was parsed,
+ *  so every guard-path refusal degraded to `E_HTTP_<status>` with a raw JSON blob as its message. A
+ *  `detail` payload WITHOUT a `code` (plain 422s, incidental HTTPExceptions) stays a generic `E_HTTP_*`
+ *  — those are not refusals and must not pretend to be.
+ */
+function refusalFrom(body: unknown): ApiRefusal | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as { ok?: unknown; error?: unknown; detail?: unknown };
+  if (b.ok === false && b.error !== null && typeof b.error === "object") {
+    const e = b.error as Partial<ApiRefusal>;
+    if (typeof e.code === "string" && typeof e.message === "string") {
+      return { code: e.code, message: e.message, how_to_fix: e.how_to_fix ?? "", context: e.context };
+    }
+    return null;
+  }
+  if (b.detail !== null && typeof b.detail === "object") {
+    const d = b.detail as Partial<ApiRefusal>;
+    if (typeof d.code === "string") {
+      return {
+        code: d.code,
+        message: typeof d.message === "string" ? d.message : d.code,
+        how_to_fix: typeof d.how_to_fix === "string" ? d.how_to_fix : "",
+        context: d.context,
+      };
+    }
+  }
+  return null;
 }
 
 function sleep(ms: number) {
@@ -93,9 +116,9 @@ async function apiFetch<T>(
         } catch {
           parsed = undefined;
         }
-        if (isRefusal(parsed)) {
-          const { code, message, how_to_fix } = parsed.error;
-          throw new ApiError(res.status, message, code, how_to_fix ?? "", parsed);
+        const refusal = refusalFrom(parsed);
+        if (refusal) {
+          throw new ApiError(res.status, refusal.message, refusal.code, refusal.how_to_fix ?? "", parsed);
         }
         const err = new ApiError(res.status, text || res.statusText, `E_HTTP_${res.status}`);
         // A 5xx on a read is worth one more try; a 4xx never is.
