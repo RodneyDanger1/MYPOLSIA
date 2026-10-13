@@ -9,6 +9,20 @@ function formatCents(cents: number): string {
 }
 
 /**
+ * `null` is "not measured" — the summary answers null, not 0, when there is no snapshot or
+ * nothing to aggregate — and it renders as an em dash. A measured 0 must NOT take that branch:
+ * 0 cents is `$0.00`, a real reading, and the two states stay as different on the page as they
+ * are on the wire.
+ */
+function formatCentsOrDash(cents: number | null | undefined): string {
+  return cents == null ? "—" : formatCents(cents);
+}
+
+function formatUsdOrDash(usd: number | null | undefined): string {
+  return usd == null ? "—" : `$${usd.toFixed(2)}`;
+}
+
+/**
  * Client component on purpose.
  *
  * This page used to be an async Server Component doing `await api.get(...)`. Next prerenders this route
@@ -21,6 +35,9 @@ function formatCents(cents: number): string {
  *   loading  -> a skeleton, because "not read yet" is not "empty"
  *   error    -> the failure named on the page, never an empty list standing in for it
  *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ *
+ * A fourth distinction lives in the numbers: every money field is nullable, null means "not measured",
+ * and it renders "—" while a real 0 renders "$0.00" (see formatCentsOrDash).
  */
 
 export default function FinancePage() {
@@ -60,12 +77,12 @@ export default function FinancePage() {
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <MetricsCard
           title="MRR"
-          value={data ? formatCents(data.mrr_cents) : "—"}
+          value={formatCentsOrDash(data?.mrr_cents)}
           trend="up"
         />
         <MetricsCard
           title="ARR"
-          value={data ? formatCents(data.arr_cents) : "—"}
+          value={formatCentsOrDash(data?.arr_cents)}
           trend="up"
         />
         <MetricsCard
@@ -74,16 +91,16 @@ export default function FinancePage() {
         />
         <MetricsCard
           title="Stripe Balance"
-          value={data ? formatCents(data.stripe_balance_cents) : "—"}
+          value={formatCentsOrDash(data?.stripe_balance_cents)}
         />
         <MetricsCard
           title="Total Ad Spend"
-          value={data ? `$${data.total_ad_spend_usd.toFixed(2)}` : "—"}
+          value={formatUsdOrDash(data?.total_ad_spend_usd)}
           trend="neutral"
         />
         <MetricsCard
           title="Expenses (Month)"
-          value={data ? formatCents(data.total_expenses_month_cents) : "—"}
+          value={formatCentsOrDash(data?.total_expenses_month_cents)}
           trend="neutral"
         />
       </div>

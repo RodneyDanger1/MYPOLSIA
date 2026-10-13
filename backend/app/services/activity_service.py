@@ -99,12 +99,14 @@ async def log_activities(
                 how_to_fix=ERROR_HINTS[E_VALIDATION],
                 context={"index": index, "missing": missing},
             )
+        # NULL (writer did not set a level) -> "info" explicitly; `or` would also swallow "" (A-T3).
+        entry_level = entry.get("level")
         rows.append(
             {
                 "agent_type": entry["agent_type"],
                 "action": entry["action"],
                 "summary": entry["summary"],
-                "level": entry.get("level") or "info",
+                "level": "info" if entry_level is None else entry_level,
                 "detail": entry.get("detail"),
                 "created_at": entry.get("created_at") or batch_at,
             }

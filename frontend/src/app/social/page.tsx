@@ -3,7 +3,21 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 
-type Post = { id: number; content: string; status: string; published_at: string | null; engagement: Record<string, number> | null };
+// `engagement` is `dict[str, Any] | None` server-side (`SocialPostResponse.engagement` in
+// `app/schemas/social.py`), so each counter is as untyped on the wire as the dashboard's `kpis`:
+// the type says `unknown` and `engagementValue` below narrows it for display.
+type Post = { id: number; content: string; status: string; published_at: string | null; engagement: Record<string, unknown> | null };
+
+/**
+ * Same narrowing the dashboard's `kpiText` applies to `kpis`: a displayable counter is shown as it
+ * is (`likes: 11`, never `likes: 11.00`), a missing one becomes the em dash, and anything else is
+ * stringified rather than rendered as "[object Object]".
+ */
+function engagementValue(value: unknown): string | number {
+  if (typeof value === "string" || typeof value === "number") return value;
+  if (value == null) return "—";
+  return String(value);
+}
 
 /**
  * Client component on purpose.
@@ -62,9 +76,15 @@ export default function SocialPage() {
             <div className="flex gap-4 mt-2 text-sm text-gray-400">
               <span className={`capitalize ${p.status === "published" ? "text-green-400" : "text-yellow-400"}`}>{p.status}</span>
               {p.published_at && <span>{new Date(p.published_at).toLocaleDateString()}</span>}
-              {p.engagement && Object.entries(p.engagement).map(([k, v]) => (
-                <span key={k}>{k}: {v}</span>
-              ))}
+              {/* A null engagement is "no counters recorded yet", not an error: the em dash is the
+                  same "not measured" placeholder the finance cards use for a null reading. */}
+              {p.engagement == null ? (
+                <span>engagement: —</span>
+              ) : (
+                Object.entries(p.engagement).map(([k, v]) => (
+                  <span key={k}>{k}: {engagementValue(v)}</span>
+                ))
+              )}
             </div>
           </div>
         ))}

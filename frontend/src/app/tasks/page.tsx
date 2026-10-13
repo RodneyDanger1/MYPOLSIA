@@ -71,7 +71,9 @@ export default function TasksPage() {
                 {t.agent_type.replace(/_/g, " ")} · Priority {t.priority}
               </p>
               <p className="text-gray-500 text-xs mt-1">
-                {new Date(t.created_at).toLocaleString()}
+                {/* `created_at` is nullable on the wire (api.ts): the placeholder below, not the
+                    "Invalid Date" that `new Date(null)` produces. */}
+                {t.created_at ? new Date(t.created_at).toLocaleString() : "date unknown"}
               </p>
             </div>
             <span

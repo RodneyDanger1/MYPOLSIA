@@ -67,4 +67,53 @@ describe("ActivityFeed", () => {
     act(() => { mockWsInstance.onclose?.(); });
     expect(screen.getByText(/Reconnecting/i)).toBeInTheDocument();
   });
+
+  it("renders the placeholder for an event whose created_at is null on the wire", async () => {
+    render(<ActivityFeed />);
+    act(() => { mockWsInstance.onopen?.(); });
+
+    // `ActivityEventResponse.created_at` is `datetime | None` (`app/schemas/report.py`) — the column
+    // is nullable — so a null really arrives, and it must not reach `new Date(null)` (1/1/1970).
+    const event = {
+      id: 2,
+      agent_type: "finance",
+      action: "snapshot",
+      summary: "Revenue captured without a timestamp",
+      level: "info",
+      created_at: null,
+    };
+
+    act(() => {
+      mockWsInstance.onmessage?.({ data: JSON.stringify(event) });
+    });
+
+    expect(screen.getByText("Revenue captured without a timestamp")).toBeInTheDocument();
+    expect(screen.getByText("date unknown")).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
+
+  it("renders a level this build does not know instead of dropping the event", async () => {
+    const { container } = render(<ActivityFeed />);
+    act(() => { mockWsInstance.onopen?.(); });
+
+    // `level` is a plain `str` server-side (`app/schemas/report.py` only normalises NULL -> "info"),
+    // so an unknown word is a legal wire value: the lookup tables fall through to their gray
+    // branches and the event still renders.
+    const event = {
+      id: 3,
+      agent_type: "ads_management",
+      action: "budget_shift",
+      summary: "Budget shifted with an unrecognised level",
+      level: "critical",
+      created_at: new Date().toISOString(),
+    };
+
+    act(() => {
+      mockWsInstance.onmessage?.({ data: JSON.stringify(event) });
+    });
+
+    expect(screen.getByText("Budget shifted with an unrecognised level")).toBeInTheDocument();
+    expect(container.querySelector("span.bg-gray-400")).not.toBeNull(); // dot fallback
+    expect(container.querySelector("span.text-gray-300")).not.toBeNull(); // label fallback
+  });
 });

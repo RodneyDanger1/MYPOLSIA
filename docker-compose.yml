@@ -95,6 +95,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Inlined into the client bundle at BUILD time (frontend/src/lib/api.ts reads it); it must
+        # match the backend's API_KEY or every dashboard request gets a 401.  Rebuild to change it.
+        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-dev-key}
     env_file: .env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost

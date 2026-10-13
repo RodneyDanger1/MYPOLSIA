@@ -142,8 +142,16 @@ export type ActivityEvent = {
   agent_type: string;
   action: string;
   summary: string;
-  level: "info" | "success" | "warning" | "error";
-  created_at: string;
+  /** An open string, not a closed union. The server types the field `level: str`
+   *  (`ActivityEventResponse` in `app/schemas/report.py`) and only normalises NULL -> "info", so
+   *  "info"/"success"/"warning"/"error" are what today's writers emit, not what the contract
+   *  promises. The feed renders an unknown word with its gray fallback (`ActivityFeed.tsx`) instead
+   *  of treating it as impossible. */
+  level: string;
+  /** `datetime | None` server-side (`ActivityEventResponse.created_at`; the column is nullable with
+   *  a `now()` default), so null is a real wire value: the feed renders it as "date unknown", the
+   *  way the memory page does — never as `new Date(null)`, which prints 1/1/1970. */
+  created_at: string | null;
 };
 
 export type DashboardSummary = {
@@ -162,7 +170,9 @@ export type Task = {
   agent_type: string;
   status: string;
   priority: number;
-  created_at: string;
+  /** Same nullable contract as `ActivityEvent.created_at` — `TimestampedORM.created_at` is
+   *  `datetime | None` (`app/schemas/common.py`). */
+  created_at: string | null;
 };
 
 export type AgentStatus = {
@@ -173,12 +183,14 @@ export type AgentStatus = {
   tasks_total: number;
 };
 
+/** GET /finance/summary. Money fields are `number | null`: null is "not measured" (no
+ *  snapshot yet, nothing to aggregate) and renders as an em dash — never as 0. */
 export type FinanceSummary = {
-  mrr_cents: number;
-  arr_cents: number;
-  active_subscribers: number;
-  total_ad_spend_usd: number;
-  total_expenses_month_cents: number;
-  stripe_balance_cents: number;
+  mrr_cents: number | null;
+  arr_cents: number | null;
+  active_subscribers: number | null;
+  total_ad_spend_usd: number | null;
+  total_expenses_month_cents: number | null;
+  stripe_balance_cents: number | null;
   last_snapshot_date: string | null;
 };

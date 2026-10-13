@@ -8,12 +8,20 @@ from app.schemas.common import ORMModel
 
 
 class FinanceSummaryResponse(BaseModel):
-    mrr_cents: int = 0
-    arr_cents: int = 0
-    active_subscribers: int = 0
-    total_ad_spend_usd: float = 0.0
-    total_expenses_month_cents: int = 0
-    stripe_balance_cents: int = 0
+    """Wire shape of `GET /finance/summary`.
+
+    Every money field is nullable on purpose: `None` is "not measured" (no snapshot
+    row yet, no expenses this month, no ad spend recorded) and must stay
+    distinguishable from a measured `0` — the frontend renders `None` as an em dash
+    and a real `0` as `$0.00`.
+    """
+
+    mrr_cents: int | None = None
+    arr_cents: int | None = None
+    active_subscribers: int | None = None
+    total_ad_spend_usd: float | None = None
+    total_expenses_month_cents: int | None = None
+    stripe_balance_cents: int | None = None
     last_snapshot_date: date | None = None
 
 

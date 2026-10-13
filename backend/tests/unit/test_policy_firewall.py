@@ -30,6 +30,12 @@ def _req(**overrides) -> ActionRequest:
         action_class=ActionClass.EXTERNAL_REVERSIBLE,
         channel="twitter",
         payload={"action": "tweet", "text": "hello"},
+        # These tests exercise the sandbox/approval layers, so they pin a MEASURED zero:
+        # `0` = "a counting source was read and found no sends". `None` would mean UNKNOWN and
+        # now trips the fail-closed cap refusal (POLSIA-E114) for every configured cap; the
+        # unknown-count case has its own tests in section 6 below.
+        sends_today=0,
+        sends_this_hour=0,
     )
     base.update(overrides)
     return ActionRequest(**base)
@@ -53,6 +59,15 @@ def test_explicit_sandbox_mode_false_is_still_honoured(monkeypatch):
     decision = evaluate_side_effect(
         "social_media", ActionClass.EXTERNAL_REVERSIBLE, "twitter",
         action="tweet", sandbox_mode=False,
+        # Repair (T5): this test's subject is the sandbox mode, not the cap counter. The new
+        # fail-closed counters make an unsupplied count mean UNKNOWN, and the default RateCaps
+        # DO configure a twitter cap — so without these two kwargs the unknown-cap refusal
+        # (POLSIA-E114, cap_unknown) fires first and the assertion below would fail for the
+        # wrong reason. Old vs new: the counts used to default to `0` = "measured zero" (the
+        # F-04 collapse this wave removes); they are now supplied explicitly AS a measured
+        # zero. The expectations ("allowed is True", "sandboxed is False") are unchanged.
+        sends_today=0,
+        sends_this_hour=0,
     )
     assert decision.allowed is True
     assert decision.sandboxed is False
@@ -131,3 +146,82 @@ def test_a_valid_approval_token_lets_the_action_through():
     )
     assert decision.decision is Decision.ALLOW
     assert decision.audit.get("approved") is True
+
+
+# ── 6. a configured cap with an UNKNOWN count refuses by name (A2 finding F-04) ────────────────
+def test_a_configured_day_cap_with_an_unknown_count_refuses_by_name():
+    """`None` means "no local record exists to count" — not zero. The cap must refuse, named.
+
+    RED leg B plants the old behaviour (an unknown count treated as passing) and this fails.
+    """
+    caps = RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={})
+    decision = decide(_req(sends_today=None), caps=caps, sandbox_mode=False)
+    assert decision.decision is Decision.DENY
+    assert decision.code == "POLSIA-E114"
+    assert decision.audit.get("cap_unknown") is True
+    assert decision.audit.get("cap_window") == "day"
+    assert decision.audit.get("cap") == 12
+    assert "'twitter'" in decision.reason, "the refusal must name the channel it cannot verify"
+    assert decision.how_to_fix, "a refusal a human must act on carries its own how_to_fix"
+    assert decision.e_code == "E_POLICY_DENIED"
+
+
+def test_a_configured_hour_cap_with_an_unknown_count_refuses_by_name():
+    caps = RateCaps(per_channel_day={}, per_channel_hour={"twitter": 3})
+    decision = decide(_req(sends_this_hour=None), caps=caps, sandbox_mode=False)
+    assert decision.decision is Decision.DENY
+    assert decision.code == "POLSIA-E114"
+    assert decision.audit.get("cap_unknown") is True
+    assert decision.audit.get("cap_window") == "hour"
+    assert decision.audit.get("cap") == 3
+    assert "'twitter'" in decision.reason
+    assert decision.how_to_fix
+
+
+def test_the_unknown_cap_refusal_becomes_a_named_polsia_error():
+    """The refusal reaches a caller as `E_POLICY_DENIED` with the action-specific fix attached."""
+    decision = decide(_req(sends_today=None),
+                      caps=RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={}),
+                      sandbox_mode=False)
+    err = decision.to_polsia_error(agent_type="social_media", action="tweet")
+    assert err.code == "E_POLICY_DENIED"
+    assert "cannot be verified" in err.message
+    assert "record twitter sends" in err.how_to_fix
+
+
+# ── 7. no configured cap -> no count needed (no FALSE refusal) ─────────────────────────────────
+def test_an_uncapped_channel_is_not_refused_for_an_unknown_count():
+    """The unknown-count refusal exists for a CONFIGURED cap only; with no cap, `None` is fine."""
+    no_caps = RateCaps(per_channel_day={}, per_channel_hour={})
+    decision = decide(_req(sends_today=None, sends_this_hour=None), caps=no_caps, sandbox_mode=False)
+    assert decision.decision is Decision.ALLOW
+    assert "cannot be verified" not in decision.reason
+
+    # …and a channel the caps do not mention is unaffected even when other channels have caps
+    # (linkedin is permitted for social_media and is absent from this cap set).
+    other = decide(_req(channel="linkedin", sends_today=None, sends_this_hour=None),
+                   caps=RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={}),
+                   sandbox_mode=False)
+    assert other.decision is Decision.ALLOW
+
+
+# ── 8. check ORDER: sandbox before caps ────────────────────────────────────────────────────────
+def test_the_sandbox_is_checked_before_the_caps_so_over_cap_still_drafts():
+    """Caps bound REAL sends; under SANDBOX_MODE nothing is sent, so an over-cap attempt must
+    record a labelled draft instead of raising a rate denial (the reordered check list)."""
+    caps = RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={})
+    drafted = decide(_req(sends_today=99), caps=caps, sandbox_mode=True)
+    assert drafted.decision is Decision.DENY
+    assert drafted.sandboxed is True
+    assert drafted.audit.get("sandbox") is True
+    assert drafted.code == "POLSIA-E114"
+
+
+def test_a_real_over_cap_send_still_hits_the_rate_cap():
+    """The reorder must not disarm the cap where sends are real (sandbox off)."""
+    caps = RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={})
+    denied = decide(_req(sends_today=99), caps=caps, sandbox_mode=False)
+    assert denied.decision is Decision.DENY
+    assert denied.code == "POLSIA-E117"
+    assert denied.e_code == "E_RATE_LIMITED"
+    assert denied.sandboxed is False

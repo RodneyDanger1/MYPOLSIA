@@ -123,11 +123,19 @@ def activity_payload(
     agent_type: str,
     action: str,
     summary: str,
-    level: str = "info",
+    level: str | None = "info",
     created_at: datetime | None = None,
     detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Wire shape consumed by frontend/src/lib/api.ts ActivityEvent."""
+    """Wire shape consumed by frontend/src/lib/api.ts ActivityEvent.
+
+    `level` accepts None because the activity_log column is DDL-nullable (A-T3): the normalize
+    below is the single boundary that guarantees the wire vocabulary stays one word — "info".
+    """
+    # NULL means the writer did not set a level; it is not an outage. Normalized here so the
+    # payload vocabulary stays one word ("info") — see the A-T3 decision in the lane receipt.
+    if level is None:
+        level = "info"
     return {
         "id": id,
         "agent_type": agent_type,

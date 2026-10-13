@@ -64,9 +64,17 @@ class SocialMediaAgent(BasePolsiaAgent):
     role_prompt = ROLE
 
     # ------------------------------------------------------------------ side effects
-    def _channel_counts(self, context: dict[str, Any], channel: str) -> tuple[int, int]:
+    def _channel_counts(self, context: dict[str, Any], channel: str) -> tuple[int | None, int | None]:
+        """The channel's send counts, passed through raw — `int | None`.
+
+        `None` is "no local record of sends" (A2 F-04: the counts come from the DB snapshot, and
+        a channel with no counting source has none): the firewall must see the unknown and
+        refuses a capped channel it cannot verify (fail closed). The old `int(x or 0)` collapsed
+        "not measured" into "measured zero", which is exactly what made the caps unfireable;
+        never re-introduce that coercion here.
+        """
         counts = ((context or {}).get("channel_sends") or {}).get(channel) or {}
-        return int(counts.get("today") or 0), int(counts.get("hour") or 0)
+        return counts.get("today"), counts.get("hour")
 
     def _publish(
         self,

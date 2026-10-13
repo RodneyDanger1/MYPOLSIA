@@ -7,6 +7,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Inlined into the client bundle at build time (frontend/src/lib/api.ts); must match the backend's
+# API_KEY or every dashboard request gets a 401.  Changing it requires a rebuild.
+ARG NEXT_PUBLIC_API_KEY=dev-key
+ENV NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY
 RUN npm run build
 
 FROM node:20-alpine AS runner

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.schemas.common import ORMModel
 
@@ -14,8 +14,21 @@ class ActivityEventResponse(ORMModel):
     action: str
     summary: str
     detail: dict[str, Any] | None = None
-    level: str
+    level: str = "info"
     created_at: datetime | None = None
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _level_defaults_to_info(cls, value: object) -> object:
+        """NULL means the writer did not set a level; it is not an outage (A-T3 decision b).
+
+        The column is DDL-nullable and only raw/Core inserts reach NULL (the ORM fires its
+        `default="info"`).  The response vocabulary stays one word, so the boundary
+        normalises None -> "info" here — the same rule `events.activity_payload` applies to
+        the websocket payload.  Without this the feed's `model_validate` raised on a NULL
+        row and the endpoint answered 500 (parent-surgical completion of T3).
+        """
+        return "info" if value is None else value
 
 
 class DailyReportResponse(ORMModel):

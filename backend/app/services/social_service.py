@@ -16,13 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
 from app.core.errors import (
+    E_DB,
     E_NOT_FOUND,
     E_VALIDATION,
     ERROR_HINTS,
     PolsiaError,
 )
 from app.models.social import SocialEngagement, SocialPost
-from app.services.query_helpers import fetch_scalars
+from app.services.query_helpers import fetch_scalar, fetch_scalars
 
 
 async def list_posts(
@@ -110,10 +111,76 @@ async def list_engagements(db: AsyncSession, limit: int = 100) -> list[SocialEng
     )
 
 
+async def record_published_posts(db: AsyncSession, result: dict[str, Any]) -> dict[str, Any]:
+    """Persist the posts a social_media run REALLY published — the worker calls this after `run()`.
+
+    WHY this lives here: agents have no DB session, and only the worker can write the
+    `social_posts` rows that `channel_service` counts the twitter/linkedin caps against
+    (A2 F-04). A row may exist ONLY for the path where the provider integration really returned
+    an id: `posted` items without `tweet_id` were never sent, so they are counted as invalid and
+    never written ("not sent" and "sent" must stay distinguishable). Deduped by
+    `(platform, tweet_id)` so a retried run cannot double-count. `flush` only — the worker owns
+    the commit. Never raises: any failure comes back in the report's `error` field.
+    """
+    report: dict[str, Any] = {
+        "ok": True,
+        "posts_written": 0,
+        "duplicates_skipped": 0,
+        "skipped_invalid": 0,
+        "error": None,
+    }
+    try:
+        for item in (result or {}).get("posted") or []:
+            if not isinstance(item, dict):
+                report["skipped_invalid"] += 1
+                continue
+            tweet_id = str(item.get("tweet_id") or "").strip()
+            if not tweet_id:
+                # No provider id = the integration never confirmed a send; never counted.
+                report["skipped_invalid"] += 1
+                continue
+            platform = str(item.get("platform") or "twitter")
+            existing = await fetch_scalar(
+                db,
+                select(SocialPost.id).where(
+                    SocialPost.platform == platform, SocialPost.tweet_id == tweet_id
+                ),
+                what=f"social post ({platform}, {tweet_id})",
+            )
+            if existing is not None:
+                report["duplicates_skipped"] += 1
+                continue
+            db.add(
+                SocialPost(
+                    platform=platform,
+                    content=str(item.get("content") or ""),
+                    status="published",
+                    tweet_id=tweet_id,
+                    published_at=utcnow(),
+                )
+            )
+            await db.flush()
+            report["posts_written"] += 1
+    except PolsiaError as exc:
+        report["ok"] = False
+        report["error"] = {"code": exc.code, "message": exc.message}
+    except Exception as exc:  # noqa: BLE001 — the worker contract is a report, never a raise
+        refusal = PolsiaError(
+            E_DB,
+            f"could not persist social posts: {type(exc).__name__}: {exc}",
+            how_to_fix=ERROR_HINTS[E_DB],
+            context={"agent": "social_media", "posts_written": report["posts_written"]},
+        )
+        report["ok"] = False
+        report["error"] = {"code": refusal.code, "message": refusal.message}
+    return report
+
+
 __all__ = [
     "create_post",
     "get_post",
     "list_engagements",
     "list_posts",
     "mark_published",
+    "record_published_posts",
 ]

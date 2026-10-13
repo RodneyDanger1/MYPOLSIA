@@ -128,6 +128,10 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_RATE_LIMITED: 429,
     E_SANDBOX_BLOCKED: 403,
     E_POLICY_DENIED: 403,
+    # A config outage is the same class as the broker outage below: the service itself cannot
+    # take the work right now (a malformed COMPANY_TIMEZONE is reachable at request time — every
+    # day window resolves the zone), and it is never the caller's fault — hence 503, not 4xx.
+    E_CONFIG: 503,
     # A broker/dependency outage is neither the caller's fault nor an unmapped internal error:
     # 503 says "this service cannot take the work right now", which is exactly what happened.
     E_REDIS: 503,

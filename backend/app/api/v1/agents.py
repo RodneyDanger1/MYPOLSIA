@@ -36,7 +36,11 @@ from app.services.task_service import (
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-AgentTypeEnum = Enum("AgentTypeEnum", {name: name for name in VALID_AGENT_TYPES})
+# The enum is built from the LIVE registry on purpose: a literal member list here would silently
+# drift from VALID_AGENT_TYPES (an added/renamed agent must still 422, not 500). The checker's
+# [misc] asks for a literal; the registry is the source of truth, so the ignore is the honest
+# form — a copy here is the thing that WOULD drift (T13).
+AgentTypeEnum = Enum("AgentTypeEnum", {name: name for name in VALID_AGENT_TYPES})  # type: ignore[misc]  # built from the live VALID_AGENT_TYPES registry so the enum cannot drift
 
 
 @router.get("/status", response_model=list[AgentStatusResponse], dependencies=[Depends(verify_api_key)])

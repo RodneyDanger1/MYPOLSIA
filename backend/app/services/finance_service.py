@@ -18,13 +18,14 @@ Three measured problems this module fixes:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, literal, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
@@ -33,18 +34,20 @@ from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.services.query_helpers import db_refusal, fetch_scalars
 
-ZERO = Decimal("0")
 
+def money(value: Any) -> Decimal | None:
+    """A USD value as `Decimal`, never a binary float.  `None` stays `None`.
 
-def money(value: Any) -> Decimal:
-    """A USD value as `Decimal`, never a binary float.
+    `None` means "not measured" (an aggregate over zero rows, an absent column);
+    returning `Decimal("0")` for it would collapse it into a measured zero — the
+    exact state confusion this module refuses — so absence passes through.
 
     `Decimal(str(x))` — not `Decimal(x)` — because the float has already lost the
     decimal value by the time it is a float (`Decimal(0.1)` is
     `0.1000000000000000055511151231257827`).
     """
     if value is None:
-        return ZERO
+        return None
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
@@ -101,11 +104,14 @@ async def list_stripe_events(db: AsyncSession, limit: int = 100) -> list[StripeE
 
 
 async def get_finance_summary(db: AsyncSession, month: date | None = None) -> dict[str, Any]:
-    """Every headline scalar in ONE statement.  Empty database ⇒ zeros + None date.
+    """Every headline scalar in ONE statement.  Nothing measured ⇒ `None`, never 0.
 
     Shape: the seven keys `GET /finance/summary` and `dashboard.summary` consume.
-    `total_ad_spend_usd` is a `Decimal` here and becomes the float the wire format
-    declares at the response-model boundary.
+    Every money field is `int`/`Decimal` when measured and `None` when not — no
+    `or 0` and no `coalesce(..., 0)` may collapse "not measured" into a fake zero on
+    this path (the response model and the frontend both keep the two states apart).
+    `total_ad_spend_usd` is a `Decimal` (or `None`) here and becomes the float the
+    wire format declares at the response-model boundary.
     """
     month_start, month_end = _month_bounds(month)
 
@@ -114,18 +120,20 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
         .order_by(RevenueSnapshot.snapshot_date.desc(), RevenueSnapshot.id.desc())
         .limit(1)
     ).subquery("snap")
-    # A one-row anchor LEFT JOINed to the snapshot keeps the all-zero contract when
-    # the table is empty: the JOIN is what the shipped test's "no snapshot yet"
-    # case needs, and a Python-side default dict would be an unstated second shape.
+    # A one-row anchor LEFT JOINed to the snapshot keeps the one-row contract when the
+    # table is empty: the row's money columns come back NULL ("not measured"), which is
+    # what the "no snapshot yet" case needs, and a Python-side default dict would be an
+    # unstated second shape.
     anchor = select(literal(1).label("one")).subquery("one")
     expenses = (
-        select(func.coalesce(func.sum(ExpenseRecord.amount_cents), 0))
+        # No coalesce here: SUM over zero rows is NULL ("nothing measured"), and a 0
+        # would be an invented reading — the same collapse the `or 0` on the return
+        # dict below used to ship.
+        select(func.sum(ExpenseRecord.amount_cents))
         .where(ExpenseRecord.date >= month_start, ExpenseRecord.date < month_end)
         .scalar_subquery()
     )
-    ad_spend = (
-        select(func.coalesce(func.sum(AdCampaign.total_spent_usd), 0.0)).scalar_subquery()
-    )
+    ad_spend = select(func.sum(AdCampaign.total_spent_usd)).scalar_subquery()
     stmt = (
         select(
             latest.c.mrr_cents,
@@ -144,13 +152,23 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
     except Exception as exc:  # noqa: BLE001 - translated into a named refusal below
         raise db_refusal("finance summary", exc) from exc
 
+    # Explicit `is not None` per field: `value or 0` cannot tell a measured 0 from an
+    # absent measurement — the exact collapse this path used to ship.
     return {
-        "mrr_cents": int(row.mrr_cents or 0),
-        "arr_cents": int(row.arr_cents or 0),
-        "active_subscribers": int(row.active_subscribers or 0),
-        "stripe_balance_cents": int(row.stripe_balance_cents or 0),
-        "total_revenue_month_cents": int(row.total_revenue_month_cents or 0),
-        "total_expenses_month_cents": int(row.total_expenses_month_cents or 0),
+        "mrr_cents": int(row.mrr_cents) if row.mrr_cents is not None else None,
+        "arr_cents": int(row.arr_cents) if row.arr_cents is not None else None,
+        "active_subscribers": (
+            int(row.active_subscribers) if row.active_subscribers is not None else None
+        ),
+        "stripe_balance_cents": (
+            int(row.stripe_balance_cents) if row.stripe_balance_cents is not None else None
+        ),
+        "total_revenue_month_cents": (
+            int(row.total_revenue_month_cents) if row.total_revenue_month_cents is not None else None
+        ),
+        "total_expenses_month_cents": (
+            int(row.total_expenses_month_cents) if row.total_expenses_month_cents is not None else None
+        ),
         "total_ad_spend_usd": money(row.total_ad_spend_usd),
         "last_snapshot_date": row.last_snapshot_date,
     }
@@ -216,6 +234,164 @@ async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
     return expense
 
 
+#: `revenue_snapshots` columns `persist_finance_run` may write — any other key in the
+#: payload's snapshot dict is not a column and must not reach the insert.
+_SNAPSHOT_COLUMNS = (
+    "mrr_cents",
+    "arr_cents",
+    "active_subscribers",
+    "churned_today",
+    "new_today",
+    "total_revenue_month_cents",
+    "stripe_balance_cents",
+)
+#: `expense_records` columns a payload expense entry may supply (`date` handled separately).
+_EXPENSE_COLUMNS = ("category", "vendor", "amount_cents", "currency", "description", "external_ref")
+
+
+def _iso_date(value: Any) -> date | None:
+    """An ISO date string (or `date`) as `date`; `None` when it is neither.
+
+    Payloads carry ISO strings; a full datetime string maps to its date.  There is NO
+    "today()" fallback: a guessed date on the UNIQUE-indexed snapshot row (or on an
+    expense) is a fabricated measurement, so a missing date stays missing and the
+    caller decides — skip the expense, refuse the snapshot.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                return None
+    return None
+
+
+def _expense_kwargs(expense: Any) -> dict[str, Any]:
+    """Map one `FinanceOutput.expenses[]` entry onto `ExpenseRecord` kwargs.
+
+    Raises the `E_VALIDATION` refusal when the entry cannot become an honest row: it
+    is not an object, or a NOT NULL column (category/vendor) or a usable date is
+    missing.  `amount_cents` is left for `record_expense` to adjudicate by name.
+    """
+    if not isinstance(expense, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"expense entry is not an object: {type(expense).__name__}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"expense": repr(expense)[:200]},
+        )
+    values = {key: expense[key] for key in _EXPENSE_COLUMNS if expense.get(key) is not None}
+    missing = [key for key in ("category", "vendor") if not values.get(key)]
+    parsed = _iso_date(expense.get("date"))
+    if missing or parsed is None:
+        detail = f"missing {missing}" if missing else f"unusable date {expense.get('date')!r}"
+        raise PolsiaError(
+            E_VALIDATION,
+            f"expense entry cannot be recorded: {detail}",
+            how_to_fix="each expense needs a category, a vendor and an ISO date; fix the agent output",
+            context={"expense": {k: expense.get(k) for k in (*_EXPENSE_COLUMNS, "date")}},
+        )
+    values["date"] = parsed
+    return values
+
+
+async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, Any]:
+    """Persist what a finished finance run ACTUALLY measured: the snapshot row + the expenses.
+
+    This is the seam the queue worker calls after a finance run
+    (`celery_app.tasks.agent_tasks._persist_run_artifacts`); before it existed,
+    `revenue_snapshots` / `expense_records` had no writer at all and the summary could
+    only ever read empty tables.  Idempotent by date: `upsert_revenue_snapshot` is an
+    upsert on the UNIQUE `snapshot_date`, so a retried run updates the same row instead
+    of duplicating it.
+
+    Contract: NEVER raises — every failure is returned as the `error` field (a named
+    `{"code", "message", ...}` refusal).  The worker owns the transaction, so this
+    flushes only and never commits.  An expense the service refuses (`amount_cents`
+    missing or <= 0, or a row that cannot be formed at all) is counted in
+    `skipped_invalid` — never silently dropped, never fake-written.
+
+    Returns `{"ok": True, "snapshot_written": bool, "expenses_written": int,
+    "skipped_invalid": int}` — `snapshot_written` is True only when the upsert really
+    returned a row, which is the fact the worker reports as the run's `snapshot_written`.
+    """
+    snapshot_written = False
+    expenses_written = 0
+    skipped_invalid = 0
+    try:
+        snapshot = result.get("snapshot")
+        if snapshot is not None:
+            if not isinstance(snapshot, dict):
+                raise PolsiaError(
+                    E_VALIDATION,
+                    f"snapshot is not an object: {type(snapshot).__name__}",
+                    how_to_fix="the finance agent must provide a snapshot object or null",
+                    context={"snapshot": repr(snapshot)[:200]},
+                )
+            snapshot_date = _iso_date(snapshot.get("snapshot_date"))
+            if snapshot_date is None:
+                raise PolsiaError(
+                    E_VALIDATION,
+                    f"snapshot has no usable snapshot_date: {snapshot.get('snapshot_date')!r}",
+                    how_to_fix=(
+                        "the agent must provide snapshot_date = YYYY-MM-DD (UTC); a guessed "
+                        "date would mis-key the UNIQUE row"
+                    ),
+                    context={"snapshot_date": snapshot.get("snapshot_date")},
+                )
+            values = {
+                key: snapshot[key] for key in _SNAPSHOT_COLUMNS if snapshot.get(key) is not None
+            }
+            row = await upsert_revenue_snapshot(db, snapshot_date=snapshot_date, **values)
+            snapshot_written = row is not None
+        for expense in result.get("expenses") or []:
+            try:
+                await record_expense(db, **_expense_kwargs(expense))
+                expenses_written += 1
+            except PolsiaError as exc:
+                if exc.code != E_VALIDATION:
+                    raise
+                # `record_expense` refuses `amount_cents<=0` by name (and an entry that
+                # cannot form a row refuses the same way): one unusable draft must not
+                # sink the run's good rows — and must not be invented into a write either.
+                skipped_invalid += 1
+        await db.flush()  # flush only: the worker owns the commit
+        return {
+            "ok": True,
+            "snapshot_written": snapshot_written,
+            "expenses_written": expenses_written,
+            "skipped_invalid": skipped_invalid,
+        }
+    except Exception as exc:  # noqa: BLE001 - the documented contract is "never raises"
+        if isinstance(exc, PolsiaError):
+            error: dict[str, Any] = {
+                "code": exc.code,
+                "message": exc.message,
+                "how_to_fix": exc.how_to_fix,
+            }
+        elif isinstance(exc, SQLAlchemyError):
+            error = {"code": E_DB, "message": f"finance persist hit a database error: {exc}"}
+        else:
+            error = {
+                "code": E_VALIDATION,
+                "message": f"finance persist rejected the run result: {type(exc).__name__}: {exc}",
+            }
+        return {
+            "ok": False,
+            "snapshot_written": snapshot_written,
+            "expenses_written": expenses_written,
+            "skipped_invalid": skipped_invalid,
+            "error": error,
+        }
+
+
 async def record_stripe_event(
     db: AsyncSession,
     stripe_event_id: str,
@@ -278,6 +454,7 @@ __all__ = [
     "list_revenue_snapshots",
     "list_stripe_events",
     "money",
+    "persist_finance_run",
     "record_expense",
     "record_stripe_event",
     "upsert_revenue_snapshot",

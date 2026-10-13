@@ -25,6 +25,32 @@ async def test_get_activity_empty(api_client, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_get_activity_null_level_row_is_normalized(api_client, auth_headers, async_db_session):
+    """A DDL-nullable `level` must not 500 the feed (A-T3 decision b).
+
+    The ORM constructor fires `default="info"`, so NULL is only reachable by a Core/raw
+    insert (measured by seat S1-t3) — which is exactly this insert.  The response boundary
+    normalises None -> "info"; the endpoint must answer 200 with the documented value.
+    """
+    from sqlalchemy import insert
+
+    from app.models.report import ActivityLog
+
+    await async_db_session.execute(
+        insert(ActivityLog).values(
+            agent_type="social_media", action="probe", summary="null level", level=None
+        )
+    )
+    await async_db_session.commit()
+
+    resp = await api_client.get("/api/v1/dashboard/activity", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["level"] == "info"
+
+
+@pytest.mark.asyncio
 async def test_get_daily_report_none(api_client, auth_headers):
     resp = await api_client.get("/api/v1/dashboard/reports/daily", headers=auth_headers)
     assert resp.status_code == 200

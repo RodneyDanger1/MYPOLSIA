@@ -57,7 +57,12 @@ STATUS_BY_CODE: dict[str, int] = {
     E_BUDGET_EXCEEDED: status.HTTP_429_TOO_MANY_REQUESTS,
     E_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
     E_PROMPT_TOO_LARGE: status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-    E_CONFIG: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    # E_CONFIG surfaces at request time when a malformed COMPANY_TIMEZONE blocks a day
+    # window: the service's own misconfiguration, not the caller's fault and not an
+    # unmapped internal error — same class as E_REDIS.  Kept in agreement with
+    # errors.HTTP_STATUS_BY_CODE, which the middleware/exception-handler paths use
+    # (parent-surgical completion of T4; the two tables must not disagree).
+    E_CONFIG: status.HTTP_503_SERVICE_UNAVAILABLE,
     E_DB: status.HTTP_503_SERVICE_UNAVAILABLE,
     E_REDIS: status.HTTP_503_SERVICE_UNAVAILABLE,
     E_STORAGE: status.HTTP_503_SERVICE_UNAVAILABLE,

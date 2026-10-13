@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 
-type Prospect = { id: number; email: string; first_name: string | null; company: string | null; status: string; created_at: string };
+// `created_at` is nullable on the wire (`ProspectResponse.created_at` in `app/schemas/social.py` is
+// `datetime | None`), so the column below renders the "date unknown" placeholder for a null — the
+// same idiom the memory page uses.
+type Prospect = { id: number; email: string; first_name: string | null; company: string | null; status: string; created_at: string | null };
 
 const STATUS_STYLE: Record<string, string> = {
   new: "text-blue-400", contacted: "text-yellow-400", replied: "text-green-400",
@@ -61,7 +64,8 @@ export default function OutreachPage() {
               <th className="pb-2 pr-4">Email</th>
               <th className="pb-2 pr-4">Name</th>
               <th className="pb-2 pr-4">Company</th>
-              <th className="pb-2">Status</th>
+              <th className="pb-2 pr-4">Status</th>
+              <th className="pb-2">Created</th>
             </tr>
           </thead>
           <tbody>
@@ -70,7 +74,10 @@ export default function OutreachPage() {
                 <td className="py-2 pr-4 text-white">{p.email}</td>
                 <td className="py-2 pr-4 text-gray-300">{p.first_name ?? "—"}</td>
                 <td className="py-2 pr-4 text-gray-300">{p.company ?? "—"}</td>
-                <td className={`py-2 capitalize ${STATUS_STYLE[p.status] ?? "text-gray-400"}`}>{p.status}</td>
+                <td className={`py-2 pr-4 capitalize ${STATUS_STYLE[p.status] ?? "text-gray-400"}`}>{p.status}</td>
+                <td className="py-2 text-gray-400">
+                  {p.created_at ? new Date(p.created_at).toLocaleDateString() : "date unknown"}
+                </td>
               </tr>
             ))}
           </tbody>

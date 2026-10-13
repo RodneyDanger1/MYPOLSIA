@@ -26,7 +26,6 @@ fabricated success dict — the only success signal is a dict whose `summary` is
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import json
 import logging
@@ -191,11 +190,9 @@ class BasePolsiaAgent(ABC):
         company = (context or {}).get("company") or {}
         kpis = (context or {}).get("kpis") or {}
         goals = (context or {}).get("goals") or []
-        (context or {}).get("budget") or {
-            "day_limit": settings.agent_daily_cost_cap_usd,
-            "spent": float((context or {}).get("day_spent_usd") or 0.0),
-            "remaining": max(0.0, settings.agent_daily_cost_cap_usd - float((context or {}).get("day_spent_usd") or 0.0)),
-        }
+        # (A2 F-08 / T8) Deleted here: a dead budget block that fabricated `$0.00` for an unknown
+        # `day_spent_usd` (`or 0.0`) and that NOTHING consumed — honest spend lives in
+        # `accounting.spend_summary`.
         tools = ", ".join(self.capability.allowed_tools) or "none"
         outcome_contract = self._outcome_contract()
 
@@ -380,12 +377,23 @@ class BasePolsiaAgent(ABC):
         return self._finish_call(result, attempts, transport=inv.transport)
 
     def _retryable(self, result: claude_cli.InvokeResult) -> bool:
+        """S-01: the retry classifier reads the envelope's `subtype`/`api_error_status`; when
+        stdout does not parse (a hook polluted it, or the envelope is truncated) the classification
+        runs WITHOUT them — and that degradation is now recorded instead of silently suppressed.
+        The values fed to `is_retryable_failure` are unchanged (an empty envelope on failure).
+        """
         failure, _, _ = self._classify_invoke(result)
         if failure is None:
             return False
         env: dict = {}
-        with contextlib.suppress(ValueError):
+        try:
             env = structured_output.extract_envelope(result.stdout)
+        except ValueError as exc:
+            logger.warning(
+                "code=envelope_extract_failed: retry classification runs without "
+                "subtype/api_error_status (%s)",
+                exc,
+            )
         return claude_cli.is_retryable_failure(
             structured_output.e_code_for(failure),
             subtype=str(env.get("subtype") or ""),
@@ -495,7 +503,16 @@ class BasePolsiaAgent(ABC):
             from app.schemas.agent_outputs import to_cli_schema
 
             json_schema = to_cli_schema(model)
-        except Exception:  # pragma: no cover - schema emission is local and deterministic
+        except Exception as exc:  # noqa: BLE001 — a RECORDED fallback, never a silent one
+            # Schema emission is local and deterministic, so a failure here must not kill the run:
+            # the repair ladder still validates the payload locally, it just cannot hand
+            # `--json-schema` to the CLI. Until T10 this was swallowed (`except: None`); the slug
+            # below is the recording (S-02).
+            logger.warning(
+                "code=schema_emission_failed: %s runs without --json-schema (%s)",
+                model.__name__,
+                exc,
+            )
             json_schema = None
 
         resolve_kwargs: dict[str, Any] = {
@@ -556,17 +573,17 @@ class BasePolsiaAgent(ABC):
 
     # ------------------------------------------------------------------ run metadata
     def usage_metadata(self) -> dict[str, Any]:
-        """The accounting keys for the result dict (see `RUN_META_KEYS`)."""
+        """The accounting keys for the result dict (see `RUN_META_KEYS`).
+
+        Measured-or-absent, never measured-or-zero (F-10/M2): when `last_usage` is None — mock
+        mode, or a run that never produced an accounting envelope — the measurement keys
+        (`tokens_input`, `tokens_output`, `tokens_used`, `cost_usd`, `cost_estimate_usd`,
+        `usage_json`, `num_turns`, `model`) are OMITTED, so `_apply_run_usage` leaves those
+        columns NULL instead of writing a fabricated 0. `is_error: False` below describes the
+        PAYLOAD state (no error envelope was seen), not accounting.
+        """
         meta: dict[str, Any] = {
             "cli_session_id": self.session_id,
-            "tokens_input": 0,
-            "tokens_output": 0,
-            "tokens_used": 0,
-            "cost_usd": 0.0,
-            "cost_estimate_usd": 0.0,
-            "usage_json": {},
-            "num_turns": 0,
-            "model": "",
             "is_error": False,
             "error_code": "",
             "cli_attempts": self.last_attempts,
@@ -576,11 +593,14 @@ class BasePolsiaAgent(ABC):
         }
         usage = self.last_usage
         if usage is not None:
-            delta = accounting.compute_run_delta(
-                usage.total_cost_usd, usage.session_id, self._session_totals
-            )
             meta.update(usage.as_dict())
-            meta["cost_usd"] = round(delta, 6)
+            if usage.total_cost_usd is not None:
+                # The per-run delta (resume-safe) is computed only for a MEASURED cost: an
+                # unknown total must not become a 0.0 spend row (F-11/R9).
+                delta = accounting.compute_run_delta(
+                    usage.total_cost_usd, usage.session_id, self._session_totals
+                )
+                meta["cost_usd"] = round(delta, 6)
             meta["cli_session_id"] = usage.session_id or self.session_id
         return meta
 

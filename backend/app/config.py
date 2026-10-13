@@ -5,6 +5,7 @@ what every existing call site and test relies on.
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,7 +44,7 @@ class Settings(BaseSettings):
     celery_max_tasks_per_child: int = 50
     celery_worker_concurrency: int = 4
 
-    # --- daily cycles (UTC hours) ---
+    # --- daily cycles (morning hour: company-local, task-gated; evening hour: UTC, beat crontab) ---
     morning_cycle_hour: int = 6
     evening_cycle_hour: int = 20
     company_timezone: str = "UTC"
@@ -55,6 +56,23 @@ class Settings(BaseSettings):
     task_batch_size: int = 25
     activity_retention_days: int = 90
     activity_bulk_flush: int = 200
+
+    # --- activity event bus ---
+    # The publish breaker's window: after a failed Redis publish, further events are SKIPPED (and
+    # counted -- see events.publish_stats()) for this long instead of each one stalling out the
+    # redis-py retry ladder.  Must be > 0; 0 would disable the breaker outright.
+    activity_publish_cooldown_seconds: float = 30.0
+
+    @field_validator("activity_publish_cooldown_seconds")
+    @classmethod
+    def _cooldown_must_be_positive(cls, value: float) -> float:
+        """A non-positive cooldown disables the breaker, so every event stalls again."""
+        if value <= 0:
+            raise ValueError(
+                f"activity_publish_cooldown_seconds must be > 0, got {value!r} "
+                "(0 would disable the publish breaker)"
+            )
+        return value
 
     # --- chroma ---
     chroma_persist_dir: str = "/app/data/chroma"

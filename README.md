@@ -36,6 +36,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 | **Ads Management** | Google + Meta campaign optimization | Every 6h |
 | **Code Generation** | Ship features, open PRs | On demand |
 | **Finance** | Stripe revenue sync, spend tracking | Every 6h |
+| **Maintenance** | Task-lease sweep — requeues tasks whose worker died mid-run | Every 5 min |
 
 Each agent calls `claude -p "..." --output-format json` as a subprocess. No API key is needed — the Claude Code CLI authenticates via OAuth stored at `~/.claude`.
 
@@ -53,6 +54,11 @@ git clone <repo>
 cd polsia
 cp .env.example .env
 # Edit .env — at minimum set API_KEY and SANDBOX_MODE=true
+
+# The dashboard sends NEXT_PUBLIC_API_KEY as X-API-Key; docker-compose passes it into the frontend
+# image as a build arg (default: dev-key, matching API_KEY's default).  This value is inlined at
+# build time; changing it requires a rebuild.
+export NEXT_PUBLIC_API_KEY=dev-key
 
 # 2. Start all services
 docker-compose up -d
@@ -83,11 +89,18 @@ The Claude CLI authenticates via the `~/.claude` directory on your host, which i
 Fill in the relevant sections of `.env` to activate each integration:
 
 - **Twitter/X** — Post social content
-- **SendGrid + IMAP** — Send cold emails, read support inbox
-- **Tavily** — Web search for competitor research
-- **Google Ads / Meta Ads** — Campaign management
-- **Stripe** — Revenue and expense tracking
+- **SendGrid + IMAP** — Send cold emails (SendGrid is wired); read support inbox — advertised, not
+  implemented: the `IMAP_*` settings are not read by any code path
+- **Tavily** — Web search for competitor research — advertised, not implemented: `TAVILY_API_KEY`
+  is not read by any code path
+- **Google Ads / Meta Ads** — Campaign management (advertised, not implemented:
+  `GOOGLE_ADS_CLIENT_SECRET` is not read by any code path; the other Google Ads settings are)
+- **Stripe** — Revenue and expense tracking (advertised, not implemented:
+  `STRIPE_PUBLISHABLE_KEY` is not read by any code path — `STRIPE_SECRET_KEY` and
+  `STRIPE_WEBHOOK_SECRET` are)
 - **GitHub** — Open PRs from the code generation agent
+- **Deployment (Render)** — advertised, not implemented: `RENDER_API_KEY` is not read by any code
+  path (there is no Deployment agent — see `.env.example` and `docs/ACCEPTANCE_TESTING.md`)
 
 ## Known gaps (measured, not hidden)
 
@@ -101,9 +114,18 @@ quietly relaxed. Each one names its measurement.
   suite grows. Closing the gap to 75% is open work rather than a number that is quietly edited away.
 - **Two advertised capabilities have no producer wired in.** The policy firewall's per-channel send caps
   read `sends_today` from `channel_sends`, which currently has no writer anywhere in the tree (so the caps
-  cannot fire), and the finance agents' summary reads snapshot/expense tables whose writers
-  (`upsert_revenue_snapshot`, `record_expense`, the ad-metric writers) have no callers. Both are honest
+  cannot fire), and the `ad_campaigns`/`ad_metrics` writers have no callers. Both are honest
   0-with-no-data situations today; both are tracked as work, not presented as working features.
+  (The finance half of this gap is closed: `upsert_revenue_snapshot` / `record_expense` are now called
+  through `finance_service.persist_finance_run` when a finance run is persisted, and `GET /finance/summary`
+  reports `null` — not 0 — for a field that was never measured.)
+- **Twelve advertised settings are read by no code path.** A three-set census (`config.py` fields vs
+  `.env.example` keys vs actual reads by `backend/app` + `backend/celery_app` code) finds `DEBUG`,
+  `LOG_JSON`, `CELERY_WORKER_CONCURRENCY`, `TASK_BATCH_SIZE`, `DB_BACKLOG_HOURS`,
+  `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`, `TAVILY_API_KEY`, `GOOGLE_ADS_CLIENT_SECRET`,
+  `STRIPE_PUBLISHABLE_KEY` and `RENDER_API_KEY` declared and advertised with no consumer. Each is
+  labelled `advertised — not implemented in this repository` where it is defined, rather than left
+  advertising.
 
 ## Development
 
@@ -123,6 +145,11 @@ make test-unit       # Unit tests only
 make lint            # Ruff + mypy + ESLint
 make reset-db        # Drop and recreate schema
 ```
+
+Without Docker there is a separate target set — `make dev-backend` (the venv + local SQLite backend,
+the path in "Running the stack without Docker" below), `make dev-frontend` (the local standalone
+server) and `make dev-e2e` (the `:80` lab proxy in front of both) — while the `up`/`down`/`build`/
+`shell-*`/`test-*` targets above require Docker.
 
 ### Running tests locally (no Claude credentials needed)
 

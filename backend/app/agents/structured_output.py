@@ -35,7 +35,6 @@ from app.core.errors import (
     E_CLI_MISSING,
     E_CLI_TIMEOUT,
     E_POLICY_DENIED,
-    E_RATE_LIMITED,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
     PolsiaError,
@@ -64,6 +63,8 @@ class FailureCode(StrEnum):
     POLICY_BLOCKED = "POLSIA-E114"            # output-action firewall denied a side effect
     INJECTION_FLAGGED = "POLSIA-E115"         # untrusted-content taint caused a review hold
     DUPLICATE_SUPPRESSED = "POLSIA-E116"      # idempotency: work already done this cycle
+    # POLSIA-E117 is raised by the policy firewall (policy_firewall.PolicyDecision.e_code),
+    # never by CLI-envelope classification — no classifier path emits this member (A2 census; T14)
     RATE_CAPPED = "POLSIA-E117"               # channel cap hit
     KILL_SWITCH = "POLSIA-E118"               # kill switch active
     UNKNOWN = "POLSIA-E119"
@@ -87,7 +88,6 @@ REMEDIATION: dict[FailureCode, str] = {
     FailureCode.POLICY_BLOCKED: "Firewall decision is final for this cycle; the blocked action goes to pending_approvals with the exact reason.",
     FailureCode.INJECTION_FLAGGED: "Content carried instruction-like text. Hold irreversible actions; a human reviews the quarantined content and the proposed action.",
     FailureCode.DUPLICATE_SUPPRESSED: "Idempotency key already satisfied today. No user-visible action needed; recorded for the ledger (skipped_duplicate).",
-    FailureCode.RATE_CAPPED: "Channel cap reached. Re-schedule to the next window; do not raise the cap from inside an agent.",
     FailureCode.KILL_SWITCH: "Operator froze the fleet. All side effects denied; reads may continue.",
     FailureCode.UNKNOWN: "Unclassified: capture the full envelope + stderr and open a runtime bug.",
 }
@@ -113,7 +113,6 @@ FAILURE_TO_E_CODE: dict[FailureCode, str] = {
     FailureCode.POLICY_BLOCKED: E_SANDBOX_BLOCKED,
     FailureCode.INJECTION_FLAGGED: E_POLICY_DENIED,
     FailureCode.DUPLICATE_SUPPRESSED: "",
-    FailureCode.RATE_CAPPED: E_RATE_LIMITED,
     FailureCode.KILL_SWITCH: E_POLICY_DENIED,
     FailureCode.UNKNOWN: E_CLI_JSON,
 }

@@ -22,10 +22,12 @@ from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import (
     evaluate_side_effect,
+    named_refusal,
     request_side_effect,
     side_effect_receipt,
 )
 from app.config import settings
+from app.core.errors import E_VALIDATION
 from app.schemas.agent_outputs import CustomerSupportOutput
 
 ROLE = """You are the Customer Support agent of an autonomous company. You read the support inbox
@@ -59,13 +61,27 @@ class CustomerSupportAgent(BasePolsiaAgent):
     def run(self, task: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         payload, assembled = self.collect_structured(task, context)
         payload["agent_type"] = self.agent_type
+        # int | None: None = "no local record of sends" -> the firewall refuses the send on a
+        # capped channel (fail closed); it must never be collapsed to 0 here.
         counts = ((context or {}).get("channel_sends") or {}).get("email") or {}
-        sends_today = int(counts.get("today") or 0)
-        sends_hour = int(counts.get("hour") or 0)
+        sends_today = counts.get("today")
+        sends_hour = counts.get("hour")
         receipts: list[dict[str, Any]] = []
 
         for index, reply in enumerate(list(payload.get("replies") or [])):
-            ref = str(reply.get("message_ref") or reply.get("message_id") or f"msg:{index}")
+            ref = str(reply.get("message_ref") or reply.get("message_id") or "").strip()
+            if not ref:
+                # T7: without a provider message id the reply cannot be acted on. The old
+                # `f"msg:{index}"` fabricated one, so the firewall fingerprint (and a real send,
+                # outside sandbox) carried an id no provider ever issued. Refuse by name and keep
+                # the reply a draft; it never reaches evaluate_side_effect/request_side_effect.
+                reply["status"] = "draft"
+                payload.setdefault("refusals", []).append(named_refusal(
+                    E_VALIDATION,
+                    f"reply #{index} has no provider message_ref; cannot act on it",
+                    index=index,
+                ))
+                continue
             proposed = str(reply.get("proposed_action") or "send_reply")
             if proposed in ("none",):
                 reply["status"] = "draft"

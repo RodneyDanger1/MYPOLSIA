@@ -3,6 +3,13 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: ".",
   testMatch: "**/*.spec.ts",
+  // Suite-end fixture sweep (T12): the belt to each spec's own `finally`.  Playwright runs
+  // globalTeardown after the last test — also when a spec failed or timed out and never reached its
+  // own cleanup — and it adds no test to the 20-test contract the campaign tracks (a sweep spec
+  // ordered last would, and a filtered/`--grep`ed run could skip it entirely).  The option takes a
+  // MODULE PATH only, so the hook is `_helpers`'s default export; it spawns `_sweep-fixtures.py`
+  // (venv python, tag-scoped, both stores, idempotent) and throws if the sweep cannot complete.
+  globalTeardown: "./_helpers.ts",
   timeout: 30_000,
   retries: 1,
   // 10s for assertions, not Playwright's 5s default: the FIRST visit to a data-dependent page has to

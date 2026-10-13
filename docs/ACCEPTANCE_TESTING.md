@@ -34,7 +34,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `test_memory_service.py` | 4 | `store_memory()` PG+Chroma dual-write, `search_memory()`, `list_memories()` filter |
 | `test_report_service.py` | 6 | `get_or_create()` idempotent, `save_morning_plan()`, `save_evening_summary()`, `get_daily_report()` |
 | `api/test_dashboard.py` | 4 | `GET /summary`, `GET /activity`, `GET /reports/daily`, `/health` |
-| `api/test_agents.py` | 4 | Trigger valid agent → 202, invalid agent → 422, no auth → 403, `GET /status` |
+| `api/test_agents.py` | 4 | Trigger valid agent → 202, invalid agent → 422, no auth → 401, `GET /status` |
 | `api/test_tasks.py` | 4 | List empty, create, get by id, 404 not found |
 | `api/test_config.py` | 4 | Get 404 when missing, get existing, update, auth required |
 | `api/test_memory.py` | 3 | List memories, semantic search, create memory |
@@ -80,7 +80,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Docker stack starts | All 7 services healthy after `make up` | Manual / `docker-build.yml` CI |
 | Database migrations | `make init-db` succeeds, all 16 tables present | Manual |
 | Health endpoint | `GET /api/v1/health` → `{"status":"ok"}` | E2E |
-| Authentication | Requests without `X-API-Key` return 403 | Unit (all API tests) |
+| Authentication | Requests without `X-API-Key` return 401 | Unit (all API tests) |
 | WebSocket | Connect to `WS /ws/activity`, receive events from agent runs | Unit + E2E |
 
 ### Agent framework
@@ -107,7 +107,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Ads Management | Returns campaign recommendation | Unit (mocked CLI) |
 | Code Generation | Calls PyGitHub (mocked), returns commit summary | Unit (mocked CLI) |
 | Finance | Calls Stripe (mocked), returns MRR/ARR values | Unit (mocked CLI) |
-| Deployment | Calls Render API (mocked), logs to `deployments` table | Unit (mocked HTTP) |
+| Deployment | **Not implemented in this repository** — no Deployment agent and no `deployments` table exist in this tree (GET /agents/status asserts exactly nine agent types). | — |
 
 ### REST API endpoints
 
@@ -116,7 +116,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `GET /api/v1/config` | Returns 404 if no config, 200 with company data if seeded |
 | `PUT /api/v1/config` | Updates fields, returns updated object with refreshed `updated_at` |
 | `POST /api/v1/agents/{type}/trigger` | Returns 202 with `task_id`, task visible in `GET /tasks` |
-| `GET /api/v1/agents/status` | Returns list of all 10 agent types with last-run info |
+| `GET /api/v1/agents/status` | Returns list of all nine agent types with last-run info |
 | `GET /api/v1/tasks` | Returns paginated task list |
 | `POST /api/v1/tasks` | Creates task, returns 201 |
 | `GET /api/v1/memory?q=<query>` | Returns semantic search results from ChromaDB |
@@ -124,9 +124,9 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `GET /api/v1/finance/summary` | Returns MRR, ARR, subscribers, ad spend, expenses |
 | `POST /api/v1/finance/stripe/webhook` | Validates Stripe signature, logs event, returns `{"received":true}` |
 | `GET /api/v1/social/posts` | Returns list of posts, filterable by status |
-| `GET /api/v1/deployments` | Returns deploy history |
-| `POST /api/v1/deployments/trigger` | Triggers Render deploy, returns deploy record |
-| `GET /api/v1/deployments/latest` | Returns most recent deploy per service |
+| `GET /api/v1/deployments` | **Not implemented in this repository** — no such route exists in `app/api/v1/`. |
+| `POST /api/v1/deployments/trigger` | **Not implemented in this repository** — no such route exists. |
+| `GET /api/v1/deployments/latest` | **Not implemented in this repository** — no such route exists. |
 
 ### Finance agent (Stripe)
 
@@ -137,16 +137,23 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Webhook signature | Invalid signature → 400, missing secret → 500 | Unit: `test_finance.py` |
 | Sandbox gate | `SANDBOX_MODE=true` prevents real Stripe refunds | Unit (env check) |
 
-### Deployment agent (Render)
+### Deployment agent (Render) — not implemented
+
+> **Not implemented in this repository.** This section documents a capability this repository does
+> not implement: there is no Deployment agent class, no Render client, no `/api/v1/deployments*`
+> route, no `deployments` table and no test for any of it. The only traces that exist are the draft
+> schema in `app/schemas/agent_outputs.py` (deliberately not in the agent registry) and the
+> `RENDER_API_KEY` placeholder in `.env.example`. The rows below are a specification for future
+> work, kept rather than erased so the design record survives.
 
 | Feature | Acceptance criteria | Test type |
 |---|---|---|
-| Trigger deploy | `POST /v1/services/{id}/deploys` called with correct headers | Unit (mock httpx) |
-| Poll status | Polls until `live` or `failed`, updates `deployments.status` | Unit |
-| Health check | `GET {health_check_url}` after deploy; marks `health_check_passed` | Unit |
-| Rollback | On health check failure, calls `POST /v1/deploys/{id}/rollback` | Unit |
-| Sandbox mode | No real HTTP calls when `SANDBOX_MODE=true` | Unit |
-| DB record | Every deploy attempt logged to `deployments` table | Unit |
+| Trigger deploy | `POST /v1/services/{id}/deploys` called with correct headers | Not implemented |
+| Poll status | Polls until `live` or `failed`, updates `deployments.status` | Not implemented |
+| Health check | `GET {health_check_url}` after deploy; marks `health_check_passed` | Not implemented |
+| Rollback | On health check failure, calls `POST /v1/deploys/{id}/rollback` | Not implemented |
+| Sandbox mode | No real HTTP calls when `SANDBOX_MODE=true` | Not implemented |
+| DB record | Every deploy attempt logged to `deployments` table | Not implemented |
 
 ### Frontend dashboard
 
@@ -154,10 +161,10 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 |---|---|---|
 | Metrics cards | Show MRR, ARR, tasks today, active agents | E2E: `dashboard.spec.ts` |
 | Activity feed | WebSocket events appear in real-time, level-colour coded | Unit + E2E |
-| Agent status grid | All 10 agents shown with last-run status badge | Unit: `AgentStatusGrid.test.tsx` |
+| Agent status grid | All nine agents shown with last-run status badge | Unit: `AgentStatusGrid.test.tsx` |
 | Agent trigger | Button click → 202 → task appears in task list | E2E: `agents.spec.ts` |
 | Settings save | Update company name → `PUT /config` → success toast | E2E: `settings.spec.ts` |
-| Deploy page | Deploy history table, trigger button per service | E2E (to be added) |
+| Deploy page | **Not implemented in this repository** — no deploy page exists in `frontend/src/app/`. | — |
 | Memory search | Type query → semantic results appear | E2E (to be added) |
 
 ---
@@ -177,20 +184,20 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 ## Gaps to address before production
 
 ### Missing unit tests (to write when agents are implemented)
-- `tests/unit/test_deployment_agent.py` — mock Render HTTP calls with `respx` or `httpx`
-- `tests/unit/api/test_deployments.py` — GET/POST deployment endpoints
+- `tests/unit/test_deployment_agent.py` — mock Render HTTP calls with `respx` or `httpx` (**not implemented** — the Deployment agent does not exist; see the note above)
+- `tests/unit/api/test_deployments.py` — GET/POST deployment endpoints (**not implemented** — no such routes exist)
 - `tests/unit/test_social_media_agent.py` — mock Tweepy
 - `tests/unit/test_finance_agent.py` — mock Stripe SDK
 
 ### Missing E2E specs
 - `e2e/finance.spec.ts` — Finance page loads MRR/ARR, expense table visible
-- `e2e/deployments.spec.ts` — Deploy page shows history, trigger button works
+- `e2e/deployments.spec.ts` — Deploy page shows history, trigger button works (**not implemented** — no deploy page exists; see the note above)
 - `e2e/memory.spec.ts` — Search returns results, add memory entry
 
 ### Manual acceptance checklist (run before first real deployment)
 
 - [ ] `SANDBOX_MODE=false` + real Stripe keys → Stripe balance loads in Finance page
-- [ ] `SANDBOX_MODE=false` + real Render keys → trigger deploy from dashboard → Render dashboard shows active deploy
+- [ ] `SANDBOX_MODE=false` + real Render keys → trigger deploy from dashboard → Render dashboard shows active deploy (**not implemented** — there is no deploy trigger and no Deployment agent; see the note above)
 - [ ] Morning cycle runs at 06:00 UTC → tasks visible in dashboard
 - [ ] Agent trigger → Celery worker picks up task → activity feed updates via WebSocket
 - [ ] Claude CLI authenticated (`claude login` on host) → agent runs real inference

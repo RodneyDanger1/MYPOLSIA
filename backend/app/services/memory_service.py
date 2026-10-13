@@ -12,10 +12,15 @@ Failure policy — no silent partial success:
 * a ChromaDB *read* failure degrades to a SQL `ILIKE` search over the same table
   (each hit is tagged `fallback: "sql_like"`), because an empty list standing in
   for "the vector store is down" is exactly the deceptive shape this rebuild
-  removes — and if that fallback read also fails, the caller gets `E_DB`.
+  removes — and if that fallback read also fails, the caller gets `E_DB`;
+* a collection whose client rejects `where` (TypeError) is retried without the
+  category filter — the drop is recorded (`code=where_filter_dropped`, naming the
+  query and the lost category) and every hit that retry returns is tagged
+  `fallback: "sql_unfiltered"`, so an unfiltered read cannot pass as filtered.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -28,6 +33,8 @@ from app.models.memory import MemoryEntry
 from app.services.query_helpers import fetch_scalars
 
 MAX_FALLBACK_LIMIT = 200
+
+logger = logging.getLogger(__name__)
 
 
 def _build_where(category: str | None, source: str | None) -> dict[str, Any] | None:
@@ -158,6 +165,7 @@ async def search_memory(
             how_to_fix=ERROR_HINTS[E_VALIDATION],
         )
 
+    where_dropped = False
     try:
         collection = get_collection()
         where = _build_where(category, None)
@@ -167,7 +175,17 @@ async def search_memory(
         try:
             raw = collection.query(**kwargs)
         except TypeError:
-            # A collection whose client rejects `where` still answers the plain query.
+            # A collection whose client rejects `where` still answers the plain query — but the
+            # category filter is LOST, so the drop is recorded and every hit from this retry is
+            # tagged `fallback: "sql_unfiltered"`: an unfiltered read must not pass as filtered.
+            where_dropped = True
+            logger.warning(
+                "code=where_filter_dropped: collection rejected `where`; retrying without it "
+                "(query=%r, category=%r, where=%r)",
+                query,
+                category,
+                where,
+            )
             raw = collection.query(query_texts=[query], n_results=n_results)
     except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
         hits = await _sql_fallback(db, query, n_results, category)
@@ -189,17 +207,18 @@ async def search_memory(
     results: list[dict[str, Any]] = []
     for index, document in enumerate(documents):
         meta = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
-        results.append(
-            {
-                "id": ids[index] if index < len(ids) else None,
-                "content": document,
-                "category": meta.get("category"),
-                "title": meta.get("title"),
-                "source": meta.get("source"),
-                "memory_id": meta.get("memory_id"),
-                "distance": distances[index] if index < len(distances) else None,
-            }
-        )
+        hit: dict[str, Any] = {
+            "id": ids[index] if index < len(ids) else None,
+            "content": document,
+            "category": meta.get("category"),
+            "title": meta.get("title"),
+            "source": meta.get("source"),
+            "memory_id": meta.get("memory_id"),
+            "distance": distances[index] if index < len(distances) else None,
+        }
+        if where_dropped:
+            hit["fallback"] = "sql_unfiltered"
+        results.append(hit)
     return results
 
 

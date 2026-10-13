@@ -59,13 +59,15 @@ DOCUMENTED_AGENTS = {
 }
 
 # README's agent table: Orchestrator 06:00/20:00, Social every 2h, Email every 3h, Ads+Stripe
-# every 6h — plus the maintenance job that the upload declared and never scheduled.
+# every 6h — plus the maintenance job that the upload declared and never scheduled, and the
+# task-lease sweep T1 added (its README row reads "Every 5 min").
 DOCUMENTED_SCHEDULE_ENTRIES = {
     "morning-cycle",
     "evening-cycle",
     "social-mentions-sweep",
     "email-inbox-sweep",
     "ads-stripe-sync",
+    "task-lease-sweep",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -73,9 +75,11 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
 # KEY NAME is the implementer's choice — so it is matched by task PATH, never by a name this test
 # invented. The first revision of this file pinned the invented key "activity-retention" and failed
 # the shipped build for choosing "activity-retention-cleanup". That was the test being wrong: a test
-# must not pin a name the source never carried.
+# must not pin a name the source never carried. The lease sweep T1 added is pinned the same
+# way — by task path.
 REQUIRED_SCHEDULED_TASKS = {
     "celery_app.tasks.maintenance.cleanup_old_activity",
+    "celery_app.tasks.maintenance.requeue_stale_task_claims",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3).

@@ -1,6 +1,9 @@
 "use client";
 import { useActivityFeed } from "@/hooks/useActivityFeed";
 
+// Lookup tables, not a closed union: `ActivityEvent.level` is an open string on the wire
+// (`app/schemas/report.py` types it `str`), so a level this build does not know must still render —
+// falling through to the gray dot/text below — rather than being treated as impossible.
 const LEVEL_STYLES: Record<string, string> = {
   success: "text-green-400",
   error: "text-red-400",
@@ -43,7 +46,9 @@ export function ActivityFeed() {
               <span className="text-gray-400 mx-1">·</span>
               <span className="text-gray-200">{e.summary}</span>
               <div className="text-gray-500 text-xs">
-                {new Date(e.created_at).toLocaleTimeString()}
+                {/* `created_at` is nullable on the wire: the placeholder below, not the
+                    "Invalid Date" that `new Date(null)` produces. */}
+                {e.created_at ? new Date(e.created_at).toLocaleTimeString() : "date unknown"}
               </div>
             </div>
           </div>

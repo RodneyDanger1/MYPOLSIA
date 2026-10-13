@@ -109,8 +109,8 @@ def request_side_effect(
     action: str = "",
     value_usd: float = 0.0,
     payload: dict | None = None,
-    sends_today: int = 0,
-    sends_this_hour: int = 0,
+    sends_today: int | None = None,
+    sends_this_hour: int | None = None,
     taint: RunTaint | None = None,
     approval_token: str = "",
     tool: str = "",
@@ -119,6 +119,10 @@ def request_side_effect(
     approval_secret: bytes = b"",
 ) -> SideEffectOutcome:
     """Ask the firewall about one external action.
+
+    `sends_today`/`sends_this_hour` carry a MEASURED count, or `None` = "no count was supplied =
+    unknown" — the firewall refuses a configured cap whose count is unknown rather than assuming
+    zero sends.
 
     Raises the named refusal for a policy/rate/kill denial (an agent must not continue past a
     real denial). Returns an outcome carrying `sandboxed=True` for a sandbox denial — the caller
@@ -212,13 +216,16 @@ def evaluate_side_effect(
     action: str = "",
     value_usd: float = 0.0,
     payload: dict | None = None,
-    sends_today: int = 0,
-    sends_this_hour: int = 0,
+    sends_today: int | None = None,
+    sends_this_hour: int | None = None,
     sandbox_mode: bool | None = None,
     caps: RateCaps | None = None,
     approval_secret: bytes = b"",
 ) -> PolicyDecision:
     """The firewall's ANSWER without enforcement.
+
+    `sends_today`/`sends_this_hour` carry a MEASURED count, or `None` = "unknown" (a configured
+    cap is then refused by name instead of being read as zero sends).
 
     Used where an agent must *record* what policy says rather than perform the action — e.g.
     customer_support proposing a refund: money never moves from the support agent (its capability

@@ -19,6 +19,7 @@ class ActivityLog(Base):
     action: Mapped[str] = mapped_column(String(255), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     detail: Mapped[dict[str, Any] | None] = mapped_column(json_type())
+    # NULL is legal (A-T3 decision b): normalized to "info" at events.activity_payload; no migration.
     level: Mapped[str | None] = mapped_column(
         String(20), server_default="info", default="info"
     )

@@ -17,10 +17,15 @@ Two documented caveats drive the design (CLI-CONTRACT.md §2.1, D1/D4):
 2. On `--resume`/`--continue` the result's total covers the WHOLE session ("Read the latest
    result for the session total; summing results double-counts the restored spend") → we keep a
    per-session high-water mark and account only the delta.
+3. **Missing is not zero (F-10/M2).** Every measurement below is `int | None` / `float | None`:
+   an envelope that OMITS a key (or sends `null`) reports `None`, and the queue leaves the
+   `agent_runs` column NULL; a key present with `0` is a measured zero and is written as `0`.
+   `tokens_used` is None whenever either side is unknown — a one-sided sum is fabrication.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
 
@@ -30,13 +35,18 @@ from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
 
 @dataclass
 class RunUsage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    total_cost_usd: float = 0.0      # the envelope's cumulative-for-session estimate
-    duration_ms: int = 0
-    num_turns: int = 0
+    """One run's measured usage. Every MEASUREMENT is `int | None` / `float | None`: `None` is
+    "the CLI did not report this", and a measured `0` is a real zero — the two must never collapse
+    into one representation (F-10/M2: `or 0` used to turn every absent key into a fake zero).
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    total_cost_usd: float | None = None   # the envelope's cumulative-for-session estimate
+    duration_ms: int | None = None
+    num_turns: int | None = None
     is_error: bool = False
     subtype: str = ""
     session_id: str = ""
@@ -45,11 +55,23 @@ class RunUsage:
     terminal_reason: str = ""
 
     @property
-    def tokens_used(self) -> int:
+    def tokens_used(self) -> int | None:
+        """input + output, or None when EITHER side is unmeasured.
+
+        A one-sided sum is fabrication-precision (F-10/R8): adding a real count to a fabricated
+        `0` invents a total the CLI never reported. One unknown side -> the column stays NULL.
+        """
+        if self.input_tokens is None or self.output_tokens is None:
+            return None
         return self.input_tokens + self.output_tokens
 
     def as_dict(self) -> dict:
-        """The documented result keys the queue persists into `agent_runs`."""
+        """The documented result keys the queue persists into `agent_runs`.
+
+        Unmeasured values pass through as None so `_apply_run_usage` leaves those columns NULL;
+        `cost_estimate_usd` is None when `total_cost_usd` was never reported (never `round(None)`,
+        never `0.0`).
+        """
         return {
             "cli_session_id": self.session_id,
             "tokens_input": self.input_tokens,
@@ -57,7 +79,7 @@ class RunUsage:
             "tokens_used": self.tokens_used,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_creation_tokens": self.cache_creation_tokens,
-            "cost_estimate_usd": round(self.total_cost_usd, 6),
+            "cost_estimate_usd": None if self.total_cost_usd is None else round(self.total_cost_usd, 6),
             "num_turns": self.num_turns,
             "model": ",".join(sorted(self.models)),
             "is_error": self.is_error,
@@ -79,19 +101,35 @@ class RunUsage:
         }
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Envelope integer: an absent key OR a JSON `null` is NOT MEASURED (None); a present `0` is
+    a measured zero and stays 0. The old `int(usage.get(k) or 0)` collapsed the two (F-10)."""
+    return None if value is None else int(value)
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Same contract as `_int_or_none`, for the money/duration fields."""
+    return None if value is None else float(value)
+
+
 def usage_from_envelope(env: dict) -> RunUsage:
     """Extract the documented usage fields. `usage` undercounts with subagents; `modelUsage`
-    and `total_cost_usd` are the accounting authority (D4)."""
+    and `total_cost_usd` are the accounting authority (D4).
+
+    Every measurement is read with an explicit `is None` guard — no `or 0`: an envelope that
+    omits the key (or sends `null`) reports `None` ("unknown"), while a key present with value 0
+    reports a measured zero.
+    """
     usage = env.get("usage") or {}
     model_usage = env.get("modelUsage") or env.get("model_usage") or {}
     return RunUsage(
-        input_tokens=int(usage.get("input_tokens") or 0),
-        output_tokens=int(usage.get("output_tokens") or 0),
-        cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
-        cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
-        total_cost_usd=float(env.get("total_cost_usd") or 0.0),
-        duration_ms=int(env.get("duration_ms") or 0),
-        num_turns=int(env.get("num_turns") or 0),
+        input_tokens=_int_or_none(usage.get("input_tokens")),
+        output_tokens=_int_or_none(usage.get("output_tokens")),
+        cache_read_tokens=_int_or_none(usage.get("cache_read_input_tokens")),
+        cache_creation_tokens=_int_or_none(usage.get("cache_creation_input_tokens")),
+        total_cost_usd=_float_or_none(env.get("total_cost_usd")),
+        duration_ms=_int_or_none(env.get("duration_ms")),
+        num_turns=_int_or_none(env.get("num_turns")),
         is_error=bool(env.get("is_error")),
         subtype=str(env.get("subtype") or ""),
         session_id=str(env.get("session_id") or ""),
@@ -208,6 +246,22 @@ def cli_budget_flag(allowance_usd: float, headroom: float = 0.9) -> str:
     return f"{max(0.01, allowance_usd * headroom):.4f}"
 
 
+def spend_summary(day_spent_usd: float | None, cap_usd: float) -> dict[str, float | None]:
+    """The ONE honest spend summary (T8 / A2 F-08).
+
+    `day_spent_usd is None` means the day's spend was NOT MEASURED: `spent`/`remaining` stay None
+    so the caller renders "unmeasured" — never `$0.00`. The deleted `base_agent.layers_for`
+    budget block did the opposite (`or 0.0`), inventing a zero spend (and a full remaining
+    budget) for a day nobody had measured. A measured `0.0` is a real zero and stays `0.0`, and
+    `remaining` is clamped at 0 so an over-cap day never reports negative headroom.
+    """
+    return {
+        "limit": cap_usd,
+        "spent": day_spent_usd,
+        "remaining": None if day_spent_usd is None else max(0.0, cap_usd - day_spent_usd),
+    }
+
+
 def burn_rate(*, spilled_usd: float, day_limit_usd: float, elapsed_fraction: float) -> dict:
     """Burn-rate view for the dashboard, computed from ledger totals the caller supplies."""
     rate = spilled_usd / max(0.05, elapsed_fraction)
@@ -264,6 +318,7 @@ __all__ = [
     "burn_rate",
     "cli_budget_flag",
     "compute_run_delta",
+    "spend_summary",
     "unit_economics",
     "usage_from_envelope",
 ]

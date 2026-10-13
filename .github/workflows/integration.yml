@@ -3,7 +3,18 @@ name: integration
 # Documented in README.md ("integration.yml — Integration tests (testcontainers), Playwright E2E
 # on push to main") and CLAUDE.md.  The upload shipped no .github/ directory.
 #
-# HONESTY NOTE: never executed here (no Docker on the authoring host).  The integration suite
+# W4-ship upgrade (S2-ci) of the e2e job below: `npm ci || npm install` (reproducible install,
+# install as cold fallback), explicit `BASE_URL: http://localhost` (e2e/playwright.config.ts
+# reads process.env.BASE_URL — the config default only hid the requirement), upload-artifact@v4
+# of e2e/playwright-report + e2e/test-results on failure, and the `--reporter=list` CLI override
+# dropped so the config's [html, list] reporters actually write the report that gets uploaded
+# (the CLI flag REPLACES the config reporters).  Failures are never swallowed: a red e2e fails
+# the run.  The card asked for a NEW e2e.yml — the restored tree already carries this documented
+# e2e job, and README's CI table (README.md:235) names integration.yml as the Playwright home,
+# so it was upgraded in place instead (S2-ci plan correction; a second file would duplicate the
+# job and falsify that README row).
+#
+# HONESTY NOTE: never executed on this host (no Docker) — UNRUN.  The integration suite
 # skips itself cleanly when testcontainers is absent (tests/integration/conftest.py), which is
 # the behaviour this workflow relies on in CI.
 
@@ -52,10 +63,20 @@ jobs:
           exit 1
       - name: Playwright
         working-directory: e2e
+        env:
+          BASE_URL: http://localhost
         run: |
-          npm install
+          npm ci || npm install
           npx playwright install --with-deps chromium
-          npx playwright test --reporter=list
+          npx playwright test
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
       - name: Stack logs on failure
         if: failure()
         run: docker compose logs --tail=300

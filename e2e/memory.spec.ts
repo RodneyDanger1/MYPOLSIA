@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { BACKEND_URL, PREFIX, backendRequest } from "./_helpers";
 
 // Unique per RUN: the fixture titles/content carry these tokens so reruns cannot mistake an older
-// run's rows for their own.  (Memory fixtures are deliberately NOT auto-deleted: the row also lives
-// as a ChromaDB document, and deleting only one half would leave ghost results — the campaign closes
-// with a sweep of [e2e-fixture] rows in both stores.)
+// run's rows for their own.  (Memory fixtures are deliberately NOT auto-deleted here: the row also
+// lives as a ChromaDB document, and deleting only one half would leave ghost results — the suite-end
+// sweep does it for both stores: playwright.config.ts `globalTeardown` → _helpers.ts → the tag-scoped,
+// idempotent e2e/_sweep-fixtures.py.)
 const runId = randomUUID().slice(0, 8);
 const tokenA = `e2efixture${runId}alpha`;
 const tokenB = `e2efixture${runId}beta`;

@@ -6,11 +6,15 @@ Duty (README:38): "Stripe revenue sync, spend tracking". Dispatched by `ads-stri
 Output (lane 05 `FinanceOutput` + lane 03's snapshot/failed-payment keys): `{summary, mrr_cents,
 arr_cents, active_subscribers, churned_today, new_today, stripe_balance_cents, snapshot{},
 expenses[], failed_payments[], alerts[], snapshot_written}` — one key per column of
-`revenue_snapshots`, `expense_records` and `stripe_events`.
+`revenue_snapshots`, `expense_records` and `stripe_events`.  A revenue field the model did not
+measure stays `None`/absent and is OMITTED from the snapshot — never zero-filled, because
+"omitted" and "measured 0" are different states.
 
 Idempotency: `revenue_snapshots.snapshot_date` is UNIQUE, so the snapshot is an upsert keyed by
-date; `snapshot_written` means "this payload carries a snapshot to upsert", which is why the
-second morning run of the day cannot create a duplicate row.
+date.  `snapshot_written` in this payload is always `False`: the WRITE decides it — the worker
+sets it True only when `finance_service.persist_finance_run`'s upsert really returned a row, so
+an attempted write can never wear a real one and the second morning run of the day cannot
+create a duplicate row.
 
 Sandbox semantics: balance/subscription reads and the snapshot/expense writes are allowed; a
 REFUND is `external_irreversible` and is refused (`E_SANDBOX_BLOCKED`) while sandboxed, and
@@ -25,8 +29,22 @@ from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import request_side_effect, side_effect_receipt
 from app.config import settings
+from app.core.errors import E_VALIDATION
 from app.core.timeutil import today_utc
 from app.schemas.agent_outputs import FinanceOutput
+
+#: The seven `revenue_snapshots` money columns this agent may measure.  A field that is `None`
+#: here means "not measured" and must be omitted from the row, never zero-filled — measured 0
+#: and not-measured are different states.
+_SNAPSHOT_MONEY_FIELDS = (
+    "mrr_cents",
+    "arr_cents",
+    "active_subscribers",
+    "churned_today",
+    "new_today",
+    "total_revenue_month_cents",
+    "stripe_balance_cents",
+)
 
 ROLE = """You are the Finance agent of an autonomous company. You own the numbers: revenue, spend
 and the alerts a founder must see.
@@ -40,11 +58,14 @@ Rules:
 - Report ONLY numbers that appear in the context you were given or that you read from the provider
   through a tool. There is no "roughly": an unmeasured number is omitted, and its name is listed in
   `alerts` so someone measures it.
-- `snapshot` mirrors the `revenue_snapshots` row for today (snapshot_date = YYYY-MM-DD, UTC). Set
-  `snapshot_written=true` only when you are providing that row.
+- `snapshot` mirrors the `revenue_snapshots` row for today (snapshot_date = YYYY-MM-DD, UTC) and
+  carries ONLY the fields you actually measured: omit the rest, because an omitted field means
+  "not measured" while a 0 is a measurement. Leave `snapshot_written` alone — the runtime
+  records the real write.
 - `expenses` entries are single real costs with category, vendor and amount in cents; never roll up
   guessed infrastructure spend.
-- `failed_payments` lists the failed charges you actually saw, with their event id and amount.
+- `failed_payments` lists the failed charges you actually saw, with their event id and amount; a
+  failed charge without the provider's real event id cannot be refunded and will be refused.
 - `alerts` are the things a human must act on today: a failed charge above the usual size, a churn
   spike, a balance that cannot cover the payroll window. If nothing is wrong, return an empty list
   rather than inventing concern.
@@ -65,20 +86,40 @@ class FinanceAgent(BasePolsiaAgent):
         payload["agent_type"] = self.agent_type
         receipts: list[dict[str, Any]] = []
 
-        # A snapshot payload is the internal write this agent performs; make the date explicit so
-        # the UNIQUE(snapshot_date) upsert in the services layer can never drift from the payload.
-        snapshot = payload.get("snapshot")
-        if not isinstance(snapshot, dict) or not snapshot.get("snapshot_date"):
-            snapshot = {
-                "snapshot_date": today_utc().isoformat(),
-                "mrr_cents": int(payload.get("mrr_cents") or 0),
-                "arr_cents": int(payload.get("arr_cents") or 0),
-                "active_subscribers": int(payload.get("active_subscribers") or 0),
-                "churned_today": int(payload.get("churned_today") or 0),
-                "new_today": int(payload.get("new_today") or 0),
-                "total_revenue_month_cents": int(payload.get("total_revenue_month_cents") or 0),
-                "stripe_balance_cents": int(payload.get("stripe_balance_cents") or 0),
+        # The snapshot row is built ONLY from values this run actually measured — from the
+        # top-level money fields and/or a model-provided `snapshot` dict.  The schema's money
+        # fields are nullable, so an omitted field is `None` ("did not measure") while an
+        # explicit 0 is a measured zero; only the measured keys enter the row (the columns are
+        # nullable, and zero-filling them here was the fabrication this replaces).
+        model_snapshot = payload.get("snapshot")
+        provided: dict[str, Any] = {}
+        if isinstance(model_snapshot, dict):
+            provided.update(
+                {key: model_snapshot[key] for key in _SNAPSHOT_MONEY_FIELDS
+                 if model_snapshot.get(key) is not None}
+            )
+        provided.update(
+            {key: payload[key] for key in _SNAPSHOT_MONEY_FIELDS
+             if key not in provided and payload.get(key) is not None}
+        )
+        if provided:
+            # The date logic is unchanged: the model's date wins, UTC-today otherwise, so the
+            # UNIQUE(snapshot_date) upsert in the services layer can never drift from the payload.
+            snapshot: dict[str, Any] | None = {
+                "snapshot_date": (
+                    model_snapshot.get("snapshot_date") if isinstance(model_snapshot, dict) else None
+                )
+                or today_utc().isoformat(),
+                **provided,
             }
+        else:
+            snapshot = None
+            # ONE alert naming every unmeasured field, so a human measures them.  Nothing was
+            # written and nothing may claim otherwise — the write decides `snapshot_written`.
+            payload.setdefault("alerts", []).append(
+                "no revenue figures were provided; no snapshot was written — unmeasured: "
+                + ", ".join(_SNAPSHOT_MONEY_FIELDS)
+            )
         payload["snapshot"] = snapshot
 
         # Refunds: irreversible, so the firewall decides — never the model.
@@ -86,7 +127,29 @@ class FinanceAgent(BasePolsiaAgent):
             refundable = bool(item.get("refund_requested"))
             if not refundable:
                 continue
-            ref = str(item.get("event_id") or f"failed_payment:{index}")
+            event_id = item.get("event_id")
+            if not event_id:
+                # `str(item.get("event_id") or f"failed_payment:{index}")` used to fabricate a
+                # payment id that then fed `integrations.refund_payment(payment_id=ref)`: a
+                # refund must NEVER be requested against a made-up id — refuse by name and
+                # build no request at all.
+                payload.setdefault("refusals", []).append({
+                    "ok": False,
+                    "error": {
+                        "code": E_VALIDATION,
+                        "message": (
+                            f"failed payment #{index} has no provider event_id; "
+                            "cannot request a refund for it"
+                        ),
+                        "how_to_fix": (
+                            "read the failed charge's real event id from Stripe before "
+                            "requesting a refund"
+                        ),
+                        "context": {"index": index},
+                    },
+                })
+                continue
+            ref = str(event_id)
             outcome = request_side_effect(
                 self.agent_type,
                 ActionClass.EXTERNAL_IRREVERSIBLE,
@@ -118,7 +181,10 @@ class FinanceAgent(BasePolsiaAgent):
         payload.setdefault("expenses", [])
         payload.setdefault("alerts", [])
         payload.setdefault("failed_payments", [])
-        payload["snapshot_written"] = True
+        # The WRITE decides this flag, not the model and not this payload: the agent only
+        # proposes a snapshot.  The worker sets it True only when persist_finance_run's upsert
+        # really returned a row.
+        payload["snapshot_written"] = False
         if settings.sandbox_mode:
             payload["sandbox"] = True
             payload["drafted_not_sent"] = True

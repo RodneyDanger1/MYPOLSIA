@@ -60,9 +60,11 @@ class EmailOutreachAgent(BasePolsiaAgent):
         payload, assembled = self.collect_structured(task, context)
         payload["agent_type"] = self.agent_type
         action = str(payload.get("action") or "draft")
+        # int | None: None = "no local record of sends" -> the firewall refuses the send on a
+        # capped channel (fail closed); it must never be collapsed to 0 here.
         counts = ((context or {}).get("channel_sends") or {}).get("email") or {}
-        sends_today = int(counts.get("today") or 0)
-        sends_hour = int(counts.get("hour") or 0)
+        sends_today = counts.get("today")
+        sends_hour = counts.get("hour")
         receipts: list[dict[str, Any]] = []
 
         for _index, email in enumerate(list(payload.get("emails") or [])):

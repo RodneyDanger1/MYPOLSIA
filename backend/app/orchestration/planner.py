@@ -30,6 +30,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from app.agents.accounting import BudgetPolicy, BudgetStop, authorize
 from app.config import settings
@@ -132,6 +133,16 @@ class Plan:
     def depth(self) -> dict[str, int]:
         return dict(getattr(self, "_depth", {}))
 
+    if TYPE_CHECKING:
+        # `_order`/`_depth` are set by `build_plan` AFTER construction; they are NOT dataclass
+        # fields — the serialised shape and plan_hash must not move (T13). The plain declaration
+        # form is collected by the dataclass plugin as a REQUIRED field (mypy [misc] "Attributes
+        # without a default cannot follow attributes with one" + call-arg noise), so the
+        # declarations live in a type-checker-only method the runtime never defines.
+        def _t13_dynamic_attrs(self) -> None:  # never defined at runtime (TYPE_CHECKING False)
+            self._order: list[str]
+            self._depth: dict[str, int]
+
 
 def build_plan(
     date: str,
@@ -178,6 +189,16 @@ def build_plan(
         except (TypeError, ValueError):
             warn.append(f"node '{title}': non-numeric estimate coerced to defaults")
             cost, dur = 0.0, 60.0
+        # A MISSING estimate is not a measured $0.00 / 60s.  When NEITHER key of either pair
+        # carries a value (absent = key missing or None — `0` is a legal measured zero and stays
+        # silent), the defaults are the planner's, not the spec's, and the difference is
+        # recorded; a value the non-numeric branch above already named is not re-recorded.
+        cost_absent = spec.get("estimate_usd") is None and spec.get("est_cost_usd") is None
+        dur_absent = spec.get("estimate_seconds") is None and spec.get("est_duration_s") is None
+        if cost_absent and dur_absent:
+            warn.append(
+                f"node '{title}': no cost/duration estimate provided; defaulted to $0.00 / 60s"
+            )
         prio = spec.get("priority", 3)
         prio = int(prio) if isinstance(prio, int | float) or (isinstance(prio, str) and prio.isdigit()) else 3
         side_effect = SideEffect(str(spec.get("side_effect") or "internal_write"))
@@ -279,7 +300,11 @@ def critical_path(plan: Plan, weight: str = "est_duration_s") -> tuple[list[str]
     if not best:
         return [], 0.0
     last = max(best, key=lambda n: best[n])
-    path, cur = [], last
+    # Annotation-only (T13): `prev` records None for dependency-free roots, so the walk variable
+    # must admit None for the checker; the `while cur is not None` guard below is the real
+    # terminator. Same walk, same output — proven by raw/probe-before vs probe-after + the tests.
+    path: list[str] = []
+    cur: str | None = last
     while cur is not None:
         path.append(cur)
         cur = prev[cur]

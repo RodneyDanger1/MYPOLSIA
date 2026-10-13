@@ -10,6 +10,8 @@ What the upload did and what this file does instead (all measured, lane 03/04/06
 | no claim → two workers can run the same row | atomic `claim_task` first; a second delivery exits without side effects |
 | sweeps create a task per tick (duplicates under at-least-once, D-06) | `<agent_type>:<utc-day>:<bucket>` dedupe key |
 | `agent_runs` duration only, tokens/cost/session never written | duration, tokens, cost, CLI session persisted |
+| a run's side effects never reached the tables (`social_posts`, `email_logs`, `revenue_snapshots` stayed empty) | `_persist_run_artifacts` writes what a completed run really performed, on the run's own transaction |
+| every per-channel cap read `context["channel_sends"]`, which had no producer anywhere | `_with_channel_sends` injects the channel snapshot for this agent's own channels (absent-and-recorded if the producer cannot answer) |
 
 The claim API (`claim_task`, `heartbeat_task`, `release_task_claim`) is requested from the
 services owner in the lane receipt (`## REQUESTS`) — it is imported inside the coroutine so
@@ -128,8 +130,12 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
         run_row.tokens_output = int(tokens_output)
     if tokens_used is not None:
         run_row.tokens_used = int(tokens_used)
-    elif tokens_input is not None or tokens_output is not None:
-        run_row.tokens_used = int(tokens_input or 0) + int(tokens_output or 0)
+    elif tokens_input is not None and tokens_output is not None:
+        # F-10/R8: this was `elif tokens_input is not None or tokens_output is not None:
+        # run_row.tokens_used = int(tokens_input or 0) + int(tokens_output or 0)` — a one-sided
+        # sum adds a FABRICATED 0 to the side that was measured, producing a precise-looking total
+        # for a run whose other half was never reported. One side unknown -> the column stays NULL.
+        run_row.tokens_used = int(tokens_input) + int(tokens_output)
     if session_id:
         run_row.cli_session_id = str(session_id)[:120]
     if cost is not None:
@@ -146,6 +152,92 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
             recorded[key] = result[key]
     if recorded:
         run_row.usage_json = recorded
+
+
+#: The slug a completed run carries in `result["persistence"]["error"]["code"]` when its artifacts
+#: could not be written. Deliberately NOT an `app.core.errors` code: those map to HTTP statuses and
+#: operator hints, while this is an internal record of a PARTIAL outcome (the run succeeded; only
+#: the persistence leg did not).
+E_RUN_ARTIFACTS_PERSIST_FAILED = "E_RUN_ARTIFACTS_PERSIST_FAILED"
+
+
+async def _with_channel_sends(db: Any, agent_type: str, context: dict[str, Any]) -> dict[str, Any]:
+    """`context` plus the per-channel send counts this agent's cap checks read (T5 worker hook).
+
+    Why worker-side: the channel agents check `context["channel_sends"][channel]` before an external
+    send, and until T5 NOTHING in the tree produced that key (README: "no writer anywhere in the
+    tree"), so every per-channel cap saw an absent count. The agents hold no DB session; the worker
+    does — so the snapshot is taken here, once, before the run.
+
+    Only the channels in THIS agent's `policy_firewall` capability are looked at (an agent should
+    not even see counts for channels it cannot touch), and the return is a NEW dict: the copy-on-
+    write spread cannot mutate the (deep-copied) cached context `get_full_context` hands back.
+
+    A producer that cannot answer leaves the key ABSENT and records why — "unmeasured" stays
+    distinguishable from "measured zero sends". The firewall denies a configured cap on an unknown
+    count (fail closed); an injected `0` would silently allow the send.
+    """
+    from app.agents.policy_firewall import AGENT_CAPABILITIES
+
+    cap = AGENT_CAPABILITIES.get(agent_type)
+    channels = tuple(cap.channels) if cap is not None else ()
+    if not channels:
+        return context  # orchestrator / business_planning: no external channel to count
+    try:
+        from app.services.channel_service import channel_sends_snapshot
+
+        snapshot = await channel_sends_snapshot(db, channels, now=None)
+    except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated count
+        logger.warning(
+            "code=channel_sends_unavailable: %s runs without per-channel send counts (%s)",
+            agent_type,
+            exc,
+            exc_info=True,
+        )
+        return context
+    return {**context, "channel_sends": snapshot}
+
+
+async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Persist what a finished run ACTUALLY performed, and report what happened.
+
+    Why here and not in the agents: agents hold no DB session (that is why the run's side effects —
+    published posts, sent emails, the finance snapshot/expenses — used to exist only in the run's
+    JSON output while `social_posts` / `email_logs` / `revenue_snapshots` stayed empty and every
+    downstream counter read zero). The worker owns the session, so it persists on the caller's
+    transaction (the services `flush`, `_execute_agent_task` commits).
+
+    An agent with no persisted artifact returns `{}` — "nothing to write", not "wrote nothing".
+    A failure is RECORDED as `{"ok": False, "error": {...}}` and never swallowed: the caller folds
+    the report into the run's stored output and logs an activity row. It is not raised either — the
+    run itself succeeded; only the persistence leg did not.
+    """
+    try:
+        if agent_type == "finance":
+            from app.services.finance_service import persist_finance_run
+
+            return await persist_finance_run(db, result)
+        if agent_type == "social_media":
+            from app.services.social_service import record_published_posts
+
+            return await record_published_posts(db, result)
+        if agent_type == "email_outreach":
+            from app.services.outreach_service import record_sent_emails
+
+            return await record_sent_emails(db, result)
+        return {}
+    except PolsiaError as exc:
+        logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
+        return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+    except Exception as exc:  # noqa: BLE001 — a persistence bug is reported in the run output
+        logger.warning("code=run_artifacts_persist_failed: %s (%s)", agent_type, exc, exc_info=True)
+        return {
+            "ok": False,
+            "error": {
+                "code": E_RUN_ARTIFACTS_PERSIST_FAILED,
+                "message": f"{type(exc).__name__}: {exc}",
+            },
+        }
 
 
 @app.task(
@@ -250,6 +342,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
     async with session_factory() as db:
         context = await get_full_context(db)
+        # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
+        # producer (agents hold no database session). Copy-on-write, own channels only.
+        context = await _with_channel_sends(db, agent_type, context)
         run = await create_agent_run(db, agent_type, task_id=task_id, input_context=context)
         await db.commit()
         run_id = run.id
@@ -312,6 +407,37 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     attempts = 0
     requeued = False
     async with session_factory() as db:
+        # T5/T6 persistence hook: a completed run's side effects (published posts, sent emails, the
+        # finance snapshot) are written HERE, on this transaction, BEFORE the run row is finished —
+        # so `agent_runs.output` carries the report of what was really persisted. A failure is
+        # folded into the output + an activity row, never into the run's status: the run succeeded.
+        if status == "completed" and isinstance(result, dict):
+            report = await _persist_run_artifacts(db, agent_type, result)
+            if report:
+                result["persistence"] = report
+                if agent_type == "finance" and report.get("ok"):
+                    # T6/PLAN-3: `snapshot_written` is the PERSISTED upsert's fact, not the agent's
+                    # intent — the agent had no session and could not know.
+                    result["snapshot_written"] = bool(report.get("snapshot_written"))
+                if not report.get("ok"):
+                    persist_error = report.get("error") or {}
+                    logger.warning(
+                        "task %s: run artifacts not persisted for %s: %s",
+                        task_id,
+                        agent_type,
+                        persist_error or report,
+                    )
+                    await log_activity(
+                        db,
+                        agent_type=agent_type,
+                        action="run_artifacts_not_persisted",
+                        summary=(
+                            f"{agent_type} run completed but its artifacts were not persisted "
+                            f"({persist_error.get('code') or 'unknown'})"
+                        ),
+                        level="warning",
+                        detail=persist_error,
+                    )
         run_row = await finish_agent_run(
             db,
             run_id,

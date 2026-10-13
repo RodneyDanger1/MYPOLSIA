@@ -254,7 +254,12 @@ class EmailOutreachOutput(AgentEnvelope):
 class SupportReply(BaseModel):
     model_config = {"populate_by_name": True}
 
-    message_ref: str = Field(min_length=1, max_length=255)   # IMAP UID / thread id
+    # IMAP UID / thread id
+    message_ref: str = Field(
+        min_length=1,
+        max_length=255,
+        description="provider message id from the inbox — absent means the reply cannot be acted on",
+    )
     intent: Literal["question", "complaint", "refund_request", "bug", "praise", "other"]
     sentiment: Literal["positive", "neutral", "negative"]
     reply_body: str = Field(min_length=1, max_length=8000)
@@ -278,7 +283,11 @@ class CustomerSupportOutput(AgentEnvelope):
 
 class AdsRecommendation(BaseModel):
     platform: Literal["google_ads", "meta_ads"]
-    campaign_ref: str = Field(min_length=1, max_length=255)
+    campaign_ref: str = Field(
+        min_length=1,
+        max_length=255,
+        description="provider campaign id from the ad platform — absent means the recommendation cannot be applied",
+    )
     action: Literal["pause", "resume", "scale_up", "scale_down", "new_campaign", "noop"]
     rationale: str = Field(min_length=10, max_length=2000)
     budget_change_usd: float = Field(ge=-10000.0, le=10000.0, default=0.0)
@@ -359,18 +368,26 @@ class ExpenseDraft(BaseModel):
 
 
 class RevenueSnapshotDraft(BaseModel):
+    """The `revenue_snapshots` row for today.  Every money field is nullable on purpose: a field
+    the model did not measure validates as `None`, and the finance agent OMITS it from the row
+    instead of zero-filling it — "omitted" and "measured 0" are different states and stay so."""
+
     snapshot_date: str = Field(min_length=8, max_length=32)
-    mrr_cents: int = Field(default=0, ge=0)
-    arr_cents: int = Field(default=0, ge=0)
-    active_subscribers: int = Field(default=0, ge=0)
-    churned_today: int = Field(default=0, ge=0)
-    new_today: int = Field(default=0, ge=0)
-    total_revenue_month_cents: int = Field(default=0, ge=0)
-    stripe_balance_cents: int = Field(default=0, ge=0)
+    mrr_cents: int | None = Field(default=None, ge=0)
+    arr_cents: int | None = Field(default=None, ge=0)
+    active_subscribers: int | None = Field(default=None, ge=0)
+    churned_today: int | None = Field(default=None, ge=0)
+    new_today: int | None = Field(default=None, ge=0)
+    total_revenue_month_cents: int | None = Field(default=None, ge=0)
+    stripe_balance_cents: int | None = Field(default=None, ge=0)
 
 
 class FailedPayment(BaseModel):
-    event_id: str | None = Field(default=None, max_length=255)
+    event_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Stripe event id — only ever the provider's real id; absent means this charge cannot be acted on",
+    )
     customer_id: str | None = Field(default=None, max_length=255)
     amount_cents: int = Field(default=0, ge=0)
     currency: str = Field(default="usd", max_length=10)
@@ -380,13 +397,18 @@ class FailedPayment(BaseModel):
 
 
 class FinanceOutput(AgentEnvelope):
-    mrr_cents: int = Field(default=0, ge=0)
-    arr_cents: int = Field(default=0, ge=0)
-    active_subscribers: int = Field(default=0, ge=0)
-    churned_today: int = Field(default=0, ge=0)
-    new_today: int = Field(default=0, ge=0)
-    stripe_balance_cents: int = Field(default=0, ge=0)
-    total_revenue_month_cents: int = Field(default=0, ge=0)
+    """The finance agent's contract.  The money fields are nullable so that a field the model did
+    not measure survives validation as `None` — the agent then omits it from the snapshot row
+    instead of writing a fabricated 0.  `snapshot_written` in this payload is always False: the
+    worker sets it from what `persist_finance_run` actually wrote."""
+
+    mrr_cents: int | None = Field(default=None, ge=0)
+    arr_cents: int | None = Field(default=None, ge=0)
+    active_subscribers: int | None = Field(default=None, ge=0)
+    churned_today: int | None = Field(default=None, ge=0)
+    new_today: int | None = Field(default=None, ge=0)
+    stripe_balance_cents: int | None = Field(default=None, ge=0)
+    total_revenue_month_cents: int | None = Field(default=None, ge=0)
     snapshot_written: bool = False
     snapshot: RevenueSnapshotDraft | None = None
     expenses: list[ExpenseDraft] = Field(default_factory=list, max_length=50)
@@ -396,9 +418,11 @@ class FinanceOutput(AgentEnvelope):
 
     @field_validator("arr_cents")
     @classmethod
-    def arr_matches_mrr(cls, v: int, info) -> int:
+    def arr_matches_mrr(cls, v: int | None, info) -> int | None:
         # tolerance: 12x MRR within 2% (partial-month rounding is normal)
-        mrr = info.data.get("mrr_cents", 0)
+        if v is None:
+            return v      # not measured: there is no number to check against MRR
+        mrr = info.data.get("mrr_cents")
         if mrr and abs(v - 12 * mrr) > max(200, int(0.02 * 12 * mrr)):
             raise ValueError("arr_cents must be approximately 12 * mrr_cents")
         return v

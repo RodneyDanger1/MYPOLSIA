@@ -12,6 +12,14 @@ Evening (D-04/D-05): ONE grouped aggregate over the day window, computed with
 naive local midnight against a `timestamptz` column — measured: 0 rows selected for a day
 that had 303 (lane 06, matrix Table 3).
 
+Timing (T2).  The morning entry in `beat_schedule` fires **hourly** and this task self-gates
+on the window: the configured hour is read as `company_config.daily_cycle_hour` FIRST, with
+`settings.morning_cycle_hour` filling an ABSENT value only — precedence is explicit, and a
+stored value always wins.  The hour is **company-local** (interpreted via
+`core/timeutil.company_tz()`, never as a naive UTC hour), so the task runs only inside the
+configured hour's `[H:00, H+1:00)` local window; an invalid stored value is a named
+`E_CONFIG` refusal, never a silent fallback.
+
 Trade-off recorded (lane 04 D5): the finance snapshot is now queued with the rest instead of
 running before the orchestrator.  The cycle therefore no longer blocks on it (the defect
 being fixed), and today's plan sees the *previous* snapshot; the fresh snapshot lands
@@ -22,11 +30,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from celery import group
 
-from app.core.timeutil import today_in, today_utc
+from app.config import settings
+from app.core.timeutil import company_tz, now_utc, today_in
 from celery_app.tasks._common import create_task_deduped, dedupe_key, plan_bucket, run_async
 from celery_app.worker import app
 
@@ -51,7 +62,7 @@ _FIXED_MORNING_WORK: tuple[tuple[str, str, str, int], ...] = (
 
 @app.task(name="celery_app.tasks.daily_cycle.run_morning_cycle")
 def run_morning_cycle() -> dict[str, Any]:
-    """06:00 (settings.morning_cycle_hour, UTC) — plan the day, create its tasks, fan out."""
+    """Hourly Beat tick — self-gates on the company-local Morning Cycle Hour, then plans the day."""
     return run_async(_morning_cycle())
 
 
@@ -59,6 +70,40 @@ def run_morning_cycle() -> dict[str, Any]:
 def run_evening_cycle() -> dict[str, Any]:
     """20:00 (settings.evening_cycle_hour, UTC) — day summary for the company's day."""
     return run_async(_evening_cycle())
+
+
+async def _resolve_morning_hour(db) -> tuple[int, str]:
+    """The hour the morning cycle runs at, and which source supplied it.
+
+    Company value first, the settings fallback for an absent value only; an invalid value is
+    a named `E_CONFIG` refusal rather than a silent default (see the module docstring).
+    """
+    # precedence: company_config.daily_cycle_hour wins; settings.morning_cycle_hour fills an
+    # absent value only.
+    from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+    from app.services.company_service import get_daily_cycle_hour
+
+    stored = await get_daily_cycle_hour(db)
+    if stored is None:
+        hour, source = settings.morning_cycle_hour, "settings"
+    else:
+        hour, source = stored, "company"
+    if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
+        raise PolsiaError(
+            E_CONFIG,
+            f"morning cycle hour {hour!r} (from {source}) is not a valid hour: "
+            "the accepted range is an integer 0-23",
+            how_to_fix=ERROR_HINTS[E_CONFIG],
+            context={"value": hour, "source": source},
+        )
+    return hour, source
+
+
+def _morning_window(day: date, hour: int, tz: ZoneInfo) -> tuple[datetime, datetime]:
+    """The `[H:00, H+1:00)` company-local window as timezone-aware UTC instants."""
+    start_local = datetime.combine(day, time(hour=hour), tzinfo=tz)
+    end_local = start_local + timedelta(hours=1)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 async def _morning_cycle() -> dict[str, Any]:
@@ -74,7 +119,35 @@ async def _morning_cycle() -> dict[str, Any]:
     from celery_app.tasks.agent_tasks import run_agent_task
 
     session_factory = get_session_factory()
-    day = today_in()  # the company's local day: what "today's plan" means (D-16)
+
+    # The self-gate (T2): the beat entry fires hourly, so decide HERE, before any heavy work.
+    # The configured hour is company-local, read company-first, and an invalid value has already
+    # raised E_CONFIG inside _resolve_morning_hour.
+    now = now_utc()
+    tz = company_tz()
+    async with session_factory() as db:
+        hour, source = await _resolve_morning_hour(db)
+    day = now.astimezone(tz).date()  # the company's local day: what "today's plan" means (D-16)
+    start, end = _morning_window(day, hour, tz)
+    window = {
+        "hour": hour,
+        "source": source,
+        "tz": tz.key,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+    if not (start <= now < end):
+        logger.info(
+            "morning cycle skipped (outside_morning_window): now=%s window=[%s, %s) "
+            "hour=%s source=%s tz=%s",
+            now.isoformat(),
+            start.isoformat(),
+            end.isoformat(),
+            hour,
+            source,
+            tz.key,
+        )
+        return {"status": "skipped", "reason": "outside_morning_window", "window": window}
 
     async with session_factory() as db:
         context = await get_full_context(db)
@@ -135,10 +208,25 @@ async def _morning_cycle() -> dict[str, Any]:
                 skipped.append(f"malformed plan entry: {entry!r}")
                 logger.warning("morning plan: skipping malformed entry %r", entry)
                 continue
+            # The priority coercion below used to be fully silent.  An ABSENT priority is the
+            # output schema's own default (`TaskSpec.priority` — default=3,
+            # app/schemas/agent_outputs.py), so absence is not malformed and is not recorded;
+            # a PRESENT value the coercion rewrites — non-numeric, or falsy like 0 swallowed
+            # by the `or` — is recorded under a stable slug so "defaulted" and "coerced" stay
+            # distinguishable.
+            raw_priority = entry.get("priority")
             try:
-                priority = int(entry.get("priority") or 3)
+                priority = int(raw_priority or 3)
+                coerced = raw_priority is not None and not raw_priority
             except (TypeError, ValueError):
                 priority = 3
+                coerced = True
+            if coerced:
+                logger.warning(
+                    "code=priority_coerced: morning plan entry %r priority %r -> 3",
+                    title,
+                    raw_priority,
+                )
             key = dedupe_key(agent_type, plan_bucket(title))
             try:
                 task = await create_task_deduped(
@@ -195,7 +283,7 @@ async def _morning_cycle() -> dict[str, Any]:
                 "plan_entries_dropped_by_cap": dropped_by_cap,
                 "fanout": "celery_group",
                 "day": day.isoformat(),
-                "utc_day": today_utc().isoformat(),
+                "utc_day": now.astimezone(UTC).date().isoformat(),
             },
         )
         await db.commit()
@@ -219,6 +307,7 @@ async def _morning_cycle() -> dict[str, Any]:
         "plan_entries": len(planned),
         "plan_entries_dropped_by_cap": dropped_by_cap,
         "plan_summary": plan_text,
+        "window": window,
     }
 
 

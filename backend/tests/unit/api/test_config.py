@@ -1,6 +1,8 @@
-"""Test GET/PUT /api/v1/config endpoints."""
+"""Test GET/PUT /api/v1/config endpoints, and the Settings fields they rely on."""
 import pytest
+from pydantic import ValidationError
 
+from app.config import Settings
 from app.models.company import CompanyConfig
 
 
@@ -43,3 +45,19 @@ async def test_update_config(api_client, auth_headers, async_db_session):
 async def test_requires_api_key(api_client):
     resp = await api_client.get("/api/v1/config")
     assert resp.status_code == 401
+
+
+# --- Settings: the activity publish breaker's cooldown (what `events` reads) ---
+
+
+def test_activity_publish_cooldown_defaults_to_30_seconds():
+    """Default 30.0s window (config.py -> events._PUBLISH_COOLDOWN_S)."""
+    assert Settings().activity_publish_cooldown_seconds == 30.0
+
+
+def test_activity_publish_cooldown_rejects_non_positive_values():
+    """0 or negative would silently disable the publish breaker, so Settings refuses it."""
+    for bad in (0, -1, 0.0, -0.5):
+        with pytest.raises(ValidationError) as excinfo:
+            Settings(activity_publish_cooldown_seconds=bad)
+        assert "activity_publish_cooldown_seconds must be > 0" in str(excinfo.value)

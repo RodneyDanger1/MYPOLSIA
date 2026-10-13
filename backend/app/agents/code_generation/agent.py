@@ -81,6 +81,8 @@ class CodeGenerationAgent(BasePolsiaAgent):
                         f"change[{index}] missing repo/branch/pr_title; not actionable"
                     )
                     continue
+                # int | None: None = "no local record of sends" -> the firewall refuses (fail
+                # closed); it must never be collapsed to 0 here.
                 counts = ((context or {}).get("channel_sends") or {}).get("github") or {}
                 outcome = request_side_effect(
                     self.agent_type,
@@ -89,8 +91,8 @@ class CodeGenerationAgent(BasePolsiaAgent):
                     action="open_pr",
                     payload={"action": "open_pr", "repo": repo, "branch": branch,
                              "pr_title": pr_title},
-                    sends_today=int(counts.get("today") or 0),
-                    sends_this_hour=int(counts.get("hour") or 0),
+                    sends_today=counts.get("today"),
+                    sends_this_hour=counts.get("hour"),
                 )
                 receipt = side_effect_receipt(outcome, action="open_pr", ref=f"{repo}#{branch}")
                 if outcome.allowed:                              # approval token verified

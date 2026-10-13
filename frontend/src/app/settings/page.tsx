@@ -82,7 +82,7 @@ export default function SettingsPage() {
       <div className="bg-gray-800 rounded-lg p-5 space-y-4">
         <h2 className="text-white font-semibold">Scheduler</h2>
         {field("Timezone", "timezone")}
-        {field("Morning Cycle Hour (UTC)", "daily_cycle_hour", "number")}
+        {field("Morning Cycle Hour (company-local)", "daily_cycle_hour", "number")}
       </div>
 
       <button

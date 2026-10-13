@@ -18,8 +18,9 @@ from typing import Any
 from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass
-from app.agents.side_effects import request_side_effect, side_effect_receipt
+from app.agents.side_effects import named_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
+from app.core.errors import E_VALIDATION
 from app.schemas.agent_outputs import AdsOutput
 
 ROLE = """You are the Ads Management agent of an autonomous company. You run paid acquisition on
@@ -62,11 +63,25 @@ class AdsManagementAgent(BasePolsiaAgent):
         for index, rec in enumerate(list(payload.get("recommendations") or [])):
             platform = str(rec.get("platform") or "google_ads")
             action = str(rec.get("action") or "noop")
-            campaign_ref = str(rec.get("campaign_ref") or f"campaign:{index}")
             delta = float(rec.get("budget_change_usd") or 0.0)
             if action == "noop":
                 rec["applied"] = False
                 continue
+            campaign_ref = str(rec.get("campaign_ref") or "").strip()
+            if not campaign_ref:
+                # T7: a provider ref must BE one. The old `f"campaign:{index}"` fabricated an id,
+                # so the firewall fingerprint and (had the action been allowed) the provider call
+                # carried a campaign no platform ever issued. Refuse by name; the item never
+                # reaches the firewall.
+                rec["applied"] = False
+                payload.setdefault("refusals", []).append(named_refusal(
+                    E_VALIDATION,
+                    f"recommendation #{index} has no provider campaign_ref; cannot act on it",
+                    index=index, platform=platform,
+                ))
+                continue
+            # int | None: None = "no local record of sends" -> the firewall refuses (fail
+            # closed); it must never be collapsed to 0 here.
             counts = ((context or {}).get("channel_sends") or {}).get(platform) or {}
             outcome = request_side_effect(
                 self.agent_type,
@@ -76,8 +91,8 @@ class AdsManagementAgent(BasePolsiaAgent):
                 value_usd=abs(delta),
                 payload={"action": action, "campaign_ref": campaign_ref,
                          "budget_change_usd": delta},
-                sends_today=int(counts.get("today") or 0),
-                sends_this_hour=int(counts.get("hour") or 0),
+                sends_today=counts.get("today"),
+                sends_this_hour=counts.get("hour"),
             )
             receipt = side_effect_receipt(outcome, action=action, ref=campaign_ref,
                                           extra={"platform": platform, "budget_change_usd": delta})

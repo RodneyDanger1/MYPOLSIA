@@ -15,18 +15,44 @@ shifts by the UTC offset.  Always compute bounds as timezone-AWARE UTC.
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 def company_tz(tz_name: str | None = None) -> ZoneInfo:
+    """The company's timezone: malformed -> named `E_CONFIG` refusal; unset -> UTC.
+
+    Unset (`tz_name` and `COMPANY_TIMEZONE` both falsy) is the documented default, not a
+    guess: `.env.example` ships `COMPANY_TIMEZONE=UTC`, so "the operator configured
+    nothing" answers `UTC` without a record.  A non-empty value that is not a known zone
+    is malformed — it would shift every day window (`today_in`, `day_bounds`,
+    `day_window`) — so it raises the named `E_CONFIG` refusal instead of a silent UTC
+    fallback.  Supersedes S-04's `code=invalid_company_timezone` warning (W3-refusals):
+    the refusal names the bad value and the fix, so the fallback record has nothing left
+    to say (T4).
+    """
     from app.config import settings
+    from app.core.errors import E_CONFIG, PolsiaError
 
     name = tz_name or settings.company_timezone or "UTC"
     try:
         return ZoneInfo(name)
-    except Exception:
-        return ZoneInfo("UTC")
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        # ZoneInfoNotFoundError (a KeyError subclass): the name is not in the tz database.
+        # ValueError: the name is not a normalized relative path ("/etc/localtime", "../x").
+        # malformed = named refusal (A-T4/R13); unset = documented UTC default
+        raise PolsiaError(
+            E_CONFIG,
+            f"COMPANY_TIMEZONE {name!r} is not a known timezone",
+            how_to_fix=(
+                "set COMPANY_TIMEZONE to an IANA name like 'America/Chicago' (see "
+                ".env.example), or leave it unset to use UTC"
+            ),
+            context={"value": name, "expected": "IANA timezone name"},
+        ) from exc
 
 
 def now_utc() -> datetime:

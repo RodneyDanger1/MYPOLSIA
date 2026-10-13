@@ -94,6 +94,19 @@ async def get_company_by_name(db: AsyncSession, name: str) -> CompanyConfig | No
     return result.scalar_one_or_none()
 
 
+async def get_daily_cycle_hour(db: AsyncSession) -> int | None:
+    """The company's stored Morning Cycle Hour, or None when no value is stored.
+
+    `company_config.daily_cycle_hour` is `int | None` (DDL server_default 6, Python default 6 —
+    but a stored NULL means "no value", NOT 6). This getter never invents a default: None is an
+    answer, and the caller decides the fallback (see daily_cycle._resolve_morning_hour).
+    """
+    company = await get_company(db)
+    if company is None:
+        return None
+    return company.daily_cycle_hour
+
+
 def _cached_context(db: AsyncSession) -> dict[str, Any] | None:
     """The live cached context for this engine, or None.  Zero queries."""
     entry = _CONTEXT_CACHE.get(db.get_bind())
@@ -271,6 +284,7 @@ __all__ = [
     "cache_info",
     "get_company",
     "get_company_by_name",
+    "get_daily_cycle_hour",
     "get_full_context",
     "invalidate_company_context",
 ]

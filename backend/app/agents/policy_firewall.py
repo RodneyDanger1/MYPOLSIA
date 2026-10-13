@@ -65,6 +65,7 @@ class PolicyDecision:
     code: str                            # POLSIA taxonomy code (stable, see structured_output)
     require_token: bool = False
     audit: dict = field(default_factory=dict)
+    how_to_fix: str = ""                 # action-specific fix; falls back to ERROR_HINTS[code]
 
     @property
     def allowed(self) -> bool:
@@ -94,7 +95,7 @@ class PolicyDecision:
         return PolsiaError(
             code,
             f"{agent_type or 'agent'} action {action or self.audit.get('class', '')!r} refused: {self.reason}",
-            how_to_fix=ERROR_HINTS.get(code, ""),
+            how_to_fix=self.how_to_fix or ERROR_HINTS.get(code, ""),
             context={"decision": self.decision.value, "policy_code": self.code, **self.audit},
         )
 
@@ -244,8 +245,10 @@ class RunTaint:
 
 @dataclass
 class RateCaps:
-    """Per-channel send caps. Counters come from the DB (`email_logs`, `social_posts`,
-    `ad_campaigns`) so caps survive restarts. Values are policy, not physics."""
+    """Per-channel send caps. Counters come from the DB via `app.services.channel_service`
+    (`social_posts` for twitter/linkedin, `email_logs` for email) so caps survive restarts —
+    a channel with NO local send record is UNKNOWN, and a cap it cannot verify is refused by
+    name (`cap_unknown`, E114) rather than read as zero sends. Values are policy, not physics."""
     per_channel_day: dict[str, int] = field(default_factory=lambda: {
         "email": 50, "twitter": 12, "linkedin": 4, "github": 6,
         "google_ads": 10, "meta_ads": 10, "stripe": 5, "render": 3,
@@ -307,14 +310,36 @@ class ActionRequest:
     payload: dict = field(default_factory=dict)
     taint: RunTaint | None = None
     approval_token: str = ""
-    sends_today: int = 0
-    sends_this_hour: int = 0
+    # Counters are `int | None` on purpose: `None` = the caller supplied no count = UNKNOWN, and
+    # a configured cap is then refused BY NAME (POLSIA-E114, cap_unknown) instead of reading as
+    # "zero sends"; `0` = a MEASURED zero (a counting source was read and found none).
+    # Collapsing the two is exactly how the caps came to never fire (A2 finding F-04).
+    sends_today: int | None = None
+    sends_this_hour: int | None = None
 
 
 APPROVAL_THRESHOLDS = {
     "value_usd": 25.0,                 # any action moving >= $25 needs a human
     "new_email_domain_batch": 10,      # first cold blast to a domain bigger than this: review
 }
+
+
+def _cap_count_unknown(channel: str, window: str, cap_value: int, audit: dict) -> PolicyDecision:
+    """The named refusal for a configured cap whose counter has NO source (A2 finding F-04).
+
+    `sends_today`/`sends_this_hour` is `None` when no local record exists to count — that is
+    "unknown", not zero. Quietly passing the request would disable the cap entirely; a
+    fabricated `0` would be a second fake gate. The safe answer is no, with the way out named.
+    """
+    return PolicyDecision(
+        Decision.DENY,
+        f"{window} cap for '{channel}' cannot be verified: no local record of '{channel}' "
+        f"sends exists (count unknown)",
+        "POLSIA-E114",
+        audit={**audit, "cap_window": window, "cap": cap_value, "cap_unknown": True},
+        how_to_fix=f"record {channel} sends in a local table the snapshot can count, or remove "
+                   f"this channel's cap in RateCaps; until then the safe answer is no",
+    )
 
 
 def decide(
@@ -331,11 +356,10 @@ def decide(
       1. kill switch (E118)
       2. agent capability exists; action class permitted; channel permitted
       3. tool allowlist (when a tool call is the action)
-      4. rate caps (E117)
-      5. sandbox mode: external actions are recorded as dry-runs, nothing is sent
-      6. taint: irreversible actions on tainted context require approval (E115)
-      7. value threshold: >= $25 requires approval
-      8. approval token verification (missing/invalid -> REQUIRE_APPROVAL)
+      4. sandbox mode: external actions are recorded as dry-runs, nothing is sent
+      5. rate caps (E117; E114 when a configured cap's count is unknown)
+      6. taint/approval/value: irreversible or tainted or >= $25 requires a human (E115)
+      7. approval token verification (missing/invalid -> REQUIRE_APPROVAL)
     """
     caps = caps or RateCaps()
     audit: dict[str, Any] = {
@@ -369,24 +393,34 @@ def decide(
         if denied or not allowed:
             return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "POLSIA-E114", audit=audit)
 
-    if req.channel:
-        day_cap = caps.per_channel_day.get(req.channel)
-        if day_cap is not None and req.sends_today >= day_cap:
-            return PolicyDecision(Decision.DENY,
-                                  f"daily cap for {req.channel}: {req.sends_today}/{day_cap}",
-                                  "POLSIA-E117", audit=audit)
-        hour_cap = caps.per_channel_hour.get(req.channel)
-        if hour_cap is not None and req.sends_this_hour >= hour_cap:
-            return PolicyDecision(Decision.DENY,
-                                  f"hourly cap for {req.channel}: {req.sends_this_hour}/{hour_cap}",
-                                  "POLSIA-E117", audit=audit)
-
     external = req.action_class in (ActionClass.EXTERNAL_REVERSIBLE, ActionClass.EXTERNAL_IRREVERSIBLE)
+    # Sandbox BEFORE caps: the caps bound REAL sends, and a sandboxed run performs none. Checking
+    # a (previously unwired) counter first turns a labelled draft into a run-killing denial — a
+    # fail-loud where a draft is exactly the correct answer. Residual, recorded in the receipt: a
+    # sandboxed over-cap attempt now records a draft instead of raising; nothing is sent either way.
     if external and sandbox_mode:
         return PolicyDecision(
             Decision.DENY,
             "SANDBOX_MODE=true: external action recorded as a labelled draft, nothing sent",
             "POLSIA-E114", audit={**audit, "sandbox": True})
+
+    if req.channel:
+        day_cap = caps.per_channel_day.get(req.channel)
+        if day_cap is not None:
+            if req.sends_today is None:
+                return _cap_count_unknown(req.channel, "day", day_cap, audit)
+            if req.sends_today >= day_cap:
+                return PolicyDecision(Decision.DENY,
+                                      f"daily cap for {req.channel}: {req.sends_today}/{day_cap}",
+                                      "POLSIA-E117", audit=audit)
+        hour_cap = caps.per_channel_hour.get(req.channel)
+        if hour_cap is not None:
+            if req.sends_this_hour is None:
+                return _cap_count_unknown(req.channel, "hour", hour_cap, audit)
+            if req.sends_this_hour >= hour_cap:
+                return PolicyDecision(Decision.DENY,
+                                      f"hourly cap for {req.channel}: {req.sends_this_hour}/{hour_cap}",
+                                      "POLSIA-E117", audit=audit)
 
     needs_approval = False
     reasons: list[str] = []

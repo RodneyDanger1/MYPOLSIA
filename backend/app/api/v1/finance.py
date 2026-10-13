@@ -217,7 +217,12 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -
         )
 
     data_object = event.get("data", {}).get("object", {}) if isinstance(event.get("data"), dict) else {}
-    amount = data_object.get("amount") or data_object.get("amount_paid")
+    # `amount or amount_paid` collapsed a measured 0 (a trial / zero-amount charge) into
+    # "absent" and stored NULL for it; only fall through to `amount_paid` when `amount`
+    # is really missing (F-11: measured zero vs not measured).
+    amount = data_object.get("amount")
+    if amount is None:
+        amount = data_object.get("amount_paid")
     with refusal_guard():
         await record_stripe_event(
             db,
