@@ -165,6 +165,10 @@ def extract_envelope(stdout: str) -> dict:
     `--output-format json` prints one JSON object. `stream-json` prints one JSON object per
     line and the last line is the `result` message; we accept both. Raises ValueError (the
     caller maps it to E_CLI_JSON / E_CLI_EXIT) when nothing parses.
+
+    `RecursionError` is caught beside `JSONDecodeError` at every decode of this untrusted text:
+    json's decoder recurses on nested containers and raises it (not JSONDecodeError) past the
+    interpreter limit, and stdout is model-controlled.
     """
     text = (stdout or "").strip()
     if not text:
@@ -173,7 +177,7 @@ def extract_envelope(stdout: str) -> dict:
         obj = json.loads(text)
         if isinstance(obj, dict):
             return obj
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         pass
     # stream-json / polluted stdout: take the last parseable JSON object line.
     for line in reversed(text.splitlines()):
@@ -182,17 +186,20 @@ def extract_envelope(stdout: str) -> dict:
             continue
         try:
             obj = json.loads(line)
+            # Unreachable false arm (`if` kept deliberately): a line that starts with `{` and
+            # parses is an object by construction, so this guard can only mirror the whole-text one.
             if isinstance(obj, dict):
                 return obj
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
-    # last resort: last balanced-brace slice
-    m = re.search(r"\{.*\}\s*$", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
+    # last resort: the last decodable JSON object on stdout. This used to be a single
+    # `\{.*\}\s*$` slice — a first-brace..last-brace span, despite the comment calling it the
+    # "last balanced-brace slice" — which returned nothing as soon as a hook's log line held a
+    # brace of its own (`hook {"plugin":"x"} {"type":"result",…}`), a sentence followed the
+    # envelope, or two objects shared one line.
+    fallback = _last_json_value(text)
+    if isinstance(fallback, dict):
+        return fallback
     raise ValueError("no JSON object found on stdout")
 
 
@@ -219,6 +226,66 @@ def usage_from_envelope_raw(env: dict) -> dict:
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _SMART = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'"})
 
+#: Recognized scalar tokens for `coerce_types`' bool repair. Anything OUTSIDE these two sets is
+#: left untouched on purpose (see the function): a bool field is a claim about the world, and
+#: "maybe"/"unclear"/"2" must reach the validator so it can name the problem instead of being
+#: quietly rewritten to False.
+_BOOL_TRUE_TOKENS = ("true", "1", "yes")
+_BOOL_FALSE_TOKENS = ("false", "0", "no")
+
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _scan_last_json_value(text: str) -> Any | None:
+    """The last JSON value that starts at `text`'s top level, or None when nothing decodes.
+
+    Walks candidate value starts left to right and jumps PAST every value it decodes, so a nested
+    object can never be mistaken for a later top-level one; a start that does not decode is stepped
+    over one character. `raw_decode` (not `loads`) is what makes the jump possible.
+    """
+    idx = 0
+    found: Any | None = None
+    has_found = False
+    while idx < len(text):
+        starts = [p for p in (text.find("{", idx), text.find("[", idx)) if p != -1]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        except RecursionError:
+            # json's decoder recurses on nested containers and raises RecursionError (not
+            # JSONDecodeError) past the interpreter limit. FAIL the whole scan instead of stepping
+            # on: every start INSIDE the too-deep value would raise the same way, and near its end
+            # the remaining depth is shallow enough to decode — i.e. stepping would hand the caller
+            # a fragment of the payload as if it were the answer. Untrusted model text must
+            # degrade to "nothing parsed", never to a quieter wrong value.
+            return None
+        found, has_found = value, True
+        idx = end if end > start else start + 1
+    return found if has_found else None
+
+
+def _last_json_value(text: str) -> Any | None:
+    r"""The last top-level JSON value anywhere in free-form text, or None.
+
+    Both extractors used to end in ONE whole-span slice (`[\[{].*[\]}]\s*$`): a first-bracket to
+    last-bracket regex anchored to the end of the text (its comment called it a "last
+    balanced-brace slice"). That span is not valid JSON as soon as the prose holds a brace of its
+    own — `Result follows: {name} then {"a": 1}` — or as soon as anything follows the object —
+    `{"a": 1} — done` (the shape a model produces when it adds a closing sentence). Here the raw
+    text is scanned first and the repaired text (smart quotes + trailing commas) second, so the
+    "no repair needed" answer still wins when both would decode.
+    """
+    for candidate in (text, _de_trailing_commas(text.translate(_SMART))):
+        found = _scan_last_json_value(candidate)
+        if found is not None:
+            return found
+    return None
+
 
 def extract_json_from_text(text: str) -> Any | None:
     """Pull a JSON value out of free-form model text: fenced block, brace slice, or whole
@@ -237,13 +304,53 @@ def extract_json_from_text(text: str) -> Any | None:
         for variant in (cand, _de_trailing_commas(cand.translate(_SMART))):
             try:
                 return json.loads(variant)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
-    return None
+    # Last resort: the last top-level value anywhere in the text (prose with braces in it, or a
+    # sentence after the object, defeats every whole-span candidate above).
+    return _last_json_value(text)
 
 
 def _de_trailing_commas(s: str) -> str:
-    return re.sub(r",\s*([}\]])", r"\1", s)
+    """Drop a trailing comma before `}` / `]`, leaving string literals alone.
+
+    The regex this replaces (`re.sub(r",\\s*([}\\]])", r"\\1", s)`) rewrote string CONTENT too, so
+    a repair-eligible payload came back as a DIFFERENT payload: `{"note": "x,}", "a": 1,}` ->
+    `{"note": "x}", "a": 1}` (delivered as a successful `text_extract`). Comma removal is now
+    guarded by string state (escape-aware), so only a structurally trailing comma is dropped.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if j < n and s[j] in "}]":
+                i += 1          # a real trailing comma: drop it, keep the surrounding formatting
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def coerce_types(payload: Any, field_types: dict[str, type]) -> Any:
@@ -260,7 +367,17 @@ def coerce_types(payload: Any, field_types: dict[str, type]) -> Any:
             continue
         try:
             if want is bool and isinstance(val, str):
-                out[key] = val.strip().lower() in ("true", "1", "yes")
+                # Only a RECOGNIZED token may be coerced. The old form here was
+                # `out[key] = val.strip().lower() in ("true", "1", "yes")`, which answers False
+                # for EVERY unmapped token — so a bool field the model left ambiguous
+                # ("maybe"/"unclear"/"2"/"") was silently rewritten to a definite False that the
+                # validator then accepted, in a validated payload the ladder reports as OK.
+                # An unrecognized token is left as-is: the validator's own error names it.
+                token = val.strip().lower()
+                if token in _BOOL_TRUE_TOKENS:
+                    out[key] = True
+                elif token in _BOOL_FALSE_TOKENS:
+                    out[key] = False
             elif want in (int, float) and isinstance(val, str):
                 out[key] = want(float(val.strip()))
             elif want is str and not isinstance(val, dict | list):
@@ -285,6 +402,25 @@ def _looks_like_refusal(text: str) -> bool:
     return any(m in t for m in _REFUSAL_MARKERS)
 
 
+def _errors_detail(errors: Any) -> str:
+    """Human-readable detail for the `errors` array of an error envelope.
+
+    The CLI contract documents `errors: string[]` (CLI-CONTRACT.md §2.1), but this classifier is
+    the one choke point every consumer calls (`base_agent._classify_invoke`/`_finish_call`/
+    `_retryable`, `resolve_output`, the ladder) and NONE of them wraps it — so an off-shape value
+    must still produce a named failure. It used to raise inside
+    `"; ".join(...)` (`TypeError: sequence item 0: expected str instance, dict found`) for
+    `list[dict]` / `list[int]` / `list[None]` / a bare `int`, and to mangle the model's own words
+    for a bare `str` (`"boom"` -> `"b; o; o; m"`) or a `dict` (`{"msg": "x"}` -> `"msg"`, value
+    dropped). Same output as before for the documented `list[str]` shape.
+    """
+    if isinstance(errors, list):
+        return "; ".join(str(e) for e in errors)[:400]
+    if errors is None:
+        return ""
+    return str(errors)[:400]
+
+
 def classify_error_envelope(env: dict) -> tuple[FailureCode, str]:
     """Map an error envelope to (code, detail). Called only when is_error/subtype says the run
     failed, or when the required output is absent."""
@@ -296,7 +432,7 @@ def classify_error_envelope(env: dict) -> tuple[FailureCode, str]:
         case "error_max_budget_usd":
             return FailureCode.BUDGET_EXCEEDED, "CLI budget cap reached"
         case "error_max_structured_output_retries":
-            return FailureCode.STRUCTURED_RETRIES_EXHAUSTED, "; ".join(env.get("errors") or [])[:400]
+            return FailureCode.STRUCTURED_RETRIES_EXHAUSTED, _errors_detail(env.get("errors"))
         case "error_during_execution":
             if status in (401, 403) or env.get("startup_failure_reason") in (
                 "authentication_failed", "oauth_org_not_allowed", "account_on_hold",
@@ -377,8 +513,13 @@ def resolve_output(
                 except Exception:
                     pass
             if used != "type_coercion":
-                missing = [f for f in required_fields if f not in payload]
-                if tolerate_partial and missing and len(missing) < len(list(required_fields)):
+                # `required_fields` is an Iterable (callers pass tuples/lists): materialize it ONCE.
+                # Consuming it twice (comprehension + `len(list(...))`) made the second
+                # materialization empty for a generator, so `len(missing) < len(required)` was
+                # `n < 0` and the lenient branch could never fire for one.
+                required = list(required_fields)
+                missing = [f for f in required if f not in payload]
+                if tolerate_partial and missing and len(missing) < len(required):
                     return OutputResolution(False, payload, FailureCode.PARTIAL_RESULT,
                                             REMEDIATION[FailureCode.PARTIAL_RESULT],
                                             partial=True, detail=f"missing={missing}")
