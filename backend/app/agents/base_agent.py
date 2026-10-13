@@ -180,12 +180,12 @@ class BasePolsiaAgent(ABC):
         memories: list[dict[str, Any]] | None = None,
         extra_context: str | None = None,
     ) -> dict[str, Layer]:
-        """The eight named layers, in the fixed order the assembler enforces.
+        """The nine named layers, in the fixed order the assembler enforces.
 
         Layers 1-5 (identity, tool doctrine, company, business state, yesterday) are stable
-        across runs — they form the cacheable prefix; memories/today's tasks/the task itself are
-        volatile. Nothing here is optional-by-accident: an absent layer renders empty and the
-        assembler reports it, rather than the prompt silently losing a section.
+        across runs — they form the cacheable prefix; memories/today's tasks/extra context/the
+        task itself are volatile. Nothing here is optional-by-accident: an absent layer renders
+        empty and the assembler reports it, rather than the prompt silently losing a section.
         """
         company = (context or {}).get("company") or {}
         kpis = (context or {}).get("kpis") or {}
@@ -225,7 +225,6 @@ class BasePolsiaAgent(ABC):
         business_state = business_state_lines(kpis, goals)
         yesterday = "\n".join(filter(None, [
             str((context or {}).get("yesterday_summary") or ""),
-            extra_context or "",
         ]))
         today_tasks = "\n".join(
             f"- {t.get('title')} (@{t.get('agent_type')}, {t.get('status')})"
@@ -264,6 +263,7 @@ class BasePolsiaAgent(ABC):
             "yesterday": Layer("yesterday", 0, text=yesterday, pinned=True),
             "memories": Layer("memories", 0, entries=memory_layer.entries, volatile=True),
             "today_tasks": Layer("today_tasks", 0, text=today_tasks, volatile=True),
+            "extra_context": Layer("extra_context", 0, text=extra_context or "", volatile=True),
             "task_brief": Layer("task_brief", 0, text=task_brief, volatile=True),
         }
 

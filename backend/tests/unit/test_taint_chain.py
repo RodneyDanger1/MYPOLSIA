@@ -211,8 +211,8 @@ def test_memories_carrying_an_injection_taint_the_run():
 
 # ── (d) content a caller wrapped itself (the pre-existing wrap site) still taints ──────────────
 def test_external_content_wrapped_by_a_caller_taints_the_run():
-    """competitor_research's pattern (raw material quarantined into `extra_context`, which
-    base_agent places inside `yesterday`): scanned even though that layer is not wrapped."""
+    """competitor_research's pattern (raw material quarantined into `extra_context`, its own
+    volatile layer since the RD follow-up): scanned even though that layer is not wrapped."""
     extra = wrap_untrusted("task", "77", f"fetched page text follows. {INJECTION}")
     assembled = _prompt(CompetitorResearchAgent, CLEAN, extra_context=extra)
 

@@ -84,10 +84,13 @@ LAYER_ORDER = (
     "yesterday",         # L4  yesterday's summary + open loops (changes daily)
     "memories",          # L5  retrieved memories, ranked (changes per task)
     "today_tasks",       # L6  today's plan slice relevant to this agent (changes per run)
-    "task_brief",        # L7  THE task (volatile; never cached)
+    "extra_context",     # L7  run-specific raw material from the caller (volatile; caller-quarantined)
+    "task_brief",        # L8  THE task (volatile; never cached)
 )
 
-#: Relative weights, summing to 23,300 tokens — the shape lane 05 designed. The absolute budget
+#: Relative weights, summing to 25,800 tokens — the shape lane 05 designed, plus the
+#: `extra_context` layer (RD follow-up: caller material was riding in the pinned `yesterday`
+#: layer — a per-run untrusted block inside the cacheable prefix).  The absolute budget
 #: comes from `settings.planner_context_token_budget` via `budgets_for_total()`.
 DEFAULT_BUDGETS = {
     "identity": 1600,
@@ -97,6 +100,7 @@ DEFAULT_BUDGETS = {
     "yesterday": 2000,
     "memories": 8000,
     "today_tasks": 3500,
+    "extra_context": 2500,
     "task_brief": 2500,
 }
 SAFETY_MARGIN = 0.15   # applied on top of the sum of layer budgets
@@ -292,7 +296,7 @@ def rank_memories(
 @dataclass
 class AssembledContext:
     stable_prefix: str            # cacheable layers (identity -> yesterday)
-    volatile_suffix: str          # memories + today_tasks + task_brief (per-run)
+    volatile_suffix: str          # memories + today_tasks + extra_context + task_brief (per-run)
     full_prompt: str
     per_layer_tokens: dict[str, int]
     stable_prefix_hash: str
@@ -381,9 +385,13 @@ def assemble(
         per_layer_tokens[name] = measure_tokens(body)
 
     # 4. blocks that arrived already wrapped from a caller (the competitor_research pattern: raw
-    #    material quarantined into `extra_context`, which base_agent places inside `yesterday`)
-    #    are scanned too — external content must taint the run no matter which layer carries it,
-    #    and those layers are NOT in UNTRUSTED_LAYERS so nothing above counted them.
+    #    material quarantined into `extra_context`, which base_agent places in the volatile
+    #    `extra_context` layer since the RD follow-up — it used to ride inside the pinned
+    #    `yesterday` layer, a per-run block in the cacheable prefix) are scanned too — external
+    #    content must taint the run no matter which layer carries it, and those layers are NOT in
+    #    UNTRUSTED_LAYERS so nothing above counted them.  `extra_context` is deliberately NOT in
+    #    UNTRUSTED_LAYERS: its content arrives pre-wrapped by the caller, and wrapping it again
+    #    here would double-wrap every existing call site.
     for name in LAYER_ORDER:
         if name in UNTRUSTED_LAYERS:
             continue
