@@ -108,6 +108,7 @@ ERROR_HINTS: dict[str, str] = {
     E_AGENT_BAD_OUTPUT: "the repair ladder will retry; otherwise tighten the agent schema",
     E_PROMPT_TOO_LARGE: "enable CLAUDE_PROMPT_VIA_STDIN or lower the context budget",
     E_DEEPSEEK_KEY: "enter your DeepSeek API key in Settings (or set DEEPSEEK_API_KEY) and retry",
+    E_STORAGE: "repair or remove the local secret store file (backend/data/deepseek_api_key.json) and retry",
     E_SANDBOX_BLOCKED: "set SANDBOX_MODE=false once credentials are configured",
     E_POLICY_DENIED: "the action needs an approval or a wider tool allowlist",
     E_BUDGET_EXCEEDED: "raise the agent/day cap or wait for the next window",
