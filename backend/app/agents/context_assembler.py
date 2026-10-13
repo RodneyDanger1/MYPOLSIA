@@ -32,6 +32,7 @@ import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 # ---------------------------------------------------------------------------
 
@@ -153,13 +154,31 @@ def screen_prompt(text: str) -> list[str]:
 
 @dataclass
 class MemoryItem:
-    memory_id: str
+    #: The provider's id as a string, or None when the provider has none.  A list position is
+    #: never an identity (F-09 / R7): the old enumerate-index fallback fabricated one, and a
+    #: tiebreak on a positional string let two identical queries disagree on order.
+    memory_id: str | None = field(default=None, kw_only=True)
     title: str
     content: str
     similarity: float            # 0..1 from the vector store (1 - distance) or FTS rank
     age_days: float
     tags: tuple[str, ...] = ()
     pinned: bool = False
+
+
+def memory_identity(item: dict[str, Any]) -> str | None:
+    """The provider's id for a memory hit, as a string — or None when it has none.
+
+    F-09 / R7: a list position is never presented as an id.  `is None` checks (plus a skip for
+    the empty string), not a bare `or` chain — an id of `0` is a REAL id, and the old chain
+    silently skipped it (the same collapse class as F-10's `or 0`), falling through to the
+    enumerate index.
+    """
+    for key in ("id", "memory_id"):
+        value = item.get(key)
+        if value is not None and str(value) != "":
+            return str(value)
+    return None
 
 
 def recency_weight(age_days: float, half_life_days: float = 14.0) -> float:
@@ -178,8 +197,9 @@ def rank_memories(
 ) -> list[MemoryItem]:
     """score = w_sim*similarity + w_rec*recency + w_tag*tag_overlap.
 
-    Pinned items always come first (stable order), then by score, then memory_id. An optional
-    token budget trims the tail. Deterministic for identical inputs.
+    Pinned items always come first, then by score, then by content: title, then memory_id.
+    A list position is never an identity (F-09/R7), so two queries over the same items cannot
+    disagree on order. An optional token budget trims the tail. Deterministic for identical inputs.
     """
     terms = {t.lower() for t in query_terms if t.strip()}
     scored: list[tuple[float, MemoryItem]] = []
@@ -187,9 +207,10 @@ def rank_memories(
         tag_overlap = len(terms & {t.lower() for t in it.tags}) / max(1, len(terms)) if terms else 0.0
         score = w_sim * it.similarity + w_rec * recency_weight(it.age_days) + w_tag * tag_overlap
         scored.append((score, it))
-    pinned = sorted((p for p in scored if p[1].pinned), key=lambda x: x[1].memory_id)
+    pinned = sorted((p for p in scored if p[1].pinned),
+                    key=lambda x: (x[1].title, x[1].memory_id or ""))
     rest = sorted((p for p in scored if not p[1].pinned),
-                  key=lambda x: (-x[0], x[1].memory_id))
+                  key=lambda x: (-x[0], x[1].title, x[1].memory_id or ""))
     ordered = [it for _, it in pinned] + [it for _, it in rest[:k]]
     if budget_tokens is None:
         return ordered
@@ -351,6 +372,7 @@ __all__ = [
     "budgets_for_total",
     "business_state_text",
     "measure_tokens",
+    "memory_identity",
     "rank_memories",
     "recency_weight",
     "screen_prompt",

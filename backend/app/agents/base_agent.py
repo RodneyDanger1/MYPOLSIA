@@ -239,11 +239,11 @@ class BasePolsiaAgent(ABC):
         ]))
         memory_layer = Layer("memories", 0)
         if memories:
-            from app.agents.context_assembler import MemoryItem, rank_memories
+            from app.agents.context_assembler import MemoryItem, memory_identity, rank_memories
 
             items = [
                 MemoryItem(
-                    memory_id=str(m.get("id") or m.get("memory_id") or i),
+                    memory_id=memory_identity(m),
                     title=str(m.get("title") or ""),
                     content=str(m.get("content") or ""),
                     similarity=float(m.get("similarity") or 0.0),
@@ -251,7 +251,7 @@ class BasePolsiaAgent(ABC):
                     tags=tuple(m.get("tags") or ()),
                     pinned=bool(m.get("pinned")),
                 )
-                for i, m in enumerate(memories)
+                for m in memories
             ]
             ranked = rank_memories(items, query_terms=task_title_terms(task), k=30)
             memory_layer.entries = [f"- {m.title}: {m.content}" for m in ranked]
