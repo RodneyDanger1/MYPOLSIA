@@ -1,11 +1,18 @@
 """Frozen schema contract for `app.models` — the in-repo guard for the SQLAlchemy 2.0 migration.
 
-Every value below is pinned to the PRE-migration ORM `create_all` output (the D-models receipt's
+Every value below is pinned to the ORM `create_all` output (the D-models receipt's
 `probes/ddl_before.columns.tsv`: 17 tables / 182 columns / 6 unique constraints / 6 explicit
-indexes; canonical sqlite_master sha256 `4bf064cd928d663566d6a05d8e681c2d57e1cdf285ae6a3b43d23d17beacc04e`).
-The `Column(...)` -> `Mapped[...]` + `mapped_column(...)` migration must be zero-drift, so a
+indexes). The `Column(...)` -> `Mapped[...]` + `mapped_column(...)` migration was zero-drift, so a
 failure here means the DB contract changed — which belongs in a new `backend/alembic/versions/`
 revision, not in a typing change.
+
+RE-PINNED DELIBERATELY (T17, 2026-10-12): the four money columns moved `FLOAT` ->
+`NUMERIC(14, 4)` in `backend/alembic/versions/0003_money_exact.py` (A-T17) — exactly the
+"new alembic revision" this docstring demands.  Old canonical sha256
+`4bf064cd928d663566d6a05d8e681c2d57e1cdf285ae6a3b43d23d17beacc04e` (pre-T17) ->
+`0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075967cc5912900e8`.  Only the four money
+rows below changed (`daily_budget_usd`, `total_spent_usd`, `spend_usd`, `cost_usd`); every
+other row is byte-identical to the D-models pin.
 """
 from __future__ import annotations
 
@@ -24,7 +31,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "4bf064cd928d663566d6a05d8e681c2d57e1cdf285ae6a3b43d23d17beacc04e"
+DDL_SHA256 = "0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075967cc5912900e8"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -65,8 +72,8 @@ FROZEN_COLUMNS = {
         ('name', 'VARCHAR(512)', False, '', '', '', False),
         ('goal', 'VARCHAR(255)', True, '', '', '', False),
         ('status', 'VARCHAR(50)', True, "'active'", 'active', '', False),
-        ('daily_budget_usd', 'FLOAT', True, '0', '0', '', False),
-        ('total_spent_usd', 'FLOAT', True, '0', '0', '', False),
+        ('daily_budget_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
+        ('total_spent_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
     ),
     'ad_metrics': (
@@ -76,7 +83,7 @@ FROZEN_COLUMNS = {
         ('impressions', 'INTEGER', True, '0', '0', '', False),
         ('clicks', 'INTEGER', True, '0', '0', '', False),
         ('conversions', 'INTEGER', True, '0', '0', '', False),
-        ('spend_usd', 'FLOAT', True, '0', '0', '', False),
+        ('spend_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
         ('ctr', 'FLOAT', True, '0', '0', '', False),
         ('cpc', 'FLOAT', True, '0', '0', '', False),
         ('roas', 'FLOAT', True, '0', '0', '', False),
@@ -91,7 +98,7 @@ FROZEN_COLUMNS = {
         ('output', 'JSON', True, '', '', '', False),
         ('raw_log', 'TEXT', True, '', '', '', False),
         ('tokens_used', 'INTEGER', True, '', '', '', False),
-        ('cost_usd', 'FLOAT', True, '', '', '', False),
+        ('cost_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         ('duration_secs', 'FLOAT', True, '', '', '', False),
         ('started_at', 'DATETIME', True, '', 'now()', 'ix_agent_runs_started_at', False),
         ('ended_at', 'DATETIME', True, '', '', '', False),

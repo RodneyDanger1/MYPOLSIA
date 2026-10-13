@@ -15,8 +15,9 @@ tests pin the agreement from BOTH directions:
   service's real signatures (`inspect.signature`) — `bind()` rejects an unknown/missing/duplicate
   parameter and a too-large positional arity, and the required-parameter check rejects a call
   that omits something the service needs;
-* the parameter lists of the five functions the caller imports are frozen by name, and
-  `claim_task`'s keyword-only kinds are asserted explicitly (the shape the parent reconciled).
+* the names the caller imports are pinned (the five reconciled service functions + T17's single
+  money boundary `_as_column_decimal`), and `claim_task`'s keyword-only kinds are asserted
+  explicitly (the shape the parent reconciled).
 
 `binding_problems(service)` is a module-level function on purpose: the red-leg harness runs it
 against a mutated service module to prove the check can fail without editing any service file.
@@ -32,8 +33,18 @@ from app.services import task_service
 
 CALLER_PATH = Path(agent_tasks.__file__)
 
-#: Exactly what `_execute_agent_task` imports from the service (the reconciled contract).
-IMPORTED = {"claim_task", "create_agent_run", "finish_agent_run", "heartbeat_task", "update_task_status"}
+#: Exactly what the caller imports from the service: the reconciled five-function contract
+#: plus T17's single money boundary.  `_apply_run_usage` writes `agent_runs.cost_usd` through
+#: `_as_column_decimal` (A-T17 single-site rule) instead of the old in-place `float(cost)`.
+#: Old pin (pre-T17): the five functions only — both sides agree on every name here.
+IMPORTED = {
+    "claim_task",
+    "create_agent_run",
+    "finish_agent_run",
+    "heartbeat_task",
+    "update_task_status",
+    "_as_column_decimal",
+}
 
 CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type"]
 
@@ -104,8 +115,13 @@ def binding_problems(service) -> list[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 # the contract
 # ─────────────────────────────────────────────────────────────────────────────
-def test_caller_imports_exactly_the_five_service_functions_it_uses():
-    """RED leg: add any name to the caller's import that the service does not define."""
+def test_caller_imports_exactly_the_service_names_it_uses():
+    """RED leg: add any name to the caller's import that the service does not define.
+
+    Renamed by T17 from `..._the_five_service_functions_...`: the caller now imports a sixth
+    name — `_as_column_decimal`, the single money boundary — and the pin moved deliberately
+    with it (old pin: the five functions; new pin: those five + the boundary).
+    """
     imported = _imported_names(_tree())
     assert imported == IMPORTED, f"the caller's service imports changed: {sorted(imported)}"
     for name in sorted(imported):

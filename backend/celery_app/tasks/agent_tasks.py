@@ -139,9 +139,13 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
     if session_id:
         run_row.cli_session_id = str(session_id)[:120]
     if cost is not None:
+        # A-T17 single-site rule: money crosses to the column only through the one
+        # boundary in task_service (lazy import — this module's imports stay lazy).
+        from app.services.task_service import _as_column_decimal
+
         try:
-            run_row.cost_usd = float(cost)
-        except (TypeError, ValueError):  # pragma: no cover - defensive, logged not silent
+            run_row.cost_usd = _as_column_decimal(cost)
+        except (TypeError, ValueError, ArithmeticError):  # pragma: no cover - defensive, logged not silent
             logger.warning("non-numeric cost in agent result: %r", cost)
 
     recorded: dict[str, Any] = dict(envelope_usage)

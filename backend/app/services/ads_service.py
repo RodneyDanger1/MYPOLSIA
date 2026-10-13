@@ -6,9 +6,9 @@ It now asks the cheap existence question first and raises `E_NOT_FOUND`.
 
 Read ordering is deterministic (`date DESC, id DESC` for metrics; `id DESC` for
 campaigns, which have no per-day series) and every read failure is `E_DB`.
-`AdMetric.spend_usd` is a Float column in the frozen schema; money that must be
-compared rather than merely displayed is handled as `Decimal`
-(`finance_service.money`) until the column is migrated (REQUESTS #4).
+`AdMetric.spend_usd` is `Numeric(14, 4)` (alembic `0003_money_exact`); money that must
+be compared rather than merely displayed is handled as `Decimal`
+(`finance_service.money`) — the column itself is exact at rest now.
 """
 from __future__ import annotations
 

@@ -623,7 +623,7 @@ async def create_agent_run(
         cli_session_id=cli_session_id,
         tokens_input=tokens_input,
         tokens_output=tokens_output,
-        cost_usd=_as_column_float(cost_usd),
+        cost_usd=_as_column_decimal(cost_usd),
         usage_json=usage_json,
     )
     db.add(run)
@@ -668,7 +668,7 @@ async def finish_agent_run(
     if tokens_output is not None:
         run.tokens_output = tokens_output
     if cost_usd is not None:
-        run.cost_usd = _as_column_float(cost_usd)
+        run.cost_usd = _as_column_decimal(cost_usd)
     if usage_json is not None:
         run.usage_json = usage_json
     run.ended_at = utcnow()
@@ -676,16 +676,18 @@ async def finish_agent_run(
     return run
 
 
-def _as_column_float(value: Decimal | float | None) -> float | None:
-    """`cost_usd` is a Float column (frozen model) — convert at the boundary only.
+def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
+    """`cost_usd` is a `Numeric(14, 4)` column (alembic `0003_money_exact`) — the ONE boundary.
 
-    Money is handled as `Decimal` inside the service layer; this is the one place
-    it crosses back to the column's binary type, so the conversion (and the site
-    that would change if the column becomes `Numeric`) is greppable.
+    Money is handled as `Decimal` inside the service layer; this is the single place it
+    crosses to the column's exact type.  A `Decimal` passes through untouched; anything
+    else goes `Decimal(str(value))` — never binary-float arithmetic.  The name is
+    greppable: every write of `agent_runs.cost_usd` in the tree routes through here
+    (A-T17 single-site rule).
     """
     if value is None:
         return None
-    return float(value if isinstance(value, Decimal) else Decimal(str(value)))
+    return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
 async def get_agent_run(db: AsyncSession, run_id: int) -> AgentRun | None:

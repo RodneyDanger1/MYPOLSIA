@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -81,7 +82,10 @@ class AgentRun(Base):
     output: Mapped[dict[str, Any] | None] = mapped_column(json_type())
     raw_log: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int | None] = mapped_column(Integer)
-    cost_usd: Mapped[float | None] = mapped_column(Float)
+    # money is exact at rest: NUMERIC(14, 4), written only through
+    # task_service._as_column_decimal (A-T17 / alembic 0003).  `duration_secs`
+    # stays FLOAT — it is a duration, not money.
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
     duration_secs: Mapped[float | None] = mapped_column(Float)
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
