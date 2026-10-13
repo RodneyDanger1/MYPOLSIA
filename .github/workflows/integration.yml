@@ -17,6 +17,10 @@ name: integration
 # HONESTY NOTE: never executed on this host (no Docker) — UNRUN.  The integration suite
 # skips itself cleanly when testcontainers is absent (tests/integration/conftest.py), which is
 # the behaviour this workflow relies on in CI.
+#
+# F4 (H10) applied to the e2e job's API wait: the probe now execs into the backend container — the
+# old runner-side curl to :80 had no listener (nginx is excluded by the ci override and the backend
+# publishes no port).  See the step's comment; still UNRUN (no Docker).
 
 on:
   push:
@@ -53,15 +57,29 @@ jobs:
       - name: Start the stack
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build
       - name: Wait for the API to answer
+        # F4 (H10): the old probe curled http://localhost/api/v1/health from the runner.  The
+        # ENDPOINT was right (health.py, no-auth, {"status":"ok"}), the LISTENER was not: this job
+        # starts the stack with the ci override, which excludes nginx (`profiles: ["disabled"]`) and
+        # publishes no backend port — nothing ever listened on :80, so the probe could not succeed.
+        # Probe where the API actually serves: inside the backend container (uvicorn :8000; curl
+        # ships in the image).  Retry loop kept (5 s × 60); exec noise while the container is still
+        # starting is suppressed — the failure path dumps the stack logs.
+        env:
+          COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
         run: |
           for i in $(seq 1 60); do
-            if curl -fsS http://localhost/api/v1/health >/dev/null; then echo "api healthy"; exit 0; fi
+            if ${COMPOSE} exec -T backend curl -fsS http://localhost:8000/api/v1/health >/dev/null 2>&1; then
+              echo "api healthy"; exit 0
+            fi
             sleep 5
           done
           echo "api never became healthy" >&2
-          docker compose logs --tail=200
+          ${COMPOSE} logs --tail=200
           exit 1
       - name: Playwright
+        # KNOWN RESIDUAL (recorded, not fixed in this lane — out of F4's named scope): with nginx
+        # excluded by the ci override and no `ports:` published anywhere, this runner-side
+        # BASE_URL cannot reach the stack yet; the RD10-e2eci receipt records it as a REQUESTS item.
         working-directory: e2e
         env:
           BASE_URL: http://localhost
@@ -79,7 +97,8 @@ jobs:
             e2e/test-results
       - name: Stack logs on failure
         if: failure()
-        run: docker compose logs --tail=300
+        # Same -f flags as the `up` above: dump the logs of the stack that was actually started.
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --tail=300
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v

@@ -10,6 +10,13 @@ export default defineConfig({
   // MODULE PATH only, so the hook is `_helpers`'s default export; it spawns `_sweep-fixtures.py`
   // (venv python, tag-scoped, both stores, idempotent) and throws if the sweep cannot complete.
   globalTeardown: "./_helpers.ts",
+  // R-W4-2 restart guard — runs BEFORE any test, on every test-bearing invocation (including a bare
+  // `npx playwright test`, the campaign's ×3 recipe; skipped for --list/--help).  It refuses to
+  // start while the sweep's restart marker is present AND a backend still answers /health, because
+  // that backend's cached chroma collection is stale (measured memory-search 500s — W4 §3.9 /
+  // endgame V2 run 3).  Policy text: e2e/_restart-guard.sh; the same check runs in run-suite.sh's
+  // pre-flight, and the sweep writes/clears the marker it reads.
+  globalSetup: "./_guard.ts",
   timeout: 30_000,
   retries: 1,
   // 10s for assertions, not Playwright's 5s default: the FIRST visit to a data-dependent page has to

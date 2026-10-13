@@ -8,6 +8,10 @@ name: docker-build
 # frontend/package-lock.json (`npm ci` requires it) and the missing frontend/public/ directory
 # (`COPY --from=builder /app/public ./public`).  Both are now present; `npm ci` is retried with
 # `npm install` so a stale lockfile cannot wedge the build silently.
+#
+# F4 (H10) applied in the health-check step below: the probe now execs into the backend container —
+# with nginx excluded by the ci override there is no host-side listener for the old
+# `curl http://localhost/api/v1/health` (see the step comment).
 
 on:
   push:
@@ -21,14 +25,20 @@ jobs:
       - name: Build every image
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build
       - name: Start the stack and health-check it
+        # F4 (H10): the probe used to curl http://localhost/api/v1/health from the runner, but the ci
+        # override excludes the only published port (nginx, `profiles: ["disabled"]`), so the
+        # endpoint path was right while the listener did not exist.  Probe inside the backend
+        # container instead (uvicorn :8000; curl ships in the image).  Retry loop kept (5 s × 60).
+        env:
+          COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+          ${COMPOSE} up -d
           for i in $(seq 1 60); do
-            if curl -fsS http://localhost/api/v1/health; then exit 0; fi
+            if ${COMPOSE} exec -T backend curl -fsS http://localhost:8000/api/v1/health 2>/dev/null; then exit 0; fi
             sleep 5
           done
           echo "stack never became healthy" >&2
-          docker compose logs --tail=300
+          ${COMPOSE} logs --tail=300
           exit 1
       - name: Tear down
         if: always()
