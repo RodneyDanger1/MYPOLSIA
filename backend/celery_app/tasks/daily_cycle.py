@@ -43,8 +43,9 @@ from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
 
-# The documented band is "06:00 Beat job enqueues 5-8 tasks for the day"
-# (docs/ACCEPTANCE_TESTING.md:94).  Of those, three are fixed (finance snapshot +
+# The documented band is "enqueues 5-8 tasks for the day" on the morning-cycle row of
+# docs/ACCEPTANCE_TESTING.md (since D7: "Hourly Beat job, self-gated to the configured
+# company-local hour (default 06:00)").  Of those, three are fixed (finance snapshot +
 # customer_support + social_media) and the orchestrator's plan supplies the rest, so the
 # plan contributes at most 5.  Nothing here fabricates tasks to reach the band: a plan
 # that does not fill it is logged as a warning.

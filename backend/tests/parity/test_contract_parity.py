@@ -58,9 +58,10 @@ DOCUMENTED_AGENTS = {
     "finance",
 }
 
-# README's agent table: Orchestrator 06:00/20:00, Social every 2h, Email every 3h, Ads+Stripe
-# every 6h — plus the maintenance job that the upload declared and never scheduled, and the
-# task-lease sweep T1 added (its README row reads "Every 5 min").
+# README's agent table: Orchestrator (since D7 the row reads "Morning: hourly, self-gated to the
+# configured company-local hour (default 06:00) — Evening: 20:00 UTC"), Social every 2h, Email
+# every 3h, Ads+Stripe every 6h — plus the maintenance job that the upload declared and never
+# scheduled, and the task-lease sweep T1 added (its README row reads "Every 5 min").
 DOCUMENTED_SCHEDULE_ENTRIES = {
     "morning-cycle",
     "evening-cycle",
