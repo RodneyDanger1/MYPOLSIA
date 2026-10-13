@@ -77,16 +77,18 @@ def _broken_select():
 
 
 def test_parse_signature_header_shapes() -> None:
-    assert _parse_signature_header("t=123,v1=abc") == ("123", "abc")
-    assert _parse_signature_header("t=1, v1=deadbeef") == ("1", "deadbeef")  # spaces around parts
-    assert _parse_signature_header("scheme=x,t=2,v1=aa") == ("2", "aa")  # unknown parts ignored
-    # Multiple v1 values (secret rotation): the LAST one wins and is the only one tried.  That is
-    # a documented divergence from the SDK, which accepts ANY of them — REQUESTS #5, pinned here.
-    assert _parse_signature_header("t=1,v1=first,v1=second") == ("1", "second")
-    assert _parse_signature_header("t=1,t=9,v1=a") == ("9", "a")  # duplicate t: last wins
-    assert _parse_signature_header("T=1,V1=abc") == (None, None)  # keys are case-sensitive
-    assert _parse_signature_header("v1") == (None, "")  # a bare part carries no v1 value
-    assert _parse_signature_header("") == (None, None)
+    assert _parse_signature_header("t=123,v1=abc") == ("123", ["abc"])
+    assert _parse_signature_header("t=1, v1=deadbeef") == ("1", ["deadbeef"])  # spaces around parts
+    assert _parse_signature_header("scheme=x,t=2,v1=aa") == ("2", ["aa"])  # unknown parts ignored
+    # R32 (REQUESTS #5 resolved): secret rotation — ALL v1 values are returned, in header order,
+    # and the verifier accepts a match with ANY of them, exactly like the SDK
+    # (`stripe/_webhook.py:81`, `any(secure_compare(...))`).  R28 pinned the old last-wins
+    # divergence; the fix moved the pin with the behavior.
+    assert _parse_signature_header("t=1,v1=first,v1=second") == ("1", ["first", "second"])
+    assert _parse_signature_header("t=1,t=9,v1=a") == ("9", ["a"])  # duplicate t: last wins
+    assert _parse_signature_header("T=1,V1=abc") == (None, [])  # keys are case-sensitive
+    assert _parse_signature_header("v1") == (None, [""])  # a bare part carries no v1 value
+    assert _parse_signature_header("") == (None, [])
 
 
 def test_stdlib_verify_accepts_a_really_signed_body() -> None:

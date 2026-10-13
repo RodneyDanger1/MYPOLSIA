@@ -13,6 +13,11 @@ measured 2026-10-13, `raw/probe_stripe_presence.txt` — the docstring used to c
 was absent.  The stdlib ladder is a real production path on a host without the SDK and
 is tested both directly and by forcing the absent-import state.)
 
+Both branches accept a match with ANY `v1=` signature a header carries (R32): a secret
+rotation can deliver several v1 values in one `Stripe-Signature` header, the SDK tries
+all of them (`stripe/_webhook.py:81`) and the stdlib fallback now mirrors that
+accept-any behavior instead of keeping only the last one.
+
 Persistence is idempotent at the statement level (`finance_service.record_stripe_event`):
 one `INSERT ... ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id`, so two
 concurrent duplicate deliveries produce ONE row and no `IntegrityError` (which would
@@ -103,16 +108,24 @@ async def finance_events(
     return [StripeEventResponse.model_validate(row) for row in rows]
 
 
-def _parse_signature_header(header: str) -> tuple[str | None, str | None]:
+def _parse_signature_header(header: str) -> tuple[str | None, list[str]]:
+    """`(timestamp, v1 candidates)` from a `Stripe-Signature` header.
+
+    Every `v1=` value is kept, in header order (R32, secret rotation): Stripe documents that a
+    rotation can deliver several v1 signatures in one header, and the verifier must accept a
+    match with ANY of them — the SDK does exactly that (`stripe/_webhook.py:81`,
+    `any(secure_compare(expected, s) for s in signatures)`); this fallback used to keep only the
+    last one.  A duplicate `t=` still resolves last-wins (unchanged since R28).
+    """
     timestamp: str | None = None
-    signature: str | None = None
+    signatures: list[str] = []
     for part in header.split(","):
         key, _, value = part.strip().partition("=")
         if key == "t":
             timestamp = value
         elif key == "v1":
-            signature = value
-    return timestamp, signature
+            signatures.append(value)
+    return timestamp, signatures
 
 
 def _stdlib_verify(
@@ -121,9 +134,14 @@ def _stdlib_verify(
     secret: str,
     tolerance: int,
 ) -> dict[str, Any]:
-    """Stripe's documented scheme without the SDK: HMAC-SHA256 over `t.payload`."""
-    timestamp, signature = _parse_signature_header(signature_header)
-    if not timestamp or not signature:
+    """Stripe's documented scheme without the SDK: HMAC-SHA256 over `t.payload`.
+
+    Accept-any over every `v1=` candidate (secret rotation), each comparison constant-time
+    (`hmac.compare_digest`) with `any` short-circuiting exactly like the SDK; the timestamp
+    tolerance is unchanged (R32).
+    """
+    timestamp, candidates = _parse_signature_header(signature_header)
+    if not timestamp or not any(candidates):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid Stripe signature header",
@@ -144,7 +162,10 @@ def _stdlib_verify(
     # string — a non-UTF8 byte would otherwise be rewritten by errors="replace".
     signed_payload = timestamp.encode("utf-8") + b"." + raw_body
     expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, signature):
+    # Accept ANY matching candidate (secret rotation).  Each comparison is constant-time;
+    # `any` short-circuits like the SDK's `any(secure_compare(...))`.  R32: the old code kept
+    # only the LAST v1, so a rotated header whose matching v1 was not last was refused.
+    if not any(hmac.compare_digest(expected, candidate) for candidate in candidates):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid Stripe signature",
@@ -175,7 +196,8 @@ def construct_stripe_event(
     inside the function: a module-level import would break the app on a host where
     the SDK is absent.  (R28: the SDK IS installed in this venv — 11.3.0, measured —
     so the fallback is reached in tests by forcing the absent-import state; the older
-    "measured absent" note was stale.)
+    "measured absent" note was stale.)  Both branches verify a rotated multi-`v1=`
+    header by accept-any (R32, see `_stdlib_verify`).
     """
     window = DEFAULT_SIGNATURE_TOLERANCE if tolerance is None else int(tolerance)
     try:
