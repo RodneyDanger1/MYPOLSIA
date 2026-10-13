@@ -22,16 +22,23 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, literal, select, true
+from sqlalchemy import case, func, literal, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.accounting import (
+    budget_policy_from_settings,
+    burn_rate,
+    spend_summary,
+    unit_economics,
+)
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.core.timeutil import dialect_name
+from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, today_in
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
+from app.models.task import AgentRun
 from app.services.query_helpers import db_refusal, fetch_scalars
 
 
@@ -172,6 +179,115 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
         "total_ad_spend_usd": money(row.total_ad_spend_usd),
         "last_snapshot_date": row.last_snapshot_date,
     }
+
+
+async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
+    """The additive `ai_spend` block of `GET /finance/summary`: the day's AI spend, measured.
+
+    CONSUMER (R24).  `app/agents/accounting.py` carries three public analytics functions that had
+    no production caller at all — `spend_summary` (:276), `burn_rate` (:292) and `unit_economics`
+    (:310); the deleted `base_agent` budget block (base_agent.py:193-195) is their whole history.
+    This is the wire: the cap comes from `budget_policy_from_settings` (accounting.py:212-221) —
+    the SAME call the dispatch gate makes (`celery_app/tasks/_common.py:258`) — and the spend is
+    the measured quantity the gate gates on (`agent_runs.cost_usd`, company-local day).
+
+    MEASURED-SPEND DISCIPLINE (D3; `_common.day_spend_by_agent` + test_budget_gate):
+
+    * ABSENT day (no `agent_runs` rows in the window) -> a measured `0.0`: the ledger genuinely has
+      nothing, the same state the gate calls a fresh day;
+    * rows exist AND at least one `cost_usd` was reported -> the measured sum (a reported `0` is a
+      measured zero and stays `0.0`);
+    * rows exist with NO measured cost anywhere (every column NULL: a run whose CLI never reported
+      one, or one still running — the column staying NULL is documented at accounting.py:20-23) ->
+      UNMEASURED: `spent`/`remaining` are None, so the wire can never render `$0.00` for a day
+      nobody measured (F-08/F-10).
+
+    The window is `timeutil.day_window` — half-open `[start, end)` and dialect-bound.  That is
+    STRICTER than the gate's (`>= start` only): a future-dated `started_at` must not be counted
+    into today, the same correction `_month_bounds` records for the month window.
+
+    `unit_economics` is fed ONLY the agents whose day sum is measured.  It collapses a missing
+    spend entry into `0.0` (accounting.py:320), so an agent with completions but an unmeasured
+    spend would otherwise be priced at a fabricated `$0.00` per task; instead it is NAMED in
+    `unmeasured_spend_agents` — outside the priced set, never silently dropped.  `burn_rate` is
+    None when `spent` is None: a projection from an unmeasured spend is fabricated precision.
+
+    Exactness: the cap and the spend reach `spend_summary` as `Decimal` (this module's money rule,
+    see the module docstring), so `remaining` is `0.3`, not `0.3000000000000007`; the response
+    model floats the values at the wire boundary only.  `unit_economics` takes `float`s (its own
+    documented `dict[str, float]` contract).
+    """
+    start, end = day_window(db)
+
+    # ONE grouped statement: the day's spend AND the completed-run count per agent, from the same
+    # rows — a run's cost and its status live on the row that carries both, so they cannot drift
+    # apart.  `sum(case(...))` (not `count(*) filter`) is spelled the same way on both engines.
+    grouped = (
+        select(
+            AgentRun.agent_type,
+            func.sum(AgentRun.cost_usd).label("spent"),
+            func.sum(case((AgentRun.status == "completed", 1), else_=0)).label("completed"),
+        )
+        .where(AgentRun.started_at >= start, AgentRun.started_at < end)
+        .group_by(AgentRun.agent_type)
+    )
+    try:
+        rows = (await db.execute(grouped)).all()
+    except SQLAlchemyError as exc:
+        raise db_refusal("ai spend analytics", exc) from exc
+
+    cap = money(budget_policy_from_settings().day_limit_usd)
+    assert cap is not None  # `money` only passes a None through; the settings cap is a float
+    spend_by_agent: dict[str, Decimal] = {}
+    completed_by_agent: dict[str, int] = {}
+    unmeasured_spend_agents: list[str] = []
+    for agent, spent, completed in rows:
+        name = str(agent)
+        if spent is None:  # rows, no reported cost: NOT a measured 0 (F-08/F-10)
+            unmeasured_spend_agents.append(name)
+            continue
+        measured = money(spent)
+        assert measured is not None  # guarded above: `money` only passes a None through
+        spend_by_agent[name] = measured
+        completed_by_agent[name] = int(completed)
+
+    if not rows:                                    # absent day: measured zero (D3)
+        day_spent: Decimal | None = Decimal("0")
+    elif spend_by_agent:                            # at least one run reported its cost
+        day_spent = sum(spend_by_agent.values(), Decimal("0"))
+    else:                                           # runs exist, none reported a cost
+        day_spent = None
+
+    # `spend_summary` is `float`-typed but arithmetically exact on Decimals (is-None guard, then
+    # `cap - spent`): passing Decimal here is what keeps `remaining` exact, hence the one ignore.
+    view = spend_summary(day_spent, cap)  # type: ignore[arg-type]
+
+    # Elapsed fraction from the REAL local-day bounds — a DST day is 23/25h, so
+    # `seconds/86400` would mis-project it.
+    local_start, local_end = day_bounds(today_in())
+    elapsed_fraction = (
+        (now_utc() - local_start).total_seconds() / (local_end - local_start).total_seconds()
+    )
+
+    block: dict[str, Any] = dict(view)
+    block["burn_rate"] = (
+        None
+        if day_spent is None
+        else burn_rate(
+            spilled_usd=float(day_spent),
+            day_limit_usd=float(cap),
+            elapsed_fraction=elapsed_fraction,
+        )
+    )
+    economics: dict[str, Any] = unit_economics(
+        {name: float(total) for name, total in spend_by_agent.items()}, completed_by_agent
+    )
+    # Additive honesty marker, not part of `unit_economics` itself: the totals above cover exactly
+    # the agents in `per_agent`, and this names the agents that are outside them because their
+    # day spend was never measured (they are NOT $0.00/task — they are unpriced).
+    economics["unmeasured_spend_agents"] = sorted(unmeasured_spend_agents)
+    block["unit_economics"] = economics
+    return block
 
 
 async def upsert_revenue_snapshot(
@@ -448,6 +564,7 @@ async def record_stripe_event(
 
 
 __all__ = [
+    "get_ai_spend_summary",
     "get_finance_summary",
     "get_latest_revenue_snapshot",
     "list_expenses",

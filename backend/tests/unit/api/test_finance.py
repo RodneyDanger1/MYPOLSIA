@@ -21,6 +21,11 @@ async def test_finance_summary_empty(api_client, auth_headers):
     resp = await api_client.get("/api/v1/finance/summary", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
+    # R24: `ai_spend` is appended to this response (additive).  Its states are pinned in
+    # `tests/unit/api/test_finance_ai_spend.py`; the seven pre-R24 metrics below stay pinned by
+    # exact equality, and here we only fix the additive key's presence.
+    ai_spend = data.pop("ai_spend")
+    assert ai_spend is not None, "the additive ai_spend block must be present"
     # Precisely, key by key: each of the six money fields is JSON null, and
     # `last_snapshot_date` is null.  The regexes below prove the RAW BODY agrees —
     # for exactly those keys, no `"<key>": 0` / `0.0` hides anywhere.

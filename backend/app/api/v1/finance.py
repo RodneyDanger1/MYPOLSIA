@@ -37,6 +37,7 @@ from app.schemas.finance import (
     StripeEventResponse,
 )
 from app.services.finance_service import (
+    get_ai_spend_summary,
     get_finance_summary,
     list_expenses,
     list_revenue_snapshots,
@@ -54,9 +55,13 @@ DEFAULT_SIGNATURE_TOLERANCE = 300
 
 @router.get("/summary", response_model=FinanceSummaryResponse, dependencies=[Depends(verify_api_key)])
 async def finance_summary(db: AsyncSession = Depends(get_db)) -> FinanceSummaryResponse:
+    # `ai_spend` (R24) is the additive day view: `get_finance_summary` keeps its seven-key, ONE-
+    # statement contract (and its docstring), and the spend block is composed here from the real
+    # `agent_runs` day ledger — see `finance_service.get_ai_spend_summary`.
     with refusal_guard():
         summary = await get_finance_summary(db)
-    return FinanceSummaryResponse(**summary)
+        ai_spend = await get_ai_spend_summary(db)
+    return FinanceSummaryResponse(**summary, ai_spend=ai_spend)
 
 
 @router.get(
