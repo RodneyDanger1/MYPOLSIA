@@ -27,16 +27,16 @@ services:
     volumes:
       - celery_beat_data:/app/celerybeat
 
-  frontend:
-    # NEXT_PUBLIC_* are INLINED INTO THE CLIENT BUNDLE AT BUILD TIME (frontend/Dockerfile ARGs; the
-    # base compose file already passes NEXT_PUBLIC_API_KEY) — runtime `environment:` here would be
-    # inert.  The bundle carries the code defaults (http://localhost / ws://localhost), which in
-    # this job resolve to the runner's :80 — i.e. nginx below, which muxes /api + /ws to the
-    # backend.  The old block here set backend:8000 values that were never read and read as if the
-    # browser talked to the compose network.
+  # NEXT_PUBLIC_* are INLINED INTO THE CLIENT BUNDLE AT BUILD TIME (frontend/Dockerfile ARGs; the
+  # base compose file already passes NEXT_PUBLIC_API_KEY) — runtime `environment:` here would be
+  # inert.  The bundle carries the code defaults (http://localhost / ws://localhost), which in
+  # this job resolve to the runner's :80 — i.e. nginx, which muxes /api + /ws to the backend.
+  # The old override set backend:8000 runtime vars that were never read; removed so nobody
+  # re-adds a misleading value.  Explicit empty map = intentionally unchanged from the base file.
+  frontend: {}
 
-  nginx:
-    # RD16: previously `profiles: ["disabled"]`, which left the Playwright job's BASE_URL
-    # (http://localhost) with NO listener — the documented KNOWN RESIDUAL.  Enabled: it is the
-    # same :80 entry point the local e2e lab proves (stdlib proxy twin), gated on the backend
-    # healthcheck, ports inherited from the base compose file.
+  # RD16: previously `profiles: ["disabled"]`, which left the Playwright job's BASE_URL
+  # (http://localhost) with NO listener — the documented KNOWN RESIDUAL.  Intentionally left
+  # UNCHANGED from the base file now (explicit empty map): nginx enabled = the :80 mux, the same
+  # topology the local e2e lab proves, gated on the backend healthcheck, ports inherited.
+  nginx: {}
