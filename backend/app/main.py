@@ -78,13 +78,23 @@ logger = logging.getLogger(__name__)
 
 
 def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
-    """Extra headers a named refusal must carry.
+    """Extra headers a named refusal must carry — the SAME set wherever it was raised.
+
+    `X-Polsia-Error-Code` is the machine-readable form of the code the body already names.  The
+    in-route `refusal_guard` path has always sent it (`deps.as_http_exception`), and a client must
+    not see a different response for the same refusal just because it was raised a layer earlier:
+    before this header was added here, a pre-route refusal (a dependency, e.g. a failing `get_db`)
+    lost it while the identical in-route refusal kept it (R27 §M2, measured in
+    build/R27-social-outreach/raw/probe_edb_paths.txt; closed by lane R29).
 
     Auth is the one refusal with a protocol-level challenge: an E_AUTH response keeps the
     `WWW-Authenticate: X-API-Key` header the previous bare-HTTPException path sent, so a client that
     looks for it is not silently worse off for the refusal having become nameable.
     """
-    return {"WWW-Authenticate": "X-API-Key"} if exc.code == E_AUTH else {}
+    headers = {"X-Polsia-Error-Code": exc.code}
+    if exc.code == E_AUTH:
+        headers["WWW-Authenticate"] = "X-API-Key"
+    return headers
 
 
 def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:

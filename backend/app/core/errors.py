@@ -120,6 +120,13 @@ ERROR_HINTS: dict[str, str] = {
 
 # Which HTTP status a code means when it reaches the API boundary. Anything unlisted is a 500:
 # an unmapped failure is by definition an internal one, and guessing 4xx would blame the caller.
+#
+# THIS TABLE IS THE SINGLE SOURCE OF TRUTH for code -> status.  `deps.STATUS_BY_CODE` is an ALIAS
+# of it (it used to be a second literal table; the two disagreed for nine codes — E_DB, E_STORAGE,
+# the four E_CLI_*, E_INTEGRATION, E_AGENT_BAD_OUTPUT, E_PROMPT_TOO_LARGE — so the same
+# `PolsiaError` answered 502/503/504/413 when raised inside a route and a codeless 500 when raised
+# before it; measured in build/R27-social-outreach/raw/status_table_diff.txt + probe_edb_paths.txt,
+# consolidated here by lane R29).
 HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_AUTH: 401,
     E_VALIDATION: 422,
@@ -138,6 +145,19 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     # A broker/dependency outage is neither the caller's fault nor an unmapped internal error:
     # 503 says "this service cannot take the work right now", which is exactly what happened.
     E_REDIS: 503,
+    # R29: the nine rows below used to live only in `deps.STATUS_BY_CODE`, so the in-route
+    # `refusal_guard` path knew them while this canonical table (read by the app-level handler for
+    # everything raised before a route) fell through to 500.  The VALUES are exactly what the
+    # in-route path has always emitted — this move adds no new status to any shipped response.
+    E_DB: 503,            # database unavailable / unreadable — same class as E_REDIS
+    E_STORAGE: 503,       # filesystem or secret-store failure — same class
+    E_CLI_MISSING: 503,   # the agent runtime cannot take work until the CLI exists
+    E_CLI_TIMEOUT: 504,   # CLI exceeded its deadline — the gateway-timeout analogue
+    E_CLI_EXIT: 502,      # CLI exited non-zero — an upstream-gateway fault
+    E_CLI_JSON: 502,      # CLI output was not the documented envelope — same upstream class
+    E_AGENT_BAD_OUTPUT: 502,  # agent output failed schema validation — upstream fault
+    E_INTEGRATION: 502,       # third-party integration failure — upstream fault
+    E_PROMPT_TOO_LARGE: 413,  # the caller's prompt exceeds the argv limit — caller input
 }
 
 

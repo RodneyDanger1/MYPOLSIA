@@ -38,40 +38,18 @@ from app.core.errors import (  # noqa: F401  (re-exported)
     E_TASK_CLAIMED,
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
+    HTTP_STATUS_BY_CODE,
     PolsiaError,
 )
 from app.core.security import check_api_key, verify_api_key  # noqa: F401  (re-exported)
 
-#: `E_*` code -> HTTP status.  Anything unmapped is a server-side fault (500) but
-#: still carries the code in the body.
-STATUS_BY_CODE: dict[str, int] = {
-    E_AUTH: status.HTTP_401_UNAUTHORIZED,
-    E_VALIDATION: status.HTTP_422_UNPROCESSABLE_ENTITY,
-    E_NOT_FOUND: status.HTTP_404_NOT_FOUND,
-    E_AGENT_UNKNOWN: status.HTTP_422_UNPROCESSABLE_ENTITY,
-    E_AGENT_BAD_OUTPUT: status.HTTP_502_BAD_GATEWAY,
-    E_TASK_CLAIMED: status.HTTP_409_CONFLICT,
-    E_TASK_NOT_RUNNABLE: status.HTTP_409_CONFLICT,
-    E_POLICY_DENIED: status.HTTP_403_FORBIDDEN,
-    E_SANDBOX_BLOCKED: status.HTTP_403_FORBIDDEN,
-    E_BUDGET_EXCEEDED: status.HTTP_429_TOO_MANY_REQUESTS,
-    E_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
-    E_PROMPT_TOO_LARGE: status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-    # E_CONFIG surfaces at request time when a malformed COMPANY_TIMEZONE blocks a day
-    # window: the service's own misconfiguration, not the caller's fault and not an
-    # unmapped internal error — same class as E_REDIS.  Kept in agreement with
-    # errors.HTTP_STATUS_BY_CODE, which the middleware/exception-handler paths use
-    # (parent-surgical completion of T4; the two tables must not disagree).
-    E_CONFIG: status.HTTP_503_SERVICE_UNAVAILABLE,
-    E_DB: status.HTTP_503_SERVICE_UNAVAILABLE,
-    E_REDIS: status.HTTP_503_SERVICE_UNAVAILABLE,
-    E_STORAGE: status.HTTP_503_SERVICE_UNAVAILABLE,
-    E_CLI_MISSING: status.HTTP_503_SERVICE_UNAVAILABLE,
-    E_CLI_TIMEOUT: status.HTTP_504_GATEWAY_TIMEOUT,
-    E_CLI_EXIT: status.HTTP_502_BAD_GATEWAY,
-    E_CLI_JSON: status.HTTP_502_BAD_GATEWAY,
-    E_INTEGRATION: status.HTTP_502_BAD_GATEWAY,
-}
+#: `E_*` code -> HTTP status.  DERIVED, not a second table: this name is an ALIAS of
+#: `errors.HTTP_STATUS_BY_CODE`, the single source of truth, so the two can never diverge again —
+#: they did for nine codes (E_DB, E_STORAGE, the four E_CLI_*, E_INTEGRATION, E_AGENT_BAD_OUTPUT,
+#: E_PROMPT_TOO_LARGE), because this module's literal table served the in-route `refusal_guard`
+#: path while `app/main.py`'s exception handler read the other.  Anything unmapped is a server-side
+#: fault (500) but still carries the code in the body.
+STATUS_BY_CODE: dict[str, int] = HTTP_STATUS_BY_CODE
 
 
 def refusal_status(code: str) -> int:
