@@ -114,8 +114,20 @@ quietly relaxed. Each one names its measurement.
   hardening waves). This **meets the `fail_under = 75` this project originally declared**; the gate is
   now a **ratchet at the measured floor (87)**: it fails the moment coverage drops below what was
   measured and moves up as the suite grows.
-- **One advertised capability has no producer wired in.** The `ad_campaigns`/`ad_metrics` writers have
-  no callers — an honest 0-with-no-data situation, tracked as work, not presented as a working feature.
+- **The advertised capability that had no producer wired in is now closed (with one named residual).**
+  The `ad_campaigns`/`ad_metrics` writers had no callers — an honest 0-with-no-data situation, tracked
+  as work, not presented as a working feature. R33 wired them: a completed `ads_management` run
+  persists its own `campaigns[]`/`metrics[]` payload through `agent_tasks._persist_run_artifacts` →
+  `ads_service.record_ads_run` (campaigns via `create_campaign`; metrics via the ORM, with the engine
+  computing `ctr`/`cpc`/`roas` from the reported raw inputs — the generated columns are never written),
+  deduped on the keys the data really has: a campaign by the provider's own id
+  (`platform`+`external_id`, with a `(platform, name)` fallback), a metric by `(campaign_id, date)` —
+  the key the `uq_ad_metrics_campaign_date` unique index (migration `0002`) already guards — so the
+  6-hourly beat re-run inserts no duplicate rows, and a malformed entry is skipped by name in the run
+  output, never silently. Pinned by `tests/unit/test_r33_ads_persist_e2e.py` and
+  `tests/unit/celery/test_r33_ads_persist.py`. Residual, named not hidden: `AdMetricRow`
+  (`app/schemas/agent_outputs.py:307-316`) carries no `revenue_usd`, so a persisted row's `roas` reads
+  the column's 0 default until the CLI schema gains that field (R33 receipt `§REQUESTS`).
   (Two halves of this gap are closed. The finance writers are called through
   `finance_service.persist_finance_run` when a finance run is persisted, and `GET /finance/summary`
   reports `null` — not 0 — for a field that was never measured. The policy firewall's per-channel send

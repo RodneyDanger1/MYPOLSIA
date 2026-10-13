@@ -212,10 +212,16 @@ def test_worker_records_a_failed_persistence_in_output_and_activity(
 def test_worker_records_no_persistence_report_for_an_agent_without_one(
     monkeypatch, queue_db, execute_body
 ):
-    """No dispatcher -> no report -> no `persistence` key (absent, not `{}`)."""
-    _install_agent_spy(monkeypatch, {"summary": "ad metrics synced"})
+    """No dispatcher -> no report -> no `persistence` key (absent, not `{}`).
 
-    outcome = execute_body(queue_db.create_task(agent_type="ads_management"))
+    R33: the vehicle changed from `ads_management` to `orchestrator` — ads now HAS a dispatcher
+    (its runs report a real zero/shape report, pinned by
+    `tests/unit/test_r33_ads_persist_e2e.py`), so it can no longer stand in for "an agent
+    without one".  The intent — and every assertion — is unchanged.
+    """
+    _install_agent_spy(monkeypatch, {"summary": "planned the day"})
+
+    outcome = execute_body(queue_db.create_task(agent_type="orchestrator"))
 
     assert outcome["status"] == "completed"
     output = _latest_run_output(queue_db)

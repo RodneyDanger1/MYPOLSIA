@@ -19,6 +19,25 @@ def mock_claude_cli(monkeypatch):
     )
 
 
+# ─── Events circuit breaker reset (autouse) ───────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def reset_publish_breaker_state():
+    """The events breaker + counters are PROCESS-GLOBAL module state (app/core/events.py).
+
+    Any test that lets a publish fail for real (the worker path with no Redis running:
+    agent_tasks -> log_activity -> publish_activity -> connection refused) opens the breaker for
+    its cooldown window, and every later publish in the same pytest process is SKIPPED — an
+    order-dependent failure measured when the R33 e2e's real-worker tests made the redteam spec
+    invariant see 0 publishes instead of 1. Reset around every test so no test can poison another
+    (the same leak class fixed for run-taint in RD11)."""
+    from app.core import events
+
+    events.reset_publish_breaker()
+    yield
+    events.reset_publish_breaker()
+
+
 # ─── In-memory SQLite database ────────────────────────────────────────────────
 
 @pytest_asyncio.fixture

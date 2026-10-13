@@ -255,6 +255,20 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
                 for r in (result or {}).get("replies") or []
                 if str(r.get("from_address") or r.get("from") or "").strip()
             ]})
+        if agent_type == "ads_management":
+            # R33: the ads producer.  The run's `campaigns[]`/`metrics[]` payload is documented as
+            # "feeding ad_campaigns / ad_metrics" (app/agents/ads_management/agent.py:6-7), and
+            # writing those rows is explicitly allowed in sandbox (agent.py:9-12) — but no branch
+            # here ever looked at the payload, so both tables stayed empty whatever the run really
+            # read (README "Known gaps").  The writer dedupes on the payload's OWN natural keys
+            # (campaign: provider id, with a (platform, name) fallback; metric: campaign + as-of
+            # date — the key the shipped `uq_ad_metrics_campaign_date` unique index guards), so a
+            # 6-hourly beat re-run writes no duplicate rows, and every unpersistable entry is
+            # skipped BY NAME in the report (the run stays alive, one transaction for the
+            # artifacts: the service flushes, this caller commits — like every branch here).
+            from app.services.ads_service import record_ads_run
+
+            return await record_ads_run(db, result)
         return {}
     except PolsiaError as exc:
         logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
