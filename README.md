@@ -19,7 +19,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
               │                       │                   │
      ┌────────▼────────┐   ┌──────────▼──────┐  ┌────────▼──────┐
      │  PostgreSQL 16  │   │  Redis + Celery  │  │  ChromaDB     │
-     │  (15 tables)    │   │  (task queue)    │  │  (vector mem) │
+     │  (17 tables)    │   │  (task queue)    │  │  (vector mem) │
      └─────────────────┘   └──────────────────┘  └───────────────┘
 ```
 
@@ -27,7 +27,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 
 | Agent | Responsibility | Schedule |
 |-------|---------------|----------|
-| **Orchestrator** | Writes morning plan + evening summary | 06:00 / 20:00 |
+| **Orchestrator** | Writes morning plan + evening summary | Morning: hourly, self-gated to the configured company-local hour (default 06:00) — Evening: 20:00 UTC |
 | **Business Planning** | Strategy, KPIs, growth recommendations | Via the morning plan (no beat entry) |
 | **Competitor Research** | Web search, profile updates | Via the morning plan (no beat entry) |
 | **Social Media** | Draft + post tweets | Every 2h |
@@ -37,6 +37,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 | **Code Generation** | Ship features, open PRs | On demand |
 | **Finance** | Stripe revenue sync, spend tracking | Every 6h |
 | **Maintenance** | Task-lease sweep — requeues tasks whose worker died mid-run | Every 5 min |
+| **Maintenance** | Activity retention — deletes `activity_log` rows older than `activity_retention_days` (default 90) | Daily at 03:00 UTC |
 
 Each agent calls `claude -p "..." --output-format json` as a subprocess. No API key is needed — the Claude Code CLI authenticates via OAuth stored at `~/.claude`.
 
@@ -80,7 +81,7 @@ The stack is up when `http://localhost/api/v1/health` returns `{"status": "ok"}`
 |----------|-------------|
 | `API_KEY` | Secret key for the dashboard API (`X-API-Key` header) |
 | `SANDBOX_MODE` | `true` = no real posts/emails/charges (default) |
-| `CLAUDE_CLI_PATH` | Path to the `claude` binary (default `/usr/local/bin/claude`) |
+| `CLAUDE_CLI_PATH` | Path to the `claude` binary. The setting's default is `claude` (found on `PATH`); the container image's ENV sets `/usr/local/bin/claude` (`backend/Dockerfile:25`) |
 
 The Claude CLI authenticates via the `~/.claude` directory on your host, which is mounted read-only into the containers. Run `claude login` on your host once before starting the stack.
 
@@ -227,7 +228,7 @@ polsia/
 │   │   │   └── finance/
 │   │   ├── api/v1/          # REST endpoints + WebSocket
 │   │   ├── core/            # DB, Redis, ChromaDB, security, retry
-│   │   ├── models/          # SQLAlchemy ORM (15 tables)
+│   │   ├── models/          # SQLAlchemy ORM (17 tables)
 │   │   ├── schemas/         # Pydantic request/response models
 │   │   └── services/        # Business logic layer
 │   ├── celery_app/          # Celery worker, Beat schedule, tasks

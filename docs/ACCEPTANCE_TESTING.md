@@ -42,7 +42,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `api/test_social.py` | 4 | List empty, list all, filter by status, auth required |
 | `celery/test_agent_tasks.py` | 2 | Celery task dispatches correct agent from AGENT_MAP |
 
-**Total: 60 backend unit tests**
+**Total: 293 backend tests** (`tests/unit` + `tests/parity` + `tests/redteam`, measured 2026-10-12 — the file list above is the original snapshot; the gate XML holds the live count)
 
 ### Frontend unit tests
 
@@ -78,7 +78,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Feature | Acceptance criteria | Test type |
 |---|---|---|
 | Docker stack starts | All 7 services healthy after `make up` | Manual / `docker-build.yml` CI |
-| Database migrations | `make init-db` succeeds, all 16 tables present | Manual |
+| Database migrations | `make init-db` succeeds, all 17 tables present | Manual |
 | Health endpoint | `GET /api/v1/health` → `{"status":"ok"}` | E2E |
 | Authentication | Requests without `X-API-Key` return 401 | Unit (all API tests) |
 | WebSocket | Connect to `WS /ws/activity`, receive events from agent runs | Unit + E2E |
@@ -91,7 +91,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Agent dispatch | `run_agent_task(task_id)` routes to correct agent class | Unit: `test_agent_tasks.py` |
 | Task lifecycle | Create → pending → in_progress → completed/failed | Unit: `test_task_service.py` |
 | Activity broadcast | `log_activity()` writes to DB + publishes to Redis channel | Unit: `test_activity_service.py` |
-| Morning cycle | 06:00 Beat job enqueues 5-8 tasks for the day | Integration |
+| Morning cycle | Hourly Beat job, self-gated to the configured company-local hour (default 06:00); enqueues 5-8 tasks for the day | Integration |
 | Evening cycle | 20:00 Beat job saves evening summary to `daily_reports` | Integration |
 
 ### Individual agents (all sandbox-safe)
@@ -198,7 +198,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 
 - [ ] `SANDBOX_MODE=false` + real Stripe keys → Stripe balance loads in Finance page
 - [ ] `SANDBOX_MODE=false` + real Render keys → trigger deploy from dashboard → Render dashboard shows active deploy (**not implemented** — there is no deploy trigger and no Deployment agent; see the note above)
-- [ ] Morning cycle runs at 06:00 UTC → tasks visible in dashboard
+- [ ] Morning cycle fires hourly and self-gates to the configured company-local hour (default 06:00) → tasks visible in dashboard
 - [ ] Agent trigger → Celery worker picks up task → activity feed updates via WebSocket
 - [ ] Claude CLI authenticated (`claude login` on host) → agent runs real inference
 - [ ] Stripe webhook received → event appears in `/finance/events`
