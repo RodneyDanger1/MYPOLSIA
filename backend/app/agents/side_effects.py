@@ -27,10 +27,27 @@ from app.agents.policy_firewall import (
     PolicyDecision,
     RateCaps,
     RunTaint,
+    current_run_taint,
     decide,
     enforce,
 )
 from app.core.errors import E_INTEGRATION, ERROR_HINTS, PolsiaError
+
+
+def _resolve_taint(taint: RunTaint | None) -> RunTaint | None:
+    """The taint a side-effect request must carry: the explicit one, else the RUN's.
+
+    RD4 item 3 / audit L2-F05 — the consumer half of the taint chain.  `context_assembler.assemble()`
+    publishes the run's taint on the `RUN_TAINT` contextvar (set from the real content the prompt
+    carried, through `flag_injection_heuristics`); every agent call site below would otherwise have
+    to accept and thread a `taint=` argument.  Reading it here means all six callers
+    (ads_management, code_generation, customer_support, email_outreach, finance, social_media)
+    inherit it with no per-agent edit, an explicit `taint=` still WINS (callers that know better,
+    and every existing test, keep their behaviour), and a run that assembled no context at all
+    (no taint published) is `None` — "not known to be tainted", which the firewall treats exactly
+    as it did before this change.
+    """
+    return taint if taint is not None else current_run_taint()
 
 
 def _resolve_sandbox_mode(sandbox_mode: bool | None) -> bool:
@@ -124,6 +141,9 @@ def request_side_effect(
     unknown" — the firewall refuses a configured cap whose count is unknown rather than assuming
     zero sends.
 
+    `taint` is the run's taint when the caller passes it explicitly, else whatever
+    `context_assembler.assemble()` published for THIS run (`_resolve_taint`).
+
     Raises the named refusal for a policy/rate/kill denial (an agent must not continue past a
     real denial). Returns an outcome carrying `sandboxed=True` for a sandbox denial — the caller
     then records a labelled draft instead of performing the action.
@@ -135,7 +155,7 @@ def request_side_effect(
         tool=tool,
         value_usd=float(value_usd),
         payload=dict(payload or {"action": action}),
-        taint=taint,
+        taint=_resolve_taint(taint),
         approval_token=approval_token,
         sends_today=sends_today,
         sends_this_hour=sends_this_hour,
@@ -218,6 +238,7 @@ def evaluate_side_effect(
     payload: dict | None = None,
     sends_today: int | None = None,
     sends_this_hour: int | None = None,
+    taint: RunTaint | None = None,
     sandbox_mode: bool | None = None,
     caps: RateCaps | None = None,
     approval_secret: bytes = b"",
@@ -226,6 +247,11 @@ def evaluate_side_effect(
 
     `sends_today`/`sends_this_hour` carry a MEASURED count, or `None` = "unknown" (a configured
     cap is then refused by name instead of being read as zero sends).
+
+    `taint` (RD4 item 3): this path used to build its `ActionRequest` with NO taint at all, so the
+    customer_support refund escalation — the caller that reaches `evaluate_side_effect` — could
+    never see the run's taint.  It now resolves like `request_side_effect`: explicit argument first,
+    else the run's published taint.
 
     Used where an agent must *record* what policy says rather than perform the action — e.g.
     customer_support proposing a refund: money never moves from the support agent (its capability
@@ -239,6 +265,7 @@ def evaluate_side_effect(
             channel=channel,
             value_usd=float(value_usd),
             payload=dict(payload or {"action": action}),
+            taint=_resolve_taint(taint),
             sends_today=sends_today,
             sends_this_hour=sends_this_hour,
         ),

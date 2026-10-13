@@ -31,6 +31,7 @@ import hmac
 import math
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
@@ -242,6 +243,45 @@ class RunTaint:
 
 
 # ---------------------------------------------------------------------------
+# Run-level taint: the contextvar the PRODUCER sets and the CONSUMER reads
+# ---------------------------------------------------------------------------
+
+#: The taint of the run executing in this context.
+#:
+#: Why a contextvar instead of a parameter (RD4 item 3, audit L2-F05 "the taint chain is dead"):
+#: the content that taints a run is assembled in `context_assembler.assemble()`, which every agent
+#: reaches through `base_agent.collect_structured` — but the side-effect request that must SEE the
+#: taint happens later, inside per-agent code, at six call sites that would each have to accept and
+#: thread a new argument.  A contextvar carries it through the whole call with zero call-site
+#: edits: `assemble()` sets it from the real content, `request_side_effect` /
+#: `evaluate_side_effect` read it whenever the caller supplied no explicit `taint=`.
+#:
+#: Isolation: a contextvar is per thread/task, so one run's verdict cannot bleed into an unrelated
+#: concurrent run.  Each `assemble()` call OVERWRITES the value (clean content writes
+#: `tainted=False`), so a tainted run cannot taint the next run in the same worker either;
+#: `reset_run_taint()` restores the no-run state for tests and one-off callers.
+#:
+#: It lives HERE (not in context_assembler) because this module is the taint's home and both the
+#: producer and the consumer already import it — no new import edge, no cycle.
+RUN_TAINT: ContextVar[RunTaint | None] = ContextVar("polsia_run_taint", default=None)
+
+
+def set_run_taint(taint: RunTaint | None) -> None:
+    """Publish the taint of the run being assembled (producer side — `context_assembler`)."""
+    RUN_TAINT.set(taint)
+
+
+def current_run_taint() -> RunTaint | None:
+    """The taint of the run executing in this context; None when no run assembled one."""
+    return RUN_TAINT.get()
+
+
+def reset_run_taint() -> None:
+    """Clear the run taint (tests, or a caller that must not inherit a previous run's verdict)."""
+    RUN_TAINT.set(None)
+
+
+# ---------------------------------------------------------------------------
 # Rate caps
 # ---------------------------------------------------------------------------
 
@@ -398,6 +438,14 @@ def decide(
         "fingerprint": fingerprint(req.action_class.value, req.channel, req.payload),
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if req.taint is not None:
+        # The EVIDENCE, not just the verdict: an action_audit row (or a refusal a human reads) must
+        # show WHY the run was escalated — which blocks were flagged and where they came from.
+        audit["taint"] = {
+            "tainted": req.taint.tainted,
+            "flagged_blocks": list(req.taint.flagged_blocks),
+            "sources": list(req.taint.sources),
+        }
     if kill_switch:
         return PolicyDecision(Decision.DENY, "kill switch active", "POLSIA-E118", audit=audit)
 
@@ -454,8 +502,19 @@ def decide(
     if external and req.action_class == ActionClass.EXTERNAL_IRREVERSIBLE:
         needs_approval = True                 # irreversible ALWAYS needs a human
         reasons.append("irreversible action")
-        if req.taint and req.taint.tainted:
-            reasons.append("context tainted by untrusted content")
+    if external and req.taint is not None and req.taint.tainted:
+        # RD4 item 3 / audit L2-F05 — this is the leg that was dead.  The check list this function
+        # documents (see the docstring: "irreversible or tainted or >= $25 requires a human")
+        # promised that a TAINTED run escalates; the code only *mentioned* taint inside the
+        # irreversible branch, so a tainted run could still send an ordinary reversible email or
+        # post.  A tainted run is one whose context (task text, memories, fetched content) carried
+        # instruction-like content: escalating every external action out of that run to human
+        # review is the entire point of the heuristic, which is explicitly never-permitting.
+        # The heuristic is probabilistic, so over-escalation is the safe direction — and it is the
+        # only direction implemented: REQUIRE_APPROVAL here, or the hard DENY below when no
+        # approval channel exists.  It can never turn a deny into an allow.
+        needs_approval = True
+        reasons.append("context tainted by untrusted content")
     if value_cents_now >= _APPROVAL_VALUE_CENTS:
         needs_approval = True
         reasons.append(f"value ${value_cents_now / 100:.2f} >= ${APPROVAL_THRESHOLDS['value_usd']:.0f}")
@@ -501,6 +560,19 @@ def _tool_match(tool: str, pattern: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def kill_grade_from_env() -> str:
+    """The operator's kill grade, read at CALL time: `POLSIA_KILL_SWITCH` env, then settings.
+
+    Audit L2 (item RD4-1): the settings fallback read `settings.kill_switch`, a field `config.py`
+    did not carry — so it was permanently `""` and an operator could set the switch in config and
+    have it never read.  `config.py` now carries `kill_switch: str = ""` (added alongside this
+    wave); the `getattr` fallback stays on purpose, so this read path keeps working against a
+    config surface that predates (or differs from) that field instead of raising at dispatch.
+
+    Precedence is deliberate — env first, settings second: an operator's shell-level stop is the
+    fastest one and must win even while a settings file still says "run".  Both paths are pinned by
+    tests/unit/test_kill_switch_settings.py, including a monkeypatched-settings leg that the
+    missing field made impossible to write before.
+    """
     import os
 
     from app.config import settings
@@ -574,12 +646,15 @@ __all__ = [
     "RunTaint",
     "assert_sandboxed_side_effect_allowed",
     "capability_for",
+    "current_run_taint",
     "decide",
     "enforce",
     "fingerprint",
     "flag_injection_heuristics",
     "issue_approval",
     "kill_grade_from_env",
+    "reset_run_taint",
+    "set_run_taint",
     "value_cents",
     "verify_approval",
     "wrap_untrusted",

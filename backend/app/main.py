@@ -5,10 +5,13 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import (
     ads,
@@ -25,7 +28,8 @@ from app.api.v1 import (
 )
 from app.config import settings
 from app.core.database import dispose_engine
-from app.core.errors import E_AUTH, PolsiaError, http_status_for, to_http_detail
+from app.core.errors import E_AUTH, ERROR_HINTS, PolsiaError, http_status_for, to_http_detail
+from app.core.redis_client import close_redis
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -39,6 +43,40 @@ def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
     looks for it is not silently worse off for the refusal having become nameable.
     """
     return {"WWW-Authenticate": "X-API-Key"} if exc.code == E_AUTH else {}
+
+
+def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:
+    """Wrap a CODED `HTTPException.detail` into the standard refusal envelope (D5).
+
+    At HEAD there were two wire shapes for one refusal: the envelope
+    `{"ok": false, "error": {code, message, how_to_fix, context}}` that `to_http_detail` produces
+    (emitted by the `PolsiaError` handler below and by the request middleware), and
+    `{"detail": {...}}` — what FastAPI's default handler serializes for the coded dicts raised by
+    `refusal_guard()` (deps.py:95-125) and by the direct `HTTPException` raises in
+    tasks.py:52-77.  The frontend's `isRefusal` parses the envelope only, so those raise-paths
+    surfaced as `E_HTTP_<status>` with a raw JSON message even though the refusal was fully named.
+
+    Returns the envelope for a detail dict carrying a non-empty `code`, and `None` for EVERYTHING
+    else — a plain string, a validation array, an incidental `HTTPException` — which the caller
+    hands back to FastAPI's own handler, unchanged.  Only the coded case is ours to wrap; the
+    `how_to_fix` fallback mirrors `to_http_detail` (an empty hint falls back to the code's
+    `ERROR_HINTS`, never to "").
+    """
+    if not isinstance(detail, dict):
+        return None
+    code = detail.get("code")
+    if not isinstance(code, str) or not code:
+        return None
+    context = detail.get("context")
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": detail.get("message") or "",
+            "how_to_fix": detail.get("how_to_fix") or ERROR_HINTS.get(code, ""),
+            "context": context if isinstance(context, dict) else {},
+        },
+    }
 
 
 @asynccontextmanager
@@ -62,7 +100,12 @@ async def lifespan(application: FastAPI):
     finally:
         # A clean shutdown releases the connection pool instead of leaving sockets to the OS.
         await dispose_engine()
-        logger.info("shutting down %s (db engine disposed)", settings.app_name)
+        # ...and the Redis client, for the same reason: `close_redis()` closes the shared async
+        # client's connection pool when one was ever created, and is a no-op when none was (the
+        # client is created lazily).  Without it a shutdown leaves that socket to the OS — the same
+        # class of leak the engine disposal above exists to prevent (RD4 item 5; audit D4 batch).
+        await close_redis()
+        logger.info("shutting down %s (db engine disposed, redis closed)", settings.app_name)
 
 
 def create_app() -> FastAPI:
@@ -115,6 +158,28 @@ def create_app() -> FastAPI:
             content=to_http_detail(exc),
             headers=_refusal_headers(exc),
         )
+
+    @application.exception_handler(StarletteHTTPException)
+    async def coded_http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        """D5: a CODED `HTTPException` reaches the client in the same envelope as a named refusal.
+
+        Registered for Starlette's `HTTPException` (FastAPI's subclasses it, and so does every
+        route raise) so the raise-based refusals in tasks.py/config.py are covered too.  The
+        UNCODED case goes straight back to FastAPI's own handler — the default response for a 404
+        route miss, a plain `detail` string or a validation array is byte-identical to before, and
+        the `PolsiaError` path above keeps its own handler (no double-wrapping: a `PolsiaError`
+        never arrives here).
+        """
+        envelope = coded_detail_envelope(exc.detail)
+        if envelope is None:
+            return await http_exception_handler(request, exc)
+        logger.warning(
+            "%s on %s %s: %s", envelope["error"]["code"], request.method, request.url.path,
+            envelope["error"]["message"],
+        )
+        return JSONResponse(status_code=exc.status_code, content=envelope, headers=exc.headers)
 
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(health.router)     # no auth
