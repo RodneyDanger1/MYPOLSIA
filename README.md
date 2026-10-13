@@ -108,12 +108,12 @@ Fill in the relevant sections of `.env` to activate each integration:
 Things this repository declares or advertises that are **not** yet true, recorded here instead of being
 quietly relaxed. Each one names its measurement.
 
-- **Backend unit coverage is 73.0%** (3,441 of 4,714 statements, `pytest tests/unit --cov=app` — it was
-  51.48% at the first measurement and 57.6% before the waves 1–4 and T16–T19 tests landed), against the
-  `fail_under = 75` this project originally declared. No run of this repository has ever met 75%, so the
-  gate is a **ratchet at the measured floor (72)**: it fails the moment coverage drops below what was
-  measured and moves up as the suite grows. Closing the gap to 75% is open work rather than a number that
-  is quietly edited away.
+- **Backend coverage is 87.5%** (4,984 of 5,693 statements; `pytest tests/unit tests/parity tests/redteam
+  --cov=app` with the `sysmon` core pinned in `pyproject.toml` — the truthful tracer for async route
+  lines, measured by R26/R27/R28; it was 51.48% at the first measurement and 73.0% before the R17–R32
+  hardening waves). This **meets the `fail_under = 75` this project originally declared**; the gate is
+  now a **ratchet at the measured floor (87)**: it fails the moment coverage drops below what was
+  measured and moves up as the suite grows.
 - **One advertised capability has no producer wired in.** The `ad_campaigns`/`ad_metrics` writers have
   no callers — an honest 0-with-no-data situation, tracked as work, not presented as a working feature.
   (Two halves of this gap are closed. The finance writers are called through
@@ -129,13 +129,13 @@ quietly relaxed. Each one names its measurement.
   no counting source — github, google_ads, meta_ads, stripe, render — have their configured caps refused
   by name (`POLSIA-E114`, `cap_unknown`) instead of being read as zero sends; customer_support replies
   are not yet counted; LinkedIn has no send adapter.)
-- **Twelve advertised settings are read by no code path.** A three-set census (`config.py` fields vs
-  `.env.example` keys vs actual reads by `backend/app` + `backend/celery_app` code) finds `DEBUG`,
-  `LOG_JSON`, `CELERY_WORKER_CONCURRENCY`, `TASK_BATCH_SIZE`, `DB_BACKLOG_HOURS`,
-  `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`, `TAVILY_API_KEY`, `GOOGLE_ADS_CLIENT_SECRET`,
-  `STRIPE_PUBLISHABLE_KEY` and `RENDER_API_KEY` declared and advertised with no consumer. Each is
-  labelled `advertised — not implemented in this repository` where it is defined, rather than left
-  advertising.
+- **Nine advertised settings are read by no code path** (keep-as-reserved vs remove is an owner call):
+  `TASK_BATCH_SIZE`, `DB_BACKLOG_HOURS`, `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`, `TAVILY_API_KEY`,
+  `GOOGLE_ADS_CLIENT_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `RENDER_API_KEY`. Each carries a
+  `RESERVED — no consumer yet` label where it is defined, with its intended purpose named (R23), rather
+  than being left advertising. Three former members of this list are now honest: `DEBUG` and `LOG_JSON`
+  are consumed by `app/main.py` (R22), and `CELERY_WORKER_CONCURRENCY` is documented as owned by the
+  docker-compose launch command (`--concurrency=4`), not the app (R20/R23).
 
 ## Development
 

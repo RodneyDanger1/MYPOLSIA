@@ -40,15 +40,20 @@ markers = [
 [tool.coverage.run]
 source = ["app"]
 omit = ["tests/*", "alembic/*"]
+# Truthful attribution for async route bodies. The default C tracer does not credit the final
+# statement of async endpoints through the ASGI/httpx test path (R26/R27/R28 measured phantom
+# lines and "missing" executed lines; repro probes in the bs5-closeout + lane raw/ dirs). sysmon
+# credits them and needs CPython >= 3.12 — the venv, backend/Dockerfile and every CI workflow are.
+core = "sysmon"
 
 [tool.coverage.report]
 # MEASURED, not aspirational — and it is a RATCHET, so it only ever moves up.
 # 2026-10-11, first measurement: 51.48% (2,267 of 4,404 statements) against the upload's declared
-# `fail_under = 75`, which no run of this repository has ever met. A gate that cannot pass protects
+# `fail_under = 75`, which no run of this repository had ever met. A gate that cannot pass protects
 # nothing, so it was set to the measured floor; the suite then grew (queue safety core, model schema
-# freeze, auth refinements) to 57.6% (2,554 of 4,431), and then again through waves 1–4 and T16–T19,
-# where the same command reports 73.0% (3,441 of 4,714 — 72.9953%, floored to 72). The floor moves up
-# with it. The unmet 75% target (now within ~2 points) is named in the README ("Known gaps") rather
-# than quietly forgotten here.
-fail_under = 72
+# freeze, auth refinements) to 57.6% (2,554 of 4,431), then through waves 1–4 and T16–T19 to 73.0%
+# (3,441 of 4,714 — 72.9953%, floored to 72). 2026-10-13: the R17–R32 hardening waves grew it to
+# 87.5461% (4,984 of 5,693; `pytest tests/unit tests/parity tests/redteam --cov=app`, the sysmon
+# core pinned above) — the originally-declared 75% target is now MET; the floor moves to 87.
+fail_under = 87
 show_missing = true
