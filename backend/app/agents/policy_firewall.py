@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import re
 import time
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -323,6 +325,30 @@ APPROVAL_THRESHOLDS = {
     "new_email_domain_batch": 10,      # first cold blast to a domain bigger than this: review
 }
 
+_CENT = Decimal("0.01")
+#: The operator's configured price, as the exact whole cents the decision compares (A-T18):
+#: 25.0 -> exactly 2500, byte for byte — never a float re-derivation of it.
+_APPROVAL_VALUE_CENTS: int = int(
+    Decimal(str(APPROVAL_THRESHOLDS["value_usd"])).quantize(_CENT, rounding=ROUND_HALF_UP) * 100
+)
+
+
+def value_cents(value_usd: float) -> int:
+    """The ONE place a dollar float crosses into a policy decision (A-T18 / R11).
+
+    The approval threshold is compared in exact whole cents: `Decimal(str(x))` recovers the
+    decimal the value was written as (str() is the shortest round-tripping repr — measured:
+    cents -> float -> cents round-trips exactly for 30,007 probe values), and the HALF_UP
+    cent-quantisation absorbs sub-cent binary noise (`(0.7+0.1)*31.25` is 24.999999999999996
+    in doubles but means $25.00).  Any rounding deviation is toward the human: a value within
+    half a cent BELOW the threshold rounds onto it and needs approval, never the reverse.
+    A non-finite value is unmeasurable and fails closed (the old float compare let `nan`
+    through: `nan >= 25.0` is False — fail OPEN).
+    """
+    if not math.isfinite(value_usd):
+        return _APPROVAL_VALUE_CENTS
+    return int(Decimal(str(value_usd)).quantize(_CENT, rounding=ROUND_HALF_UP) * 100)
+
 
 def _cap_count_unknown(channel: str, window: str, cap_value: int, audit: dict) -> PolicyDecision:
     """The named refusal for a configured cap whose counter has NO source (A2 finding F-04).
@@ -362,9 +388,10 @@ def decide(
       7. approval token verification (missing/invalid -> REQUIRE_APPROVAL)
     """
     caps = caps or RateCaps()
+    value_cents_now = value_cents(req.value_usd)   # the one boundary conversion (A-T18)
     audit: dict[str, Any] = {
         "agent": req.agent_type, "class": req.action_class.value, "channel": req.channel,
-        "value_usd": req.value_usd,
+        "value_usd": req.value_usd, "value_cents": value_cents_now,
         # Annotation is load-bearing: `audit` holds a float (value_usd) and strings, so without it mypy
         # infers `dict[str, float | str]` and then reports `audit["fingerprint"]` as `float | str` where
         # `verify_approval` wants `str` — a narrowing artifact, not a runtime bug (fingerprint() -> str).
@@ -429,9 +456,9 @@ def decide(
         reasons.append("irreversible action")
         if req.taint and req.taint.tainted:
             reasons.append("context tainted by untrusted content")
-    if req.value_usd >= APPROVAL_THRESHOLDS["value_usd"]:
+    if value_cents_now >= _APPROVAL_VALUE_CENTS:
         needs_approval = True
-        reasons.append(f"value ${req.value_usd:.2f} >= ${APPROVAL_THRESHOLDS['value_usd']:.0f}")
+        reasons.append(f"value ${value_cents_now / 100:.2f} >= ${APPROVAL_THRESHOLDS['value_usd']:.0f}")
     if needs_approval and not approval_secret and not sandbox_mode:
         # no approval infrastructure at all for something that needs approval => deny, fail closed
         return PolicyDecision(Decision.DENY,
@@ -553,6 +580,7 @@ __all__ = [
     "flag_injection_heuristics",
     "issue_approval",
     "kill_grade_from_env",
+    "value_cents",
     "verify_approval",
     "wrap_untrusted",
 ]

@@ -15,11 +15,13 @@ from __future__ import annotations
 import app.config as app_config
 from app.agents.policy_firewall import (
     AGENT_CAPABILITIES,
+    APPROVAL_THRESHOLDS,
     ActionClass,
     ActionRequest,
     Decision,
     RateCaps,
     decide,
+    value_cents,
 )
 from app.agents.side_effects import evaluate_side_effect
 
@@ -225,3 +227,54 @@ def test_a_real_over_cap_send_still_hits_the_rate_cap():
     assert denied.code == "POLSIA-E117"
     assert denied.e_code == "E_RATE_LIMITED"
     assert denied.sandboxed is False
+
+
+# ── 9. the approval boundary is exact, whole-cent arithmetic (T18 / R11) ───────────────────────
+def test_the_value_boundary_is_whole_cents_and_the_threshold_is_the_configured_number():
+    assert value_cents(25.0) == 2500
+    assert value_cents(24.99) == 2499
+    assert value_cents(25.01) == 2501
+    # the operator's configured 25.0 IS 2500 cents, byte for byte
+    assert value_cents(APPROVAL_THRESHOLDS["value_usd"]) == 2500
+
+
+def test_the_boundary_pair_one_cent_apart_flips_the_decision():
+    under = decide(_req(value_usd=24.99), approval_secret=b"secret", sandbox_mode=False)
+    at = decide(_req(value_usd=25.0), approval_secret=b"secret", sandbox_mode=False)
+    over = decide(_req(value_usd=25.01), approval_secret=b"secret", sandbox_mode=False)
+    assert under.decision is Decision.ALLOW, "one cent under the threshold must not need a human"
+    assert at.decision is Decision.REQUIRE_APPROVAL, "exactly at the threshold needs the human"
+    assert over.decision is Decision.REQUIRE_APPROVAL
+
+
+def test_a_noisy_sum_that_means_25_00_does_not_ride_under_the_threshold():
+    """Measured artefact: `(0.7+0.1)*31.25` means $25.00 but is 24.999999999999996 as a double.
+
+    The old float compare trusted the artefact and let the action through; the cents decision
+    must not. (Probe: build/T18-boundary/raw/probe_noise_sums.txt)
+    """
+    total = (0.7 + 0.1) * 31.25
+    assert total < 25.0, "the artefact must exist for this test to have teeth"
+    decision = decide(_req(value_usd=total), approval_secret=b"secret", sandbox_mode=False)
+    assert decision.decision is Decision.REQUIRE_APPROVAL
+
+
+def test_sub_cent_values_round_to_the_cent_toward_the_human():
+    """24.996 quantises to 25.00 (HALF_UP); the deviation is toward approval, never away."""
+    assert value_cents(24.996) == 2500
+    decision = decide(_req(value_usd=24.996), approval_secret=b"secret", sandbox_mode=False)
+    assert decision.decision is Decision.REQUIRE_APPROVAL
+
+
+def test_a_cent_amount_round_trips_the_value_float_exactly():
+    """The finance refund path: `float(amount_cents)/100` is recovered exactly at the boundary."""
+    for cents in list(range(0, 2001)) + [2499, 2500, 2501, 999_999, 10_000_000]:
+        assert value_cents(cents / 100.0) == cents
+
+
+def test_an_unmeasurable_value_fails_closed_never_open():
+    """`nan >= 25.0` is False — the old compare let an unmeasurable value through. The cents
+    decision treats a non-finite value as at-or-over the threshold."""
+    for bogus in (float("nan"), float("inf"), float("-inf")):
+        decision = decide(_req(value_usd=bogus), approval_secret=b"secret", sandbox_mode=False)
+        assert decision.decision is Decision.REQUIRE_APPROVAL, f"{bogus!r} must fail closed"
