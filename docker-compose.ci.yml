@@ -1,4 +1,7 @@
-# CI override — mocks Claude CLI, no nginx, no host volume mounts
+# CI override — mocks Claude CLI, no host volume mounts.
+# nginx stays ENABLED here (RD16 follow-up to F4/RD10): the e2e job browses BASE_URL=http://localhost
+# from the runner, so something must listen on :80 — nginx is the app's real entry point (image:
+# nginx:alpine, config mounted from nginx/nginx.conf, ports inherited from the base compose file).
 version: "3.9"
 
 services:
@@ -25,9 +28,15 @@ services:
       - celery_beat_data:/app/celerybeat
 
   frontend:
-    environment:
-      NEXT_PUBLIC_API_URL: "http://backend:8000"
-      NEXT_PUBLIC_WS_URL: "ws://backend:8000"
+    # NEXT_PUBLIC_* are INLINED INTO THE CLIENT BUNDLE AT BUILD TIME (frontend/Dockerfile ARGs; the
+    # base compose file already passes NEXT_PUBLIC_API_KEY) — runtime `environment:` here would be
+    # inert.  The bundle carries the code defaults (http://localhost / ws://localhost), which in
+    # this job resolve to the runner's :80 — i.e. nginx below, which muxes /api + /ws to the
+    # backend.  The old block here set backend:8000 values that were never read and read as if the
+    # browser talked to the compose network.
 
   nginx:
-    profiles: ["disabled"]  # Excluded in CI
+    # RD16: previously `profiles: ["disabled"]`, which left the Playwright job's BASE_URL
+    # (http://localhost) with NO listener — the documented KNOWN RESIDUAL.  Enabled: it is the
+    # same :80 entry point the local e2e lab proves (stdlib proxy twin), gated on the backend
+    # healthcheck, ports inherited from the base compose file.

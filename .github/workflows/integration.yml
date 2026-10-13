@@ -59,11 +59,13 @@ jobs:
       - name: Wait for the API to answer
         # F4 (H10): the old probe curled http://localhost/api/v1/health from the runner.  The
         # ENDPOINT was right (health.py, no-auth, {"status":"ok"}), the LISTENER was not: this job
-        # starts the stack with the ci override, which excludes nginx (`profiles: ["disabled"]`) and
-        # publishes no backend port — nothing ever listened on :80, so the probe could not succeed.
-        # Probe where the API actually serves: inside the backend container (uvicorn :8000; curl
-        # ships in the image).  Retry loop kept (5 s × 60); exec noise while the container is still
-        # starting is suppressed — the failure path dumps the stack logs.
+        # starts the stack with the ci override, which used to exclude nginx (`profiles:
+        # ["disabled"]`) and published no backend port — nothing ever listened on :80, so a
+        # runner-side probe could not succeed.  (RD16 re-enabled nginx; this exec probe remains
+        # the most precise check.)  Probe where the API actually serves: inside the backend
+        # container (uvicorn :8000; curl ships in the image).  Retry loop kept (5 s × 60); exec
+        # noise while the container is still starting is suppressed — the failure path dumps the
+        # stack logs.
         env:
           COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
         run: |
@@ -77,9 +79,10 @@ jobs:
           ${COMPOSE} logs --tail=200
           exit 1
       - name: Playwright
-        # KNOWN RESIDUAL (recorded, not fixed in this lane — out of F4's named scope): with nginx
-        # excluded by the ci override and no `ports:` published anywhere, this runner-side
-        # BASE_URL cannot reach the stack yet; the RD10-e2eci receipt records it as a REQUESTS item.
+        # FIXED (RD16 bug-sweep follow-up): the ci override no longer excludes nginx, so the
+        # runner-side BASE_URL=http://localhost reaches the stack through the :80 mux (nginx ->
+        # frontend + /api,/ws -> backend) — the same topology the local e2e lab proves.  Still
+        # UNRUN on this host (no Docker); structural validation in build/RD16-ci-e2e/.
         working-directory: e2e
         env:
           BASE_URL: http://localhost
