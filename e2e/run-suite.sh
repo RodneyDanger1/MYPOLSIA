@@ -24,6 +24,17 @@ if [ $# -lt 2 ]; then
 fi
 LABEL="$1"; BASE="$2"; shift 2
 
+# The teardown sweep (playwright.config.ts -> _helpers.ts -> _sweep-fixtures.py) inherits THIS
+# environment, and it refuses (by design) when it cannot confirm the tagged memory rows' chroma
+# documents — deleting the sqlite half alone would strand ghost search hits. Measured during the
+# V2 endgame: with CHROMA_PERSIST_DIR unset, a fully green 20/20 suite still exited 1 at teardown.
+# Point it at the same store the backend serves from — and restart the backend between runs: the
+# backend caches its chroma collection per process (the W4 receipt's R-W4-2 discloses why).
+if [ -z "${CHROMA_PERSIST_DIR:-}" ]; then
+  echo "WARNING: CHROMA_PERSIST_DIR is unset — the suite-end sweep defaults to /app/data/chroma and may" >&2
+  echo "         refuse the tagged memory rows, making the run exit nonzero after a green suite." >&2
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${E2E_RUN_LOG_DIR:-$PWD}"
 mkdir -p "$LOG_DIR"
