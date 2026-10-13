@@ -40,8 +40,13 @@ lint-frontend:
 
 lint: lint-backend lint-frontend
 
+# E2E_SQLITE (fix-4 §5): the fixture-seeding specs need the SQLite lab DB.  It is passed through
+# ONLY when set, via the `env` command — never as an expanded `E2E_SQLITE=...` assignment prefix
+# (a shell assignment built by expansion is not parsed as one) and never as the `:-` literal form,
+# which exports an EMPTY string on unset and defeats the specs' "unset -> repo-relative default
+# (<repo>/.e2e-lab.sqlite)" law, turning a runnable lab into named skips.
 e2e:
-	cd e2e && npx playwright test
+	cd e2e && $${E2E_SQLITE:+env E2E_SQLITE="$$E2E_SQLITE"} npx playwright test
 
 reset-db:
 	docker-compose exec backend alembic downgrade base
@@ -65,4 +70,4 @@ dev-frontend:
 	cd frontend && NEXT_PUBLIC_API_KEY="$${NEXT_PUBLIC_API_KEY:-dev-key}" NEXT_PUBLIC_API_URL="$${NEXT_PUBLIC_API_URL:-http://localhost}" npm run build && npm start
 
 dev-e2e:
-	cd e2e && BASE_URL="$${BASE_URL:-http://localhost}" npx playwright test
+	cd e2e && BASE_URL="$${BASE_URL:-http://localhost}" $${E2E_SQLITE:+env E2E_SQLITE="$$E2E_SQLITE"} npx playwright test

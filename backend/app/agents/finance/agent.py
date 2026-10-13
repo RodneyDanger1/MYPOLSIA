@@ -26,12 +26,18 @@ from typing import Any
 
 from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
-from app.agents.policy_firewall import ActionClass
+from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import request_side_effect, side_effect_receipt
 from app.config import settings
-from app.core.errors import E_VALIDATION
+from app.core.errors import E_VALIDATION, PolsiaError
 from app.core.timeutil import today_utc
 from app.schemas.agent_outputs import FinanceOutput
+
+#: The task-metadata key carrying the failed-payment records this run may act on (see
+#: `failed_payments_extra_context`).  The producer is the worker-side attach: the morning cycle
+#: fills it from `finance_service.recent_failed_payments` — the records the Stripe webhook
+#: persisted with their extracted `payment_intent_id` (T14/D21).
+FAILED_PAYMENTS_KEY = "failed_payments"
 
 #: The seven `revenue_snapshots` money columns this agent may measure.  A field that is `None`
 #: here means "not measured" and must be omitted from the row, never zero-filled — measured 0
@@ -45,6 +51,71 @@ _SNAPSHOT_MONEY_FIELDS = (
     "total_revenue_month_cents",
     "stripe_balance_cents",
 )
+
+
+def failed_payments_extra_context(task: dict[str, Any]) -> str | None:
+    """The failed-payment records attached to this task, quarantined for the prompt — or a refusal.
+
+    WHY (T14/D21, fix-5 §8): the refund path needs a real Stripe PaymentIntent id (`pi_…`), and
+    before this the finance agent had NO way to receive one — the webhook persisted the delivery
+    (with the id inside `raw_payload`) and nothing read it into the agent's context, so a model
+    could only ever invent an id and the adapter's fail-closed guard refused it.  The producer is
+    the task's own `metadata` (the frozen `tasks.metadata` JSON column, carried to the agent by
+    the worker): the morning cycle attaches the records `finance_service.recent_failed_payments`
+    returns.
+
+        metadata = {"failed_payments": [{"event_id": "evt_…", "event_type": "charge.failed",
+                                         "payment_intent_id": "pi_…" | None,
+                                         "amount_cents": 1500, "currency": "usd", ...}]}
+
+    The records are quarantined with the REAL `wrap_untrusted(source="stripe", ...)`, so they
+    ride the VOLATILE `extra_context` layer as DATA: an instruction-injection string smuggled
+    into a Stripe object (a description, a customer name) is scanned by the assembler and taints
+    the run instead of steering it.
+
+    Absent material: `None` — the run degrades to exactly its previous behaviour and never
+    invents a payment.  A PRESENT-but-unusable attachment (not a list of objects) is a NAMED
+    refusal raised BEFORE any model call: this agent cannot query Stripe (no tools, no DB
+    session), so a malformed attachment is a producer bug, not something to guess around.
+    An EMPTY list is not an attachment at all (`None`): "no failed payments" needs no context.
+    """
+    metadata = task.get("metadata")
+    if not isinstance(metadata, dict) or FAILED_PAYMENTS_KEY not in metadata:
+        return None
+    records = metadata.get(FAILED_PAYMENTS_KEY)
+    if records is None:
+        return None
+    if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
+        raise PolsiaError(
+            E_VALIDATION,
+            "task metadata.failed_payments is not a list of objects; the finance agent cannot "
+            "read a malformed attachment (it has no Stripe access to re-fetch it)",
+            how_to_fix=(
+                "attach the shape finance_service.recent_failed_payments returns: a list of "
+                "{event_id, event_type, payment_intent_id, amount_cents, currency, ...} objects"
+            ),
+            context={"type": type(records).__name__},
+        )
+    if not records:
+        return None
+    lines: list[str] = []
+    for index, record in enumerate(records):
+        intent = record.get("payment_intent_id")
+        intent_text = (
+            str(intent).strip()
+            if isinstance(intent, str) and intent.strip()
+            else "absent (this delivery carried no pi_… id — no refund can be requested for it)"
+        )
+        lines.append(
+            f"- failed payment #{index}: event_id={record.get('event_id') or 'unknown'}, "
+            f"event_type={record.get('event_type') or 'unknown'}, "
+            f"payment_intent_id={intent_text}, "
+            f"amount_cents={record.get('amount_cents') if record.get('amount_cents') is not None else 'unmeasured'}, "
+            f"currency={record.get('currency') or 'unmeasured'}, "
+            f"customer_id={record.get('customer_id') or 'unmeasured'}"
+        )
+    text = "FAILED STRIPE PAYMENTS (persisted by the webhook; refunds need the pi_… id):\n" + "\n".join(lines)
+    return wrap_untrusted(source="stripe", content_id=f"failed_payments:{len(lines)}", text=text)
 
 ROLE = """You are the Finance agent of an autonomous company. You own the numbers: revenue, spend
 and the alerts a founder must see.
@@ -65,11 +136,14 @@ Rules:
 - `expenses` entries are single real costs with category, vendor and amount in cents; never roll up
   guessed infrastructure spend.
 - `failed_payments` lists the failed charges you actually saw, each with the charge's amount and
-  its `payment_intent_id` (the Stripe PaymentIntent id, `pi_…`).  Keep `event_id` when you know it
-  as PROVENANCE only: a refund is created against a PaymentIntent, never against an event, so a
-  request whose `payment_intent_id` is missing (or is not a `pi_…` id) is refused by name and no
-  refund is sent.  Set `refund_requested=true` only for a charge you saw fail and want refunded —
-  it is your PROPOSAL; the policy firewall still decides whether the refund is sent.
+  its `payment_intent_id` (the Stripe PaymentIntent id, `pi_…`).  When this task carries a
+  "FAILED STRIPE PAYMENTS" block, those records are the failed charges the platform already
+  persisted — use THEIR `payment_intent_id` values verbatim; never re-type, guess or "complete"
+  one.  Keep `event_id` when you know it as PROVENANCE only: a refund is created against a
+  PaymentIntent, never against an event, so a request whose `payment_intent_id` is missing (or is
+  not a `pi_…` id) is refused by name and no refund is sent.  Set `refund_requested=true` only for
+  a charge you saw fail and want refunded — it is your PROPOSAL; the policy firewall still decides
+  whether the refund is sent.
 - `alerts` are the things a human must act on today: a failed charge above the usual size, a churn
   spike, a balance that cannot cover the payroll window. If nothing is wrong, return an empty list
   rather than inventing concern.
@@ -86,7 +160,13 @@ class FinanceAgent(BasePolsiaAgent):
     role_prompt = ROLE
 
     def run(self, task: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        payload, assembled = self.collect_structured(task, context)
+        # T14/D21: the failed-payment records attached to this task ride the VOLATILE
+        # `extra_context` layer (quarantined as DATA), which is what lets the model emit a REAL
+        # `pi_…` id below instead of an invented one.  No attachment -> None -> behaviour
+        # unchanged.
+        payload, assembled = self.collect_structured(
+            task, context, extra_context=failed_payments_extra_context(task or {})
+        )
         payload["agent_type"] = self.agent_type
         receipts: list[dict[str, Any]] = []
 
@@ -209,4 +289,4 @@ class FinanceAgent(BasePolsiaAgent):
         return self.attach_run_meta(payload, assembled=assembled)
 
 
-__all__ = ["ROLE", "FinanceAgent"]
+__all__ = ["FAILED_PAYMENTS_KEY", "ROLE", "FinanceAgent", "failed_payments_extra_context"]

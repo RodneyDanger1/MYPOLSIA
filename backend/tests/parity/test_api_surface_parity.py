@@ -46,6 +46,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ads/campaigns", ("GET",)),
     ("/api/v1/agents/status", ("GET",)),
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
+    ("/api/v1/approvals", ("POST",)),                            # T02/D1: the owner's approval-token mint
     ("/api/v1/config", ("GET",)),
     ("/api/v1/config", ("PUT",)),
     ("/api/v1/config/deepseek-key", ("DELETE",)),               # DeepSeek key lifecycle (masked; owner-managed)
@@ -73,6 +74,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/tasks", ("GET",)),
     ("/api/v1/tasks", ("POST",)),
     ("/api/v1/tasks/{task_id}", ("GET",)),
+    ("/api/v1/tasks/{task_id}/status", ("PATCH",)),               # T12/D20 (build/decisions/DECISIONS.md): the typed status write TaskStatusUpdate documents — OLD surface had no status route; NEW pin added deliberately with the route
     ("/ws/activity", None),                                    # websocket: methods is None
 ]
 

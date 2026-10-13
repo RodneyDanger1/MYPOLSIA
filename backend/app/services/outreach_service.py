@@ -4,6 +4,13 @@
 the `IntegrityError` escape as a 500.  A duplicate import is a *validation* answer
 (`E_VALIDATION` with the address in the context), not an internal error — the
 caller can act on it.  Reads are newest-first on `(created_at DESC, id DESC)`.
+
+T13/D20 removals: `list_campaigns` and `list_email_logs` were labelled zero-callers (fix-5 §4).
+`list_campaigns` read `email_campaigns`, which NO surface serves — the wired namesake is
+`ads_service.list_campaigns` behind `GET /api/v1/ads`, and keeping a same-named second reader
+for a different table is exactly the confusion the removal ends.  `list_email_logs` was a
+send-log read with no route/UI; the shipped email write path (agent -> worker ->
+`record_sent_emails`) stays, and the send log remains readable through the rows it writes.
 """
 from __future__ import annotations
 
@@ -19,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import utcnow
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import dialect_name
-from app.models.outreach import EmailCampaign, EmailLog, Prospect
+from app.models.outreach import EmailLog, Prospect
 from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
 
 logger = logging.getLogger(__name__)
@@ -62,41 +69,6 @@ async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospe
     except Exception as exc:  # noqa: BLE001 - translated below
         raise db_refusal("prospect insert", exc) from exc
     return prospect
-
-
-async def list_campaigns(db: AsyncSession, limit: int = 50) -> list[EmailCampaign]:
-    """Newest-first `email_campaigns` read.
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
-    `tests/unit/test_r27_social_outreach_sweep.py`.  NOTE the wired namesake: what
-    `GET /api/v1/ads` serves is `ads_service.list_campaigns` (ad campaigns) — this function
-    reads `email_campaigns` and no code path calls it.  Intended purpose: an outreach-campaign
-    list read for a campaigns page.  Removal vs adoption is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    return await fetch_scalars(
-        db,
-        select(EmailCampaign).order_by(EmailCampaign.id.desc()).limit(limit),
-        what="email campaigns",
-    )
-
-
-async def list_email_logs(db: AsyncSession, limit: int = 100) -> list[EmailLog]:
-    """Newest-first send-log read.
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
-    `tests/unit/test_r27_social_outreach_sweep.py`; the shipped email path is the agent ->
-    worker -> `record_sent_emails` chain and no route serves the send log today.  Intended
-    purpose: the outreach send-log read.  Removal vs adoption is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    return await fetch_scalars(
-        db,
-        select(EmailLog).order_by(EmailLog.id.desc()).limit(limit),
-        what="email logs",
-    )
 
 
 async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Prospect, bool]:
@@ -253,8 +225,6 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
 
 __all__ = [
     "create_prospect",
-    "list_campaigns",
-    "list_email_logs",
     "list_prospects",
     "record_sent_emails",
 ]

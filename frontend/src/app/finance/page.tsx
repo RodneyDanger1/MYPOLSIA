@@ -2,41 +2,15 @@
 import { useEffect, useState } from "react";
 
 import { MetricsCard } from "@/components/dashboard/MetricsCard";
-import { api, type FinanceSummary } from "@/lib/api";
+import { api, type AiSpend, type FinanceSummary } from "@/lib/api";
 
 /**
- * `ai_spend` — the additive block R24 wired into GET /finance/summary and the frontend never consumed.
- * Declared HERE rather than in `lib/api.ts` (another seat owns that file this wave); field names are
- * the schema's own (`backend/app/schemas/finance.py`), not the finding card's shorthand: the unmeasured
+ * `ai_spend` — the additive block R24 wired into GET /finance/summary. Its types now live in
+ * `lib/api.ts` (`AiSpend` / `FinanceSummary.ai_spend`), adopted there field-for-field from the
+ * backend schema (`backend/app/schemas/finance.py::AiSpendSummary`; fix-4 §2 / T15a): the unmeasured
  * marker is `unit_economics.unmeasured_spend_agents`, and `spent`/`remaining` are `float | None` — so
  * the card's suggested `spent.toFixed(2)` would throw on an unmeasured day.
  */
-type AiSpend = {
-  limit: number;
-  spent: number | null;
-  remaining: number | null;
-  burn_rate: {
-    spent_usd: number;
-    day_limit_usd: number;
-    elapsed_fraction: number;
-    projected_day_total_usd: number | null;
-    status: string;
-  } | null;
-  unit_economics: {
-    total_spend_usd: number;
-    total_completed: number;
-    cost_per_completed_task_usd: number | null;
-    per_agent: Record<
-      string,
-      { spend_usd: number; completed: number; cost_per_completed_task_usd: number | null }
-    >;
-    note: string;
-    unmeasured_spend_agents: string[];
-  } | null;
-};
-
-/** The summary as the page needs it: the seven declared fields plus the additive block. */
-type FinanceSummaryWithAiSpend = FinanceSummary & { ai_spend?: AiSpend | null };
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -93,13 +67,13 @@ function aiSpendNote(spend: AiSpend | null | undefined): string | undefined {
  */
 
 export default function FinancePage() {
-  const [data, setData] = useState<FinanceSummaryWithAiSpend | null>(null);
+  const [data, setData] = useState<FinanceSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .get<FinanceSummaryWithAiSpend>("/finance/summary")
+      .get<FinanceSummary>("/finance/summary")
       .then((rows) => {
         if (!cancelled) setData(rows);
       })

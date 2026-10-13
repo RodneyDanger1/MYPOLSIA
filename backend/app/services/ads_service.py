@@ -141,11 +141,13 @@ async def _find_existing_campaign(
     The natural key is the provider's own id — rd14's discipline ("dedupe by provider ids where
     they exist"): `(platform, external_id)` when the payload reported one.  A campaign the
     provider gave no id for is keyed on `(platform, name)` — the pair `create_campaign` stores
-    trimmed, so the read matches exactly what the writer wrote.  `ad_campaigns` carries NO unique
-    index (measured: `PRAGMA index_list(ad_campaigns)` is empty on the migration head), so this
-    SELECT-first read IS the guard — there is no constraint to catch.  Several rows for one key
-    (possible: nothing forbids it) resolve to the oldest — a re-run reuses one row rather than
-    failing on a database that never promised uniqueness.
+    trimmed, so the read matches exactly what the writer wrote.  Since migration 0006 the
+    provider-id half is ALSO a real constraint (`uq_ad_campaigns_platform_external_id`, partial
+    unique), so this SELECT-first read is the fast path and the constraint is the backstop the
+    race rescue in `record_ads_run` re-resolves against; the `(platform, name)` fallback remains
+    a code-level dedupe (a unique index on a human-edited display name would refuse a rename).
+    Several rows for one key (possible for the name-keyed fallback) resolve to the oldest — a
+    re-run reuses one row rather than failing on a database that never promised uniqueness.
     """
     stmt = select(AdCampaign)
     if external_id is not None:
@@ -312,6 +314,25 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
                     created = await create_campaign(db, platform, name, **values)
             except PolsiaError as exc:
                 if exc.code == E_VALIDATION:
+                    # T19 race rescue — the same savepoint + re-resolve shape the metrics path
+                    # below ships (441-460).  With migration 0006's partial unique
+                    # `uq_ad_campaigns_platform_external_id` in place, a concurrent ads run can win
+                    # this (platform, external_id) key between the find-or-create read above and
+                    # this insert.  `create_campaign` converts the violated constraint into
+                    # E_VALIDATION (84-94), so the rescue keys on that named refusal and re-resolves
+                    # with the SAME reader the fast path used: the fast path missed a moment ago,
+                    # so a row now present can only be the raced writer's — a duplicate, not a
+                    # failure.  A real validation refusal (bad status, no race) re-resolves nothing
+                    # and stays an item skip.
+                    raced = (
+                        await _find_existing_campaign(db, platform, name, external_id)
+                        if external_id is not None
+                        else None
+                    )
+                    if raced is not None and external_id is not None:
+                        report["duplicates_skipped"] += 1
+                        _register_campaign(by_external, ambiguous_external, external_id, raced)
+                        continue
                     skip(
                         "campaign", index, exc.code, exc.message,
                         platform=platform, name=name,

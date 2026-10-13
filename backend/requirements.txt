@@ -36,3 +36,10 @@ python-dotenv==1.0.1
 aiofiles==24.1.0
 tenacity==9.0.0
 structlog==24.4.0
+
+# Timezone data
+# The IANA DB for zoneinfo. Slim/minimal container images ship NO system zoneinfo, and every
+# company-local zone computation (the L1-01 timezone validator, daily-cycle hours, day boundaries
+# for the ai_spend ledger) goes through `zoneinfo.ZoneInfo` — without this pin a container build
+# fails at the first ZoneInfo(...) lookup. Version matches the dev venv (measured 2026-10-13).
+tzdata==2026.5

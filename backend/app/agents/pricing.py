@@ -23,6 +23,19 @@ HONESTY RULES (repo-wide):
   * the estimate is emitted under a DISTINCT key (`cost_estimate_usd`, never
     `total_cost_usd`) so no consumer can mistake it for a provider bill;
   * `PRICING_VERSION` pins the table so every persisted estimate is attributable.
+
+RESIDUAL — aborted-attempt tokens are NOT estimated (L3-05, honest, not silently fixed):
+this estimator prices ONE completion body: the one a SUCCESSFUL attempt returned.  Tokens a
+provider already billed for an attempt we aborted (a timeout, a killed CLI, an envelope-shaped
+failure the ladder declined to retry) never reach a usage call, and earlier retry attempts'
+envelopes are not summed either — `base_agent.usage_metadata` prices the LAST, successful
+attempt's `usage` block.  So `agent_runs.cost_usd` (when `cost_source="token_estimate"`) is a
+LOWER BOUND on the provider's real charge for a run whose ladder had to retry or whose
+predecessor attempt died: the estimate UNDER-counts exactly by the aborted attempts' tokens.
+Nothing here fabricates a number for them — an unmeasured attempt must not be invented into the
+row — and the under-count is bounded by `settings.agent_max_retries` aborted attempts per run.
+A future split (persisting each attempt's envelope) is what would close it; until then the
+residual is documented rather than hidden.
 """
 from __future__ import annotations
 

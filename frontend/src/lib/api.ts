@@ -21,14 +21,27 @@ export class ApiError extends Error {
   readonly code: string;
   readonly howToFix: string;
   readonly body: unknown;
+  /** The server's correlation id for THIS call — the `X-Request-ID` response header `main.py`'s
+   *  middleware sets on every response and the CORS layer exposes cross-origin. Absent for
+   *  transport-level failures that never reached the server (and for responses that carry none).
+   *  `error.tsx` shows it so the user does not have to hunt for the id. */
+  readonly requestId?: string;
 
-  constructor(status: number, message: string, code = "E_HTTP", howToFix = "", body?: unknown) {
+  constructor(
+    status: number,
+    message: string,
+    code = "E_HTTP",
+    howToFix = "",
+    body?: unknown,
+    requestId?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.howToFix = howToFix;
     this.body = body;
+    this.requestId = requestId;
   }
 
   /** What the UI should show: the code and, when the server supplied one, the fix hint. */
@@ -109,6 +122,9 @@ async function apiFetch<T>(
       });
 
       if (!res.ok) {
+        // The server's correlation id for THIS call (fix-5 §1 / T15c): read it BEFORE consuming the
+        // body, so even a bodiless refusal can carry it onto the error the UI renders.
+        const requestId = res.headers.get("X-Request-ID") ?? undefined;
         const text = await res.text().catch(() => res.statusText);
         let parsed: unknown;
         try {
@@ -118,9 +134,23 @@ async function apiFetch<T>(
         }
         const refusal = refusalFrom(parsed);
         if (refusal) {
-          throw new ApiError(res.status, refusal.message, refusal.code, refusal.how_to_fix ?? "", parsed);
+          throw new ApiError(
+            res.status,
+            refusal.message,
+            refusal.code,
+            refusal.how_to_fix ?? "",
+            parsed,
+            requestId,
+          );
         }
-        const err = new ApiError(res.status, text || res.statusText, `E_HTTP_${res.status}`);
+        const err = new ApiError(
+          res.status,
+          text || res.statusText,
+          `E_HTTP_${res.status}`,
+          "",
+          undefined,
+          requestId,
+        );
         // A 5xx on a read is worth one more try; a 4xx never is.
         if (res.status >= 500 && retryable && attempt < RETRY_ATTEMPTS) {
           lastError = err;
@@ -230,6 +260,50 @@ export type AgentStatus = {
   tasks_total: number;
 };
 
+/** One agent's row inside `ai_spend.unit_economics.per_agent` — the backend's `AgentEconomicsView`
+ *  (`app/schemas/finance.py`). `cost_per_completed_task_usd` is `float | None` server-side: null is
+ *  "no completion was measured", never `$0.00`. */
+export type AgentEconomics = {
+  spend_usd: number;
+  completed: number;
+  cost_per_completed_task_usd: number | null;
+};
+
+/** `ai_spend.burn_rate` — the literal output of the backend's `accounting.burn_rate`
+ *  (`AiBurnRateView`). `projected_day_total_usd` is null only in the first instant of the local
+ *  day, where the function refuses to project from a zero-length window. */
+export type AiBurnRate = {
+  spent_usd: number;
+  day_limit_usd: number;
+  elapsed_fraction: number;
+  projected_day_total_usd: number | null;
+  status: string;
+};
+
+/** `ai_spend.unit_economics` (`UnitEconomicsView`): totals over the same company-local day, plus
+ *  the additive `unmeasured_spend_agents` marker — an agent whose day spend was NOT measurable is
+ *  NAMED here rather than priced at a fabricated per-task cost. */
+export type AiUnitEconomics = {
+  total_spend_usd: number;
+  total_completed: number;
+  cost_per_completed_task_usd: number | null;
+  per_agent: Record<string, AgentEconomics>;
+  note: string;
+  unmeasured_spend_agents: string[];
+};
+
+/** `ai_spend` — the additive AI-spend day view of `GET /finance/summary` (R24; backend
+ *  `AiSpendSummary`). `limit` is the day cap the dispatch gate enforces; `spent`/`remaining` are
+ *  `float | None` — null is "the day could not be measured" (an absent day is a measured 0.0,
+ *  never the other way round), so a renderer must branch on null before formatting. */
+export type AiSpend = {
+  limit: number;
+  spent: number | null;
+  remaining: number | null;
+  burn_rate: AiBurnRate | null;
+  unit_economics: AiUnitEconomics | null;
+};
+
 /** GET /finance/summary. Money fields are `number | null`: null is "not measured" (no
  *  snapshot yet, nothing to aggregate) and renders as an em dash — never as 0. */
 export type FinanceSummary = {
@@ -240,4 +314,8 @@ export type FinanceSummary = {
   total_expenses_month_cents: number | null;
   stripe_balance_cents: number | null;
   last_snapshot_date: string | null;
+  /** R24's additive block, adopted here from the page's local declaration (fix-4 §2 / T15a).
+   *  Optional AND nullable for the same reason as the money fields above: an absent block is
+   *  "not measured" and must render as the em dash, never as a fabricated `$0.00`. */
+  ai_spend?: AiSpend | null;
 };

@@ -7,8 +7,10 @@ What this file pins:
   company-local day (the T2 morning pattern); a tick outside the window is a named skip.
 * L3-06 — both cycle call sites DECLARE their cycle in the task metadata.
 * L4-09 — the manual-trigger path funnels through `_execute_agent_task`, where the D3 budget
-  gate now sits at the choke point: an over-cap day stops the run (no agent_runs row, terminal
-  `failed` row carrying the measured reason, named skip), a fresh day still runs.
+  gate now sits at the choke point: an over-cap SCHEDULED-style dispatch stops there (no
+  agent_runs row, terminal `rejected` row carrying the measured reason — W1/T03's D2 status —
+  named skip), a fresh day still runs, and the owner's `source='manual'` trigger runs past the
+  cap with a NAMED `manual_override` record (W1/T04's D3 flip).
 * L2-03 — `attempt=task.attempts` is passed to the run-ledger writer when the service signature
   accepts the frozen keyword, and the call site degrades safely when it does not.
 * L3-04 — a DeepSeek token estimate reaches `agent_runs.cost_usd` via the real writer, is summed
@@ -165,26 +167,77 @@ def test_the_morning_cycle_call_site_declares_its_cycle(queue_db, monkeypatch):
     assert orchestrator_calls[0]["task"]["metadata"] == {"cycle": "morning"}
 
 
-# ------------------------------------------------------------------ L4-09
+# ------------------------------------------------------------------ L4-09 (+ the W1 T03/T04 flip)
+#
+# DELIBERATE CONTRACT CHANGE (W1 T03 + T04, DECISIONS.md D2/D3): the gate still refuses every
+# non-manual over-cap dispatch — but the row now lands `rejected` ("refused before execution —
+# nothing charged", D2) instead of `failed`, and the OWNER's manual trigger (D3: the row the
+# trigger route writes, `source='manual'`) is no longer vetoed: it runs with a NAMED
+# `manual_override` record.  Old pins, recorded here as old->new:
+#   * `row["status"] == "failed"`                          -> `"rejected"` (+ outcome["task_status"])
+#   * the manual leg did not exist in this file            -> `test_a_manual_over_cap_run_runs_
+#     with_the_override_recorded` below
+# The full manual-vs-scheduled battery lives in tests/unit/celery/test_t04_manual_override.py.
 
 
-def test_a_manual_over_cap_run_is_refused_at_the_choke_point(queue_db, monkeypatch):
-    """The API trigger funnels into `_execute_agent_task`; the D3 gate must stop it there."""
+def test_an_over_cap_dispatch_is_refused_at_the_choke_point(queue_db, monkeypatch):
+    """The API trigger funnels into `_execute_agent_task`; the D3 gate must stop it there.
+
+    The row this test creates is NOT `source='manual'` (the queue fixture writes `'test'`), so it
+    is a scheduled-style dispatch: refused, `rejected`, nothing charged.
+    """
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
-    task_id = queue_db.create_task(title="manual over-cap run", agent_type="finance")
+    task_id = queue_db.create_task(title="over-cap run", agent_type="finance")
     policy = budget_policy_from_settings()
     _seed_spend(queue_db, "social_media", str(policy.day_limit_usd))  # the day is full
 
     outcome = queue_db.run(_execute_agent_task(task_id))
 
     assert outcome["status"] == "skipped"
+    assert outcome["task_status"] == "rejected"
     assert "insufficient budget" in outcome["reason"]
     assert queue_db.count("agent_runs", "agent_type = ?", ("finance",)) == 0, "no ledger row"
     row = queue_db.row(task_id)
-    assert row["status"] == "failed"
+    assert row["status"] == "rejected", "refused before execution, never charged (D2)"
     assert "budget:" in (row["error_message"] or ""), "the row carries the measured reason"
     assert row["claimed_by"] is None, "the claim is released with the terminal state"
+
+
+def _create_manual_task(queue_db, *, title: str) -> int:
+    """`QueueDB.create_task` pins `source="test"`; D3's override keys on `source='manual'`."""
+    from app.services.task_service import create_task
+
+    async def _make() -> int:
+        async with queue_db.factory() as db:
+            task = await create_task(db, title=title, agent_type="finance", source="manual")
+            await db.commit()
+            return int(task.id)
+
+    return queue_db.run(_make())
+
+
+def test_a_manual_over_cap_run_runs_with_the_override_recorded(
+    queue_db, monkeypatch, install_run_spy
+):
+    """D3: the owner's manual trigger is not vetoed by the cap — and the bypass is NAMED."""
+    from celery_app.tasks.agent_tasks import _execute_agent_task
+
+    install_run_spy(delegate=False)
+    policy = budget_policy_from_settings()
+    _seed_spend(queue_db, "social_media", str(policy.day_limit_usd))  # the day is full
+    task_id = _create_manual_task(queue_db, title="manual over-cap run")
+
+    outcome = queue_db.run(_execute_agent_task(task_id))
+
+    assert outcome["status"] == "completed", "D3: the payer's Run Now is not the cap's subject"
+    assert outcome["manual_override"] is True
+    assert "past the daily cap" in outcome["manual_override_reason"]
+    assert queue_db.row(task_id)["status"] == "completed"
+    activities = queue_db.query(
+        "SELECT action FROM activity_log WHERE action = 'budget_manual_override'"
+    )
+    assert len(activities) == 1, "the override is visible in the ledger"
 
 
 def test_a_manual_run_on_a_fresh_day_still_runs(queue_db, monkeypatch, install_run_spy):

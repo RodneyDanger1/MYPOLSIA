@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     db_pool_pre_ping: bool = True
     db_pool_recycle_seconds: int = 1800
     db_statement_timeout_ms: int = 30_000
-    db_backlog_hours: int = 24
 
     # --- redis / celery ---
     redis_url: str = "redis://localhost:6379/0"
@@ -61,7 +60,6 @@ class Settings(BaseSettings):
     task_claim_lease_seconds: int = 900
     task_max_attempts: int = 3
     task_retry_backoff_seconds: int = 20
-    task_batch_size: int = 25
     activity_retention_days: int = 90
     activity_bulk_flush: int = 200
 
@@ -124,6 +122,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("POLSIA_KILL_SWITCH", "KILL_SWITCH"),
     )
 
+    # --- approvals (D1 / T02: owner-authed approval tokens; FROZEN interface) ---
+    # The HMAC secret behind `policy_firewall.issue_approval` / `verify_approval`: the approvals
+    # API issues a TTL-bounded token for a named action fingerprint, and the firewall verifies it
+    # with this secret.  The field name and its `str`/`""` shape are FROZEN by D1's interface —
+    # the approvals seat (T02) consumes `settings.approval_secret` directly.
+    approval_secret: str = ""
+
     # --- planner ---
     planner_max_nodes: int = 12
     planner_context_token_budget: int = 12_000
@@ -134,15 +139,6 @@ class Settings(BaseSettings):
     # --- stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
-    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
-    # no read of `stripe_publishable_key` in app/, celery_app/, scripts/, tests/, frontend/, compose
-    # or the Makefile; every other hit is this declaration, its `.env.example` lines or a README
-    # advertisement).  Intended for a CLIENT-side Stripe flow (Stripe.js/Checkout — a publishable
-    # key is, by design, the half that ships to the browser); none exists.  The consumed half of
-    # this section is `stripe_secret_key` (app/agents/integrations.py:166) and
-    # `stripe_webhook_secret` (app/api/v1/finance.py:190).  Kept, not deleted — keep-vs-remove is
-    # an owner decision (polsia-work/build/R23-labels REQUESTS).
-    stripe_publishable_key: str = ""
 
     # --- integrations (optional) ---
     twitter_api_key: str = ""
@@ -151,26 +147,6 @@ class Settings(BaseSettings):
     twitter_access_secret: str = ""
     sendgrid_api_key: str = ""
     sendgrid_from_email: str = ""
-    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
-    # no read of `imap_host`/`imap_user`/`imap_password` in app/, celery_app/, scripts/, tests/,
-    # frontend/, compose or the Makefile; every remaining mention is a comment, docstring, label or
-    # README/docs prose).  Intended as the mail-POLL ingest for the support
-    # inbox: the R17 service names "a future IMAP poller" as an alternative submitter
-    # (app/services/support_inbox_service.py:8) while the inbox is in fact filled via
-    # `POST /api/v1/support/inbox`, and the customer_support agent fetches nothing itself
-    # ("no tools, no IMAP path" — app/agents/customer_support/agent.py:85).  Kept, not deleted —
-    # keep-vs-remove is an owner decision (polsia-work/build/R23-labels REQUESTS).
-    imap_host: str = ""
-    imap_user: str = ""
-    imap_password: str = ""
-    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
-    # no code path reads `tavily_api_key`; every other mention is a label/advertisement, the optional
-    # dependency rows (check_deps.py; `tavily-python` pinned in requirements.txt, never imported), or
-    # the docs/ACCEPTANCE_TESTING.md spec row for a future test).  Intended as the web-search
-    # provider for competitor research (README:95); that agent reaches the web through the CLI's own
-    # WebSearch/WebFetch tools instead (app/agents/competitor_research/agent.py:3-4).  Kept, not
-    # deleted — keep-vs-remove is an owner decision (polsia-work/build/R23-labels REQUESTS).
-    tavily_api_key: str = ""
     github_token: str = ""
     google_ads_developer_token: str = ""
     google_ads_client_id: str = ""
@@ -179,21 +155,13 @@ class Settings(BaseSettings):
     # name-checked by app/agents/integrations.py:182-187 — and that adapter refuses past the check
     # anyway: "needs an account-scoped API client that this deployment does not ship").  Intended
     # as the OAuth client secret of that not-yet-built client (Google's OAuth flow pairs it with
-    # the client id).  Kept, not deleted — keep-vs-remove is an owner decision
-    # (polsia-work/build/R23-labels REQUESTS).
+    # the client id).  KEPT by the 2026-10-13 owner decision (D14) — our google_ads channel
+    # exists; the eight sibling dead settings were removed the same day.
     google_ads_client_secret: str = ""
     google_ads_refresh_token: str = ""
     google_ads_customer_id: str = ""
     meta_ads_access_token: str = ""
     meta_ads_account_id: str = ""
-    # advertised — not implemented in this repository; RESERVED — no consumer yet (R23 re-verified:
-    # nothing reads `render_api_key` — only this declaration, the `.env.example` block, the README
-    # advertisements and docs/ACCEPTANCE_TESTING.md mention it).  Intended for the
-    # advertised-but-never-built tenth "Deployment" agent (Render is a PaaS): `deployment` exists
-    # only as an UNREGISTERED schema — app/schemas/agent_outputs.py:40-44/432-465 — and
-    # `GET /agents/status` asserts nine agents.  Kept, not deleted — keep-vs-remove is an owner
-    # decision (polsia-work/build/R23-labels REQUESTS).
-    render_api_key: str = ""
 
     # --- deepseek (the agent runtime's model provider) ---
     # Read through app.services.secret_store: a key entered in the dashboard is stored

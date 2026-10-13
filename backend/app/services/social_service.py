@@ -1,14 +1,20 @@
-"""Social posts/engagements.
+"""Social posts.
 
 Index-friendly: newest-first with the `(created_at DESC, id DESC)` tie-break, so a
 post inserted in the same second as another cannot reorder the feed and the sort is
-served by an index on that pair (REQUESTS #3).  Failure paths are named refusals:
-a missing post is `E_NOT_FOUND`, malformed input `E_VALIDATION`, a failed read
-`E_DB` — never a `None`/`[]` that reads like success.
+served by an index on that pair (REQUESTS #3).  Failure paths are named refusals: a
+failed read is `E_DB` — never a `None`/`[]` that reads like success.
+
+T13/D20 removals: `create_post`, `mark_published` and `list_engagements` were labelled
+zero-callers (fix-5 §4) with no consumer in the shipped surface — no compose route, no status
+PATCH, no `/social/engagements` read — and `mark_published` carried a recorded RISK if wired
+as-is (it accepts `tweet_id=None`, so it could write a `status='published'` row with no provider
+id into the very table the twitter/linkedin caps count, bypassing `record_published_posts`'
+"a row exists only where the provider returned an id" contract).  The shipped social write path
+is agent -> worker -> `record_published_posts`; that is what stays.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -19,13 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import utcnow
 from app.core.errors import (
     E_DB,
-    E_NOT_FOUND,
-    E_VALIDATION,
     ERROR_HINTS,
     PolsiaError,
 )
 from app.core.timeutil import dialect_name
-from app.models.social import SocialEngagement, SocialPost
+from app.models.social import SocialPost
 from app.services.query_helpers import fetch_scalar, fetch_scalars
 
 
@@ -46,103 +50,17 @@ async def list_posts(
     return await fetch_scalars(db, stmt, what="social posts")
 
 
-async def create_post(
-    db: AsyncSession,
-    content: str,
-    platform: str = "twitter",
-    status: str = "draft",
-    scheduled_for: datetime | None = None,
-    engagement: dict[str, Any] | None = None,
-) -> SocialPost:
-    """Insert a draft/scheduled post row (blank content is a named refusal).
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
-    `tests/unit/test_r27_social_outreach_sweep.py`; production's shipped social path is the
-    agent -> worker -> `record_published_posts` chain, and no route composes a post.  Intended
-    purpose: a service-layer writer for a manual compose/schedule flow.  Removal vs adoption is
-    an owner decision (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    if not content or not content.strip():
-        raise PolsiaError(
-            E_VALIDATION,
-            "post content must not be empty",
-            how_to_fix=ERROR_HINTS[E_VALIDATION],
-            context={"platform": platform},
-        )
-    post = SocialPost(
-        platform=platform,
-        content=content,
-        status=status,
-        scheduled_for=scheduled_for,
-        engagement=engagement,
-    )
-    db.add(post)
-    await db.flush()
-    return post
-
-
 async def get_post(db: AsyncSession, post_id: int) -> SocialPost | None:
     """One post by id, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
-    `db.execute`)."""
+    `db.execute`).
+
+    NOTE (T13): `mark_published` — its only production-shaped caller — was removed as a labelled
+    zero-caller (fix-5 §4), so this read is currently consumed by tests only.  It is kept (not in
+    the ticket's eight) because it is the natural single-row read a post-detail view would use,
+    and it is an L2-06 `E_DB`-discipline pin; the residual is recorded in the lane REQUESTS.
+    """
     return await fetch_scalar(
         db, select(SocialPost).where(SocialPost.id == post_id), what=f"social post {post_id}"
-    )
-
-
-async def mark_published(
-    db: AsyncSession,
-    post_id: int,
-    tweet_id: str | None = None,
-    published_at: datetime | None = None,
-) -> SocialPost:
-    """Mark a post published.  A post that does not exist is `E_NOT_FOUND`.
-
-    Returning `None` here (as the original did) makes "we published nothing"
-    indistinguishable from "the id was wrong" at the call site.
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
-    `tests/unit/test_r27_social_outreach_sweep.py`; the shipped writer for published rows is
-    `record_published_posts` (the worker path).  RISK IF WIRED AS-IS: this sets
-    `status='published'` while accepting `tweet_id=None`, so it can put a published row with
-    NO provider id into `social_posts` — the table `channel_service` counts the
-    twitter/linkedin caps from — bypassing `record_published_posts`' contract that "a row
-    exists only where the provider really returned an id".  Removal vs adoption (and, if
-    adopted, the id requirement) is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    post = await get_post(db, post_id)
-    if post is None:
-        raise PolsiaError(
-            E_NOT_FOUND,
-            f"social post {post_id} does not exist",
-            how_to_fix=ERROR_HINTS[E_NOT_FOUND],
-            context={"post_id": post_id},
-        )
-    post.status = "published"
-    post.tweet_id = tweet_id
-    post.published_at = published_at or utcnow()
-    await db.flush()
-    return post
-
-
-async def list_engagements(db: AsyncSession, limit: int = 100) -> list[SocialEngagement]:
-    """Newest-first mentions/replies read.
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only callers are
-    `tests/unit/test_r27_social_outreach_sweep.py`; no route serves social engagements (the
-    would-be wire model `SocialEngagementResponse` carries its own zero-consumer label, L1-05).
-    Intended purpose: the engagement feed read for a mentions/replies page.  Removal vs adoption
-    is an owner decision (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    return await fetch_scalars(
-        db,
-        select(SocialEngagement)
-        .order_by(SocialEngagement.created_at.desc(), SocialEngagement.id.desc())
-        .limit(limit),
-        what="social engagements",
     )
 
 
@@ -235,10 +153,7 @@ async def record_published_posts(db: AsyncSession, result: dict[str, Any]) -> di
 
 
 __all__ = [
-    "create_post",
     "get_post",
-    "list_engagements",
     "list_posts",
-    "mark_published",
     "record_published_posts",
 ]

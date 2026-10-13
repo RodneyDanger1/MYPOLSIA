@@ -115,7 +115,11 @@ async def create_task_deduped(
     existed — the caller must treat None as "already created", not as a failure.
 
     Validation matches `task_service.create_task` (unknown agent types raise ValueError)
-    so a malformed orchestrator plan is caught here rather than written.  The
+    so a malformed orchestrator plan is caught here rather than written.  The `status` value is
+    asserted against `task_service.VALID_TASK_STATUSES` the same way (fix-5 REQUESTS §7/T17): this
+    creator constructs `Task(...)` DIRECTLY, so before this assertion a caller could bypass the
+    service-level check and store an out-of-set — or unset (`None`) — status on SQLite, where the
+    `ck_tasks_status` CHECK is only carried by fresh `create_all` schemas.  The
     insert uses a SAVEPOINT: if a concurrent writer wins the unique index, this call
     re-checks and returns None instead of poisoning the caller's transaction.
 
@@ -125,11 +129,19 @@ async def create_task_deduped(
     (`metadata.inbox_item`, RD12 receipt §7 REQUEST 1) could not carry its item until R17.
     Additive: the default (None) writes exactly the previous row.
     """
-    from app.services.task_service import VALID_AGENT_TYPES
+    from app.services.task_service import VALID_AGENT_TYPES, VALID_TASK_STATUSES
 
     if agent_type not in VALID_AGENT_TYPES:
         raise ValueError(
             f"Unknown agent type: {agent_type!r}. Valid: {', '.join(VALID_AGENT_TYPES)}"
+        )
+    if status not in VALID_TASK_STATUSES:
+        # Refused the same way as an unknown agent type: this is a caller-side value error, not a
+        # named `E_VALIDATION` refusal — the service route converts ValueError into the agent-type
+        # refusal, and a status typo must not wear that code (task_service.create_task's note).
+        # Covers "unset" too: `None` is not in the set.
+        raise ValueError(
+            f"Unknown task status: {status!r}. Valid: {', '.join(VALID_TASK_STATUSES)}"
         )
 
     existing = await db.scalar(select(Task.id).where(Task.dedupe_key == dedupe_key).limit(1))

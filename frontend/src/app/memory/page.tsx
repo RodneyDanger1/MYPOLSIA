@@ -18,10 +18,21 @@ import { api } from "@/lib/api";
  * first search against a cold store can outlive the client default — measured >30 s on this host
  * (G-e2e-pages/RECEIPT.md §3; the lab proxy caps at 30 s on a cold Chroma load).
  */
-type Memory = {
+/**
+ * The search wire shape (`MemoryItem`, `backend/app/schemas/memory.py`): `category` and `title` are
+ * `str | None` server-side — the semantic path builds each hit from Chroma metadata with
+ * `meta.get("category")` / `meta.get("title")` (`memory_service`), so a hit without them really can
+ * serve null. The old `string`/`string` assumption here was the L1-02 residual (fix-1 §4): a null
+ * would have rendered an empty chip / an empty title line.
+ *
+ * Exported (type-only — erased at build time, invisible to Next's page-export validator) so this
+ * page's tests can pin the nullable contract at COMPILE time: a fixture declaring `category: null`
+ * stops compiling the moment the type drops the null.
+ */
+export type Memory = {
   id: number | string;
-  category: string;
-  title: string;
+  category: string | null;
+  title: string | null;
   content: string;
   created_at: string | null;
   /** The service's DEGRADATION MARKER, carried on the wire as `MemoryItem.fallback`: `"sql_like"`
@@ -129,8 +140,17 @@ export default function MemoryPage() {
         {results?.map((m) => (
           <div key={m.id} className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs bg-indigo-600/30 text-indigo-300 px-2 py-0.5 rounded">
-                {m.category}
+              {/* `category` is nullable on the wire: a null renders the gray "unknown" chip (the
+                  tasks/social pages' doctrine) instead of an empty chip pretending to be a
+                  category. */}
+              <span
+                className={
+                  m.category !== null
+                    ? "text-xs bg-indigo-600/30 text-indigo-300 px-2 py-0.5 rounded"
+                    : "text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded"
+                }
+              >
+                {m.category ?? "unknown"}
               </span>
               {/* The degradation marker, rendered where the results are: a keyword scan must not
                   look like a semantic match.  Same `role="status"` idiom as the warming notice. */}
@@ -146,7 +166,9 @@ export default function MemoryPage() {
                 {m.created_at ? new Date(m.created_at).toLocaleDateString() : "date unknown"}
               </span>
             </div>
-            <p className="text-white font-medium text-sm">{m.title}</p>
+            {/* A null title (the metadata may simply not carry one) is named "untitled", never an
+                empty line and never the literal word "null". */}
+            <p className="text-white font-medium text-sm">{m.title ?? "untitled"}</p>
             <p className="text-gray-400 text-sm mt-1 line-clamp-3">{m.content}</p>
           </div>
         ))}

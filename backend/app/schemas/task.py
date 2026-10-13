@@ -39,14 +39,18 @@ class TaskResponse(TimestampedORM):
 
 
 class TaskStatusUpdate(BaseModel):
-    """The would-be task status-change request body.
+    """The task status-change request body — now WIRED to `PATCH /api/v1/tasks/{task_id}/status`.
 
-    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — no status route exists:
-    `update_task_status` is called by the worker and agent paths, never over HTTP (the
-    L1-09/L2-02 fix asserts the value set at the SERVICE — it deliberately adds no route).
-    Adding a route that accepts this body vs deleting it is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2).
+    fix-5 (2026-10-13) labelled this model zero-consumer: `update_task_status` was called by the
+    worker and agent paths, never over HTTP (the L1-09/L2-02 fix asserts the value set at the
+    SERVICE).  D20 ruled the model is the contract: the route now takes it as its typed body, so
+    the write surface is documented and validated at the boundary instead of being an unwritten
+    promise.  The vocabulary is NOT re-declared here — the service's `VALID_TASK_STATUSES`
+    (`task_service.py`) stays the single authority, and a bad value is refused by name with the
+    accepted set in the context.
+
+    `result_summary`/`error_message` are assigned only when supplied (the service's rule), so a
+    body that omits them cannot wipe a previously recorded message.
     """
 
     status: str
@@ -72,21 +76,3 @@ class AgentTriggerRequest(BaseModel):
     task_title: str | None = None
     description: str | None = None
     priority: int = 3
-
-
-class TasksTodaySummary(BaseModel):
-    """The would-be "tasks today" summary response shape.
-
-    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the service function it
-    mirrors (`task_service.get_tasks_today_summary`) returns a plain dict, declares this model
-    nowhere and is itself a labelled zero-caller (L2-04); the shipped dashboard builds its own
-    statement.  Wiring the pair vs deleting them is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2).
-    """
-
-    tasks_today_total: int = 0
-    tasks_today_completed: int = 0
-    tasks_today_pending: int = 0
-    tasks_today_failed: int = 0
-    active_agents: list[str] = []

@@ -32,6 +32,19 @@ running before the orchestrator.  The cycle therefore no longer blocks on it (th
 being fixed), and today's plan sees the *previous* snapshot; the fresh snapshot lands
 asynchronously and feeds the evening report and tomorrow's plan.  Running it inline again
 would restore the serial wall-clock this design exists to remove.
+
+T13 (D20).  The morning cycle's summary write is the production consumer of
+`activity_service.log_activities`: every plan entry the run SKIPPED becomes one row in a single
+`executemany` (budget denial / malformed entry / unknown agent type, reason named), where those
+reasons previously died in `logger.warning` + the return dict.  The cycle keeps exactly ONE
+`log_activity` for its headline announcement, because the batch writer publishes no Redis event
+and `/ws/activity` must still see the cycle.
+
+T14 (D21).  The producer half of the refund path: when the morning cycle creates the fixed
+`finance` task, it attaches the failed-payment records the Stripe webhook persisted
+(`finance_service.recent_failed_payments` -> `metadata.failed_payments`), so the finance agent's
+run actually RECEIVES the `pi_…` id a refund needs.  Nothing is attached when there are no such
+records — the task row is then exactly what it was before.
 """
 from __future__ import annotations
 
@@ -149,8 +162,9 @@ async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.agents.crew_factory import run_agent_for_task
     from app.core.database import get_session_factory
-    from app.services.activity_service import log_activity
+    from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
+    from app.services.finance_service import recent_failed_payments
     from app.services.report_service import save_morning_plan
 
     session_factory = get_session_factory()
@@ -225,6 +239,18 @@ async def _morning_cycle() -> dict[str, Any]:
                 logger.warning("morning cycle: budget denied %s (%s)", agent_type, exc.reason)
                 continue
             key = dedupe_key(agent_type, bucket)
+            # T14/D21: the finance run is the one that must SEE the failed payments (its refund
+            # path needs a real `pi_…` id).  Agents hold no DB session, so the worker can only
+            # hand a task its own `metadata` — this is the producer that fills it, from the
+            # records the Stripe webhook persisted (finance_service.recent_failed_payments).
+            # Absent reads attach NOTHING (the task row is exactly what it was before, and the
+            # agent's consumer degrades to no extra context) — an empty list is not attached
+            # because "no failed payments" needs no row.
+            metadata: dict[str, Any] | None = None
+            if agent_type == "finance":
+                failed_payments = await recent_failed_payments(db)
+                if failed_payments:
+                    metadata = {"failed_payments": failed_payments}
             task = await create_task_deduped(
                 db,
                 title=title,
@@ -232,6 +258,7 @@ async def _morning_cycle() -> dict[str, Any]:
                 dedupe_key=key,
                 priority=priority,
                 source="scheduler",
+                metadata=metadata,
             )
             if task is None:
                 duplicates.append(key)
@@ -324,6 +351,26 @@ async def _morning_cycle() -> dict[str, Any]:
     plan_text = str(plan.get("summary") or "Morning plan generated")
     async with session_factory() as db:
         await save_morning_plan(db, report_date=day, plan=plan_text, tasks_planned=len(created))
+        # T13/D20: the cycle's per-item records go through the BATCH writer — one `executemany`
+        # for every plan entry this run had to skip (budget denial / malformed entry / unknown
+        # agent type), which is exactly the "hundreds of rows, one round trip" case
+        # `log_activities` was built and measured for (×63.8 vs one insert per row).  These rows
+        # used to exist nowhere durable: the reasons lived in `logger.warning` + the return dict,
+        # so the dashboard feed could show a plan's SIZE but never why it was short.
+        skip_rows: list[dict[str, Any]] = [
+            {
+                "agent_type": "orchestrator",
+                "action": "plan_entry_skipped",
+                "summary": reason,
+                "level": "warning",
+                "detail": {"day": day.isoformat(), "reason": reason, "cycle": "morning"},
+            }
+            for reason in skipped
+        ]
+        if skip_rows:
+            await log_activities(db, skip_rows)
+        # The cycle's ANNOUNCEMENT stays a single `log_activity`: `log_activities` publishes no
+        # Redis event by design, and `/ws/activity` must still see the cycle complete.
         await log_activity(
             db,
             agent_type="orchestrator",
@@ -452,6 +499,11 @@ async def _evening_cycle() -> dict[str, Any]:
             tasks_failed=failed,
             metrics_snapshot=context.get("kpis", {}),
         )
+        # T13/D20: the evening cycle produces exactly ONE event and no per-item records (its
+        # aggregate is the event; the per-status detail rides the row's `detail`), so there is
+        # nothing to batch — a one-row `log_activities` call would buy nothing and would LOSE the
+        # live publish (the batch writer publishes no Redis event by design).  The single
+        # `log_activity` here is the documented announcement shape, unchanged.
         await log_activity(
             db,
             agent_type="orchestrator",

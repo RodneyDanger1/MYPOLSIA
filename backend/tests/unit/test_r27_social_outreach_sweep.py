@@ -14,8 +14,9 @@ status='published'; email from `email_logs` status='sent'), so their disciplines
     cannot double-count;
   * never raises — any failure comes back in the report's `error` field (the worker folds it into
     the run row), so a broken read can never look like "nothing to persist";
-  * refusal honesty — malformed input is a named `E_VALIDATION`/`E_NOT_FOUND` refusal, never a
-    silent `None`/`[]`.
+  * refusal honesty — malformed input is a named `E_VALIDATION` refusal, never a silent
+    `None`/`[]`; a failed read is a named `E_DB` (T13 removed the `E_NOT_FOUND` raiser with
+    `mark_published`, whose test went with it).
 
 Doubles live only here: the CLI seam (`collect_structured` — the mock CLI carries no structured
 payload), the provider SDKs (fake `sendgrid` module mirroring the real 202 + X-Message-Id shape;
@@ -37,9 +38,9 @@ import app.config as app_config
 from app.agents import integrations
 from app.agents.email_outreach.agent import EmailOutreachAgent
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_DB, E_NOT_FOUND, E_RATE_LIMITED, E_VALIDATION, PolsiaError
+from app.core.errors import E_DB, E_RATE_LIMITED, E_VALIDATION, PolsiaError
 from app.models.outreach import EmailLog, Prospect
-from app.models.social import SocialEngagement, SocialPost
+from app.models.social import SocialPost
 from app.services import outreach_service, social_service
 from app.services.channel_service import channel_sends_snapshot
 
@@ -198,88 +199,35 @@ async def test_list_posts_read_failure_is_a_named_E_DB_refusal(async_db_session,
     assert "SQLAlchemyError" in excinfo.value.message
 
 
-async def test_create_post_refuses_blank_content_and_writes_nothing(async_db_session):
-    db = async_db_session
-    for blank in ("", "   ", "\n\t "):
-        with pytest.raises(PolsiaError) as excinfo:
-            await social_service.create_post(db, blank)
-        assert excinfo.value.code == E_VALIDATION
-        assert excinfo.value.message == "post content must not be empty"
-        assert excinfo.value.context == {"platform": "twitter"}
-        assert excinfo.value.how_to_fix                       # a refusal says how to fix it
-    assert await _count(db, SocialPost) == 0
-
-
-async def test_create_post_persists_defaults_and_supplied_fields(async_db_session):
-    db = async_db_session
-    scheduled = NOW + timedelta(days=1)
-
-    defaulted = await social_service.create_post(db, "defaults")
-    assert (defaulted.platform, defaulted.status) == ("twitter", "draft")
-    assert defaulted.id is not None                          # flush ran (the worker owns the commit)
-
-    explicit = await social_service.create_post(
-        db, "  spaced but kept verbatim  ", platform="linkedin", status="scheduled",
-        scheduled_for=scheduled, engagement={"likes": 0},
-    )
-    assert explicit.content == "  spaced but kept verbatim  "   # only EMPTINESS is rejected
-    assert explicit.platform == "linkedin" and explicit.status == "scheduled"
-    assert explicit.scheduled_for is not None and explicit.engagement == {"likes": 0}
-
-    reloaded = await social_service.get_post(db, explicit.id)
-    assert reloaded is not None and reloaded.content == explicit.content
+# ── T13/D20: the four removed reads (create_post / mark_published / list_engagements +
+#    outreach_service.list_campaigns / list_email_logs) lost their tests WITH their code.
+#    The assertions that went with them pinned behaviour of functions no surface called:
+#      * create_post's blank-content refusal + defaults (2 tests);
+#      * mark_published's draft->published transition, its E_NOT_FOUND refusal and its explicit
+#        `published_at` pass-through (3 tests) — the function whose RISK note (fix-5 §4) said
+#        wiring it as-is could write a `published` row with no provider id into the table the
+#        channel caps count;
+#      * list_engagements' empty/limit shape (1 test), alongside its wire model
+#        `SocialEngagementResponse` which T12 removes for the same reason;
+#      * outreach_service.list_campaigns / list_email_logs' empty/limit shapes (1 test).
+#    What REMAINS pinned is the shipped write path (`record_published_posts`) and the reads with
+#    live consumers (`list_posts`, `get_post`, `list_prospects`).
 
 
 async def test_get_post_returns_none_only_for_a_missing_row(async_db_session):
+    """Kept (T13): the read survives, so its lookup contract stays pinned.
+
+    REPAIRED — old: the row was created through `social_service.create_post` (removed by T13);
+    new: it is inserted directly through the ORM, which is what the assertion is about anyway.
+    """
     db = async_db_session
-    post = await social_service.create_post(db, "find me")
+    post = SocialPost(platform="twitter", content="find me", status="draft")
+    db.add(post)
+    await db.flush()
+
     found = await social_service.get_post(db, post.id)
     assert found is not None and found.id == post.id
     assert await social_service.get_post(db, 999_999) is None    # a lookup, not a refusal
-
-
-async def test_post_status_transition_draft_to_published(async_db_session, monkeypatch):
-    db = async_db_session
-    monkeypatch.setattr(social_service, "utcnow", lambda: NOW)
-    post = await social_service.create_post(db, "transition")
-
-    marked = await social_service.mark_published(db, post.id, tweet_id="tw-transition")
-    assert marked.status == "published" and marked.tweet_id == "tw-transition"
-    assert marked.published_at is not None
-
-    published = await social_service.list_posts(db, status="published")
-    assert [p.id for p in published] == [post.id]
-
-
-async def test_mark_published_refuses_an_unknown_id_with_E_NOT_FOUND(async_db_session):
-    with pytest.raises(PolsiaError) as excinfo:
-        await social_service.mark_published(async_db_session, 4242, tweet_id="tw-x")
-    assert excinfo.value.code == E_NOT_FOUND
-    assert excinfo.value.message == "social post 4242 does not exist"
-    assert excinfo.value.context == {"post_id": 4242}
-
-
-async def test_mark_published_keeps_an_explicit_published_at(async_db_session):
-    db = async_db_session
-    post = await social_service.create_post(db, "dated")
-    explicit = NOW - timedelta(hours=3)
-    marked = await social_service.mark_published(db, post.id, tweet_id="tw-dated",
-                                                 published_at=explicit)
-    assert marked.published_at == explicit
-    assert marked.status == "published"
-
-
-async def test_list_engagements_empty_and_limit(async_db_session):
-    db = async_db_session
-    assert await social_service.list_engagements(db) == []
-    db.add_all([
-        SocialEngagement(mention_id=f"m{i}", author_handle="@a", content=f"c{i}",
-                         created_at=NOW - timedelta(minutes=i))
-        for i in range(3)
-    ])
-    await db.flush()
-    assert [e.mention_id for e in await social_service.list_engagements(db, limit=1)] == ["m0"]
-    assert len(await social_service.list_engagements(db)) == 3
 
 
 # ── record_published_posts: the twitter/linkedin cap's producer ────────────────────────────────
@@ -432,31 +380,6 @@ async def test_list_prospects_empty_status_filter_and_limit(async_db_session):
     assert {p.email for p in await outreach_service.list_prospects(db, status="new")} == {
         "p0@example.com", "p1@example.com"}
     assert await outreach_service.list_prospects(db, status="archived") == []
-
-
-async def test_list_campaigns_and_email_logs_empty_and_limited(async_db_session):
-    db = async_db_session
-    assert await outreach_service.list_campaigns(db) == []
-    assert await outreach_service.list_email_logs(db) == []
-
-    from app.models.outreach import EmailCampaign
-
-    prospect = Prospect(email="logs@example.com")
-    db.add(prospect)
-    await db.flush()
-    db.add_all([
-        EmailCampaign(name=f"camp {i}") for i in range(2)
-    ])
-    db.add_all([
-        EmailLog(prospect_id=prospect.id, subject=f"log {i}", status="sent", sent_at=NOW)
-        for i in range(3)
-    ])
-    await db.flush()
-
-    assert [c.name for c in await outreach_service.list_campaigns(db, limit=1)] == ["camp 1"]
-    assert len(await outreach_service.list_campaigns(db)) == 2
-    assert len(await outreach_service.list_email_logs(db, limit=2)) == 2
-    assert len(await outreach_service.list_email_logs(db)) == 3
 
 
 async def test_create_prospect_refuses_unusable_addresses(async_db_session):

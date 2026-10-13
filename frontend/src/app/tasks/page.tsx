@@ -3,11 +3,21 @@ import { useEffect, useState } from "react";
 
 import { api, type Task } from "@/lib/api";
 
+/**
+ * The backend's documented status set (`task_service.VALID_TASK_STATUSES`): the four original
+ * states plus `cancelled` (stopped deliberately — NOT the same claim as `failed`),
+ * `awaiting_approval` (parked until the owner's green light, D1) and `rejected` (refused before
+ * execution, nothing charged — D2's status landing this wave, T03). A null/unrecognised status
+ * still falls back to the gray chip at the call site, never an empty chip.
+ */
 const STATUS_STYLE: Record<string, string> = {
   completed: "bg-green-500/20 text-green-400",
   in_progress: "bg-blue-500/20 text-blue-400",
   pending: "bg-yellow-500/20 text-yellow-400",
   failed: "bg-red-500/20 text-red-400",
+  cancelled: "bg-gray-500/20 text-gray-300",
+  awaiting_approval: "bg-orange-500/20 text-orange-400",
+  rejected: "bg-rose-500/20 text-rose-400",
 };
 
 /**

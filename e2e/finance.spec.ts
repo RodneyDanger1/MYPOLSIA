@@ -52,6 +52,31 @@ test.describe("Finance page", () => {
     await expectCard("Total Ad Spend", s.total_ad_spend_usd == null ? "—" : `$${s.total_ad_spend_usd.toFixed(2)}`);
     await expectCard("Expenses (Month)", fmtUsdOrDash(s.total_expenses_month_cents));
 
+    // R24's ai_spend block, asserted from the SAME summary body under the page's null law
+    // (fix-4 §1 / T15b): an absent block or an unmeasured day (`spent: null`) renders "—"; a
+    // measured 0 renders "$0.00". Field names are the schema's own — the unmeasured marker is
+    // `unit_economics.unmeasured_spend_agents` — and `spent.toFixed(2)` must NEVER run unguarded.
+    const aiSpend = s.ai_spend as
+      | {
+          spent: number | null;
+          limit: number;
+          unit_economics?: { unmeasured_spend_agents?: string[] } | null;
+        }
+      | null
+      | undefined;
+    const expectedAi =
+      aiSpend == null || aiSpend.spent == null
+        ? "—"
+        : `$${aiSpend.spent.toFixed(2)} of $${aiSpend.limit.toFixed(2)}`;
+    await expectCard("AI spend today", expectedAi);
+    if (aiSpend?.unit_economics?.unmeasured_spend_agents?.length) {
+      await expect(
+        page
+          .locator("main div.bg-gray-800")
+          .filter({ has: page.getByText("AI spend today", { exact: true }) }),
+      ).toContainText(`unmeasured spend: ${aiSpend.unit_economics.unmeasured_spend_agents.join(", ")}`);
+    }
+
     expect(
       apiCalls.length,
       "the page must actually CALL GET /api/v1/finance/summary — an all-em-dash render without a " +

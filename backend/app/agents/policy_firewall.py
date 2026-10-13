@@ -301,6 +301,71 @@ def reset_run_taint() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run-level approval: the contextvar the WORKER sets and the firewall CONSUMER reads
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RunApproval:
+    """The approval material ONE run executes with: the operator's secret + the supplied token.
+
+    Both default to the exact "nothing" values the firewall's parameters already used (`b""` /
+    `""`), so a run that publishes no approval is byte-identical to the pre-channel behaviour.
+    """
+
+    secret: bytes = b""
+    token: str = ""
+
+
+#: The approval context of the run executing in this context (self-approval channel, D1/T02).
+#:
+#: Why a contextvar, same reasoning as RUN_TAINT above: the run's approval material is decided by
+#: the WORKER (it owns `settings.approval_secret` and the task row carrying `metadata.approval_token`),
+#: while the side-effect request that must SEE it happens later inside per-agent code, at call sites
+#: that would each have to accept and thread a new argument.  A contextvar carries it through the
+#: whole call with zero per-agent edits: `agent_tasks._execute_agent_task` sets it before invoking
+#: the agent (`asyncio.to_thread` copies the context into the run's thread — pinned by
+#: tests/unit/api/test_t02_approvals.py), `request_side_effect` / `evaluate_side_effect` read it
+#: whenever the caller supplied no explicit `approval_secret=`/`approval_token=`.  Each worker
+#: invocation SETS it and RESETS it in a `finally`, so one run's token cannot leak into the next
+#: run in the same worker process (the RUN_TAINT isolation argument).
+RUN_APPROVAL: ContextVar[RunApproval | None] = ContextVar("polsia_run_approval", default=None)
+
+
+def set_run_approval(approval: RunApproval | None) -> None:
+    """Publish the approval material of the run about to execute (producer side — the worker)."""
+    RUN_APPROVAL.set(approval)
+
+
+def current_run_approval() -> RunApproval | None:
+    """The approval material of the run executing in this context; None when no run published one."""
+    return RUN_APPROVAL.get()
+
+
+def reset_run_approval() -> None:
+    """Clear the run approval (a worker's `finally`, or tests that must not inherit one).
+
+    Clearing publishes `None` — "no approval channel for this context" — which the resolvers treat
+    exactly as they treat a run that never set one, never as an error.
+    """
+    RUN_APPROVAL.set(None)
+
+
+def configured_approval_secret() -> bytes:
+    """The operator's `APPROVAL_SECRET`, read DEFENSIVELY at call time.
+
+    `getattr` on purpose (the same pattern `kill_grade_from_env` uses for `kill_switch`): this read
+    path keeps working against a config surface that predates the field instead of raising at
+    dispatch, and an unset/empty value is `b""` — "no approval channel", which the firewall treats
+    as the fail-closed DENY it always was (policy_firewall `decide()`: "approval required but no
+    approval channel configured").
+    """
+    from app.config import settings
+
+    raw = getattr(settings, "approval_secret", "")
+    return raw.encode("utf-8") if isinstance(raw, str) and raw else b""
+
+
+# ---------------------------------------------------------------------------
 # Rate caps
 # ---------------------------------------------------------------------------
 
@@ -335,21 +400,20 @@ def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
                    issued_to: str = "operator") -> ApprovalToken:
     """Mint a single-use HMAC approval token for a gated action (TTL-bounded).
 
-    NO PRODUCTION ISSUER (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/grep_issue_approval.txt) — zero call sites in
-    app/, celery_app/ and scripts/; the only caller is
-    tests/unit/test_policy_firewall.py:145, which mints a token to exercise the
-    `verify_approval` ALLOW path.  Verification IS live (`decide()`, this file line 529,
-    reached via `enforce()` from `side_effects.request_side_effect`), but nothing in
-    production issues a token — nor does any production caller pass `approval_secret` /
-    `approval_token` (raw/supplementary_evidence.txt) — so the firewall's "approval
-    required but no approval channel configured" DENY is FINAL for gated actions today:
-    no gated action can come back ALLOW.
+    The ISSUER is now live: `POST /api/v1/approvals` (owner-authenticated, D1/T02) calls this for a
+    named action fingerprint and returns the token + expiry, and `agent_tasks` publishes
+    `settings.approval_secret` plus the task's supplied token as the run's approval context, so a
+    token that verifies lets the gated action PROCEED (`decide()`'s token branch).  Until D1/T02
+    landed there was no production issuer and the firewall's "approval required but no approval
+    channel configured" DENY was final for gated actions.
 
-    OWNER DECISION: building the issuance channel (an operator-facing mint + delivery
-    path) CHANGES THE SAFETY POSTURE — the gate is deliberately closed, not broken.
-    Do NOT wire an issuer as an incidental refactor; removal vs adoption is an owner
-    decision (REQUESTS R25-2).
+    The safety shape is unchanged and deliberate: a token is scoped to ONE fingerprint (it verifies
+    only against the exact action+payload class it was minted for), TTL-bounded, and only useful when
+    the operator has actually configured `APPROVAL_SECRET` — with no secret the resolver yields
+    `b""`, `verify_approval` cannot match anything, and the DENY stands (fail closed).
+
+    NOTE (still true): the token is bearer-style — anyone holding it AND the secret's cooperation
+    can approve that fingerprint.  Delivery to the owner is the operator's channel.
     """
     exp = int(time.time()) + ttl_s
     msg = f"{action_fingerprint}|{exp}|{issued_to}".encode()
@@ -746,9 +810,12 @@ __all__ = [
     "Decision",
     "PolicyDecision",
     "RateCaps",
+    "RunApproval",
     "RunTaint",
     "assert_sandboxed_side_effect_allowed",
     "capability_for",
+    "configured_approval_secret",
+    "current_run_approval",
     "current_run_taint",
     "decide",
     "enforce",
@@ -756,7 +823,9 @@ __all__ = [
     "flag_injection_heuristics",
     "issue_approval",
     "kill_grade_from_env",
+    "reset_run_approval",
     "reset_run_taint",
+    "set_run_approval",
     "set_run_taint",
     "value_cents",
     "verify_approval",

@@ -10,6 +10,13 @@ omitted `awaiting_approval`, which the DDL allows.
 
 The F2 signature pin (`tests/unit/celery/test_service_contract.py`) is deliberately NOT
 touched by this fix: the refusals are raises, not new parameters.
+
+W1/T03 follow-up (2026-10-13, D2): the value set moved to ONE source — `app.models.task.TaskStatus`
+(an `Enum(native_enum=False, create_constraint=True)` column) — and `VALID_TASK_STATUSES` is derived
+from it, so the reconciliation pin now reads the CHECK **SQLAlchemy renders** (the DDL a fresh
+`create_all` — and now every SQLite unit-test fixture — carries) instead of 0002's literal, which
+0006 supersedes.  0002's literal is still checked, as the ORDERED PREFIX the current set must keep;
+the 0006 literal itself (old six + `rejected`) is pinned in `tests/unit/test_t03_rejected_status.py`.
 """
 from __future__ import annotations
 
@@ -31,12 +38,24 @@ BACKEND = Path(__file__).resolve().parents[2]
 DDL_0002 = BACKEND / "alembic" / "versions" / "0002_queue_and_perf.py"
 
 
-def _ck_tasks_status_values() -> set[str]:
-    """The SHIPPED CHECK's value set, parsed from 0002's own DDL."""
+def _orm_check_values() -> set[str]:
+    """The value set of the CHECK the ORM renders for `tasks.status` — the shipped DDL text."""
+    from sqlalchemy.schema import CreateTable
+
+    from app.models.task import Task
+
+    ddl = str(CreateTable(Task.__table__).compile())
+    match = re.search(r"CONSTRAINT ck_tasks_status CHECK \(status IN \(([^)]+)\)\)", ddl)
+    assert match is not None, "ck_tasks_status not in the ORM-rendered tasks DDL"
+    return {part.strip().strip("'") for part in match.group(1).split(",")}
+
+
+def _ddl_0002_values() -> list[str]:
+    """The SHIPPED CHECK's value set, parsed from 0002's own DDL (as a list — order is checked)."""
     text = DDL_0002.read_text(encoding="utf-8")
     match = re.search(r'"ck_tasks_status",\s*"tasks",\s*"status IN \(([^)]+)\)"', text)
     assert match is not None, "ck_tasks_status not found in 0002's CHECK_CONSTRAINTS"
-    return {part.strip().strip("'") for part in match.group(1).split(",")}
+    return [part.strip().strip("'") for part in match.group(1).split(",")]
 
 
 async def _make_task(db, title: str = "fix5 task", **kwargs):
@@ -50,9 +69,18 @@ async def _make_task(db, title: str = "fix5 task", **kwargs):
 
 def test_valid_task_statuses_reconciles_exactly_with_the_shipped_check():
     """The tuple and `ck_tasks_status` are one contract; drift in either fails HERE."""
-    assert set(VALID_TASK_STATUSES) == _ck_tasks_status_values()
+    assert set(VALID_TASK_STATUSES) == _orm_check_values()
     assert "awaiting_approval" in VALID_TASK_STATUSES
+    assert "rejected" in VALID_TASK_STATUSES
     assert len(VALID_TASK_STATUSES) == len(set(VALID_TASK_STATUSES)), "no duplicates"
+
+
+def test_migration_0006_appends_rejected_and_preserves_the_0002_prefix_exactly():
+    """The shipped history cannot drift: 0002's six values, in order, are the current prefix."""
+    values_0002 = _ddl_0002_values()
+    assert list(VALID_TASK_STATUSES) == [*values_0002, "rejected"], (
+        "0006 must append 'rejected' to the 0002 set and change nothing else"
+    )
 
 
 # ── the writer asserts before mutating ────────────────────────────────────────────────────────

@@ -203,7 +203,13 @@ def test_0005_precleans_duplicates_creates_keys_and_downgrades_cleanly(monkeypat
     command.upgrade(cfg, "0004")
     _seed_legacy_duplicates(db_path)
 
-    command.upgrade(cfg, "head")
+    # W1/T03+T19: scoped to THIS revision explicitly (0006 exists now, and a round trip about
+    # 0005's own rows must not silently include 0006's moves — the same reason the 0004 round-trip
+    # in tests/unit/test_support_inbox_migration.py names its revision).  Old -> new:
+    # `command.upgrade(cfg, "head")` -> `command.upgrade(cfg, "0005")`; the version pin below stays
+    # "0005" and the downgrade-to-0004 leg stays exactly as shipped.  0006's own round trip lives
+    # in tests/unit/test_t03_rejected_status.py.
+    command.upgrade(cfg, "0005")
     head = _snapshot(db_path)
     assert ("index", "uq_social_posts_platform_tweet_id") in head
     assert ("index", "uq_email_logs_sendgrid_id") in head

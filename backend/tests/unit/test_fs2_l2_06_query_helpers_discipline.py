@@ -14,11 +14,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.errors import E_DB, PolsiaError
 from app.services import (
     company_service,
-    finance_service,
     memory_service,
     social_service,
     support_inbox_service,
-    task_service,
 )
 
 
@@ -38,8 +36,11 @@ def _broken_factory(tmp_path):
         ("company", lambda db: company_service.get_company_by_name(db, "Acme")),
         ("social post", lambda db: social_service.get_post(db, 1)),
         ("memory", lambda db: memory_service.get_memory(db, 1)),
-        ("agent run", lambda db: task_service.get_agent_run(db, 1)),
-        ("latest revenue snapshot", lambda db: finance_service.get_latest_revenue_snapshot(db)),
+        # T13/D20 removed `task_service.get_agent_run` and
+        # `finance_service.get_latest_revenue_snapshot` as labelled zero-callers (fix-5 §4), so
+        # their two rows leave this pin with them.  The discipline they covered — a converted read
+        # refusing `E_DB` instead of a codeless 500 — stays pinned by the five rows above (and by
+        # every other `fetch_scalar`/`fetch_scalars` caller in the tree).
     ],
 )
 async def test_converted_reads_refuse_e_db(tmp_path, label, call):

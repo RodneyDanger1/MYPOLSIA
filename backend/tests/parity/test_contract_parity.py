@@ -32,8 +32,15 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/tasks"),
     ("POST", "/api/v1/tasks"),
     ("GET", "/api/v1/tasks/{task_id}"),
+    # T12/D20 (build/decisions/DECISIONS.md): the typed task-status update route — the deliberate
+    # new surface of wave-T12; verified live in app.routes as [PATCH] on this path.
+    ("PATCH", "/api/v1/tasks/{task_id}/status"),
     ("GET", "/api/v1/agents/status"),
     ("POST", "/api/v1/agents/{agent_type}/trigger"),
+    # T02/D1 (build/decisions/DECISIONS.md): the approvals channel's mint — owner-authenticated,
+    # documented by app/api/v1/approvals.py and tests/unit/api/test_t02_approvals.py; route
+    # verified live in app.routes as [POST] on this path (wave-W2 checked 2026-10-13).
+    ("POST", "/api/v1/approvals"),
     ("GET", "/api/v1/config"),
     ("PUT", "/api/v1/config"),
     ("GET", "/api/v1/config/deepseek-key"),
@@ -103,7 +110,9 @@ REQUIRED_SCHEDULED_TASKS = {
     "celery_app.tasks.maintenance.requeue_stale_task_claims",
 }
 
-# Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3).
+# Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus
+# `approval_secret` — the D1 approvals interface, added by wave-W2/T05 for the T02 seat to
+# consume (`settings.approval_secret`); frozen by D1.
 FROZEN_SETTINGS = {
     "api_key", "database_url", "redis_url", "celery_broker_url", "celery_result_backend",
     "morning_cycle_hour", "evening_cycle_hour", "company_timezone", "stripe_webhook_secret",
@@ -111,10 +120,11 @@ FROZEN_SETTINGS = {
     "claude_max_argv_chars", "claude_prompt_via_stdin", "claude_repair_attempts",
     "agent_max_retries", "agent_retry_backoff_seconds", "agent_run_cost_cap_usd",
     "agent_daily_cost_cap_usd", "task_claim_lease_seconds", "task_max_attempts",
-    "task_retry_backoff_seconds", "task_batch_size", "activity_retention_days",
+    "task_retry_backoff_seconds", "activity_retention_days",
     "activity_bulk_flush", "celery_task_time_limit", "celery_soft_time_limit",
     "celery_max_tasks_per_child", "db_pool_size", "db_max_overflow", "db_pool_recycle_seconds",
     "db_statement_timeout_ms", "planner_max_nodes", "planner_context_token_budget", "log_json",
+    "approval_secret",
 }
 
 

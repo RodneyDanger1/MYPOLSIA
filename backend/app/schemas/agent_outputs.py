@@ -179,10 +179,28 @@ class PostedItem(BaseModel):
 class ReplyItem(BaseModel):
     mention_id: str = Field(min_length=1, max_length=255)
     reply: str = Field(min_length=1, max_length=1000)
-    reply_id: str | None = None       # None while sandboxed
+    reply_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Provider id of the reply the integration really created; None while sandboxed (a "
+            "refused send records no id), and None when the reply was only drafted — \"not sent\" "
+            "and \"sent\" must stay distinguishable, so an id is never invented"
+        ),
+    )
 
 
 class SocialMediaOutput(AgentEnvelope):
+    """One social run's contract.
+
+    `action` is what the run ATTEMPTED, and it is the key the worker's persistence path reads:
+    `draft` records drafts only (the sandboxed default), `post` says items in `posted[]` really
+    went out (each carrying the provider `tweet_id`/`post_id` that proves it), `reply` says the
+    same for `replies[]`, and `noop` is the honest "nothing to do this cycle".  `posted` stays
+    empty whenever no provider id was returned — a refused or sandboxed send is a draft, never a
+    post — and `replies[].reply_id` follows the same rule.
+    """
+
     action: Literal["draft", "post", "reply", "noop"] = "draft"
     posts: list[SocialPostDraft] = Field(default_factory=list, max_length=5)
     tweets: list[str] = Field(default_factory=list, max_length=10)      # specced key (mock parity)
@@ -311,6 +329,16 @@ class AdMetricRow(BaseModel):
     clicks: int = Field(default=0, ge=0)
     conversions: int = Field(default=0, ge=0)
     spend_usd: float = Field(default=0.0, ge=0.0)
+    # D17/R33: `ad_metrics.revenue_usd` is the real money column both engines hold (`Numeric(14,4)
+    # DEFAULT '0' NOT NULL`, alembic 0002:203-207 / 0003:71) and the input `roas` is GENERATED
+    # from (`models/ads.py:75-87`).  The persist path already maps it
+    # (`ads_service.record_ads_run`, the `("spend_usd", "revenue_usd")` money loop), but the field
+    # itself was missing HERE — and this model is the contract: the run payload is validated with
+    # it and re-dumped before the worker sees it, so an undeclared key was dropped at validation
+    # and the column could only ever hold its default.  `ge=0.0` mirrors `ck_ad_metrics_nonneg`
+    # (PostgreSQL-only; the writer asserts it for both engines).  Not-reported stays absent from
+    # the row — the column default is the writer's, never a fabricated measurement.
+    revenue_usd: float = Field(default=0.0, ge=0.0)
     ctr: float = Field(default=0.0, ge=0.0)
     cpc: float = Field(default=0.0, ge=0.0)
     roas: float = Field(default=0.0, ge=0.0)

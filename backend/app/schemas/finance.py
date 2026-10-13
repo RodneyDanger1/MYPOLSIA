@@ -138,35 +138,20 @@ class StripeEventResponse(ORMModel):
 
 
 class StripeWebhookResponse(BaseModel):
-    """The declared shape of `POST /api/v1/finance/stripe/webhook`'s 200 body.
+    """The declared shape of `POST /api/v1/finance/stripe/webhook`'s 200 body — now WIRED.
 
-    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — repo-wide (app/, tests/,
-    scripts/, frontend/src/, e2e/, docs/) the only occurrence is this definition: the webhook
-    route returns its own hand-built `{"received": True}` dict and declares no `response_model`
-    (app/api/v1/finance.py::stripe_webhook), so the documented and the actual response are two
-    copies of one fact.  Declaring `response_model=` on the route vs deleting the model is an
-    owner decision (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2) — not wired by this lane.
+    fix-5 (2026-10-13) labelled this model zero-consumer: the route returned its own hand-built
+    `{"received": True}` dict and declared no `response_model`, so the documented and the actual
+    response were two copies of one fact.  D20 ruled the model is the contract: the route now
+    declares `response_model=StripeWebhookResponse`, which — per FastAPI's own semantics — makes
+    the model VALIDATE the returned dict and publish the response schema, instead of the response
+    merely happening to match.  The schema was left TRUE to the handler: the handler returns
+    exactly `{"received": True}`, so this model gained no field and dropped none (adjusting the
+    model to some imagined response would have documented a body the route never returns).
+
+    A non-2xx delivery answers the refusal envelope (`{"ok": false, "error": {…}}`), never this
+    shape: 500 when the webhook secret is unconfigured, 400 for a missing/invalid signature or a
+    payload that cannot be de-duplicated.
     """
 
     received: bool = True
-
-
-class ExpenseCreate(BaseModel):
-    """Declared request shape for a "create expense" route that does not ship.
-
-    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — no route accepts it:
-    expenses enter the DB through the finance-agent path (`finance_service.record_expense` /
-    `persist_finance_run`) and `ExpenseRecordResponse` serves the only expense read.  Adding a
-    POST route that uses it vs deleting it is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2).
-    """
-
-    category: str
-    vendor: str
-    amount_cents: int
-    currency: str = "usd"
-    description: str | None = None
-    date: date
-    external_ref: str | None = None

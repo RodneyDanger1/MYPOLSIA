@@ -24,6 +24,48 @@ const wireTask: Task = {
 
 const datedIso = "2026-10-05T12:30:00Z";
 
+/**
+ * T15e: the chip map must recognise the backend's full documented status set — including
+ * `rejected` (D2's refused-before-execution status landing in this wave's T03) and the
+ * cancelled/awaiting states that were already on the wire. An unrecognised word keeps the gray
+ * fallback, so both halves (complete map, intact fallback) stay pinned.
+ */
+describe("TasksPage status chips (T15e)", () => {
+  afterEach(() => mockApiGet.mockReset());
+
+  const recognized: Array<[string, string]> = [
+    ["cancelled", "text-gray-300"],
+    ["awaiting_approval", "text-orange-400"],
+    ["rejected", "text-rose-400"],
+  ];
+
+  it.each(recognized)("styles %s with its own chip, not the unknown fallback", async (status, cls) => {
+    mockApiGet.mockResolvedValue([{ ...wireTask, id: 100, title: `fixture: ${status}`, status }]);
+
+    render(<TasksPage />);
+
+    const card = (await screen.findByText(`fixture: ${status}`)).closest("div.bg-gray-800");
+    const chip = card?.querySelector("span");
+    expect(chip).not.toBeNull();
+    expect(chip).toHaveTextContent(status);
+    expect(chip?.className).toContain(cls);
+    expect(chip?.className).not.toContain("bg-gray-700");
+  });
+
+  it("an unrecognised status still gets the gray fallback chip", async () => {
+    mockApiGet.mockResolvedValue([
+      { ...wireTask, id: 101, title: "fixture: unknown status", status: "weird_future_status" },
+    ]);
+
+    render(<TasksPage />);
+
+    const card = (await screen.findByText("fixture: unknown status")).closest("div.bg-gray-800");
+    const chip = card?.querySelector("span");
+    expect(chip).toHaveTextContent("weird_future_status");
+    expect(chip?.className).toContain("bg-gray-700");
+  });
+});
+
 describe("TasksPage", () => {
   afterEach(() => mockApiGet.mockReset());
 

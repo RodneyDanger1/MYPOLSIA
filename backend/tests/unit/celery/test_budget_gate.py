@@ -99,31 +99,40 @@ def test_ads_stripe_sync_reports_each_denied_entry_and_skips_its_row(queue_db, m
 # record. The gate now sits in `_execute_agent_task` (after the claim, before the run ledger
 # row). RED leg: remove the gate -> the over-cap test below comes back `completed` with an
 # agent_runs row on disk.
+#
+# W1/T03 (D2): the refusal is recorded on the row as `rejected` ("refused before execution —
+# nothing charged"), not `failed`.  W1/T04 (D3): ONLY a run whose row carries `source='manual'`
+# (what the trigger route writes) bypasses the cap — with a named `manual_override` record; every
+# OTHER dispatch keeps the hard gate, which is what the rows below (created with the service's
+# default source) exercise.  The manual-override legs live in
+# tests/unit/celery/test_t04_manual_override.py.
 
 
-def test_an_over_cap_manual_run_is_skipped_and_recorded(queue_db, monkeypatch):
+def test_an_over_cap_dispatch_is_rejected_and_recorded(queue_db, monkeypatch):
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
     policy = _policy()
     _seed_spend(queue_db, "social_media", str(policy.day_limit_usd))  # the day is full
-    task_id = queue_db.create_task(title="L4-09 over-cap manual run", agent_type="finance")
+    task_id = queue_db.create_task(title="L4-09 over-cap run", agent_type="finance")
 
     outcome = queue_db.run(_execute_agent_task(task_id))
 
     assert outcome["status"] == "skipped"
+    assert outcome["task_status"] == "rejected"
     assert "insufficient budget" in outcome["reason"], "the skip names the measured reason"
     assert queue_db.count("agent_runs", "agent_type = ?", ("finance",)) == 0, "no run ledger row"
     row = queue_db.row(task_id)
-    assert row["status"] == "failed" and "budget:" in (row["error_message"] or "")
+    assert row["status"] == "rejected" and "budget:" in (row["error_message"] or "")
     assert row["claimed_by"] is None
 
 
-def test_a_manual_run_on_a_fresh_day_still_completes(queue_db, monkeypatch, install_run_spy):
+def test_a_run_on_a_fresh_day_still_completes(queue_db, monkeypatch, install_run_spy):
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
     install_run_spy(delegate=False)
-    task_id = queue_db.create_task(title="L4-09 fresh manual run", agent_type="finance")
+    task_id = queue_db.create_task(title="L4-09 fresh run", agent_type="finance")
 
     outcome = queue_db.run(_execute_agent_task(task_id))
 
-    assert outcome["status"] == "completed", "measured spend 0 must not block a manual run"
+    assert outcome["status"] == "completed", "measured spend 0 must not block a run"
+    assert outcome["manual_override"] is False

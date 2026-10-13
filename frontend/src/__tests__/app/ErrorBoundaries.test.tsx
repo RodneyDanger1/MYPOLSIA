@@ -55,6 +55,40 @@ describe("app/error.tsx (segment boundary)", () => {
   });
 });
 
+describe("app/error.tsx — X-Request-ID on the failure (T15 / fix-5 §1)", () => {
+  it("names the id the API attached to the failed request", () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = Object.assign(new Error("boom"), { requestId: "req-abc123" });
+
+    render(<SegmentError error={error} reset={jest.fn()} />);
+
+    expect(screen.getByTestId("request-id")).toHaveTextContent("req-abc123");
+    // The advice line still says what to do — now with the id named in it.
+    expect(screen.getByText(/backend log for this request/)).toBeInTheDocument();
+    consoleError.mockRestore();
+  });
+
+  it("a BLANK id keeps the generic advice and renders no id line (guard)", () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = Object.assign(new Error("boom"), { requestId: "   " });
+
+    render(<SegmentError error={error} reset={jest.fn()} />);
+
+    expect(screen.queryByTestId("request-id")).toBeNull();
+    expect(screen.getByText(/backend log for this request \(X-Request-ID\)/)).toBeInTheDocument();
+    consoleError.mockRestore();
+  });
+
+  it("an error without an id keeps the generic advice", () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(<SegmentError error={new Error("boom")} reset={jest.fn()} />);
+
+    expect(screen.queryByTestId("request-id")).toBeNull();
+    consoleError.mockRestore();
+  });
+});
+
 describe("app/global-error.tsx (root boundary)", () => {
   it("renders a self-contained surface with its own html/body and calls reset", () => {
     const reset = jest.fn();

@@ -626,6 +626,10 @@ class BasePolsiaAgent(ABC):
                 # dispatch gate reads, so `agent_runs.cost_usd` stops being NULL — and
                 # `usage_json` carries `cost_source="token_estimate"` + the pricing pin, so the
                 # stored number can never be mistaken for a provider bill.
+                # L3-05 RESIDUAL (documented in `pricing`'s module docstring): only THIS
+                # attempt's envelope is priced — tokens spent by aborted/timed-out attempts and
+                # by earlier retry attempts are not summed, so a token-estimated `cost_usd` is a
+                # lower bound on the provider's charge.  Never fabricated upward.
                 meta["cost_usd"] = round(usage.token_cost_estimate_usd, 6)
             meta["cli_session_id"] = usage.session_id or self.session_id
         return meta

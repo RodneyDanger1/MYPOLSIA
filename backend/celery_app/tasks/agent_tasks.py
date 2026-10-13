@@ -35,12 +35,12 @@ from app.core.errors import (
     E_DB,
     E_INTEGRATION,
     E_NOT_FOUND,
-    E_RATE_LIMITED,
     E_REDIS,
     E_TASK_CLAIMED,
     E_TASK_NOT_RUNNABLE,
     PolsiaError,
 )
+from app.models.task import TaskStatus
 from celery_app.tasks._common import (
     assert_budget_allows,
     create_task_deduped,
@@ -58,6 +58,15 @@ logger = logging.getLogger(__name__)
 # unknown agent, a sandbox refusal, a budget stop, a validation error — is terminal by
 # definition (SPEC-AGENTS D-07: "backoff for infrastructure errors only; business
 # failures stay terminal").
+#
+# D7 (owner ruling): `E_RATE_LIMITED` is deliberately NOT here.  It is a DAILY-CAP REFUSAL
+# ("refused before charge" — the per-channel cap, the day budget cap, or the provider-side
+# limit the firewall maps to it): nothing was performed, and re-delivering the same run
+# spends `agent_max_retries` more model calls working around a limit that resets on its own
+# schedule.  The refusal is recorded on the task row and the ledger names the reason; the
+# next scheduled tick retries when the window has moved.  (The CLI-attempt ladder's use of
+# a provider `rate_limit` subtype inside one run — `claude_cli.is_retryable_failure` — is a
+# different contract and is unchanged.)
 RETRYABLE_CODES = frozenset(
     {
         E_CLI_TIMEOUT,
@@ -65,7 +74,6 @@ RETRYABLE_CODES = frozenset(
         E_CLI_JSON,
         E_AGENT_BAD_OUTPUT,
         E_INTEGRATION,
-        E_RATE_LIMITED,
         E_DB,
         E_REDIS,
     }
@@ -284,6 +292,60 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
         }
 
 
+# ── the approval channel's worker side (D1/T02) ──────────────────────────────
+#: The `tasks.metadata` key the owner's supplied approval token travels under.  `tasks.metadata`
+#: is the documented per-task payload channel (the same one `metadata.inbox_item` uses for the CS
+#: sweep, RD12): a token that is not a string is not a token, and nothing is coerced.
+APPROVAL_TOKEN_KEY = "approval_token"
+
+#: The result key a parked run's required fingerprints are recorded under — folded into the run's
+#: stored output AND merged into `tasks.metadata`, so the owner can mint a token without reading
+#: the run JSON.
+APPROVAL_REQUIRED_KEY = "approval_required"
+
+
+def approval_token_from_metadata(metadata: Any) -> str:
+    """The supplied approval token on a task row, or `""` (no token) — never a coerced value."""
+    if isinstance(metadata, dict):
+        raw = metadata.get(APPROVAL_TOKEN_KEY)
+        if isinstance(raw, str):
+            return raw.strip()
+    return ""
+
+
+def approval_requirements(result: Any) -> list[dict[str, Any]]:
+    """The gated actions a finished run recorded as needing the owner's green light.
+
+    Read from the run's `side_effects` receipts: `side_effect_receipt` carries the firewall's audit
+    record, which includes the `fingerprint` the owner mints a token for (`issue_approval` is
+    scoped to exactly that value), and a receipt whose `decision` is `require_approval` is the
+    firewall's own REQUIRE_APPROVAL answer.  Deduped by fingerprint, in the run's own order.
+    An empty list means "nothing needs approval", never "unknown" — a run that never asked the
+    firewall has no receipts and parks nothing.
+    """
+    requirements: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(result, dict):
+        return requirements
+    for receipt in result.get("side_effects") or []:
+        if not isinstance(receipt, dict):
+            continue
+        if str(receipt.get("decision") or "") != "require_approval":
+            continue
+        fingerprint = str(receipt.get("fingerprint") or "").strip()
+        if not fingerprint or fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        requirements.append({
+            "action": str(receipt.get("action") or ""),
+            "ref": str(receipt.get("ref") or ""),
+            "channel": str(receipt.get("channel") or ""),
+            "fingerprint": fingerprint,
+            "reason": str(receipt.get("reason") or ""),
+        })
+    return requirements
+
+
 @app.task(
     name="celery_app.tasks.agent_tasks.run_agent_task",
     bind=True,
@@ -380,6 +442,10 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                          # prompt layers read only id/title/description/acceptance.
                          "metadata": task.metadata_json}
             agent_type = task.agent_type
+            # Both read INSIDE the claim session (the row is attached here): the budget gate
+            # (T04) keys on `source`, and the approval channel (T02) keys on the supplied token.
+            task_source = str(task.source or "")
+            approval_token = approval_token_from_metadata(task.metadata_json)
     except PolsiaError as exc:
         if exc.code in _SKIP_CLAIM_CODES:
             logger.info("run_agent_task(%s): skipped — %s", task_id, exc)
@@ -389,35 +455,68 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             return {"status": "skipped", "task_id": task_id, "reason": exc.code}
         raise
 
-    # ── 1b. dispatch budget gate at the choke point (L4-09 / D3) ─────────────
+    # ── 1b. dispatch budget gate at the choke point (L4-09 / D3 / T03 / T04) ──
     # `assert_budget_allows` gated only the four SCHEDULER dispatch sites, and this wrapper is
     # the one place BOTH the scheduler fan-outs and the API "Run Now" trigger funnel into — so a
     # manual trigger used to be a real run (provider call, ledger row, persisted cost) that
     # silently bypassed the daily cap. The gate needs `agent_type`, which is known only after
-    # the claim; a denial is recorded on the row (terminal `failed` + the measured reason, like
-    # the dead-broker path) and returned as a NAMED skip — never a silent no-op, never a retry
-    # (`E_BUDGET_EXCEEDED` is a terminal business refusal).
+    # the claim; a denial is recorded on the row and returned as a NAMED skip — never a silent
+    # no-op, never a retry (`E_BUDGET_EXCEEDED` is a terminal business refusal).
+    #
+    # T03/D2: a refusal here happens BEFORE anything ran (no provider call, no ledger row, nothing
+    # charged), so the row lands `rejected` — the live product's Rejected state — instead of
+    # `failed`, which reads as a crash.  The returned delivery outcome stays `skipped` (nothing
+    # was executed) and names the row's state (`task_status`).
+    #
+    # T04/D3: a MANUAL owner trigger (tasks.source=="manual", the flag
+    # `POST /agents/{type}/trigger` writes — app/api/v1/agents.py:74) is the owner asking for this
+    # run NOW.  The daily cap is a spend governor for SCHEDULED dispatch, not a veto over the
+    # payer: the run proceeds past the cap and the bypass is NAMED in the run's result and in an
+    # activity row, so it is auditable rather than silent.  Every other source (scheduler,
+    # orchestrator, dashboard, beat sweeps) keeps the hard gate byte-for-byte.
     from app.agents.accounting import BudgetStop
 
+    manual_override: dict[str, Any] | None = None
     try:
         await assert_budget_allows(agent_type)
     except BudgetStop as exc:
-        logger.warning("run_agent_task(%s): budget denied (%s)", task_id, exc.reason)
-        async with session_factory() as db:
-            task_row = await update_task_status(
-                db, task_id, "failed", error_message=f"budget: {exc.reason}"
-            )
-            if task_row is not None:
-                task_row.claimed_by = None
-                task_row.claimed_at = None
-                task_row.heartbeat_at = None
-            await db.commit()
-        return {
-            "status": "skipped",
-            "task_id": task_id,
-            "agent_type": agent_type,
-            "reason": f"budget: {exc.reason}",
+        if task_source != "manual":
+            logger.warning("run_agent_task(%s): budget denied (%s)", task_id, exc.reason)
+            async with session_factory() as db:
+                task_row = await update_task_status(
+                    db, task_id, "rejected", error_message=f"budget: {exc.reason}"
+                )
+                if task_row is not None:
+                    task_row.claimed_by = None
+                    task_row.claimed_at = None
+                    task_row.heartbeat_at = None
+                await db.commit()
+            return {
+                "status": "skipped",
+                "task_id": task_id,
+                "agent_type": agent_type,
+                "task_status": "rejected",
+                "manual_override": False,
+                "reason": f"budget: {exc.reason}",
+            }
+        manual_override = {
+            "manual_override": True,
+            "manual_override_reason": (
+                "owner manual trigger (tasks.source='manual') ran past the daily cap: "
+                f"{exc.reason}"
+            ),
         }
+        logger.warning("run_agent_task(%s): %s", task_id, manual_override["manual_override_reason"])
+        async with session_factory() as db:
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action="budget_manual_override",
+                summary=f"task {task_id}: {manual_override['manual_override_reason']}",
+                level="warning",
+                detail={"task_id": task_id, **manual_override},
+            )
+            await db.commit()
 
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
     async with session_factory() as db:
@@ -470,6 +569,22 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     heartbeat = asyncio.create_task(_heartbeat())
     result: dict[str, Any] = {}
     failure: BaseException | None = None
+    # T02/D1: publish the run's approval material BEFORE the agent runs.  `asyncio.to_thread`
+    # copies the current context into the worker thread, so the side-effect path INSIDE the agent
+    # (`side_effects._resolve_approval`) sees it without any per-agent edit.  The secret comes from
+    # settings (b"" when APPROVAL_SECRET is unset — no channel, the fail-closed default), the
+    # token from the task row's metadata.  The `finally` clears it so one run's token cannot leak
+    # into the next run in this worker process.
+    from app.agents.policy_firewall import (
+        RunApproval,
+        configured_approval_secret,
+        reset_run_approval,
+        set_run_approval,
+    )
+
+    set_run_approval(
+        RunApproval(secret=configured_approval_secret(), token=approval_token)
+    )
     try:
         # The agent's CLI call is blocking; run it off the loop so the heartbeat keeps
         # beating (the upload blocked the whole event loop for the CLI's lifetime, D-11).
@@ -479,6 +594,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     finally:
         stop_heartbeat.set()
         await heartbeat
+        reset_run_approval()
     duration = round(time.monotonic() - started, 2)
 
     error = None if failure is None else f"{type(failure).__name__}: {failure}"
@@ -486,17 +602,37 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         error = "; ".join(x for x in (error, "claim lease lost during the run") if x)
 
     # ── 4. persist: run accounting, task outcome, activity ───────────────────
-    status = "failed" if error else "completed"
+    run_status = "failed" if error else "completed"
     summary = result.get("summary") if isinstance(result, dict) else None
     retryable = is_retryable(failure) if failure is not None else False
     attempts = 0
     requeued = False
+    # T02/D1: a completed run that recorded a firewall REQUIRE_APPROVAL for an external action
+    # PARKS the task for the owner's green light instead of reporting `completed` — the action did
+    # NOT happen, and the run's output carries the labelled drafts.  The fingerprints travel in
+    # the run's stored output AND on the task row (metadata + summary), so the owner can mint a
+    # token without reading run JSON.  A FAILED run parks nothing: its story is the failure.
+    approval_reqs = approval_requirements(result) if error is None else []
+    task_status = "awaiting_approval" if approval_reqs else run_status
+    if approval_reqs and isinstance(result, dict):
+        result[APPROVAL_REQUIRED_KEY] = approval_reqs
+    if manual_override is not None and isinstance(result, dict):
+        # T04: the run's own output carries the NAMED override record (the activity row above
+        # carries the second copy), so "why did this run spend past the cap" is answerable from
+        # the ledger alone.
+        result.update(manual_override)
+    parking_summary: str | None = None
+    if approval_reqs:
+        parking_summary = (
+            f"awaiting approval: {len(approval_reqs)} gated action(s) need a token; request one "
+            "for fingerprint(s) " + ", ".join(item["fingerprint"] for item in approval_reqs)
+        )
     async with session_factory() as db:
         # T5/T6 persistence hook: a completed run's side effects (published posts, sent emails, the
         # finance snapshot) are written HERE, on this transaction, BEFORE the run row is finished —
         # so `agent_runs.output` carries the report of what was really persisted. A failure is
         # folded into the output + an activity row, never into the run's status: the run succeeded.
-        if status == "completed" and isinstance(result, dict):
+        if run_status == "completed" and isinstance(result, dict):
             report = await _persist_run_artifacts(db, agent_type, result)
             if report:
                 result["persistence"] = report
@@ -526,8 +662,8 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         run_row = await finish_agent_run(
             db,
             run_id,
-            status,
-            output=result if status == "completed" else None,
+            run_status,
+            output=result if run_status == "completed" else None,
             duration_secs=duration,
             error_message=error,
         )
@@ -552,18 +688,29 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             # The combined outcome-and-release call this site was written against does not exist;
             # an earlier revision imported it, which is an ImportError at call time — loud, never a
             # silent success, and reconciled by the parent during integration.
+            #
+            # `task_status` is the RUN's own outcome (`completed`/`failed`) EXCEPT for a run the
+            # approvals channel parked (`awaiting_approval`, T02) — the agent_runs row above always
+            # carries the run's true outcome, `ck_agent_runs_status` has no parked state, and the
+            # task row is the thing the owner has to see and act on.
             task_row = await update_task_status(
                 db,
                 task_id,
-                status,
-                result_summary=summary if status == "completed" else None,
+                task_status,
+                result_summary=(parking_summary or summary) if run_status == "completed" else None,
                 error_message=error,
             )
             if task_row is not None:
                 task_row.claimed_by = None
                 task_row.claimed_at = None
                 task_row.heartbeat_at = None
-                if status == "failed":
+                if task_status == "awaiting_approval":
+                    # "recorded in its result metadata": merge — never replace — the required
+                    # fingerprints into `tasks.metadata`, the documented per-task payload channel.
+                    merged = dict(task_row.metadata_json or {})
+                    merged[APPROVAL_REQUIRED_KEY] = approval_reqs
+                    task_row.metadata_json = merged
+                if run_status == "failed":
                     # `attempts` counts EXECUTIONS, and the claim already incremented it for this one
                     # (task_service.claim_task). This site used to increment again, so a single failed
                     # execution added 2 — which halved the retry ladder (`attempts <= agent_max_retries`
@@ -583,20 +730,37 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         # here — `error_message` keeps the failure, `attempts` the count — and the
                         # retry's claim counts the next execution.  A terminal failure (not
                         # retryable, or the ladder exhausted) still ends `failed`.
-                        task_row.status = "pending"
+                        task_row.status = TaskStatus.PENDING
                         requeued = True
-            await log_activity(
-                db,
-                agent_type=agent_type,
-                action="task_completed" if status == "completed" else "task_failed",
-                summary=summary or error or "No output",
-                level="success" if status == "completed" else "error",
-                detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued},
-            )
+            if task_status == "awaiting_approval":
+                # ONE activity row for the parked outcome — the run did not "complete" the task;
+                # it recorded drafts and stopped for the owner's green light.
+                await log_activity(
+                    db,
+                    agent_type=agent_type,
+                    action="task_awaiting_approval",
+                    summary=parking_summary or "awaiting approval",
+                    level="warning",
+                    detail={
+                        "task_id": task_id,
+                        "duration_secs": duration,
+                        "fingerprints": [item["fingerprint"] for item in approval_reqs],
+                    },
+                )
+            else:
+                await log_activity(
+                    db,
+                    agent_type=agent_type,
+                    action="task_completed" if run_status == "completed" else "task_failed",
+                    summary=summary or error or "No output",
+                    level="success" if run_status == "completed" else "error",
+                    detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued,
+                            "manual_override": bool(manual_override)},
+                )
         await db.commit()
 
     return {
-        "status": status,
+        "status": task_status,
         "task_id": task_id,
         "agent_type": agent_type,
         "duration_secs": duration,
@@ -604,6 +768,11 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         "error": error,
         "retryable": retryable,
         "requeued": requeued,  # True when this failure put the row back in the queue for its retry
+        # T04: `manual_override` (True + `manual_override_reason`) when this run proceeded past the
+        # daily cap on the owner's manual trigger; `manual_override: False` for every gated run.
+        **(manual_override or {"manual_override": False}),
+        # T02: the fingerprints this run left awaiting the owner's token (empty = none).
+        APPROVAL_REQUIRED_KEY: approval_reqs,
         "_exception": failure,  # popped by the sync wrapper; never returned to Celery
     }
 

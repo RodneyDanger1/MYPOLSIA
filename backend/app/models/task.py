@@ -1,12 +1,14 @@
 """tasks + agent_runs."""
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -23,6 +25,45 @@ from app.core.database import Base
 from app.models.types import json_type
 
 
+class TaskStatus(enum.StrEnum):
+    """The `tasks.status` value set, as a TYPE (D2 / fix-5 REQUESTS §6).
+
+    Escalated from `String(50)` + a hand-maintained tuple so the value set exists in ONE place:
+    the column's `Enum(native_enum=False, create_constraint=True)` renders
+    `VARCHAR(50) ... CONSTRAINT ck_tasks_status CHECK (...)` on every backend (SQLAlchemy 2.0:
+    "When False, uses VARCHAR + check constraint for all backends"), and the `CHECK` value list and
+    `task_service.VALID_TASK_STATUSES` are both DERIVED from this class — they cannot drift.
+
+    `StrEnum` (not `str, enum.Enum`) on purpose: the shipped code compares statuses to plain strings
+    (`"pending"`, `"in_progress"`), formats them into activity summaries and JSON, and `StrEnum.__str__`
+    is the value, so every one of those keeps its exact behaviour.  Values are what gets persisted
+    (`values_callable` below): a bare class-typed Enum persists the member NAMES — measured, the CHECK
+    would read `('PENDING', ...)` — which is not the shipped schema.
+
+    `rejected` = refused before execution (budget/policy choke point; nothing charged), the live
+    product's Rejected state (D2).  `awaiting_approval` = the approvals channel parked the run for the
+    owner's green light (D1/T02).
+    """
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    AWAITING_APPROVAL = "awaiting_approval"
+    REJECTED = "rejected"
+
+
+def task_status_values(enum_cls: type[enum.Enum] = TaskStatus) -> list[str]:
+    """`Enum.values_callable`: persist the member VALUES, in definition order.
+
+    Order is load-bearing twice: the CHECK constraint's value list (a stable, readable DDL) and
+    `task_service.VALID_TASK_STATUSES` (the tuple the writers assert against).
+    """
+    return [str(member.value) for member in enum_cls]
+
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -31,8 +72,17 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(Text)
     agent_type: Mapped[str] = mapped_column(String(100), nullable=False)
     priority: Mapped[int | None] = mapped_column(Integer, server_default="3", default=3)
-    status: Mapped[str | None] = mapped_column(
-        String(50), server_default="pending", default="pending"
+    status: Mapped[TaskStatus | None] = mapped_column(
+        Enum(
+            TaskStatus,
+            native_enum=False,          # VARCHAR + CHECK on every backend (no PG ENUM type)
+            create_constraint=True,     # the named CHECK is the at-rest enforcement
+            name="ck_tasks_status",     # the SHIPPED constraint name (alembic 0002:89, re-created by 0006)
+            length=50,                  # keeps the DDL VARCHAR(50), the shipped column width
+            values_callable=task_status_values,  # persist values, not member names (see above)
+        ),
+        server_default="pending",
+        default="pending",
     )
     source: Mapped[str | None] = mapped_column(
         String(100), server_default="orchestrator", default="orchestrator"

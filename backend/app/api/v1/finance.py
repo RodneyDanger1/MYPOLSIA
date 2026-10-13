@@ -22,6 +22,17 @@ Persistence is idempotent at the statement level (`finance_service.record_stripe
 one `INSERT ... ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id`, so two
 concurrent duplicate deliveries produce ONE row and no `IntegrityError` (which would
 be a 5xx and trigger Stripe's retry storm).
+
+The 200 body is declared, not implied (T12/D20): the route carries
+`response_model=StripeWebhookResponse`, whose shape was left TRUE to the handler
+(`{"received": true}`) — FastAPI now validates that body and publishes it.
+
+Refund producer (T14/D21): the delivery also extracts the PaymentIntent id a refund needs
+and persists it ON the event row.  A `charge`/`invoice` object carries it as
+`payment_intent`; a `payment_intent` object IS it (`id`).  Stripe's own field names it
+"nullable ... if one exists", so a shape with none persists `null` — an honest "not
+measured", never a substitute id (`ch_…`/`evt_…` can never refund anything: the adapter's
+guard refuses them by name).
 """
 from __future__ import annotations
 
@@ -44,8 +55,10 @@ from app.schemas.finance import (
     FinanceSummaryResponse,
     RevenueSnapshotResponse,
     StripeEventResponse,
+    StripeWebhookResponse,
 )
 from app.services.finance_service import (
+    extract_payment_intent_id,
     get_ai_spend_summary,
     get_finance_summary,
     list_expenses,
@@ -217,9 +230,15 @@ def _signature_tolerance() -> int:
     return int(getattr(settings, "stripe_signature_tolerance", DEFAULT_SIGNATURE_TOLERANCE))
 
 
-@router.post("/stripe/webhook")
-async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
-    """Raw-body webhook.  No X-API-Key (Stripe cannot send one)."""
+@router.post("/stripe/webhook", response_model=StripeWebhookResponse)
+async def stripe_webhook(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> StripeWebhookResponse:
+    """Raw-body webhook.  No X-API-Key (Stripe cannot send one).
+
+    The 200 body is the declared `StripeWebhookResponse` (T12/D20) — the handler returns that
+    model, so the document and the response cannot drift apart.
+    """
     secret = settings.stripe_webhook_secret or ""
     if not secret:
         raise HTTPException(
@@ -280,6 +299,14 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -
     # (`.lower()` on an int) used to 500 the delivery.  Pass text or nothing.
     currency = data_object.get("currency")
     currency = currency if isinstance(currency, str) else None
+    # T14/D21 — the refund producer.  Extract the PaymentIntent id a refund would need from the
+    # delivery's own SHAPE (charge/invoice -> `payment_intent`; a payment_intent object -> `id`)
+    # and persist it on the event row, so the finance agent's reader has a durable, machine-
+    # readable answer instead of Stripe's per-object shapes.  A shape that carries none stays
+    # `None` (the column of the record answers "not measured") — never the event id, never the
+    # charge id: `integrations.refund_payment` refuses a non-`pi_` id BY NAME, so writing a
+    # substitute would only move the refusal one layer later.
+    payment_intent_id = extract_payment_intent_id(event)
     with refusal_guard():
         await record_stripe_event(
             db,
@@ -289,5 +316,6 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -
             customer_id=customer_id,
             amount_cents=amount_cents,
             currency=currency,
+            payment_intent_id=payment_intent_id,
         )
-    return {"received": True}
+    return StripeWebhookResponse(received=True)

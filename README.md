@@ -90,18 +90,19 @@ The Claude CLI authenticates via the `~/.claude` directory on your host, which i
 Fill in the relevant sections of `.env` to activate each integration:
 
 - **Twitter/X** — Post social content
-- **SendGrid + IMAP** — Send cold emails (SendGrid is wired); read support inbox — advertised, not
-  implemented: the `IMAP_*` settings are not read by any code path
-- **Tavily** — Web search for competitor research — advertised, not implemented: `TAVILY_API_KEY`
-  is not read by any code path
+- **SendGrid** — Send cold emails and support replies (wired); the support inbox is filled via the
+  owner-authenticated `POST /api/v1/support/inbox` — there is no mail-poll (IMAP) setting
+- **Web search for competitor research** — no web-search key exists (the advertised-but-dead
+  settings were removed, D14): the agent reaches the web through the CLI's own WebSearch/WebFetch
+  tools
 - **Google Ads / Meta Ads** — Campaign management (advertised, not implemented:
   `GOOGLE_ADS_CLIENT_SECRET` is not read by any code path; the other Google Ads settings are)
-- **Stripe** — Revenue and expense tracking (advertised, not implemented:
-  `STRIPE_PUBLISHABLE_KEY` is not read by any code path — `STRIPE_SECRET_KEY` and
-  `STRIPE_WEBHOOK_SECRET` are)
+- **Stripe** — Revenue and expense tracking (`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`; there
+  is no client-side publishable-key setting)
 - **GitHub** — Open PRs from the code generation agent
-- **Deployment (Render)** — advertised, not implemented: `RENDER_API_KEY` is not read by any code
-  path (there is no Deployment agent — see `.env.example` and `docs/ACCEPTANCE_TESTING.md`)
+- **Deployment (Render)** — not implemented: there is no Deployment agent and never was (see
+  `docs/ACCEPTANCE_TESTING.md`); the dead environment placeholder for it was removed with the other
+  advertised-but-dead settings (D14)
 
 ## Known gaps (measured, not hidden)
 
@@ -137,17 +138,22 @@ quietly relaxed. Each one names its measurement.
   `outreach_service.record_sent_emails`, deduped by the provider's own id — SendGrid's `X-Message-Id`
   header, added by RD14), so a count at its cap now refuses the next send by name (`E_RATE_LIMITED`);
   pinned by `tests/unit/test_send_cap_producer_e2e.py` and
-  `tests/unit/celery/test_send_cap_producer_worker_e2e.py`. Residuals, named not hidden: channels with
+  `tests/unit/celery/test_send_cap_producer_worker_e2e.py`, with the customer_support leg included
+  (`tests/unit/celery/test_cs_send_cap_producer.py` — CS replies persist through the same producer
+  and are counted against the email channel's caps). Residuals, named not hidden: channels with
   no counting source — github, google_ads, meta_ads, stripe, render — have their configured caps refused
-  by name (`POLSIA-E114`, `cap_unknown`) instead of being read as zero sends; customer_support replies
-  are not yet counted; LinkedIn has no send adapter.)
-- **Nine advertised settings are read by no code path** (keep-as-reserved vs remove is an owner call):
-  `TASK_BATCH_SIZE`, `DB_BACKLOG_HOURS`, `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`, `TAVILY_API_KEY`,
-  `GOOGLE_ADS_CLIENT_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `RENDER_API_KEY`. Each carries a
-  `RESERVED — no consumer yet` label where it is defined, with its intended purpose named (R23), rather
-  than being left advertising. Three former members of this list are now honest: `DEBUG` and `LOG_JSON`
-  are consumed by `app/main.py` (R22), and `CELERY_WORKER_CONCURRENCY` is documented as owned by the
-  docker-compose launch command (`--concurrency=4`), not the app (R20/R23).
+  by name (`POLSIA-E114`, `cap_unknown`) instead of being read as zero sends; LinkedIn has no send
+  adapter.)
+- **The advertised-but-dead settings list is closed (owner decision D14, 2026-10-13).** Eight
+  settings no code path ever read were REMOVED — both references say they never existed: the
+  original upload (`polsia-src-dossier.md` §6: the same set was read by nothing there, and no mail-
+  poll or web-search variable was defined anywhere) and the live product (vendor-processed inbound
+  email, no web-search provider, managed Meta-only ads, internal hosting, no batch/backlog knobs).
+  Exactly two settings still have no reader, and both are deliberate and named:
+  `GOOGLE_ADS_CLIENT_SECRET` — RESERVED-labelled, kept because our google_ads channel exists (the
+  OAuth client secret of a client this deployment does not ship) — and
+  `CELERY_WORKER_CONCURRENCY`, documented as owned by the docker-compose launch command
+  (`--concurrency=4`), not the app (R20/R23). `DEBUG`/`LOG_JSON` are consumed by `app/main.py` (R22).
 
 ## Development
 
@@ -225,6 +231,13 @@ cd e2e && npm install && npx playwright install chromium
 BASE_URL=http://localhost npx playwright test     # needs the stack above answering at :80
 ```
 
+The fixture-seeding specs write to the SQLite lab DB the local backend serves from: set
+`E2E_SQLITE=/path/to/your/lab.sqlite` (or put the repo-relative, gitignored `<repo>/.e2e-lab.sqlite`
+in place) and they run; leave it unset and they **skip by name** instead of erroring — the CI stack
+is Postgres, so this is a local-lab contract only. `make e2e` / `make dev-e2e` export `E2E_SQLITE`
+only when it is already set (an exported empty string would defeat the unset-default), and
+`e2e/run-suite.sh` carries the full env contract.
+
 `e2e/_diag-browser.cjs` is a diagnostic, not a test (the runner only matches `*.spec.ts`): it prints what
 the browser actually saw — console errors, failed requests, every `/api/` status code and the rendered
 text — which is how a page that "renders" was shown to be rendering its failure state.
@@ -248,7 +261,7 @@ polsia/
 │   │   │   ├── code_generation/
 │   │   │   └── finance/
 │   │   ├── api/v1/          # REST endpoints + WebSocket
-│   │   ├── core/            # DB, Redis, ChromaDB, security, retry
+│   │   ├── core/            # DB, Redis, ChromaDB, events, security
 │   │   ├── models/          # SQLAlchemy ORM (17 tables)
 │   │   ├── schemas/         # Pydantic request/response models
 │   │   └── services/        # Business logic layer

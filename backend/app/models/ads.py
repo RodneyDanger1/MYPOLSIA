@@ -12,10 +12,12 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,6 +57,24 @@ class AdCampaign(Base):
     )
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+    # migration 0006 (D18/T19): the provider's own id is the honest natural key, scoped by platform.
+    # PARTIAL (`WHERE external_id IS NOT NULL`): legacy/manual rows without a provider ref stay legal
+    # and NULLs are distinct in a unique index on both dialects (SQLite partial-index doc: "A partial
+    # index definition may include the UNIQUE keyword ... requires every entry in the index to be
+    # unique"; PostgreSQL: "When the WHERE clause is present, a partial index is created").  Mapped
+    # here for the same reason 0005's two keys are mapped next door: `create_all` must describe the
+    # schema the chain ships, or the unit-test fixture hides the constraint the migration adds.
+    __table_args__ = (
+        Index(
+            "uq_ad_campaigns_platform_external_id",
+            "platform",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+            sqlite_where=text("external_id IS NOT NULL"),
+        ),
     )
 
 

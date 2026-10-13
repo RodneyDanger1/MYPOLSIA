@@ -53,6 +53,23 @@ making the retry key inert; L2-08: the run-artifact dedupes got their real keys 
 `43a976cec632bd66f97b3cae9819a8b7343ed65d3ea24c0eec567e48de6bc1f9` ->
 `41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (W1 tickets T03 + T19, 2026-10-13; D2 + D18): TWO deliberate schema moves,
+both carried by the SAME new revision `0006_statuses_and_keys.py` — exactly the "new alembic
+revision" this docstring demands.  (1) T03: `tasks.status` is escalated to
+`Enum(TaskStatus, native_enum=False, create_constraint=True, name="ck_tasks_status")`
+(the DDL type string stays `VARCHAR(50)`, so the column row is byte-identical) and
+`create_all` now renders the column's named CHECK, `CONSTRAINT ck_tasks_status CHECK (status IN
+('pending','in_progress','completed','failed','cancelled','awaiting_approval','rejected'))` —
+inside the `tasks` CREATE TABLE SQL, which is what changes the hash.  (2) T19: `ad_campaigns`
+gains the partial unique `uq_ad_campaigns_platform_external_id` on `(platform, external_id)
+WHERE external_id IS NOT NULL` (mapped so `create_all` and migration 0006 describe one schema,
+the 0005 precedent above) — the two rows' `indexes` field gains the name and the index set gains
+`('uq_ad_campaigns_platform_external_id', ('platform','external_id'), True)`.  No other row
+changed.  Old canonical sha256
+`41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce` ->
+`c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -71,7 +88,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "41deab2c2bf803959b7a75886c7499508c4379574c3579852c356e0a90c706ce"
+DDL_SHA256 = "c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -108,8 +125,10 @@ FROZEN_COLUMNS = {
     ),
     'ad_campaigns': (
         ('id', 'INTEGER', False, '', '', '', False),
-        ('platform', 'VARCHAR(50)', False, '', '', '', False),
-        ('external_id', 'VARCHAR(255)', True, '', '', '', False),
+        # T19: the two columns carry the partial unique `uq_ad_campaigns_platform_external_id`
+        # (0006); a multi-column unique index does not set the per-column `unique` flag.
+        ('platform', 'VARCHAR(50)', False, '', '', 'uq_ad_campaigns_platform_external_id', False),
+        ('external_id', 'VARCHAR(255)', True, '', '', 'uq_ad_campaigns_platform_external_id', False),
         ('name', 'VARCHAR(512)', False, '', '', '', False),
         ('goal', 'VARCHAR(255)', True, '', '', '', False),
         ('status', 'VARCHAR(50)', True, "'active'", 'active', '', False),
@@ -357,6 +376,8 @@ FROZEN_INDEXES = {
     ('uq_email_logs_sendgrid_id', ('sendgrid_id',), True),
     ('uq_social_posts_platform_tweet_id', ('platform', 'tweet_id'), True),
     ('ux_agent_runs_task_attempt', ('task_id', 'attempt'), True),
+    # T19/D18: the ad-campaign identity key (migration 0006)
+    ('uq_ad_campaigns_platform_external_id', ('platform', 'external_id'), True),
 }
 
 

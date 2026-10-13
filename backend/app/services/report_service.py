@@ -27,6 +27,9 @@ class _Unset:
     re-run with default arguments erased what an earlier run had written — `None` cannot
     mean both "not supplied" and "set to null".  The sentinel makes the two states
     distinct; an explicit `None` still clears the field (that is the replacement path).
+    D19 extends the same rule to the COUNTERS (`tasks_completed`/`tasks_failed` and the
+    morning plan's `tasks_planned`): a re-run that supplies no counts must not zero the
+    counts a previous run measured.
     """
 
     __slots__ = ()
@@ -72,11 +75,19 @@ async def save_morning_plan(
     db: AsyncSession,
     report_date: date,
     plan: str,
-    tasks_planned: int = 0,
+    tasks_planned: int | None | _Unset = _UNSET,
 ) -> DailyReport:
+    """Idempotent per date; the counter is written only when supplied (D19).
+
+    `tasks_planned` carried a bare `int = 0` default, so a re-run that supplied only the plan
+    text silently reset a measured count to 0 — the same "not supplied" vs "measured zero"
+    collapse the evening counters had.  The daily cycle always supplies the count, so the
+    production write is unchanged; an explicit `None` clears it (the column is nullable).
+    """
     report = await get_or_create_daily_report(db, report_date)
     report.morning_plan = plan
-    report.tasks_planned = tasks_planned
+    if not isinstance(tasks_planned, _Unset):
+        report.tasks_planned = tasks_planned
     report.updated_at = utcnow()
     await db.flush()
     return report
@@ -87,26 +98,31 @@ async def save_evening_summary(
     report_date: date,
     summary: str | None | _Unset = _UNSET,
     insights: list[str] | None | _Unset = _UNSET,
-    tasks_completed: int = 0,
-    tasks_failed: int = 0,
+    tasks_completed: int | None | _Unset = _UNSET,
+    tasks_failed: int | None | _Unset = _UNSET,
     metrics_snapshot: dict[str, Any] | None | _Unset = _UNSET,
 ) -> DailyReport:
-    """Idempotent per date; each OPTIONAL field is written only when supplied (M5).
+    """Idempotent per date; each OPTIONAL field is written only when supplied (M5 + D19).
 
     A re-run with default arguments must not erase what a previous run wrote, so
     `summary`/`insights`/`metrics_snapshot` default to the `_Unset` sentinel: not
     supplied -> left as-is; an explicit `None` still clears the field (the replacement
-    path).  The two task counters keep their documented `0` default — the daily cycle
-    supplies measured counts, and whether a re-run should EVER replace rather than merge
-    the counters is the recorded REQUESTS item, not this function's call.
+    path).  D19: the two task counters follow the SAME rule — they used to default to a
+    literal `0` and were assigned unconditionally, so a re-run that measured nothing zeroed
+    the completion/failure counts an earlier run had measured (the exact silent regression
+    the sentinel exists to prevent).  The daily cycle always supplies both counts, so the
+    production write is unchanged; an explicit `None` clears them (the columns are
+    nullable).
     """
     report = await get_or_create_daily_report(db, report_date)
     if not isinstance(summary, _Unset):
         report.evening_summary = summary
     if not isinstance(insights, _Unset):
         report.insights = list(insights or [])
-    report.tasks_completed = tasks_completed
-    report.tasks_failed = tasks_failed
+    if not isinstance(tasks_completed, _Unset):
+        report.tasks_completed = tasks_completed
+    if not isinstance(tasks_failed, _Unset):
+        report.tasks_failed = tasks_failed
     if not isinstance(metrics_snapshot, _Unset):
         report.metrics_snapshot = metrics_snapshot or {}
     report.updated_at = utcnow()

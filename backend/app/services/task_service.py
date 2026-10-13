@@ -16,16 +16,16 @@ motivated it (lane 06, `research/06-data-perf-business/DATA-PERF.md`):
    `INSERT ... ON CONFLICT (dedupe_key) DO NOTHING RETURNING id` — never a
    check-then-insert, which is a race by construction.
 
-Also here: `get_tasks_today_summary` is ONE grouped aggregate over
-`day_window(...)` (was two queries, and on PostgreSQL the original's naive-local
-window selected 0 of 303 rows for the same day — `matrix-s200k.json`
-`day_window_rowcounts`), and `get_agent_statuses` is ONE statement that returns
-exactly nine rows even on an empty database (the correlated-subquery form lane 06
-measured at 84.8 ms vs 692.5 ms for the grouped-aggregate variant).
+Also here: `get_agent_statuses` is ONE statement that returns exactly nine rows even on an
+empty database (the correlated-subquery form lane 06 measured at 84.8 ms vs 692.5 ms for the
+grouped-aggregate variant).  T13/D20 removed the two labelled zero-caller reads
+(`get_tasks_today_summary` — a duplicate of `GET /dashboard/summary`'s own statement — and
+`get_agent_run` — no run-detail surface); the day rollup and the single-run lookup both live
+where their consumers are.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -45,8 +45,8 @@ from app.core.errors import (
     PolsiaError,
 )
 from app.core.timeutil import as_bound_instant, day_window, dialect_name, today_in
-from app.models.task import AgentRun, Task
-from app.services.query_helpers import agent_rollup_expr, fetch_rows, fetch_scalar, fetch_scalars
+from app.models.task import AgentRun, Task, TaskStatus
+from app.services.query_helpers import fetch_rows, fetch_scalar, fetch_scalars
 
 VALID_AGENT_TYPES: tuple[str, ...] = (
     "orchestrator",
@@ -60,21 +60,12 @@ VALID_AGENT_TYPES: tuple[str, ...] = (
     "finance",
 )
 
-#: The `tasks.status` value set the writers assert.  RECONCILED with the SHIPPED
-#: `ck_tasks_status` CHECK (alembic/versions/0002_queue_and_perf.py:89-90:
-#: pending/in_progress/completed/failed/cancelled/awaiting_approval), so the tuple and the DDL
-#: cannot drift silently — `awaiting_approval` is in the CHECK because the approvals channel is
-#: a documented owner item, so the tuple mirrors the DDL, not the other way round (L1-09/L2-02:
-#: before this assertion existed the tuple was read by nothing and the two sets disagreed; an
-#: `Enum(native_enum=False)` escalation is a REQUESTS item, not a drive-by).
-VALID_TASK_STATUSES: tuple[str, ...] = (
-    "pending",
-    "in_progress",
-    "completed",
-    "failed",
-    "cancelled",
-    "awaiting_approval",
-)
+#: The `tasks.status` value set the writers assert — DERIVED from `TaskStatus` (D2), so this tuple
+#: and the column's own `Enum(native_enum=False, create_constraint=True)` CHECK cannot drift: the
+#: CHECK's value list comes from the same enum, and migration 0006 (which carries `rejected`) states
+#: the same list.  RECONCILED with the SHIPPED `ck_tasks_status` CHECK (alembic 0002:89-90 for the
+#: first six; `0006_statuses_and_keys.py` re-creates it with `rejected` appended, order preserved).
+VALID_TASK_STATUSES: tuple[str, ...] = tuple(member.value for member in TaskStatus)
 
 
 def is_valid_agent_type(agent_type: str) -> bool:
@@ -255,7 +246,11 @@ async def update_task_status(
     task = await get_task(db, task_id)
     if task is None:
         return None
-    task.status = status
+    # The value was validated against the same enum the column is built from, so this conversion
+    # cannot raise; it is what keeps the attribute typed (`Mapped[TaskStatus | None]`) while the
+    # service's public signature stays `status: str` — the F2 signature pin
+    # (tests/unit/celery/test_service_contract.py:172) is deliberately untouched.
+    task.status = TaskStatus(status)
     if result_summary is not None:
         task.result_summary = result_summary
     if error_message is not None:
@@ -381,7 +376,7 @@ async def claim_task(
         )
     raise PolsiaError(
         E_TASK_CLAIMED if current.claimed_by else E_TASK_NOT_RUNNABLE,
-        f"task {task_id} cannot be claimed: status={current.status!r}, "
+        f"task {task_id} cannot be claimed: status={str(current.status)!r}, "
         f"claimed_by={current.claimed_by!r}",
         how_to_fix=ERROR_HINTS[E_TASK_CLAIMED],
         context={"task_id": task_id, "status": current.status, "claimed_by": current.claimed_by},
@@ -429,7 +424,7 @@ async def heartbeat_task(db: AsyncSession, task_id: int, worker: str) -> Task:
         )
     raise PolsiaError(
         E_TASK_NOT_RUNNABLE,
-        f"task {task_id} is {current.status!r}; only an in_progress claim can be heartbeated",
+        f"task {task_id} is {str(current.status)!r}; only an in_progress claim can be heartbeated",
         how_to_fix=ERROR_HINTS[E_TASK_NOT_RUNNABLE],
         context={"task_id": task_id, "worker": str(worker), "status": current.status},
     )
@@ -515,59 +510,14 @@ async def requeue_stale_claims(
     return len((await db.execute(stmt)).scalars().all())
 
 
-# ── reads (get_agent_statuses is wired to /agents/status; the two lookups below are labelled)
-#    the "dashboard/agents screens depend on" claim that used to head this section was stale
-#    for get_tasks_today_summary — GET /dashboard/summary builds its own statement.
-
-
-async def get_tasks_today_summary(
-    db: AsyncSession,
-    day: date | None = None,
-    tz_name: str | None = None,
-) -> dict[str, Any]:
-    """Counts for the company-local day — ONE grouped aggregate.
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — nothing in app/,
-    celery_app/ or scripts/ calls it, and no test does either.  Intended purpose: the
-    company-local day rollup as a service-layer read; the shipped dashboard builds its OWN
-    statement (app/api/v1/dashboard.py:46-93), so the old "the dashboard/agents screens
-    depend on" note was false.  Removal vs adoption is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-
-    The window comes from `day_window(db, day, tz_name)` (company timezone,
-    dialect-correct half-open bounds); the original built a naive local midnight
-    with no upper bound, which on PostgreSQL selected 0 of 303 rows for the same
-    day when the process timezone differed from the session timezone.
-    """
-    local_day = day or today_in(tz_name)
-    start, end = day_window(db, day=local_day, tz_name=tz_name)
-    rollup = agent_rollup_expr(dialect_name(db), Task.agent_type)
-
-    rows = await fetch_rows(
-        db,
-        select(Task.status, func.count().label("n"), rollup.label("agents"))
-        .where(Task.created_at >= start, Task.created_at < end)
-        .group_by(Task.status),
-        what="tasks-today summary",
-    )
-
-    counts: dict[str, int] = {status: int(n) for status, n, _agents in rows}
-    agents: set[str] = set()
-    for _status, _n, group in rows:
-        if group:
-            agents.update(part for part in str(group).split(",") if part)
-
-    return {
-        "total": sum(counts.values()),
-        "completed": counts.get("completed", 0),
-        "pending": counts.get("pending", 0),
-        "failed": counts.get("failed", 0),
-        "in_progress": counts.get("in_progress", 0),
-        "cancelled": counts.get("cancelled", 0),
-        "active_agents": sorted(agents),
-        "day": local_day.isoformat(),
-    }
+# ── reads (get_agent_statuses is wired to /agents/status)
+#
+# T13/D20 removal — `get_tasks_today_summary` lived here.  It was a labelled zero-caller
+# (fix-5 §4; prod 0, tests 0) AND a duplicate: the shipped `GET /dashboard/summary` builds its
+# own `_summary_statement` (app/api/v1/dashboard.py:46-74, the same `agent_rollup_expr` rollup),
+# so deleting the service read takes nothing away from the product.  Its would-be wire model
+# `TasksTodaySummary` was removed in the same pass for the same reason.  Re-introducing either
+# needs a real consumer, not a mention.
 
 
 async def get_agent_statuses(db: AsyncSession, tz_name: str | None = None) -> list[dict[str, Any]]:
@@ -764,21 +714,10 @@ def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
-async def get_agent_run(db: AsyncSession, run_id: int) -> AgentRun | None:
-    """One run by id, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
-    `db.execute`).
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only caller is
-    `tests/unit/test_fs2_l2_06_query_helpers_discipline.py` (the L2-06 `E_DB` pin).  Intended
-    purpose: the single-run lookup a run-detail view or ops read would use; the shipped worker
-    addresses runs by the id `create_agent_run` returned and closes them through
-    `finish_agent_run`.  Removal vs adoption is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    return await fetch_scalar(
-        db, select(AgentRun).where(AgentRun.id == run_id), what=f"agent run {run_id}"
-    )
+# T13/D20 removal — `get_agent_run` lived here: a labelled zero-caller (fix-5 §4; prod 0, one
+# test) with no run-detail/ops route to serve, while the shipped worker addresses runs by the id
+# `create_agent_run` returned and closes them through `finish_agent_run`.  A single-run lookup
+# that no surface reads is dead weight; re-adding it needs a consumer first.
 
 
 __all__ = [
@@ -788,10 +727,8 @@ __all__ = [
     "create_agent_run",
     "create_task",
     "finish_agent_run",
-    "get_agent_run",
     "get_agent_statuses",
     "get_task",
-    "get_tasks_today_summary",
     "heartbeat_task",
     "is_valid_agent_type",
     "list_tasks",

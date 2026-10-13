@@ -240,35 +240,50 @@ def test_an_empty_payload_reports_measured_zeros_not_an_error(monkeypatch, queue
     assert queue_db.count("activity_log", "action = ?", ("run_artifacts_not_persisted",)) == 0
 
 
-# ── 5. PINNED (not hidden): the schema cannot carry revenue_usd, so persisted roas reads 0 ────
+# ── 5. T09/D17: the schema NOW carries revenue_usd, so the persisted roas is computed ────────
 
 
-def test_the_cli_schema_drops_revenue_usd_so_the_persisted_roas_reads_the_zero_default(
+def test_reported_revenue_survives_validation_and_drives_the_engine_computed_roas(
     monkeypatch, queue_db, execute_body
 ):
-    """The residual the R33 receipt carries as a REQUESTS item, pinned so it cannot be
-    forgotten: `AdMetricRow` (`app/schemas/agent_outputs.py:307-316`) has no `revenue_usd`
-    field, and Pydantic drops unknown keys — so the agent's REPORTED roas (2.0 below) never
-    reaches the writer, and the row's ENGINE-computed roas reads the column's 0 default.
-    When the schema gains the field, this pin flips — it asserts today's truth, not a contract.
+    """T09/D17 pin — REPAIRED, old→new recorded.
+
+    OLD (R33's residual pin, now closed): `AdMetricRow` had no `revenue_usd`, Pydantic dropped
+    the unknown key, the writer persisted the column's 0 default and the engine-computed `roas`
+    read 0 — asserted as `revenue_usd == 0` / `roas == 0` with the note "when the schema gains
+    the field, this pin flips".
+
+    NEW (D17): the field exists, so the agent's reported revenue survives validation, reaches
+    `record_ads_run`'s money loop and lands in the `Numeric(14,4)` column; `roas` is a GENERATED
+    column (`models/ads.py`), so the engine computes it from that revenue — the value a model
+    reports for `roas` remains a display figure the row does not store.
+
+    The second metric has NO `revenue_usd` key: not-reported stays the column's own default
+    (a measured 0 the writer never fabricates), which is the F-11 rule this pin keeps.
     """
     from app.schemas.agent_outputs import AdMetricRow
 
-    assert "revenue_usd" not in AdMetricRow.model_fields, (
-        "the schema now carries revenue_usd: the R33 REQUESTS item is done — update this pin and "
-        "assert the engine-computed roas instead"
+    assert "revenue_usd" in AdMetricRow.model_fields, (
+        "D17 added revenue_usd to AdMetricRow; this pin asserts the persisted consequences"
     )
 
     _arm_mock_cli(monkeypatch, {
-        "summary": "a metric whose reported roas has no revenue input in the schema",
+        "summary": "two metric days: one with reported revenue, one without",
         "campaigns": [CAMPAIGN],
-        "metrics": [dict(METRIC_D1, revenue_usd=25.0)],  # the agent's extra key: dropped
+        "metrics": [dict(METRIC_D1, revenue_usd=30.0), METRIC_D2],
     })
     assert execute_body(_ads_run(queue_db, "roas"))["status"] == "completed"
 
     _, metrics = _read_via_services(queue_db)
-    assert metrics[0].revenue_usd == Decimal("0.0000"), "dropped by validation, never fabricated"
-    assert metrics[0].roas == Decimal("0.000000"), "generated from the 0-default revenue column"
-    # …while the run's own report still says what the agent reported (the two are honestly apart)
+    by_date = {metric.date.isoformat(): metric for metric in metrics}
+    reported = by_date["2026-10-12"]
+    unreported = by_date["2026-10-13"]
+
+    assert reported.revenue_usd == Decimal("30.0000"), "the reported revenue crosses to the column"
+    assert reported.roas == Decimal("2.400000"), "the engine computes roas from 30 / 12.5"
+    assert unreported.revenue_usd == Decimal("0.0000"), "not reported -> the column default"
+    assert unreported.roas == Decimal("0.000000"), "no revenue input -> the engine's 0"
+
+    # …and the run's own report now carries the key the schema declares (it used to be dropped)
     stored_metric = _latest_run_output(queue_db)["metrics"][0]
-    assert stored_metric["roas"] == 2.0 and "revenue_usd" not in stored_metric
+    assert stored_metric["revenue_usd"] == 30.0

@@ -6,7 +6,6 @@
 # Compose floor: `!override` requires Compose >= 2.24.4 (`!reset` >= 2.24.0).  GitHub's ubuntu-latest
 # runners ship Compose v2.2x+, so the tag is safe there; on an older Compose use the pre-2.24 escape
 # hatch instead — move the base file's `~/.claude` bind into a LOCAL docker-compose.override.yml.
-version: "3.9"
 
 services:
   backend:

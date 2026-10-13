@@ -25,26 +25,6 @@ class SocialPostResponse(ORMModel):
     created_at: datetime | None = None
 
 
-class SocialEngagementResponse(ORMModel):
-    """The would-be `/social/engagements` row shape.
-
-    ZERO CONSUMERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — no route serves
-    engagements, and the service read it would serialise
-    (`social_service.list_engagements`) is itself a labelled zero-caller (L2-04).  Wiring the
-    pair vs deleting them is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §2).
-    """
-
-    id: int
-    mention_id: str | None = None
-    author_handle: str | None = None
-    content: str | None = None
-    our_reply: str | None = None
-    reply_id: str | None = None
-    created_at: datetime | None = None
-
-
 class ProspectResponse(ORMModel):
     """`status` is NULLABLE in the frozen schema (`models/outreach.py`; `0001`'s
     `CREATE TABLE prospects` carries `server_default='new'` but no `NOT NULL`), so a raw-SQL/ops

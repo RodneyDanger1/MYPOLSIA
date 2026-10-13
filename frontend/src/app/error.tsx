@@ -14,7 +14,23 @@ import { useEffect } from "react";
  *
  * Dependency-free on purpose: if a dependency is what broke, the boundary must not need it
  * to render.  No key material is involved anywhere — nothing is sent over the network here.
+ * The X-Request-ID is read off the error the boundary RECEIVED (duck-typed below): an app-router
+ * error boundary is a Client Component, and Next exposes no request headers to one (nextjs docs,
+ * file-conventions/error: "'use client' — Error boundaries must be Client Components").
  */
+
+/** The server's `X-Request-ID` for the failed call, when the error carries one (fix-5 §1 / T15c).
+ *
+ *  Duck-typed on purpose: the id arrives attached to a client-thrown `ApiError.requestId` (see
+ *  lib/api.ts), and this boundary must not import anything to read it.  A blank/whitespace-only
+ *  value is treated as ABSENT — the page must never render an empty id shell (the same
+ *  blank-field guard api.ts applies to the X-API-Key header).
+ */
+function requestIdOf(error: Error): string | null {
+  const carried = (error as Error & { requestId?: unknown }).requestId;
+  return typeof carried === "string" && carried.trim() !== "" ? carried.trim() : null;
+}
+
 export default function Error({
   error,
   reset,
@@ -26,6 +42,8 @@ export default function Error({
     // The real error stays visible (rendered below) and is reported once to the console.
     console.error("Unhandled render error:", error);
   }, [error]);
+
+  const requestId = requestIdOf(error);
 
   return (
     <div className="p-6 max-w-2xl space-y-4">
@@ -55,9 +73,20 @@ export default function Error({
           Reload the page
         </button>
       </div>
-      <p className="text-gray-500 text-xs">
-        If it keeps happening, the backend log for this request (X-Request-ID) has the server side.
-      </p>
+      {requestId ? (
+        // The id NAMES the request instead of telling the user to hunt for it (fix-5 §1).
+        <p className="text-gray-500 text-xs">
+          If it keeps happening, the backend log for this request (X-Request-ID{" "}
+          <span data-testid="request-id" className="text-gray-300 font-mono">
+            {requestId}
+          </span>
+          ) has the server side.
+        </p>
+      ) : (
+        <p className="text-gray-500 text-xs">
+          If it keeps happening, the backend log for this request (X-Request-ID) has the server side.
+        </p>
+      )}
     </div>
   );
 }

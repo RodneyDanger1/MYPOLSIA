@@ -39,7 +39,7 @@ from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, tod
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.task import AgentRun
-from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
+from app.services.query_helpers import db_refusal, fetch_scalars
 
 
 def money(value: Any) -> Decimal | None:
@@ -60,6 +60,51 @@ def money(value: Any) -> Decimal | None:
     return Decimal(str(value))
 
 
+#: Stripe event types whose `data.object` is a failed payment.  The finance agent's
+#: failed-payment reader (`recent_failed_payments`) looks at exactly these; a delivery of any
+#: other type is still recorded, it just is not a "failed payment" record.
+FAILED_PAYMENT_EVENT_TYPES: tuple[str, ...] = (
+    "charge.failed",
+    "invoice.payment_failed",
+    "payment_intent.payment_failed",
+)
+
+
+def extract_payment_intent_id(event: Any) -> str | None:
+    """The Stripe PaymentIntent id (`pi_…`) a refund for this delivery would need — or `None`.
+
+    Shape-driven, because that is all the delivery carries (Stripe's own object reference,
+    fetched 2026-10-13):
+
+    * a `charge` object carries *"payment_intent … ID of the PaymentIntent associated with this
+      charge, **if one exists**"* — so its absence is legal and answers `None` (never the charge
+      id: `ch_…` is not a refund target for `integrations.refund_payment`, which refuses any
+      non-`pi_` id BY NAME);
+    * an `invoice` object carries *"payment_intent … The PaymentIntent associated with this
+      invoice"* (null until the invoice is finalised) — same rule;
+    * a `payment_intent` object IS the PaymentIntent: its own `id` is the answer (detected first
+      by `object == "payment_intent"`, and by the `pi_` prefix as a secondary signal).
+
+    Anything else — a non-dict payload, a missing `data.object`, an unrelated object — is `None`.
+    Nothing is fabricated or coerced from another id type; `None` is the honest "not measured"
+    the reader and the agent's refusal both expect.
+    """
+    if not isinstance(event, dict):
+        return None
+    data = event.get("data")
+    data_object = data.get("object") if isinstance(data, dict) else None
+    if not isinstance(data_object, dict):
+        return None
+    candidate = data_object.get("payment_intent")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    if data_object.get("object") == "payment_intent":
+        own_id = data_object.get("id")
+        if isinstance(own_id, str) and own_id.strip():
+            return own_id.strip()
+    return None
+
+
 def _month_bounds(month: date | None) -> tuple[date, date]:
     """[first of month, first of next month) — half-open, so the range is bounded.
 
@@ -76,27 +121,6 @@ def _month_bounds(month: date | None) -> tuple[date, date]:
     start = (month or today_in()).replace(day=1)
     end = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
     return start, end
-
-
-async def get_latest_revenue_snapshot(db: AsyncSession) -> RevenueSnapshot | None:
-    """Newest snapshot, or `None`; a failed read is a named `E_DB` (L2-06 — was a raw
-    `db.execute`, so a database outage answered a codeless 500).
-
-    ZERO PRODUCTION CALLERS (fix-5 sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/full-sweep/fix-5/raw/greps_zero_consumer.txt) — the only caller is
-    `tests/unit/test_fs2_l2_06_query_helpers_discipline.py` (the L2-06 `E_DB` pin); the
-    shipped summary embeds its own latest-snapshot scalar subquery, so no route needs a
-    second round trip for it.  Intended purpose: a single-row snapshot lookup for a detail
-    view or ops read.  Removal vs adoption is an owner decision
-    (polsia-work/build/full-sweep/fix-5/REQUESTS.md §4).
-    """
-    return await fetch_scalar(
-        db,
-        select(RevenueSnapshot)
-        .order_by(RevenueSnapshot.snapshot_date.desc(), RevenueSnapshot.id.desc())
-        .limit(1),
-        what="latest revenue snapshot",
-    )
 
 
 async def list_revenue_snapshots(db: AsyncSession, limit: int = 30) -> list[RevenueSnapshot]:
@@ -562,6 +586,7 @@ async def record_stripe_event(
     amount_cents: int | None = None,
     currency: str | None = None,
     status: str = "processed",
+    payment_intent_id: str | None = None,
 ) -> StripeEvent | None:
     """Persist a Stripe event EXACTLY once.  Returns the row (new or existing).
 
@@ -570,6 +595,17 @@ async def record_stripe_event(
     would surface as a 5xx and trigger Stripe's retry storm.  When the insert
     conflicts, the existing row is re-read and returned (idempotent success, not a
     fake new row).
+
+    `payment_intent_id` (T14/D21) is the refundable id the webhook extracted from the
+    delivery's shape (`extract_payment_intent_id`).  When it is present it is persisted as ONE
+    Polsia-owned sibling key on the stored payload — `raw_payload["_polsia"]["payment_intent_id"]`
+    — because `stripe_events` carries no dedicated column in this lane's ownership (models/alembic
+    are another seat's files) and the verbatim Stripe event must stay byte-for-byte under its own
+    keys.  A shape that carries NO PaymentIntent writes no annotation at all: the verbatim event
+    says so (its `payment_intent` field is null/absent) and the reader re-derives the answer with
+    the same extractor — writing a `null` there would claim an extraction for every row whose
+    caller never ran one.  Rows written by other paths (raw SQL, older writers) behave the same:
+    `recent_failed_payments` extracts from the verbatim event.
     """
     if not stripe_event_id:
         raise PolsiaError(
@@ -577,6 +613,18 @@ async def record_stripe_event(
             "stripe_event_id is empty: the event cannot be de-duplicated",
             how_to_fix="reject events without an id at the webhook boundary",
         )
+    stored_payload: dict[str, Any] | None = raw_payload
+    if isinstance(raw_payload, dict) and payment_intent_id is not None:
+        # Copy-on-write: the caller's event object is never mutated, and the verbatim keys stay
+        # untouched — the annotation rides beside them under a key Stripe does not use.
+        annotation = raw_payload.get("_polsia")
+        stored_payload = {
+            **raw_payload,
+            "_polsia": {
+                **(annotation if isinstance(annotation, dict) else {}),
+                "payment_intent_id": payment_intent_id,
+            },
+        }
     insert_fn = pg_insert if dialect_name(db) == "postgresql" else sqlite_insert
     stmt = (
         insert_fn(StripeEvent)
@@ -587,7 +635,7 @@ async def record_stripe_event(
             amount_cents=amount_cents,
             currency=(currency.lower() if currency else None),
             status=status,
-            raw_payload=raw_payload,
+            raw_payload=stored_payload,
         )
         .on_conflict_do_nothing(index_elements=["stripe_event_id"])
         .returning(StripeEvent)
@@ -608,15 +656,75 @@ async def record_stripe_event(
     )
 
 
+def _persisted_payment_intent_id(row: StripeEvent) -> str | None:
+    """The refundable id recorded on a `stripe_events` row — annotation first, event fallback.
+
+    The annotation (`raw_payload["_polsia"]["payment_intent_id"]`, written by the webhook when it
+    really extracted one) is preferred because it was taken at INGEST from a delivery we saw
+    whole.  Everything else — a shape that carried none (no annotation by design), a row written
+    by another path (raw SQL/ops, a pre-T14 writer) — is answered by re-reading the verbatim event
+    through the same extractor: the id is durably there (fix-5 §8) and this is the code path that
+    finally reads it.  Honest `None` when neither answers.
+    """
+    payload = row.raw_payload
+    if not isinstance(payload, dict):
+        return None
+    annotation = payload.get("_polsia")
+    if isinstance(annotation, dict):
+        recorded = annotation.get("payment_intent_id")
+        if isinstance(recorded, str) and recorded.strip():
+            return recorded.strip()
+    return extract_payment_intent_id(payload)
+
+
+async def recent_failed_payments(db: AsyncSession, limit: int = 20) -> list[dict[str, Any]]:
+    """The failed-payment records the FINANCE AGENT consumes — newest first.
+
+    WHY this exists (T14/D21, fix-5 §8): `stripe_events` had a producer (the webhook) and no
+    consumer — the refundable `pi_…` id sat in `raw_payload` with *"NO code path that reads it
+    into the finance agent's context"*, so a model could never emit a real `pi_` id and the
+    refund adapter's fail-closed guard was the only thing the refund path could ever reach.  This
+    is the read half: each record carries the id a refund needs, or an honest `None` (the shape
+    carried none / it is not a `pi_` id), which the agent turns into a NAMED refusal instead of a
+    fabricated one.
+
+    Shape (one dict per row, JSON-ready so it can ride a task's `metadata`):
+    `{event_id, event_type, payment_intent_id, amount_cents, currency, customer_id, occurred_at}`.
+    Only `FAILED_PAYMENT_EVENT_TYPES` are read; a dead read is a named `E_DB`.
+    """
+    rows = await fetch_scalars(
+        db,
+        select(StripeEvent)
+        .where(StripeEvent.event_type.in_(FAILED_PAYMENT_EVENT_TYPES))
+        .order_by(StripeEvent.id.desc())
+        .limit(limit),
+        what="failed stripe events",
+    )
+    return [
+        {
+            "event_id": row.stripe_event_id,
+            "event_type": row.event_type,
+            "payment_intent_id": _persisted_payment_intent_id(row),
+            "amount_cents": row.amount_cents,
+            "currency": row.currency,
+            "customer_id": row.customer_id,
+            "occurred_at": row.processed_at.isoformat() if row.processed_at is not None else None,
+        }
+        for row in rows
+    ]
+
+
 __all__ = [
+    "FAILED_PAYMENT_EVENT_TYPES",
+    "extract_payment_intent_id",
     "get_ai_spend_summary",
     "get_finance_summary",
-    "get_latest_revenue_snapshot",
     "list_expenses",
     "list_revenue_snapshots",
     "list_stripe_events",
     "money",
     "persist_finance_run",
+    "recent_failed_payments",
     "record_expense",
     "record_stripe_event",
     "upsert_revenue_snapshot",

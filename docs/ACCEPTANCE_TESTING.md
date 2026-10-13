@@ -67,7 +67,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 |---|---|
 | `dashboard.spec.ts` | Dashboard loads, metrics visible, activity feed present |
 | `agents.spec.ts` | Trigger agent button → task appears in list |
-| `settings.spec.ts` | Update company config, verify saved |
+| `settings.spec.ts` | Company profile + scheduler sections load; the failure state stays absent (the blank-API-key regression guard) — and when a config-load failure is rendered, the failure and its real reason are both named (`role="alert"`) |
 
 ---
 
@@ -141,10 +141,11 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 
 > **Not implemented in this repository.** This section documents a capability this repository does
 > not implement: there is no Deployment agent class, no Render client, no `/api/v1/deployments*`
-> route, no `deployments` table and no test for any of it. The only traces that exist are the draft
-> schema in `app/schemas/agent_outputs.py` (deliberately not in the agent registry) and the
-> `RENDER_API_KEY` placeholder in `.env.example`. The rows below are a specification for future
-> work, kept rather than erased so the design record survives.
+> route, no `deployments` table and no test for any of it. The only trace that exists is the draft
+> schema in `app/schemas/agent_outputs.py` (deliberately not in the agent registry); the dead
+> environment placeholder in `.env.example` was removed by the 2026-10-13 owner decision — the
+> never-implemented integration no longer advertises config. The rows below are a specification for
+> future work, kept rather than erased so the design record survives.
 
 | Feature | Acceptance criteria | Test type |
 |---|---|---|

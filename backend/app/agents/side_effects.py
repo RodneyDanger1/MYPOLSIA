@@ -27,6 +27,7 @@ from app.agents.policy_firewall import (
     PolicyDecision,
     RateCaps,
     RunTaint,
+    current_run_approval,
     current_run_taint,
     decide,
     enforce,
@@ -48,6 +49,24 @@ def _resolve_taint(taint: RunTaint | None) -> RunTaint | None:
     as it did before this change.
     """
     return taint if taint is not None else current_run_taint()
+
+
+def _resolve_approval(explicit_secret: bytes, explicit_token: str) -> tuple[bytes, str]:
+    """The (secret, token) a side-effect request must carry: explicit values first, else the RUN's.
+
+    D1/T02 — the consumer half of the approval channel, in the exact shape `_resolve_taint` uses:
+    `agent_tasks._execute_agent_task` publishes the run's `RunApproval` (the operator's
+    `settings.approval_secret` + the task's supplied token) on the `RUN_APPROVAL` contextvar, so a
+    gated action reached from ANY of the six agents verifies against it without a per-agent edit.
+    Each leg resolves independently: an explicit non-empty argument still WINS (every existing
+    caller/test keeps its behaviour), and a run that published nothing resolves to the literal
+    pre-channel values (`b""`, `""`) — "no approval channel", which `decide()` treats as its
+    fail-closed DENY, never as a fabricated secret or a default token.
+    """
+    published = current_run_approval()
+    secret = explicit_secret or (published.secret if published is not None else b"")
+    token = explicit_token or (published.token if published is not None else "")
+    return secret, token
 
 
 def _resolve_sandbox_mode(sandbox_mode: bool | None) -> bool:
@@ -144,10 +163,15 @@ def request_side_effect(
     `taint` is the run's taint when the caller passes it explicitly, else whatever
     `context_assembler.assemble()` published for THIS run (`_resolve_taint`).
 
+    `approval_secret`/`approval_token` resolve the same way (`_resolve_approval`): an explicit
+    argument wins, else the run's published `RunApproval` (D1/T02).  With neither, both stay
+    `b""`/`""` — no approval channel — exactly as before the channel existed.
+
     Raises the named refusal for a policy/rate/kill denial (an agent must not continue past a
     real denial). Returns an outcome carrying `sandboxed=True` for a sandbox denial — the caller
     then records a labelled draft instead of performing the action.
     """
+    approval_secret, approval_token = _resolve_approval(approval_secret, approval_token)
     req = ActionRequest(
         agent_type=agent_type,
         action_class=action_class,
@@ -257,7 +281,13 @@ def evaluate_side_effect(
     customer_support proposing a refund: money never moves from the support agent (its capability
     has no `external_irreversible` class), so the decision is attached to the output as a named
     refusal and escalated, instead of raising and killing the run.
+
+    `approval_secret` resolves like `request_side_effect`: explicit argument first, else the run's
+    published `RunApproval` (D1/T02), else the pre-channel `b""` — the decision object is what the
+    caller records, so a run WITH a secret reports `REQUIRE_APPROVAL` (owner can mint a token) while
+    a run without one keeps the fail-closed DENY.
     """
+    approval_secret, _token = _resolve_approval(approval_secret, "")
     return decide(
         ActionRequest(
             agent_type=agent_type,
