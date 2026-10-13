@@ -31,13 +31,26 @@ https://api-docs.deepseek.com/api/create-chat-completion):
   * JSON output: `response_format={"type": "json_object"}`; the docs WARN the model must ALSO be
     instructed to emit JSON via a system or user message (else it can emit unbounded whitespace
     until the token cap) — every schema request therefore carries that instruction and the schema;
-  * `finish_reason == "length"` is truncation and is reported as a FAILURE, never as success;
+  * `finish_reason == "length"` is truncation and is reported as a FAILURE, never as success; the
+    adjacent documented shapes are equally never a success (RD13): `content_filter` ("content was
+    omitted due to a flag from our content filters"), `insufficient_system_resource` ("the request
+    is interrupted due to insufficient resource of the inference system") and `aborted` ("the
+    generation was interrupted") each map to their own named failure subtype
+    (`error_max_tokens` / `error_content_filter` / `error_overloaded` / `error_aborted`);
   * `thinking` / `reasoning_effort`: canonicalized (minimal->low, medium/xhigh->high); effort
     `none` disables thinking (the fleet's deterministic JSON runs want no hidden reasoning pass).
 
 Honesty rules (repo-wide): every failure is a NAMED refusal, a truncated response is never a
 success, and no envelope key is fabricated — absent measurements stay absent (NULL-vs-zero rule
 in `accounting._int_or_none`); no cost is invented because DeepSeek returns tokens, not money.
+
+RD13 hardening (all inside the same frozen contract): unknown HTTP statuses classify by family
+(>=500 -> `error_server_error`, retried; everything else -> `error_invalid_request`, NOT retried)
+instead of borrowing the transport marker; `usage` values that are not real integers stay
+UNMEASURED (None) so a provider type slip cannot crash the accounting consumer; a misconfigured
+`DEEPSEEK_BASE_URL` is a named `E_VALIDATION` refusal, never a raw httpx `ValueError` escaping the
+runtime; and every response snippet is scrubbed of the key (an endpoint that echoes the
+Authorization header must not smuggle it into a logged failure envelope).
 """
 from __future__ import annotations
 
@@ -51,6 +64,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -100,6 +114,50 @@ _STATUS_SUBTYPES: dict[int, str] = {
     502: "error_server_error",
     503: "error_overloaded",
     504: "error_timeout",
+}
+
+
+def _subtype_for_status(status_code: int) -> str:
+    """Subtype for any non-200 response: exact table first, then the documented families.
+
+    RD13: `error_api_error` is the TRANSPORT-fault marker (`claude_cli.TRANSIENT_SUBTYPE_MARKERS`
+    reads it as retryable), so it must not stand in for unknown statuses — a 404 (wrong base URL),
+    a 3xx or a 418 would be retried without a request ever reaching a model. Unknown >=500 servers
+    ARE transient and keep the same classification 500/502 already get; every other unknown status
+    is a client-side condition (our request or the URL is wrong) and must NOT be retried.
+    (409/425 stay retryable through `claude_cli.TRANSIENT_HTTP_STATUS`, which reads the status.)
+    """
+    if status_code in _STATUS_SUBTYPES:
+        return _STATUS_SUBTYPES[status_code]
+    return "error_server_error" if status_code >= 500 else "error_invalid_request"
+
+
+#: `finish_reason` values that mean the completion is NOT the model's finished answer: the named
+#: failure subtype each maps to, plus why. Docs enum: stop | length | content_filter | tool_calls |
+#: insufficient_system_resource | aborted. `error_overloaded` carries the `overloaded` marker, so
+#: the EXISTING retry classifier treats resource pressure as transient; the others carry no
+#: transient marker (the same prompt/context should not be re-run blindly). `stop`/`tool_calls`
+#: are absent on purpose: those replies carry text that can legitimately be the answer (a
+#: tool_calls reply with NULL content is refused as E_CLI_JSON below — this runtime never
+#: requests tools, so such a reply is off-contract).
+_INCOMPLETE_FINISH_REASONS: dict[str, tuple[str, str]] = {
+    "length": (
+        "error_max_tokens",
+        "truncated at the output-token cap — raise the output budget or shrink the requested payload",
+    ),
+    "content_filter": (
+        "error_content_filter",
+        "output omitted by the provider's content filter — rewrite the prompt; the same prompt "
+        "will be filtered again",
+    ),
+    "insufficient_system_resource": (
+        "error_overloaded",
+        "interrupted by insufficient inference resources on the provider side — a retry may succeed",
+    ),
+    "aborted": (
+        "error_aborted",
+        "the generation was interrupted before completion — re-run the task",
+    ),
 }
 
 _JSON_INSTRUCTION = (
@@ -296,8 +354,26 @@ def _timeout_seconds() -> int:
 
 
 def _base_url() -> str:
+    """The configured base URL, validated UP FRONT (RD13).
+
+    A value without a scheme (`api.deepseek.com` — a plausible copy/paste of the docs host) only
+    fails deep inside httpx, as a raw `ValueError` that escapes `invoke` and the retry ladder
+    (which re-raises anything that is not `PolsiaError`/`E_CLI_TIMEOUT`) into the worker as an
+    unhandled exception. A configuration fault must be a NAMED refusal at the boundary that reads
+    the configuration, so the scheme and the host are checked here.
+    """
     value = str(_setting("deepseek_base_url", DEEPSEEK_DEFAULT_BASE_URL) or "").strip().rstrip("/")
-    return value or DEEPSEEK_DEFAULT_BASE_URL
+    value = value or DEEPSEEK_DEFAULT_BASE_URL
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"deepseek base url {value!r} is not a usable http(s) URL "
+            f"(scheme {parsed.scheme!r}, host {parsed.netloc!r})",
+            how_to_fix="set DEEPSEEK_BASE_URL to the documented https://api.deepseek.com",
+            context={"value": value},
+        )
+    return value
 
 
 def _request_headers(api_key: str) -> dict[str, str]:
@@ -393,6 +469,33 @@ def _body_snippet(response: httpx.Response, limit: int = 400) -> str:
     return text[:limit] if len(text) > limit else text
 
 
+def _usage_int(usage_raw: dict[str, Any], key: str) -> int | None:
+    """A token measurement from the provider's `usage` object, or None (UNMEASURED).
+
+    The docs type these fields as integers; this function is the boundary against whatever a
+    provider/proxy actually sent. A non-integer (string, list, dict, bool) would ride into the
+    envelope and crash the consumer — `accounting._int_or_none` runs `int(value)` inside
+    `base_agent._finish_call` on an otherwise-SUCCESSFUL run (`int("n/a")` -> ValueError). So a
+    non-integer collapses to None (absent measurement, per the NULL-vs-zero rule) — never a
+    coerced value and never a fabricated 0.
+    """
+    value = usage_raw.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _redact(text: str, secret: str) -> str:
+    """Defense in depth: no envelope this runtime emits may contain the key verbatim.
+
+    A broken or hostile endpoint can echo the Authorization header back in an error body; that
+    snippet becomes `result`/`stderr` on the failure envelope and, via `base_agent._finish_call`,
+    the recorded run error. Scrub it exactly like `secret_store.verify_deepseek_key` scrubs its
+    details.
+    """
+    if secret and secret in text:
+        return text.replace(secret, "(key hidden)")
+    return text
+
+
 # ── invoke ───────────────────────────────────────────────────────────────────────────────────
 
 def invoke(
@@ -457,14 +560,27 @@ def invoke(
             model=model_id,
             api_status=None,
         )
+    except (ValueError, httpx.InvalidURL) as exc:
+        # httpx raises a plain ValueError / InvalidURL for URL shapes it cannot build a request
+        # from at all (`http://` with no host, a non-numeric port). That is a configuration fault
+        # (RD13): name it instead of letting a raw httpx exception escape the runtime.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"deepseek request could not be sent: {type(exc).__name__}: {exc}",
+            how_to_fix="check DEEPSEEK_BASE_URL (documented value: https://api.deepseek.com)",
+            context={"url": url, "runtime": "deepseek"},
+        ) from None
     finally:
         if own_client:
             http.close()
 
     if response.status_code != 200:
         return _failure_result(
-            subtype=_STATUS_SUBTYPES.get(response.status_code, "error_api_error"),
-            detail=f"deepseek HTTP {response.status_code}: {_body_snippet(response) or 'no body'}",
+            subtype=_subtype_for_status(response.status_code),
+            detail=_redact(
+                f"deepseek HTTP {response.status_code}: {_body_snippet(response) or 'no body'}",
+                key,
+            ),
             started=started,
             model=model_id,
             api_status=response.status_code,
@@ -475,7 +591,11 @@ def invoke(
     except ValueError:
         raise PolsiaError(
             E_CLI_JSON,
-            f"deepseek API returned HTTP 200 with a non-JSON body: {_body_snippet(response, 200)!r}",
+            _redact(
+                f"deepseek API returned HTTP 200 with a non-JSON body: "
+                f"{_body_snippet(response, 200)!r}",
+                key,
+            ),
             how_to_fix="check for a proxy/portal in front of api.deepseek.com; retry once, then report",
             context={"url": url, "runtime": "deepseek"},
         ) from None
@@ -500,9 +620,16 @@ def invoke(
     content_raw = message.get("content")
     finish_reason = str(choice.get("finish_reason") or "")
     if not isinstance(content_raw, str):
-        if finish_reason == "length":
-            content_raw = ""  # truncated before any text was emitted (e.g. mid-reasoning)
+        if finish_reason in _INCOMPLETE_FINISH_REASONS:
+            # Stopped before any text was emitted (e.g. mid-reasoning, filtered, aborted): still
+            # an incomplete response, reported as the named failure below — never E_CLI_JSON, and
+            # never a success.
+            content_raw = ""
         else:
+            # Off-contract completion (docs type assistant `content` as string|null): the
+            # content-parts LIST shape is documented for REQUEST messages only, so a proxy
+            # echoing it back is refused by name rather than guessed at. A `tool_calls` reply
+            # with null content lands here too — this runtime never requests tools.
             raise PolsiaError(
                 E_CLI_JSON,
                 "deepseek response choices[0].message.content is missing or not a string",
@@ -514,21 +641,25 @@ def invoke(
     usage_scalar = payload.get("usage")
     usage_raw = usage_scalar if isinstance(usage_scalar, dict) else {}
     envelope_usage = {
-        "input_tokens": usage_raw.get("prompt_tokens"),
-        "output_tokens": usage_raw.get("completion_tokens"),
-        "cache_read_input_tokens": usage_raw.get("prompt_cache_hit_tokens"),
+        "input_tokens": _usage_int(usage_raw, "prompt_tokens"),
+        "output_tokens": _usage_int(usage_raw, "completion_tokens"),
+        "cache_read_input_tokens": _usage_int(usage_raw, "prompt_cache_hit_tokens"),
     }
 
-    if finish_reason == "length":
-        # Truncation is NOT a success: the JSON (or prose) is incomplete. Report it as a named
-        # failure envelope (subtype error_max_tokens -> ENVELOPE_IS_ERROR, not retryable: the
-        # same prompt would truncate again; the fix is a bigger output budget or a smaller ask).
+    incomplete = _INCOMPLETE_FINISH_REASONS.get(finish_reason)
+    if incomplete is not None:
+        # Truncation — and the adjacent documented shapes (content filter, resource pressure, an
+        # aborted generation) — is NOT a success: the JSON (or prose) is incomplete/omitted and
+        # nothing may be fabricated from it. `error_max_tokens` (length) stays non-retryable: the
+        # same prompt would truncate again; `error_overloaded` (resource pressure) is retryable
+        # through the existing marker list.
+        subtype, why = incomplete
         return _failure_result(
-            subtype="error_max_tokens",
+            subtype=subtype,
             detail=(
-                "deepseek response truncated at the output-token cap "
-                f"(finish_reason=length; received {len(content)} chars) — raise the output "
-                "budget or shrink the requested payload; any JSON is incomplete"
+                f"deepseek response incomplete: {why} "
+                f"(finish_reason={finish_reason}; received {len(content)} chars) — any JSON it "
+                "carries is incomplete"
             ),
             started=started,
             model=model_id,

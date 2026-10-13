@@ -41,6 +41,21 @@ about).  An edit of the file made by some other process is therefore not observe
 until the next set/clear or process start — documented here rather than hidden behind
 a stat() on every read.
 
+In-process coherence (RD13): the write path (temp file -> `os.replace` -> cache update)
+and the read-and-cache path share ONE lock, so two racing writers can no longer leave
+the cache serving a value the file does not hold (the last completed write is the last
+cache update), and a reader cannot cache a pre-write value after a completed write.
+The file itself was always safe (the temp-file + atomic-replace dance), the cache was not.
+
+CORRUPT vs EMPTY
+----------------
+Corrupt = invalid JSON, a JSON document that is not an object, or a value under
+`deepseek_api_key` that is neither a string nor null.  Those raise `E_STORAGE` (never a
+silent env fallback).  A missing key entry, an explicit JSON `null` or a blank string is
+"no usable stored value": the environment fallback applies, exactly as if nothing had
+been stored — a blank cannot be a credential, so it cannot be the "wrong credential"
+the refusal above protects against.
+
 THE KEY IS NEVER LOGGED
 -----------------------
 Nothing in this module logs a key (only names and outcomes), `deepseek_key_status`
@@ -53,6 +68,7 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -86,10 +102,27 @@ _SOURCE_STORED: Literal["stored"] = "stored"
 _SOURCE_ENV: Literal["env"] = "env"
 _SOURCE_NONE: Literal["none"] = "none"
 
+#: RD13 sweep find: `ERROR_HINTS` (app/core/errors.py) has NO `E_STORAGE` entry, so the two
+#: OSError handlers below used to raise `KeyError: 'E_STORAGE'` instead of the documented named
+#: refusal — a raw crash on the unreadable-file path, and a generic 500 on a failed clear().
+#: `.get` with a real hint keeps the refusal honest today AND picks up the canonical entry the
+#: moment it lands in the core table. (REQUIRED-FOLLOW-UP: add E_STORAGE to ERROR_HINTS.)
+_STORAGE_HINT = ERROR_HINTS.get(
+    E_STORAGE,
+    "check the file's permissions, or delete the store file and re-enter the key in Settings",
+)
+
 #: resolved-path -> stored value (None = "no usable stored value").  Cache-keying by
 #: path (not a single slot) means a test or a re-configuration pointing at a different
 #: file can never be served another file's cached value.
 _FILE_CACHE: dict[str, str | None] = {}
+
+#: Serializes (a) set's temp-write -> replace -> chmod -> cache update, (b) clear's
+#: unlink -> cache update, and (c) the read-file-and-cache path below.  One lock, so
+#: every cache transition happens in the same order as the file transition it mirrors;
+#: without it two racing set()s could leave the cache serving the loser's value after
+#: the winner's replace (RD13 — see module docstring, "In-process coherence").
+_WRITE_LOCK = threading.Lock()
 
 
 def _resolve_key_file() -> Path:
@@ -124,41 +157,81 @@ def mask_secret(value: str) -> str:
 
 
 def _stored_key(path: Path) -> str | None:
-    """The value persisted at `path` (cached per path), or None when nothing is stored."""
+    """The value persisted at `path` (cached per path), or None when nothing is stored.
+
+    The read-and-cache step runs under `_WRITE_LOCK` with a double-check after acquiring
+    it, so a reader that started during a write either sees the pre-write cache entry or
+    waits and sees the completed write — it can never cache a value the file no longer
+    holds (RD13).  Corruption is refused by NAME (`E_STORAGE`): invalid JSON, a JSON
+    document that is not an object, or a non-string value under the key (see the module
+    docstring, "CORRUPT vs EMPTY").
+    """
     cache_key = str(path)
     if cache_key in _FILE_CACHE:
         return _FILE_CACHE[cache_key]
-    value: str | None = None
-    try:
-        if path.is_file():
-            raw_document = path.read_text(encoding="utf-8")
-            try:
-                document = json.loads(raw_document)
-            except ValueError as exc:
-                # The key file exists but is not the JSON this module wrote — refuse
-                # loudly instead of falling back to env (see module docstring).
-                raise PolsiaError(
-                    E_STORAGE,
-                    f"the stored DeepSeek key file is not valid JSON: {type(exc).__name__}",
-                    how_to_fix=(
-                        "delete the file and re-enter the key in Settings "
-                        f"({path})"
-                    ),
-                    context={"path": str(path)},
-                ) from exc
-            if isinstance(document, dict):
+    with _WRITE_LOCK:
+        if cache_key in _FILE_CACHE:  # another thread cached it while we waited
+            return _FILE_CACHE[cache_key]
+        value: str | None = None
+        try:
+            if path.is_file():
+                raw_document = path.read_text(encoding="utf-8")
+                try:
+                    document = json.loads(raw_document)
+                except ValueError as exc:
+                    # The key file exists but is not the JSON this module wrote — refuse
+                    # loudly instead of falling back to env (see module docstring).
+                    raise PolsiaError(
+                        E_STORAGE,
+                        f"the stored DeepSeek key file is not valid JSON: {type(exc).__name__}",
+                        how_to_fix=(
+                            "delete the file and re-enter the key in Settings "
+                            f"({path})"
+                        ),
+                        context={"path": str(path)},
+                    ) from exc
+                if not isinstance(document, dict):
+                    # Valid JSON of the wrong shape (a list, a bare string/number) was not
+                    # written by this module; treating it as "nothing stored" would silently
+                    # fall back to env and blame the wrong credential (module docstring).
+                    raise PolsiaError(
+                        E_STORAGE,
+                        "the stored DeepSeek key file is not a JSON object "
+                        f"(found {type(document).__name__})",
+                        how_to_fix=(
+                            "delete the file and re-enter the key in Settings "
+                            f"({path})"
+                        ),
+                        context={"path": str(path)},
+                    )
                 candidate = document.get("deepseek_api_key")
-                if isinstance(candidate, str) and candidate.strip():
+                if candidate is None:
+                    # Key entry absent, or an explicit JSON null: nothing stored; the env
+                    # fallback below applies (documented "CORRUPT vs EMPTY").
+                    value = None
+                elif not isinstance(candidate, str):
+                    raise PolsiaError(
+                        E_STORAGE,
+                        "the stored DeepSeek key file carries a non-string value "
+                        f"(found {type(candidate).__name__})",
+                        how_to_fix=(
+                            "delete the file and re-enter the key in Settings "
+                            f"({path})"
+                        ),
+                        context={"path": str(path)},
+                    )
+                elif candidate.strip():
                     value = candidate.strip()
-    except OSError as exc:
-        raise PolsiaError(
-            E_STORAGE,
-            f"could not read the stored DeepSeek key file: {type(exc).__name__}: {exc}",
-            how_to_fix=ERROR_HINTS[E_STORAGE],
-            context={"path": str(path)},
-        ) from exc
-    _FILE_CACHE[cache_key] = value
-    return value
+                # else: blank string -> no usable stored value; env fallback applies.
+        except OSError as exc:
+            raise PolsiaError(
+                E_STORAGE,
+                f"could not read the stored DeepSeek key file: {type(exc).__name__}: {exc}",
+                how_to_fix=_STORAGE_HINT,
+                context={"path": str(path)},
+            ) from exc
+        _FILE_CACHE[cache_key] = value
+        return value
 
 
 def _best_effort_chmod(path: Path) -> None:
@@ -192,13 +265,19 @@ def set_deepseek_api_key(value: str) -> None:
     payload = json.dumps({"deepseek_api_key": cleaned})
     temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(handle, payload.encode("utf-8"))
-        finally:
-            os.close(handle)
-        os.replace(temp, path)
+        # RD13: the whole publish sequence is atomic w.r.t. other writers IN THIS PROCESS —
+        # the thread that replaces the file last is also the one that updates the cache last,
+        # so `get_deepseek_api_key()` can never settle on a racing loser's value.
+        with _WRITE_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(handle, payload.encode("utf-8"))
+            finally:
+                os.close(handle)
+            os.replace(temp, path)
+            _best_effort_chmod(path)
+            _FILE_CACHE[str(path)] = cleaned  # invalidate: next read sees the new value
     except OSError as exc:
         # Leave no orphan temp file behind, and keep the previous value live: the
         # cache is updated only after the replace succeeded.
@@ -213,8 +292,6 @@ def set_deepseek_api_key(value: str) -> None:
             ),
             context={"path": str(path)},
         ) from exc
-    _best_effort_chmod(path)
-    _FILE_CACHE[str(path)] = cleaned  # invalidate: next read sees the new value
     logger.info("stored a new DeepSeek API key (len=%d)", len(cleaned))
 
 
@@ -222,15 +299,16 @@ def clear_deepseek_api_key() -> None:
     """Remove the stored value (an env key may still configure the runtime)."""
     path = _resolve_key_file()
     try:
-        path.unlink(missing_ok=True)
+        with _WRITE_LOCK:  # RD13: same critical section as set() — see _WRITE_LOCK
+            path.unlink(missing_ok=True)
+            _FILE_CACHE[str(path)] = None  # invalidate: next read falls through to env/None
     except OSError as exc:
         raise PolsiaError(
             E_STORAGE,
             f"could not remove the stored DeepSeek key file: {type(exc).__name__}: {exc}",
-            how_to_fix=ERROR_HINTS[E_STORAGE],
+            how_to_fix=_STORAGE_HINT,
             context={"path": str(path)},
         ) from exc
-    _FILE_CACHE[str(path)] = None  # invalidate: next read falls through to env/None
     logger.info("cleared the stored DeepSeek API key")
 
 
