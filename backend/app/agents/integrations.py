@@ -9,8 +9,10 @@ Two rules from the build brief are enforced by construction:
   * integrations are imported LAZILY inside the function (CLAUDE.md:116) — importing the agent
     package must never drag in tweepy/stripe/sendgrid/github;
   * a capability that is not configured returns a refusal, never a success-shaped empty result.
-    On a host without the libraries (this one) every adapter refuses by name; with the libraries
-    and the `*_API_KEY` settings present it makes the documented provider call.
+    CORRECTED (RD15 dead-sweep): the provider libraries ARE installed in this venv
+    (requirements.txt pins them — verified importable 2026-10-13), so the refusal on this
+    deployment comes from the UNSET `*_API_KEY`/`*_TOKEN` settings, not from a missing library;
+    with the libraries AND those settings present the same code path makes the provider call.
 
 Nothing in this module is reachable while `SANDBOX_MODE=true`: the policy firewall refuses the
 action first and the agent records a labelled draft instead.
@@ -98,7 +100,26 @@ def _sendgrid_send(*, to: str, subject: str, body: str) -> Any:  # pragma: no co
     message = Mail(from_email=settings.sendgrid_from_email, to_emails=to,
                    subject=subject, plain_text_content=body)
     response = client.send(message)
-    return {"status_code": int(getattr(response, "status_code", 0))}
+    headers = getattr(response, "headers", None) or {}
+    # WHY (RD14): the send caps' producer (`outreach_service.record_sent_emails`) dedupes on
+    # `email_logs.sendgrid_id`, and SendGrid's per-message id is the `X-Message-Id` response
+    # header — UNIQUE per send. Returning only `status_code` made every send's dedupe key "202",
+    # so consecutive real sends collapsed onto ONE row (measured: 3 distinct sends -> 1 row) and
+    # the email cap counted 1 forever (recorded gap: "RateCaps send-cap producer — channel_sends
+    # has no writer"). No `X-Message-Id` -> empty string, and the caller's status_code fallback
+    # applies exactly as before (no behavior change there).
+    message_id = ""
+    if isinstance(headers, dict):
+        message_id = str(headers.get("X-Message-Id") or "")
+        if not message_id:
+            message_id = next(
+                (str(value) for key, value in headers.items() if str(key).lower() == "x-message-id"),
+                "",
+            )
+    return {
+        "status_code": int(getattr(response, "status_code", 0)),
+        "message_id": message_id,
+    }
 
 
 def open_pull_request(*, repo: str, branch: str, title: str, body: str,

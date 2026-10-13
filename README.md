@@ -114,13 +114,21 @@ quietly relaxed. Each one names its measurement.
   gate is a **ratchet at the measured floor (72)**: it fails the moment coverage drops below what was
   measured and moves up as the suite grows. Closing the gap to 75% is open work rather than a number that
   is quietly edited away.
-- **Two advertised capabilities have no producer wired in.** The policy firewall's per-channel send caps
-  read `sends_today` from `channel_sends`, which currently has no writer anywhere in the tree (so the caps
-  cannot fire), and the `ad_campaigns`/`ad_metrics` writers have no callers. Both are honest
-  0-with-no-data situations today; both are tracked as work, not presented as working features.
-  (The finance half of this gap is closed: `upsert_revenue_snapshot` / `record_expense` are now called
-  through `finance_service.persist_finance_run` when a finance run is persisted, and `GET /finance/summary`
-  reports `null` — not 0 — for a field that was never measured.)
+- **One advertised capability has no producer wired in.** The `ad_campaigns`/`ad_metrics` writers have
+  no callers — an honest 0-with-no-data situation, tracked as work, not presented as a working feature.
+  (Two halves of this gap are closed. The finance writers are called through
+  `finance_service.persist_finance_run` when a finance run is persisted, and `GET /finance/summary`
+  reports `null` — not 0 — for a field that was never measured. The policy firewall's per-channel send
+  caps are fed by real send records — `social_posts` (`status='published'`) for twitter/linkedin,
+  `email_logs` (`status='sent'`) for email — written only after a run's send really happened
+  (`agent_tasks._persist_run_artifacts` → `social_service.record_published_posts` /
+  `outreach_service.record_sent_emails`, deduped by the provider's own id — SendGrid's `X-Message-Id`
+  header, added by RD14), so a count at its cap now refuses the next send by name (`E_RATE_LIMITED`);
+  pinned by `tests/unit/test_send_cap_producer_e2e.py` and
+  `tests/unit/celery/test_send_cap_producer_worker_e2e.py`. Residuals, named not hidden: channels with
+  no counting source — github, google_ads, meta_ads, stripe, render — have their configured caps refused
+  by name (`POLSIA-E114`, `cap_unknown`) instead of being read as zero sends; customer_support replies
+  are not yet counted; LinkedIn has no send adapter.)
 - **Twelve advertised settings are read by no code path.** A three-set census (`config.py` fields vs
   `.env.example` keys vs actual reads by `backend/app` + `backend/celery_app` code) finds `DEBUG`,
   `LOG_JSON`, `CELERY_WORKER_CONCURRENCY`, `TASK_BATCH_SIZE`, `DB_BACKLOG_HOURS`,
