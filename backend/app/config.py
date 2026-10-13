@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     celery_task_time_limit: int = 900
     celery_soft_time_limit: int = 840
     celery_max_tasks_per_child: int = 50
+    # advertised — not implemented in this repository (R20 item 2): declared for `.env.example`
+    # parity, but no code path reads it.  Worker concurrency is a launch-command knob, and the
+    # launch command owns it: docker-compose.yml:95 runs
+    # `celery -A celery_app.worker worker --loglevel=info --concurrency=4`.  Kept, not deleted —
+    # the removal-vs-label decision is recorded in polsia-work/build/R20-minors REQUESTS.
     celery_worker_concurrency: int = 4
 
     # --- daily cycles (morning hour: company-local, task-gated; evening hour: UTC, beat crontab) ---

@@ -21,6 +21,13 @@ The app-wide session factory is what `_execute_agent_task` uses at call time, so
 points it at the file by patching `settings.database_url` and letting the real lazy
 `get_engine()` build the SQLite engine (the production construction path, busy timeout
 included).
+
+The shared fixtures below are RE-EXPOSED one level up in `tests/unit/conftest.py` (R20 item 3):
+pytest 9.1.1's once-per-directory pending-conftest parse can hand the later celery-file items of
+a mixed file-argument battery to a SECOND `tests/unit/celery` Package node that never received
+this file's fixtures ("fixture 'queue_db' not found"); the parent-level copies keep fixture
+availability order-independent.  Same fixture objects — keep both sides in sync (pinned by
+`tests/unit/test_r20_conftest_ordering_guard.py`).
 """
 from __future__ import annotations
 

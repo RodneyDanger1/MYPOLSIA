@@ -24,6 +24,7 @@ Two documented caveats drive the design (CLI-CONTRACT.md §2.1, D1/D4):
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -103,13 +104,39 @@ class RunUsage:
 
 def _int_or_none(value: Any) -> int | None:
     """Envelope integer: an absent key OR a JSON `null` is NOT MEASURED (None); a present `0` is
-    a measured zero and stays 0. The old `int(usage.get(k) or 0)` collapsed the two (F-10)."""
-    return None if value is None else int(value)
+    a measured zero and stays 0. The old `int(usage.get(k) or 0)` collapsed the two (F-10).
+
+    TOTAL by construction (R20 item 1): a value whose TYPE cannot be a count is UNMEASURED —
+    the same state as an absent key — never a raise and never a coerced number. RD13 sanitized
+    the DeepSeek producer (`deepseek_runtime._usage_int`) but every other envelope producer
+    (the real CLI, a proxy re-typing JSON numbers, a future provider seam) still reached this
+    function raw, and `int(value)` raised ValueError/TypeError inside `base_agent._finish_call`
+    AFTER a successful model call — losing the run. `bool` is a flag, not a count (its `int()`
+    is 1/0 — a fabricated measurement); a non-integral float is never silently truncated.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)  # JSON `18.0` through a float round-trip is still the count 18
+    return None
 
 
 def _float_or_none(value: Any) -> float | None:
-    """Same contract as `_int_or_none`, for the money/duration fields."""
-    return None if value is None else float(value)
+    """Same contract as `_int_or_none`, for the money/duration fields (R20 item 1).
+
+    Only finite real numbers are measurements: NaN/inf must stay None — a non-finite cost would
+    ride `round(x, 6)` into `cost_estimate_usd` and break the DB write, which is strictly worse
+    than the honest "unmeasured".
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
 
 
 def usage_from_envelope(env: dict) -> RunUsage:
