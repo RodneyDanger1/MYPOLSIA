@@ -23,6 +23,7 @@ from app.api.v1 import (
     memory,
     outreach,
     social,
+    support,
     tasks,
     ws,
 )
@@ -192,6 +193,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(social.router)
     api_v1.include_router(outreach.router)
     api_v1.include_router(ads.router)
+    api_v1.include_router(support.router)   # R17: the customer-support inbox ingest (owner's API)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

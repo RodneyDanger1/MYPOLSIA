@@ -63,8 +63,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/health", ("GET",)),
     ("/api/v1/memory", ("GET",)),
     ("/api/v1/memory", ("POST",)),
+    ("/api/v1/memory/{memory_id}", ("DELETE",)),                # the memory-delete lane's route (R19); pinned here because R17 owns this file this wave and the lane left it unpinned
     ("/api/v1/outreach/prospects", ("GET",)),
     ("/api/v1/social/posts", ("GET",)),
+    ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
+    ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)
     ("/api/v1/tasks", ("GET",)),
     ("/api/v1/tasks", ("POST",)),
     ("/api/v1/tasks/{task_id}", ("GET",)),

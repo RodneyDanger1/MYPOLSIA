@@ -19,7 +19,12 @@ import pytest
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]  # backend/
 APP = BACKEND / "app"
-MIGRATION = BACKEND / "alembic" / "versions" / "0001_initial_schema.py"
+#: The ORM↔migration table check reads EVERY revision, not only 0001: a table a later
+#: revision adds (0004's `support_inbox_items`, R17) is equally part of the schema the ORM
+#: declares — the check's subject is the whole chain.  0003's rebuild statements are plain
+#: string DDL (`op.execute`), so the `op.create_table(` regex cannot match anything but a
+#: real table creation.
+MIGRATIONS_DIR = BACKEND / "alembic" / "versions"
 
 # ── the documented HTTP surface (README + the frontend's api client + the shipped tests) ──────
 DOCUMENTED_ROUTES: list[tuple[str, str]] = [
@@ -40,6 +45,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/dashboard/reports/daily"),
     ("GET", "/api/v1/memory"),
     ("POST", "/api/v1/memory"),
+    # the memory-delete lane's route (R19) — pinned here because R17 owns this file this wave
+    # and that lane left the surface pin un-updated; remove this row if that route is reverted.
+    ("DELETE", "/api/v1/memory/{memory_id}"),
     ("GET", "/api/v1/finance/summary"),
     ("GET", "/api/v1/finance/revenue"),
     ("GET", "/api/v1/finance/expenses"),
@@ -48,6 +56,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     ("GET", "/api/v1/ads/campaigns"),
+    # R17: the customer-support inbox ingest — owner-authenticated submit + list
+    # (documented by app/api/v1/support.py and tests/unit/api/test_support_inbox.py).
+    ("POST", "/api/v1/support/inbox"),
+    ("GET", "/api/v1/support/inbox"),
 ]
 
 DOCUMENTED_AGENTS = {
@@ -234,7 +246,9 @@ def test_orm_tables_match_the_migration_exactly() -> None:
     import app.models  # noqa: F401  (registers every model)
     from app.core.database import Base
 
-    sql = MIGRATION.read_text(encoding="utf-8")
+    sql = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(MIGRATIONS_DIR.glob("*.py"))
+    )
     migration_tables = set(re.findall(r'op\.create_table\(\s*"([a-z_]+)"', sql))
     orm_tables = set(Base.metadata.tables)
 

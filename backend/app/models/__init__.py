@@ -13,6 +13,7 @@ from app.models.memory import MemoryEntry
 from app.models.outreach import EmailCampaign, EmailLog, Prospect
 from app.models.report import ActivityLog, DailyReport
 from app.models.social import SocialEngagement, SocialPost
+from app.models.support import SupportInboxItem
 from app.models.task import AgentRun, Task
 from app.models.types import json_type, string_list_type
 
@@ -33,6 +34,7 @@ __all__ = [
     "SocialEngagement",
     "SocialPost",
     "StripeEvent",
+    "SupportInboxItem",
     "Task",
     "json_type",
     "string_list_type",

@@ -13,6 +13,16 @@ RE-PINNED DELIBERATELY (T17, 2026-10-12): the four money columns moved `FLOAT` -
 `0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075967cc5912900e8`.  Only the four money
 rows below changed (`daily_budget_usd`, `total_spent_usd`, `spend_usd`, `cost_usd`); every
 other row is byte-identical to the D-models pin.
+
+RE-PINNED DELIBERATELY (R17, 2026-10-13): the customer-support inbox store —
+`support_inbox_items` — was added by `backend/alembic/versions/0004_support_inbox.py` (the
+consumer shipped in RD12 had no producer; the RD12 receipt §7 names this table as the
+missing schema decision).  17 tables -> 18; the new table's rows, its single-column unique
+(`provider_message_id` — the ingest idempotency key) and its two indexes are appended
+below.  Old canonical sha256 `0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075967cc5912900e8`
+-> `8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79`.  Every pre-R17 row is
+byte-identical; the migration's CREATE TABLE is byte-equal to this ORM `create_all`
+(probe: `build/R17-inbox/raw/probe_ddl_parity.txt`).
 """
 from __future__ import annotations
 
@@ -31,7 +41,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "0ed82ebbca2603d4431fa36f4e25b3bf5d1349b8d4525ec075967cc5912900e8"
+DDL_SHA256 = "8c9842eeb2f9e6d028a4f08d9c6b709626a66906561585056cdbdeb14a61dc79"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -51,6 +61,7 @@ FROZEN_TABLE_NAMES = (
     'social_engagements',
     'social_posts',
     'stripe_events',
+    'support_inbox_items',
     'tasks',
 )
 
@@ -252,6 +263,17 @@ FROZEN_COLUMNS = {
         ('raw_payload', 'JSON', True, '', '', '', False),
         ('processed_at', 'DATETIME', True, '', 'now()', '', False),
     ),
+    'support_inbox_items': (
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('provider_message_id', 'VARCHAR(255)', False, '', '', '', True),
+        ('from_address', 'VARCHAR(255)', False, '', '', '', False),
+        ('subject', 'VARCHAR(512)', False, '', '', '', False),
+        ('body', 'TEXT', False, '', '', '', False),
+        ('status', 'VARCHAR(50)', False, "'pending'", 'pending', 'ix_support_inbox_items_status', False),
+        ('received_at', 'DATETIME', True, '', '', '', False),
+        ('task_id', 'INTEGER', True, '', '', 'ix_support_inbox_items_task_id', False),
+        ('created_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
     'tasks': (
         ('id', 'INTEGER', False, '', '', '', False),
         ('title', 'VARCHAR(512)', False, '', '', '', False),
@@ -281,6 +303,7 @@ FROZEN_UNIQUE_CONSTRAINTS = {
     'revenue_snapshots.snapshot_date',
     'social_engagements.mention_id',
     'stripe_events.stripe_event_id',
+    'support_inbox_items.provider_message_id',
 }
 
 # (name, columns, unique)
@@ -288,6 +311,8 @@ FROZEN_INDEXES = {
     ('ix_agent_runs_agent_type', ('agent_type',), False),
     ('ix_agent_runs_started_at', ('started_at',), False),
     ('ix_agent_runs_task_id', ('task_id',), False),
+    ('ix_support_inbox_items_status', ('status',), False),
+    ('ix_support_inbox_items_task_id', ('task_id',), False),
     ('ix_tasks_created_at', ('created_at',), False),
     ('ix_tasks_dedupe_key', ('dedupe_key',), True),
     ('ix_tasks_pending_queue', ('status', 'priority', 'scheduled_date'), False),

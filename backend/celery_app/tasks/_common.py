@@ -107,6 +107,7 @@ async def create_task_deduped(
     source: str = "scheduler",
     scheduled_date: datetime | None = None,
     status: str = "pending",
+    metadata: dict[str, Any] | None = None,
 ) -> Task | None:
     """Insert a task unless `dedupe_key` already exists.
 
@@ -117,6 +118,12 @@ async def create_task_deduped(
     so a malformed orchestrator plan is caught here rather than written.  The
     insert uses a SAVEPOINT: if a concurrent writer wins the unique index, this call
     re-checks and returns None instead of poisoning the caller's transaction.
+
+    `metadata` is the per-task payload channel (`tasks.metadata`, the frozen JSON column the
+    worker threads into the agent's prompt since RD12): `task_service.create_task` already
+    accepted it, but this deduped path did not — so the CS sweep's per-item attach
+    (`metadata.inbox_item`, RD12 receipt §7 REQUEST 1) could not carry its item until R17.
+    Additive: the default (None) writes exactly the previous row.
     """
     from app.services.task_service import VALID_AGENT_TYPES
 
@@ -140,6 +147,13 @@ async def create_task_deduped(
         scheduled_date=scheduled_date,
         dedupe_key=dedupe_key,
     )
+    if metadata is not None:
+        # Pass-through set AFTER construction, not `metadata_json=None`: the JSON column type
+        # stores a Python None as the JSON literal 'null' (none_as_null=False), so passing
+        # None would silently change the stored representation of every existing sweep row.
+        # The additive promise is "the default writes exactly the previous row" (measured:
+        # tests/unit/celery/test_support_inbox_sweep.py — the bare sweep task stays SQL NULL).
+        task.metadata_json = metadata
     db.add(task)
     try:
         async with db.begin_nested():

@@ -579,13 +579,68 @@ def run_social_sweep() -> dict[str, Any]:
 @app.task(name="celery_app.tasks.agent_tasks.run_email_sweep")
 def run_email_sweep() -> dict[str, Any]:
     """Every 3h — customer_support reads the inbox and drafts replies."""
-    return run_async(
-        _create_and_enqueue(
-            "customer_support",
-            "Check inbox and reply to customer emails",
-            bucket=sweep_bucket(3),
-        )
+    return run_async(_email_inbox_sweep())
+
+
+async def _email_inbox_sweep() -> dict[str, Any]:
+    """The 3h customer_support sweep: attach pending inbox items, THEN behave as before.
+
+    R17 (RD12 receipt §6/§7): until now this sweep created one title-only task per bucket and
+    the inbox item — the thing the CS agent's prompt is built around — had no producer at all.
+    Now every `pending` support_inbox_items row becomes its OWN customer_support task carrying
+    `metadata.inbox_item` (the RD12 consumer contract), under the per-ITEM dedupe key
+    `support-inbox-<provider id>`; the item is marked `dispatched` with that task id in the
+    SAME transaction as the task row (`support_inbox_service.attach_pending`).  Dispatched
+    items are never re-attached — the pending-only query is what enforces that.
+
+    The bare 'check inbox' task (the pre-R17 behaviour) is kept EXACTLY when nothing is
+    pending: with no items attached, the bucket's title-only task is what keeps the schedule's
+    observable behaviour (and its dedupe key) unchanged for an empty inbox.
+
+    Budget: the D3 gate is checked ONCE, before any row is touched — a full day attaches
+    nothing (items stay pending for the next tick, so nothing is lost) and `_create_and_enqueue`
+    re-checks its own copy of the same decision on the bare path.
+
+    Broker hand-off: only tasks CREATED here are enqueued.  A dedupe-hit (task already exists;
+    e.g. a concurrent sweep won the insert) is reported with `task_created: False` and NOT
+    re-enqueued — `enqueue_created`'s failure path marks every listed id `failed`, which must
+    not stomp a row that may already be in flight.  The process-death window between commit
+    and hand-off is the documented D2/T19 gap (nothing reconciles an undelivered row), not
+    something a blind re-hand-off makes honest.
+    """
+    from app.agents.accounting import BudgetStop
+    from app.core.database import get_session_factory
+    from app.services.support_inbox_service import attach_pending
+
+    # D3: the day's measured spend gates dispatch (audit A1/L2-F01) — same policy decision the
+    # sibling sweeps take in `_create_and_enqueue`.
+    try:
+        await assert_budget_allows("customer_support")
+    except BudgetStop as exc:
+        logger.warning("email inbox sweep: budget denied (%s)", exc.reason)
+        return {"status": "budget_denied", "reason": exc.reason, "attached": []}
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        attached = await attach_pending(db)
+        await db.commit()
+
+    if attached:
+        created_ids = [row["task_id"] for row in attached if row["task_created"]]
+        if created_ids:
+            # D2/T19 parity: a dead broker must not strand these rows `pending` (see enqueue_created).
+            await enqueue_created(created_ids, label="email inbox sweep")
+        return {"status": "queued", "attached": attached}
+
+    # Nothing pending: the pre-R17 bucket task, unchanged (`_create_and_enqueue` keeps its own
+    # dedupe key + budget gate); `attached: []` is additive so one shape describes both paths.
+    result = await _create_and_enqueue(
+        "customer_support",
+        "Check inbox and reply to customer emails",
+        bucket=sweep_bucket(3),
     )
+    result.setdefault("attached", [])
+    return result
 
 
 @app.task(name="celery_app.tasks.agent_tasks.run_ads_stripe_sync")
