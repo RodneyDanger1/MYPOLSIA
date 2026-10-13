@@ -158,9 +158,54 @@ async def create_task_deduped(
     return task
 
 
+# ── broker hand-off ──────────────────────────────────────────────────────────
+async def enqueue_created(task_ids: list[int], *, label: str) -> None:
+    """Hand committed task rows to the broker; a failed hand-off must not strand them (D2/T19).
+
+    The scheduler paths commit rows `pending` and then dispatch. Measured defect (audit lane 4,
+    L4-F1, using the wave-4/T19 dead-broker evidence): with the broker down, `run_agent_task.delay(...)`
+    raised into the caller and the rows stayed `pending` forever — nothing reconciles a row no worker
+    was ever told about, and the unique dedupe key blocks the next bucket run from re-creating it.
+    This mirrors the API trigger's contract (app/api/v1/agents.py): mark EVERY row `failed` with the
+    measured reason in its own session, commit, then raise the named refusal so the Celery task fails
+    honestly instead of reporting a fake queue.
+    """
+    from celery_app.tasks.agent_tasks import run_agent_task  # lazy: agent_tasks imports this module
+
+    try:
+        if len(task_ids) == 1:
+            run_agent_task.delay(task_ids[0])
+        else:
+            from celery import group
+
+            group([run_agent_task.s(task_id) for task_id in task_ids]).apply_async()
+    except Exception as exc:  # broker unavailable: NO delivery was accepted for these rows
+        from app.core.database import get_session_factory
+        from app.core.errors import E_REDIS, PolsiaError
+        from app.services.task_service import update_task_status
+
+        logger.warning("failed to enqueue %s task(s) for %s", len(task_ids), label, exc_info=True)
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            for task_id in task_ids:
+                await update_task_status(
+                    db,
+                    task_id,
+                    "failed",
+                    error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
+                )
+            await db.commit()
+        raise PolsiaError(
+            E_REDIS,
+            f"{label}: {len(task_ids)} task(s) were created but could not be handed to a worker",
+            context={"task_ids": task_ids},
+        ) from exc
+
+
 __all__ = [
     "create_task_deduped",
     "dedupe_key",
+    "enqueue_created",
     "get_process_loop",
     "plan_bucket",
     "run_async",

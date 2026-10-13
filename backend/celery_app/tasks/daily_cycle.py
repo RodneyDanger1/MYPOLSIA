@@ -34,11 +34,15 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from celery import group
-
 from app.config import settings
 from app.core.timeutil import company_tz, now_utc, today_in
-from celery_app.tasks._common import create_task_deduped, dedupe_key, plan_bucket, run_async
+from celery_app.tasks._common import (
+    create_task_deduped,
+    dedupe_key,
+    enqueue_created,
+    plan_bucket,
+    run_async,
+)
 from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
@@ -113,11 +117,6 @@ async def _morning_cycle() -> dict[str, Any]:
     from app.services.activity_service import log_activity
     from app.services.company_service import get_full_context
     from app.services.report_service import save_morning_plan
-
-    # imported here, not at module scope: agent_tasks imports this module's package
-    # through celery_app.worker, and a module-level import would be circular when
-    # agent_tasks is the entry point.
-    from celery_app.tasks.agent_tasks import run_agent_task
 
     session_factory = get_session_factory()
 
@@ -263,9 +262,10 @@ async def _morning_cycle() -> dict[str, Any]:
         await db.commit()
     # Fan out AFTER the commit: every task row exists before a worker can see its message.
     # A group dispatches them independently (the upload ran the finance agent inline with
-    # .apply(), serialising the whole cycle behind it).
+    # .apply(), serialising the whole cycle behind it). D2/T19 parity: a dead broker marks
+    # the created rows failed instead of stranding them (see enqueue_created).
     if created:
-        group([run_agent_task.s(task_id) for task_id in created]).apply_async()
+        await enqueue_created(created, label="morning cycle")
 
     plan_text = str(plan.get("summary") or "Morning plan generated")
     async with session_factory() as db:

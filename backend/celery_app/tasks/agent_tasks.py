@@ -41,7 +41,13 @@ from app.core.errors import (
     E_TASK_NOT_RUNNABLE,
     PolsiaError,
 )
-from celery_app.tasks._common import create_task_deduped, dedupe_key, run_async, sweep_bucket
+from celery_app.tasks._common import (
+    create_task_deduped,
+    dedupe_key,
+    enqueue_created,
+    run_async,
+    sweep_bucket,
+)
 from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
@@ -591,8 +597,9 @@ async def _ads_stripe_sync() -> dict[str, Any]:
         await db.commit()
 
     queued = {agent_type: task_id for agent_type, task_id in created}
-    for _, task_id in created:
-        run_agent_task.delay(task_id)  # broker, never .apply()
+    if created:
+        # D2/T19 parity: a dead broker must not strand these rows `pending` (see enqueue_created).
+        await enqueue_created([task_id for _, task_id in created], label="ads/stripe sync")
     return {"status": "queued" if created else "duplicate", "queued": queued, "duplicates": duplicates}
 
 
@@ -626,5 +633,6 @@ async def _create_and_enqueue(
         logger.info("sweep %s: %s already exists for this bucket", agent_type, key)
         return {"status": "duplicate", "dedupe_key": key}
 
-    run_agent_task.delay(task_id)  # broker, never .apply() (D-03)
+    # D2/T19 parity: a dead broker must not strand this row `pending` (see enqueue_created).
+    await enqueue_created([task_id], label=f"sweep {agent_type}")
     return {"status": "queued", "task_id": task_id, "dedupe_key": key}

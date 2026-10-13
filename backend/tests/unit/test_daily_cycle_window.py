@@ -115,7 +115,10 @@ class CycleDB:
 
 
 class GroupRecorder:
-    """Stands in for `daily_cycle.group`: records the fan-out, contacts no broker."""
+    """Stands in for the `celery.group` the fan-out helper imports at call time: records the
+    fan-out, contacts no broker. (D2: the dispatch moved into `_common.enqueue_created`, which
+    does `from celery import group` inside the function — so the patch target is the celery
+    package attribute, not a `daily_cycle` module attr.)"""
 
     def __init__(self) -> None:
         self.batches: list[list] = []
@@ -189,7 +192,10 @@ def _pin_clock(monkeypatch, now: datetime) -> None:
 
 def _install_group_recorder(monkeypatch) -> GroupRecorder:
     recorder = GroupRecorder()
-    monkeypatch.setattr(daily_cycle, "group", recorder)
+    # D2: the fan-out helper (`_common.enqueue_created`) reads `group` from the celery package at
+    # call time; patch there. (Was `setattr(daily_cycle, "group", recorder)` before the dispatch
+    # moved; assertions unchanged.)
+    monkeypatch.setattr("celery.group", recorder)
     return recorder
 
 

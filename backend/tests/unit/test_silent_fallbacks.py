@@ -23,8 +23,9 @@ What each site means:
 
 The S-05 harness is the file-backed-SQLite pattern proven in `tests/unit/test_daily_cycle_window.py`
 (self-contained — fixtures do not cross directories): one FILE behind the app-wide session factory,
-the orchestrator patched at `crew_factory.run_agent_for_task`, `daily_cycle.group` replaced by a
-recorder, the clock pinned via `daily_cycle.now_utc`, and the resulting task rows read back with
+the orchestrator patched at `crew_factory.run_agent_for_task`, the fan-out `celery.group` replaced
+by a recorder (D2: the helper reads it at call time), the clock pinned via `daily_cycle.now_utc`,
+and the resulting task rows read back with
 the stdlib sqlite3 driver (the reader is not the writer).
 """
 from __future__ import annotations
@@ -180,7 +181,8 @@ def test_s04_valid_zone_records_nothing(monkeypatch, caplog):
 
 
 class _GroupRecorder:
-    """Stands in for `daily_cycle.group`: records the fan-out, contacts no broker."""
+    """Stands in for the `celery.group` the fan-out helper imports at call time (D2 moved the
+    dispatch into `_common.enqueue_created`): records the fan-out, contacts no broker."""
 
     def __init__(self) -> None:
         self.batches: list[list] = []
@@ -272,7 +274,9 @@ def test_s05_malformed_and_zero_priority_are_coerced_with_a_record(cycle_db, mon
     )
     monkeypatch.setattr(daily_cycle, "now_utc", lambda: datetime(2026, 10, 12, 7, 30, tzinfo=UTC))
     recorder = _GroupRecorder()
-    monkeypatch.setattr(daily_cycle, "group", recorder)
+    # D2: patch the celery-package attribute the fan-out helper reads at call time (was
+    # `daily_cycle.group` before the dispatch moved into `_common.enqueue_created`).
+    monkeypatch.setattr("celery.group", recorder)
 
     with caplog.at_level(logging.WARNING, logger="celery_app.tasks.daily_cycle"):
         result = daily_cycle.run_morning_cycle()
