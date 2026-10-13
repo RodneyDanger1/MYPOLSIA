@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ActivityEvent } from "@/lib/api";
+import { API_KEY, api, type ActivityEvent } from "@/lib/api";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost";
 
@@ -82,7 +82,10 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       return;
     }
 
-    const ws = new WebSocket(`${WS_URL}/ws/activity`);
+    // Auth parity with every REST call (audit L1-01/L3-08): browsers cannot set WebSocket
+    // handshake headers, so the key rides the query string — the same NEXT_PUBLIC_API_KEY the
+    // REST client already ships to the browser (no new exposure).
+    const ws = new WebSocket(`${WS_URL}/ws/activity?key=${encodeURIComponent(API_KEY)}`);
     wsRef.current = ws;
 
     ws.onopen = () => {

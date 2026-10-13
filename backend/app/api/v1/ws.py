@@ -1,7 +1,12 @@
 """WebSocket /ws/activity - relays the Redis pub/sub activity channel.
 
 nginx.conf proxies /ws/ to the backend; frontend/src/hooks/useActivityFeed.ts
-connects to `${WS_URL}/ws/activity`.
+connects to `${WS_URL}/ws/activity?key=...`.
+
+Auth (audit L1-01/L3-08): the REST twin `GET /api/v1/dashboard/activity` is key-protected;
+this socket checks the SAME key through `api_key_matches` before accepting. Browsers cannot
+set handshake headers, so the key travels as a query parameter; the header form is accepted
+too for programmatic clients.
 """
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core import events
+from app.core.security import api_key_matches
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +25,15 @@ router = APIRouter()
 
 @router.websocket("/ws/activity")
 async def activity_socket(websocket: WebSocket) -> None:
+    # Refuse BEFORE accept(): an unauthenticated subscriber never gets a working socket. The key
+    # rides the query string because browser WebSocket clients cannot set handshake headers; the
+    # header form stays available for programmatic clients. Same semantics as every REST route
+    # (no key configured => open; blank counts as absent) via the ONE shared matcher.
+    provided = websocket.query_params.get("key") or websocket.headers.get("x-api-key")
+    if not api_key_matches(provided):
+        await websocket.close(code=1008)
+        logger.warning("activity websocket refused: missing/invalid key")
+        return
     await websocket.accept()
     pubsub = None
     try:

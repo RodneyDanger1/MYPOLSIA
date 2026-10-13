@@ -8,6 +8,10 @@ an untested branch.
 The handler is called DIRECTLY with fakes rather than through a test client: a client/server test has
 to race the server task to observe teardown, while a direct call returns only after `finally` has run,
 so "the subscription was released" is asserted deterministically instead of polled.
+
+D1 (audit L1-01/L3-08) added the auth guard to `activity_socket`; these tests exercise the RELAY, so
+they run in open-backend mode explicitly (auth has its own suite: test_ws_auth.py), and the fake now
+carries the two members the guard reads (`query_params`, `headers`).
 """
 from __future__ import annotations
 
@@ -55,13 +59,17 @@ class FakeRedis:
 
 
 class FakeWebSocket:
-    """Only the four members the handler touches."""
+    """The members the handler touches: accept/send_text/close + the auth surface it reads."""
 
     def __init__(self) -> None:
         self.accepted = False
         self.sent: list[str] = []
         self.closed = False
         self.close_calls = 0
+        # D1: the handler now reads the handshake's key before accept. Empty maps = no credential
+        # (the autouse fixture below pins open-backend mode, so that is ACCEPTED here).
+        self.query_params: dict[str, str] = {}
+        self.headers: dict[str, str] = {}
 
     async def accept(self) -> None:
         self.accepted = True
@@ -90,6 +98,18 @@ def payload() -> dict:
 def _wire(monkeypatch, pubsub: FakePubSub) -> FakePubSub:
     monkeypatch.setattr(events, "get_redis", lambda: FakeRedis(pubsub))
     return pubsub
+
+
+@pytest.fixture(autouse=True)
+def _open_backend(monkeypatch):
+    """Relay tests run with NO key configured (auth is test_ws_auth.py's subject).
+
+    Explicit, not assumed: conftest's api_client fixture sets `settings.api_key` globally and does
+    not restore it, so without this the file would depend on test order.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "api_key", "")
 
 
 @pytest.mark.asyncio

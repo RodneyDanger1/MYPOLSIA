@@ -46,3 +46,14 @@ async def check_api_key(x_api_key: str | None) -> None:
             E_AUTH,
             "the X-API-Key header is missing or does not match the configured key",
         )
+
+
+def api_key_matches(provided: str | None) -> bool:
+    """Public form of `_matches` for non-HTTP transports (the /ws/activity socket).
+
+    Same semantics as every REST route: no key configured => the service is open (a blank
+    value counts as "no credential"); otherwise a constant-time compare. Exposed so the
+    WebSocket route checks the key through ONE definition instead of a second implementation
+    that could drift from `verify_api_key` (audit L1-01/L3-08).
+    """
+    return _matches(provided)

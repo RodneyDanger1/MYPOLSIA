@@ -1,5 +1,5 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+export const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 // Retry only idempotent reads, and only on transport or 5xx failures. A POST is never retried
