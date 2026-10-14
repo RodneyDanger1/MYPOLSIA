@@ -5,7 +5,7 @@ import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
 import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
 import { TabStrip, type TabDef } from "@/components/settings/TabStrip";
-import { Button, cn } from "@/components/ui";
+import { Button, Switch, cn } from "@/components/ui";
 
 /**
  * Wire shape of GET / PUT /config (`CompanyConfigResponse` in the backend).
@@ -27,7 +27,7 @@ import { Button, cn } from "@/components/ui";
  *
  * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
  * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
- * twelve text fields below plus the five booleans and two night-task numbers — and `PUT /config`
+ * twelve text fields below plus the six booleans and two night-task numbers — and `PUT /config`
  * copies only the provided keys onto the row (`update_config` → `model_dump(exclude_unset=True)`),
  * so unrendered fields keep their stored value.
  */
@@ -51,6 +51,12 @@ export type SettingsConfig = {
   notify_on_failed?: boolean;
   notify_on_awaiting_approval?: boolean;
   notify_on_run_requeued?: boolean;
+  /** V8/C5 (wave V8b/L3): the owner's pause flag — `company_config.dispatch_paused`, served by
+   *  GET /config and accepted by PUT /config (`backend/app/schemas/company.py:70,137`). While
+   *  true, no agent run is dispatched: the gate refuses by name (`app/agents/crew_factory.py:222`,
+   *  E_POLICY_DENIED). Optional-and-nullable like the notify booleans on purpose: an older fixture
+   *  without the key reads as the server's own OFF, never a crash. */
+  dispatch_paused?: boolean | null;
 };
 
 /** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
@@ -107,13 +113,15 @@ const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "notification_email",
 ];
 
-/** The five booleans this form sends (Switch-controlled; never stringified on the wire). */
+/** The six booleans this form sends (Switch-controlled; never stringified on the wire).
+ *  `dispatch_paused` (V8b/L3) rides the same machinery as the five U5 toggles. */
 const BOOL_KEYS = [
   "night_task_enabled",
   "notify_on_completed",
   "notify_on_failed",
   "notify_on_awaiting_approval",
   "notify_on_run_requeued",
+  "dispatch_paused",
 ] as const;
 type BoolKey = (typeof BOOL_KEYS)[number];
 type Bools = Record<BoolKey, boolean>;
@@ -195,6 +203,9 @@ function boolsFrom(config: SettingsConfig): Bools {
     notify_on_failed: config.notify_on_failed === true,
     notify_on_awaiting_approval: config.notify_on_awaiting_approval === true,
     notify_on_run_requeued: config.notify_on_run_requeued === true,
+    // V8b/L3: `undefined`/`null` (an older fixture, or a wire hiccup) read as false — the same
+    // rule the server's own ON/OFF default keeps; the strict === never renders a coerced truth.
+    dispatch_paused: config.dispatch_paused === true,
   };
 }
 
@@ -502,6 +513,28 @@ export default function SettingsPage() {
               className="space-y-4"
             >
               {COMPANY_FIELDS.map((field) => fieldRow(field))}
+              {/* V8b/L3: the Pause/Resume Switch — the real dispatch gate (V8/C5). `checked` is
+                  `dispatch_paused === true`; the save rides the same one-PUT boolean idiom as the
+                  notify toggles above (only a CHANGED key leaves the form). */}
+              <div className="flex items-start justify-between gap-3 border-t border-line pt-4">
+                <div>
+                  <p className="ui-label text-ink">Pause all dispatches</p>
+                  <p className="ui-label mt-1 text-ink-muted">
+                    While paused, no agent run is dispatched — attempts are refused by name
+                    (E_POLICY_DENIED). Resume here the same way.
+                  </p>
+                </div>
+                <Switch
+                  checked={bools.dispatch_paused}
+                  onChange={(next) =>
+                    setBools((current) =>
+                      current === null ? current : { ...current, dispatch_paused: next },
+                    )
+                  }
+                  label="Pause all dispatches"
+                  id="settings-dispatch_paused"
+                />
+              </div>
             </div>
           ) : null}
 

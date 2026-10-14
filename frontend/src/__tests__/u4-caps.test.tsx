@@ -297,6 +297,11 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     // V8/C3: the chat rail (new dashboard region) reads the frozen chat history; an unserved
     // path fails LOUDLY.
     "/chat": { items: [], total: 0 },
+    // V8b-D2 (parent): the Website card (left rail) reads the company row and a timed health
+    // check; both unserved paths would fail LOUDLY. Listed AFTER /config/deepseek-key so the
+    // startsWith scan keeps resolving the deeper key first.
+    "/config": { website_url: null },
+    "/health": { status: "ok" },
     ...overrides,
   };
   mockGet.mockImplementation((path: string) => {

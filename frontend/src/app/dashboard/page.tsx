@@ -6,10 +6,12 @@ import { CapsPanel } from "@/components/dashboard/CapsPanel";
 import { ChatRail } from "@/components/chat/ChatRail";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
+import { MediaCard } from "@/components/dashboard/MediaCard";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
 import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
+import { WebsiteCard } from "@/components/dashboard/WebsiteCard";
 
 /**
  * The dashboard, rebuilt as the live product's region composition (agent1 dossier §1.3–1.8):
@@ -53,11 +55,15 @@ export default function DashboardPage() {
               duplicate it; see its comment). */}
           <AutoModePanel />
           <BusinessPanel />
+          {/* V8b-D2 (parent mount): the Website card — configured URL + measured health line. */}
+          <WebsiteCard />
         </aside>
 
         <section aria-label="Tasks and reports" className="space-y-6">
           <TasksPreview />
           <DailyReportPanel />
+          {/* V8b/L3: the Media slot (live: middle column bottom) — the honest empty-state card, no dead IMAGE/VIDEO buttons. */}
+          <MediaCard />
         </section>
 
         <section aria-label="Workspace widgets" className="space-y-6">

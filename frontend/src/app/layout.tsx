@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import "./globals.css";
 import { Topbar } from "@/components/layout/Topbar";
+import { ActivityStrip } from "@/components/shell/ActivityStrip";
+import { CommandPalette } from "@/components/shell/CommandPalette";
 
 export const metadata: Metadata = {
   title: "Polsia — AI Business Agent",
@@ -27,6 +29,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           Skip to content
         </a>
         <Topbar />
+        <ActivityStrip />
+        {/* V8b-D1 (parent mount): the Ctrl+K palette. Renders nothing until opened. */}
+        <CommandPalette />
         <main id="content" tabIndex={-1} className="mx-auto w-full max-w-[1600px] px-4 py-6">
           {children}
         </main>
