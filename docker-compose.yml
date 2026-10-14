@@ -123,13 +123,15 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Inlined into the client bundle at BUILD time (frontend/src/lib/api.ts reads it); it must
-        # match the backend's API_KEY or every dashboard request gets a 401.  Rebuild to change it.
+        # NEXT_PUBLIC_* are inlined into the client bundle at BUILD time — they are NOT read at
+        # runtime, so the old `environment:` block here was inert and misleading (removed in the
+        # 2026-10-13 live pass).  URL/WS args DEFAULT TO EMPTY = RELATIVE: the browser calls
+        # /api/v1 on whatever origin serves the app through the nginx mux (works from localhost,
+        # 127.0.0.1, a LAN IP or a hostname alike).  API_KEY must match the backend's.
         NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-dev-key}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
     env_file: .env
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost
-      NEXT_PUBLIC_WS_URL: ws://localhost
     # F1: with the backend healthcheck above, gate on it — the pages call the API on first render,
     # so "container started" was never enough (a crashed backend used to start the frontend anyway).
     depends_on:

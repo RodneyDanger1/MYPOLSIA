@@ -11,6 +11,12 @@ COPY . .
 # API_KEY or every dashboard request gets a 401.  Changing it requires a rebuild.
 ARG NEXT_PUBLIC_API_KEY=dev-key
 ENV NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY
+# Empty = RELATIVE (the deployment default; see docker-compose.yml's build args): the client
+# calls /api/v1 on the serving origin through the nginx mux.  Set explicitly for split-origin dev.
+ARG NEXT_PUBLIC_API_URL=
+ARG NEXT_PUBLIC_WS_URL=
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 RUN npm run build
 
 FROM node:20-alpine AS runner
