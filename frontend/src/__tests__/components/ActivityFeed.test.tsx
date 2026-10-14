@@ -28,17 +28,34 @@ const MockWebSocket = jest.fn().mockImplementation(() => {
 describe("ActivityFeed", () => {
   beforeEach(() => {
     MockWebSocket.mockClear();
+    // The hook pulls a REST snapshot when the socket opens; jsdom has no network. Stub it so these
+    // tests exercise the intended path (the snapshot-FAILURE surface has its own test in
+    // u1-realtime.test.tsx, where the hook's error states live).
+    (global as any).fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => null },
+      json: async () => [],
+      text: async () => "[]",
+    }));
   });
 
-  it("renders empty state when no events", () => {
+  // UPDATED for the honest-state change (Q-07): the "No activity yet" copy is a claim that now
+  // requires a LIVE socket. Old behavior pinned: empty copy rendered before any connection.
+  it("claims the empty-but-fine copy only once live; CONNECTING before that", () => {
     render(<ActivityFeed />);
+    expect(screen.getByText(/CONNECTING/)).toBeInTheDocument();
+    expect(screen.queryByText(/No activity yet/i)).toBeNull();
+
+    act(() => { mockWsInstance.onopen?.(); });
     expect(screen.getByText(/No activity yet/i)).toBeInTheDocument();
   });
 
-  it("shows 'Live' status when connected", () => {
+  it("shows 'LIVE' status when connected", () => {
     render(<ActivityFeed />);
     act(() => { mockWsInstance.onopen?.(); });
-    expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("LIVE")).toBeInTheDocument();
   });
 
   it("renders events received via WebSocket", async () => {
@@ -114,6 +131,8 @@ describe("ActivityFeed", () => {
 
     expect(screen.getByText("Budget shifted with an unrecognised level")).toBeInTheDocument();
     expect(container.querySelector("span.bg-gray-400")).not.toBeNull(); // dot fallback
-    expect(container.querySelector("span.text-gray-300")).not.toBeNull(); // label fallback
+    // UPDATED for the light-theme restyle: the label fallback class is now gray-500 (was gray-300,
+    // which is illegible on the white feed surface).
+    expect(container.querySelector("span.text-gray-500")).not.toBeNull(); // label fallback
   });
 });

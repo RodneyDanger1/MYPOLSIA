@@ -7,6 +7,16 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 // the load on a backend that is already struggling.
 const RETRY_ATTEMPTS = 2;
 const RETRY_BASE_MS = 300;
+/** Q-04: the WHOLE read call — every attempt AND every backoff sleep — fits this budget. A slow
+ *  backend returning late 5xx used to burn ≈46 s (3 × 15 s attempts + 900 ms of backoff) before any
+ *  error reached the UI; with the default timeout the real worst case is now ≈20 s, and the error
+ *  that finally surfaces is a real one. A caller that passes its own (larger) `timeoutMs` — e.g. the
+ *  memory page's deliberately warm 120 s search — explicitly buys a matching total budget; its
+ *  retries still cannot outlive that. */
+export const READ_TOTAL_BUDGET_MS = 20_000;
+/** A retry is only worth scheduling if at least this much of the budget survives the backoff sleep,
+ *  so the retry gets a usable attempt window instead of an instant abort. */
+const MIN_RETRY_BUDGET_MS = 1_000;
 
 /** A failure the API described itself, in the server's named-refusal shape. */
 export type ApiRefusal = {
@@ -89,22 +99,68 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function apiFetch<T>(
-  path: string,
-  options: RequestInit & { timeoutMs?: number } = {},
-): Promise<T> {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options;
+/** Per-call transport overrides. `timeoutMs`/`retries`/`budgetMs` are read off the same object that
+ *  is spread into `RequestInit`, so pages may pass them through `api.get`'s second argument. */
+export type ApiFetchOptions = RequestInit & {
+  /** Per-attempt timeout (default 15 000 ms). */
+  timeoutMs?: number;
+  /** Retry count override for idempotent reads (default RETRY_ATTEMPTS = 2). */
+  retries?: number;
+  /** Whole-call budget override for idempotent reads (default READ_TOTAL_BUDGET_MS = 20 000 ms). */
+  budgetMs?: number;
+};
+
+/** A retry is worth it only if the backoff plus a usable attempt window still fit the budget. */
+function canRetry(attempt: number, maxRetries: number, deadline: number): boolean {
+  if (attempt >= maxRetries) return false;
+  const backoff = RETRY_BASE_MS * 2 ** attempt;
+  return Date.now() + backoff + MIN_RETRY_BUDGET_MS <= deadline;
+}
+
+async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, retries, budgetMs, ...init } = options;
   const method = (init.method ?? "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD";
-  let lastError: unknown;
+  const maxRetries = retryable ? (retries ?? RETRY_ATTEMPTS) : 0;
+  // Bound the WHOLE read call, not just each attempt (Q-04). An explicit caller `timeoutMs` larger
+  // than the budget raises it to that intent (the memory page's 120 s warm search), while a default
+  // read can never outlive READ_TOTAL_BUDGET_MS. Mutations keep their single bounded attempt.
+  const deadline = retryable
+    ? Date.now() + Math.max(budgetMs ?? READ_TOTAL_BUDGET_MS, timeoutMs)
+    : Number.POSITIVE_INFINITY;
 
-  for (let attempt = 0; attempt <= (retryable ? RETRY_ATTEMPTS : 0); attempt++) {
+  let attempt = 0; // retries consumed so far
+  // Every exit from this loop is an explicit return/throw — there is no unreachable code after it
+  // (audit Q-05; the old trailing `throw lastError` could never run).
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (retryable && remaining <= 0) {
+      // Reachable only when a backoff sleep (or a busy event loop) overshot the budget between the
+      // retry gate and here; an explicit, honest terminal state rather than a silent fall-through.
+      throw new ApiError(
+        0,
+        `read budget of ${budgetMs ?? READ_TOTAL_BUDGET_MS}ms exhausted after ${attempt} ${
+          attempt === 1 ? "retry" : "retries"
+        }`,
+        "E_TIMEOUT",
+      );
+    }
+    const attemptTimeout = retryable ? Math.min(timeoutMs, remaining) : timeoutMs;
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Q-03: TWO different causes abort this ONE controller — our timeout and the consumer's signal
+    // (component unmount). Track which one fired, or an unmount-abort gets reported to the user as
+    // "request timed out".
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, attemptTimeout);
+    const onConsumerAbort = () => controller.abort();
     if (init.signal) {
       // Honour an outer signal (component unmount) as well as our own timeout.
       if (init.signal.aborted) controller.abort();
-      else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      else init.signal.addEventListener("abort", onConsumerAbort, { once: true });
     }
 
     try {
@@ -151,10 +207,10 @@ async function apiFetch<T>(
           undefined,
           requestId,
         );
-        // A 5xx on a read is worth one more try; a 4xx never is.
-        if (res.status >= 500 && retryable && attempt < RETRY_ATTEMPTS) {
-          lastError = err;
+        // A 5xx on a read is worth one more try, if the budget still fits it; a 4xx never is.
+        if (res.status >= 500 && canRetry(attempt, maxRetries, deadline)) {
           await sleep(RETRY_BASE_MS * 2 ** attempt);
+          attempt += 1;
           continue;
         }
         throw err;
@@ -164,31 +220,33 @@ async function apiFetch<T>(
       return (await res.json()) as T;
     } catch (e) {
       if (e instanceof ApiError) throw e;
-      lastError = e;
       const aborted = (e as { name?: string })?.name === "AbortError";
-      if (retryable && !aborted && attempt < RETRY_ATTEMPTS) {
+      if (aborted) {
+        // Q-03: name the REAL cause — a timeout is a timeout, a consumer abort is a cancellation.
+        throw timedOut
+          ? new ApiError(0, `no response within ${attemptTimeout}ms`, "E_TIMEOUT")
+          : new ApiError(0, "request cancelled", "E_ABORTED");
+      }
+      if (canRetry(attempt, maxRetries, deadline)) {
         await sleep(RETRY_BASE_MS * 2 ** attempt);
+        attempt += 1;
         continue;
       }
-      throw new ApiError(
-        0,
-        aborted ? `request timed out after ${timeoutMs}ms` : String(e),
-        "E_NETWORK",
-      );
+      throw new ApiError(0, String(e), "E_NETWORK");
     } finally {
       clearTimeout(timer);
+      init.signal?.removeEventListener("abort", onConsumerAbort);
     }
   }
-  throw lastError instanceof Error ? lastError : new ApiError(0, String(lastError), "E_NETWORK");
 }
 
 export const api = {
-  get: <T>(path: string, init?: RequestInit) => apiFetch<T>(path, { ...init, method: "GET" }),
-  post: <T>(path: string, body?: unknown, init?: RequestInit) =>
+  get: <T>(path: string, init?: ApiFetchOptions) => apiFetch<T>(path, { ...init, method: "GET" }),
+  post: <T>(path: string, body?: unknown, init?: ApiFetchOptions) =>
     apiFetch<T>(path, { ...init, method: "POST", body: JSON.stringify(body ?? {}) }),
-  put: <T>(path: string, body?: unknown, init?: RequestInit) =>
+  put: <T>(path: string, body?: unknown, init?: ApiFetchOptions) =>
     apiFetch<T>(path, { ...init, method: "PUT", body: JSON.stringify(body ?? {}) }),
-  delete: <T>(path: string, init?: RequestInit) =>
+  delete: <T>(path: string, init?: ApiFetchOptions) =>
     apiFetch<T>(path, { ...init, method: "DELETE" }),
 };
 

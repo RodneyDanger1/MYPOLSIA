@@ -60,8 +60,10 @@ function fallbackLabel(marker: string): string {
  * same object it spreads into RequestInit), even though `api.get`'s declared parameter is a bare
  * `RequestInit` — naming it here mirrors the real signature without a cast.  120 s so the CLIENT is
  * never the first to give up: the semantic search loads Chroma's embedding model on its first call,
- * and the 15 s default aborted while the server was still working — which this page then reported as
- * "request timed out after 15000ms", a failure the user did not have.
+ * and the 15 s default aborted while the server was still working — the pre-U1 client reported that
+ * as "request timed out after 15000ms", a failure the user did not have; the fixed client bounds
+ * each read at READ_TOTAL_BUDGET_MS and distinguishes E_TIMEOUT from E_ABORTED, while this page's
+ * explicit 120 s timeout keeps the semantic search inside the caller's intent.
  */
 type MemorySearchInit = RequestInit & { timeoutMs?: number };
 const WARM_SEARCH: MemorySearchInit = { timeoutMs: 120_000 };

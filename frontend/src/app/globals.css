@@ -2,23 +2,269 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   POLSIA — design tokens (wave U1, coder-a-shell)
+   ----------------------------------------------------------------------------
+   Measured from the live product, not invented: agent1-live-chrome/DOSSIER.md
+   "Global palette" + §G design-language summary, and agent2-code/CAPTURES.md
+   §cap-01 / §cap-04 (PIL-sampled).
+
+   The live product is a LIGHT system: a #F0F0F0–#FFFFFF canvas with white cards,
+   pure-black chrome bands, near-black text, blue links, orange accents and a
+   dark-red NEW marker. The "dark UI" impression comes only from the black bands
+   (live-log strip, primary CTA) — do not dark-theme the app (aid3 PART C, C1).
+
+   Values are HSL triplets so Tailwind can apply opacity modifiers
+   (`hsl(var(--ink) / <alpha-value>)`). Contrast ratios quoted below are computed
+   for the surfaces each token is actually used on and are asserted by
+   src/__tests__/u1-shell.test.tsx (aid3 B18 acceptance: every text token
+   ≥ 4.5:1 on each surface it is used on).
+   ============================================================================ */
 :root {
-  --background: 222 47% 5%;
-  --foreground: 213 31% 91%;
-  --card: 222 47% 8%;
-  --card-foreground: 213 31% 91%;
-  --primary: 239 84% 67%;
-  --primary-foreground: 210 40% 98%;
-  --muted: 217 33% 17%;
-  --muted-foreground: 215 20% 65%;
-  --border: 217 33% 17%;
+  /* --- surfaces ---------------------------------------------------------- */
+  --canvas: 0 0% 94.1%; /* #F0F0F0 page canvas */
+  --surface: 0 0% 100%; /* #FFFFFF cards, panels, dropdowns */
+  --surface-sunk: 0 0% 98%; /* #FAFAFA quiet inset row (live's left rail) */
+  --surface-strong: 0 0% 89.8%; /* #E5E5E5 inset/chip fill, bevel gradient end */
+
+  /* --- black chrome bands ----------------------------------------------- */
+  --band: 0 0% 0%; /* #000000 live-log strip, black chrome */
+  --band-ink: 0 0% 100%; /* #FFFFFF text on a band (21.0:1) */
+
+  /* --- ink -------------------------------------------------------------- */
+  --ink: 0 0% 6.7%; /* #111111 headings + body (16.6:1 on canvas, 18.9:1 on white) */
+  --ink-muted: 0 0% 37.3%; /* #5F5F5F meta rows — see NOTE below */
+  /* NOTE (aid3 B18): live's measured muted text is #8B8B8B, only 2.70:1 on the
+     #E5E5E5 card fill — below WCAG AA. Same hierarchy, size and uppercase
+     treatment, one darker gray step: #5F5F5F measures 5.06:1 on #E5E5E5, 5.59:1
+     on the canvas, 6.37:1 on white (computed from this file by u1-shell.test.tsx). */
+
+  /* --- lines ------------------------------------------------------------ */
+  --line: 0 0% 87.8%; /* #E0E0E0 hairlines between rows/sections */
+  --line-strong: 0 0% 42%; /* #6B6B6B control border (live: "thin dark border") */
+
+  /* --- accents ---------------------------------------------------------- */
+  --link: 211 60.7% 42.9%; /* #2B6CB0 blue links (5.47:1 on white, 4.80:1 on canvas) */
+  --accent: 21 90.2% 47.8%; /* #E8590C brand orange — FILL / dot / outline token */
+  --accent-soft: 21 83.5% 54.7%; /* #EC6F2B "next task" outline on a card */
+  --accent-ink: 0 0% 6.7%; /* label colour ON --accent: 5.26:1 */
+  /* NOTE: --accent is a fill token, not small text on white (3.59:1). Live sets
+     white on orange (also 3.59:1) for its ON toggles; we keep the orange fill and
+     set the label in --accent-ink instead. */
+  --alert: 0 69.4% 35.9%; /* #9B1C1C dark-red NEW marker / destructive */
+  --alert-ink: 0 0% 100%; /* white on --alert: 8.15:1 */
+  --focus: 214 81.7% 50.6%; /* #1A73E8 focus ring — always an outline (Q-28):
+     4.49:1 on white, 3.94:1 on the canvas, 4.68:1 on the black band (≥3:1, the
+     floor for a focus indicator) */
+
+  /* --- type (system stacks only — no webfont downloads, no asset lifting) - */
+  --font-serif: Georgia, "Times New Roman", Times, serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo,
+    "DejaVu Sans Mono", monospace;
+
+  /* --- "retro-OS" bevel / gloss fills ----------------------------------- */
+  --bevel-top: #ffffff;
+  --bevel-mid: #f2f2f2;
+  --bevel-bottom: #dcdcdc;
+  --gloss-top: #5a5a5a;
+  --gloss-mid: #2b2b2b;
+  --gloss-bottom: #000000;
 }
 
-* {
-  box-sizing: border-box;
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: hsl(var(--canvas));
+    color: hsl(var(--ink));
+    font-family: var(--font-serif);
+  }
+
+  /* One visible keyboard-focus rule for the whole app: an outline offset from the
+     control, so it never shifts layout and never depends on colour alone. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--focus));
+    outline-offset: 2px;
+  }
+
+  /* Q-28: honour the OS motion preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-body {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+@layer components {
+  /* Monospace ALL-CAPS micro-label — the live product's label/button/chip voice
+     (10-12px, letter-spaced). */
+  .ui-label {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.6875rem;
+    line-height: 1.25;
+  }
+
+  /* Beveled light-gray "retro-OS" button (live: #E0E0E0 gradient, thin dark
+     border, subtle shadow, black caps label). */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: 3px;
+    border: 1px solid hsl(var(--line-strong));
+    padding: 0.3125rem 0.625rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.6875rem;
+    line-height: 1.15;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .btn-bevel {
+    color: hsl(var(--ink));
+    background-image: linear-gradient(
+      180deg,
+      var(--bevel-top) 0%,
+      var(--bevel-mid) 45%,
+      var(--bevel-bottom) 100%
+    );
+    box-shadow:
+      inset 0 1px 0 #ffffff,
+      0 1px 0 rgb(0 0 0 / 0.18);
+  }
+
+  .btn-bevel:hover:not(:disabled) {
+    background-image: linear-gradient(180deg, #ffffff 0%, #ececec 45%, #d2d2d2 100%);
+  }
+
+  .btn-bevel:active:not(:disabled) {
+    background-image: linear-gradient(180deg, #cfcfcf 0%, #e8e8e8 100%);
+    box-shadow: inset 0 2px 3px rgb(0 0 0 / 0.28);
+  }
+
+  /* Black glossy CTA (live: `SEE PLANS` / `RUN NOW` / `SEND`). */
+  .btn-glossy {
+    color: #ffffff;
+    border-color: #000000;
+    background-image: linear-gradient(
+      180deg,
+      var(--gloss-top) 0%,
+      var(--gloss-mid) 48%,
+      #0d0d0d 52%,
+      var(--gloss-bottom) 100%
+    );
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.45),
+      0 1px 2px rgb(0 0 0 / 0.4);
+    text-shadow: 0 -1px 0 rgb(0 0 0 / 0.6);
+  }
+
+  .btn-glossy:hover:not(:disabled) {
+    background-image: linear-gradient(180deg, #6a6a6a 0%, #333333 48%, #111111 52%, #000000 100%);
+  }
+
+  .btn-glossy:active:not(:disabled) {
+    background-image: linear-gradient(180deg, #1a1a1a 0%, #000000 100%);
+    box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.7);
+    text-shadow: none;
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    box-shadow: none;
+    text-shadow: none;
+  }
+
+  /* Small caps chip / badge. Each fill variant carries the label colour that
+     keeps its pair ≥ 4.5:1 (see the token notes above). */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 2px;
+    border: 1px solid hsl(var(--line));
+    padding: 0.0625rem 0.25rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.625rem;
+    line-height: 1.4;
+  }
+
+  .chip-soft {
+    /* live's `2D AGO` age chip */
+    color: hsl(var(--ink-muted));
+    background-color: hsl(var(--surface-strong));
+    border-color: hsl(var(--surface-strong));
+  }
+
+  .chip-dark {
+    /* live's `FEATURE` / `RESEARCH` task chips */
+    color: hsl(var(--band-ink));
+    background-color: hsl(var(--band));
+    border-color: hsl(var(--band));
+  }
+
+  .chip-accent {
+    color: hsl(var(--accent-ink));
+    background-color: hsl(var(--accent));
+    border-color: hsl(var(--accent));
+  }
+
+  .chip-alert {
+    /* live's dark-red `NEW` marker / credit badge */
+    color: hsl(var(--alert-ink));
+    background-color: hsl(var(--alert));
+    border-color: hsl(var(--alert));
+  }
+
+  /* White card on the canvas: 1px hairline, small radius (live radii ≈ 2-4px). */
+  .card-surface {
+    background-color: hsl(var(--surface));
+    border: 1px solid hsl(var(--line));
+    border-radius: 3px;
+  }
+
+  /* Dropdown / popover card (live: white panel, thin dark border, drop shadow —
+     DOSSIER §1.9 MENU dropdown, CAPTURES cap-04 NOTIFICATIONS panel). */
+  .panel-pop {
+    background-color: hsl(var(--surface));
+    border: 1px solid hsl(var(--line-strong));
+    border-radius: 3px;
+    box-shadow: 0 8px 20px rgb(0 0 0 / 0.25);
+  }
+
+  /* Full-bleed black chrome band (live-log strip). Consumers supply content. */
+  .chrome-band {
+    background-color: hsl(var(--band));
+    color: hsl(var(--band-ink));
+  }
+
+  /* Blue link, live-style: underlined, sits in serif body text. */
+  .link {
+    color: hsl(var(--link));
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .link:hover {
+    color: hsl(var(--link) / 0.85);
+  }
 }

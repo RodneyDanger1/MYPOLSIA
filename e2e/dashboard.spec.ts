@@ -1,28 +1,37 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Dashboard", () => {
-  // Locators are ROLE-scoped on purpose: `getByText("Dashboard")` resolves to BOTH the sidebar link and
-  // the page heading, and Playwright's strict mode fails rather than guessing — which is how this suite
-  // failed on its first-ever run, alongside the blank-API-key 401 hiding behind it.
-  test("loads and shows metrics cards", async ({ page }) => {
+  // Locators stay ROLE-scoped on purpose: Playwright's strict mode fails rather than guessing, and
+  // the pre-overhaul suite tripped on `getByText("Dashboard")` matching both a nav link and the page
+  // heading. Since the U1 overhaul the nav lives in the topbar's MENU dropdown (no persistent
+  // sidebar), so the heading locator below stays unambiguous while the dropdown is closed.
+  test("loads and shows the business panel", async ({ page }) => {
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    // `exact: true` is load-bearing: Playwright's getByText is CASE-INSENSITIVE and substring-based by
-    // default, so "Tasks Today" also matches the nine agent cards that read "· 0 tasks today" — 10
-    // elements once the grid had loaded and 1 before it, i.e. a failure that depended on load order.
-    await expect(page.getByText("Tasks Today", { exact: true })).toBeVisible();
+    // `exact: true` remains load-bearing: Playwright's getByText is CASE-INSENSITIVE and
+    // substring-based by default, and other surfaces (agent rows, task chips) also mention today's
+    // task counts — the label renders exactly once, so exact matching keeps the locator stable.
+    await expect(page.getByText("Tasks today", { exact: true })).toBeVisible();
     await expect(page.getByText("MRR", { exact: true })).toBeVisible();
   });
 
-  test("shows agent status grid", async ({ page }) => {
+  test("shows the workspace status rail", async ({ page }) => {
     await page.goto("/dashboard");
-    await expect(page.getByText("Agent Status")).toBeVisible();
+    const rail = page.getByLabel("Workspace status");
+    await expect(rail).toBeVisible();
+    // Honest binary state (live dossier §1.3): "Working"/"Idle" plus a run-count line. Assert the
+    // stable structure, not one state — the e2e stack's agents are usually idle.
+    await expect(rail.getByText(/^(Working|Idle)$/)).toBeVisible();
+    await expect(rail.getByText("Last run", { exact: true })).toBeVisible();
   });
 
-  test("sidebar navigation links are present", async ({ page }) => {
+  test("MENU dropdown carries the nine routes", async ({ page }) => {
     await page.goto("/dashboard");
-    await expect(page.getByRole("link", { name: "Finance" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Agents" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Tasks" })).toBeVisible();
+    await page.getByTestId("nav-menu-trigger").click();
+    const nav = page.getByRole("navigation", { name: "Main" });
+    await expect(nav.getByRole("link", { name: "Tasks" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Finance" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Agents" })).toBeVisible();
+    await expect(nav.getByRole("link")).toHaveCount(9);
   });
 });

@@ -1,0 +1,72 @@
+"use client";
+
+import Link from "next/link";
+import { Bell, Pencil } from "lucide-react";
+
+import { MenuNav } from "@/components/layout/MenuNav";
+import { TopbarPopover } from "@/components/layout/TopbarPopover";
+
+/**
+ * The app shell's control cluster.
+ *
+ * The live product's header row is `workspace name · [🔔] [EDIT] [MENU ▾]` on the
+ * light canvas (agent1-live-chrome/DOSSIER.md §1.2, §1.3; agent2-code/CAPTURES.md
+ * cap-01). This is that cluster, and it is the ONLY navigation the shell renders —
+ * the persistent sidebar is retired (DOSSIER cross-cutting A: the live app has no
+ * nav rail; aid3 MATCH-VS-BEAT C2 forbids re-adding one).
+ *
+ * Two controls have no data source in this build, so they refuse by name instead
+ * of pretending:
+ * - the bell: no notifications endpoint exists anywhere in the API (verified:
+ *   `backend/app/api/v1/*` has no notifications route and `grep -rni notification
+ *   backend frontend/src` returns nothing), so it renders NO count and says so;
+ * - EDIT: the live `EDIT` opens the Edit Dashboard sheet, which is not built yet,
+ *   and no API stores a dashboard layout (`backend/app/schemas/company.py` carries
+ *   company fields only) — so it explains that rather than opening a dead sheet.
+ */
+export function Topbar() {
+  return (
+    <header className="sticky top-0 z-40 border-b border-line bg-surface">
+      <div className="mx-auto flex w-full max-w-[1600px] items-center gap-2 px-4 py-2">
+        <Link
+          href="/dashboard"
+          className="mr-auto flex items-baseline gap-2"
+          aria-label="Polsia — dashboard"
+        >
+          <span className="text-base font-bold text-ink">Polsia</span>
+          <span className="ui-label text-ink-muted">AI Business Agent</span>
+        </Link>
+
+        <TopbarPopover
+          label="Notifications"
+          testId="topbar-notifications"
+          icon={<Bell size={13} />}
+          panelTitle="Notifications"
+          panelClassName="w-80"
+        >
+          <p>
+            Nothing to show. This build has no notifications endpoint, so the bell reports an
+            empty state instead of a count it cannot verify.
+          </p>
+        </TopbarPopover>
+
+        <TopbarPopover
+          label="Edit dashboard"
+          testId="topbar-edit"
+          icon={<Pencil size={13} />}
+          text="Edit"
+          panelTitle="Edit Dashboard"
+          panelClassName="w-80"
+        >
+          <p>
+            The Edit Dashboard sheet does not exist yet, and no API stores a dashboard layout:
+            GET/PUT /api/v1/config carries company fields only. There is nothing to toggle here
+            yet.
+          </p>
+        </TopbarPopover>
+
+        <MenuNav />
+      </div>
+    </header>
+  );
+}
