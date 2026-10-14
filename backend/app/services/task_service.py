@@ -556,6 +556,11 @@ async def release_claim(db: AsyncSession, task_id: int, worker: str) -> bool:
     )
 
 
+#: How many recovered ids the sweep's SUMMARY line names (it is a feed line, not a ledger dump).
+#: `detail` always carries every id, and the count in the summary is always exact.
+_STALE_CLAIM_IDS_IN_SUMMARY = 20
+
+
 async def requeue_stale_claims(
     db: AsyncSession,
     now: datetime | None = None,
@@ -567,6 +572,16 @@ async def requeue_stale_claims(
     else `created_at`) is older than the lease.  A stale row that has already used
     its attempts is `failed` (with the reason recorded) rather than re-queued
     forever; everything else goes back to `pending` for the next worker.
+
+    H-02 (wave U3, backend auditor).  The recovery used to be INVISIBLE: the count went to the
+    sweep task's return dict and a `logger.info` (`celery_app/tasks/maintenance.py`), so no owner
+    surface could tell that a stalled run had been requeued — B7's "stalled run requeued" line had
+    no producer.  The statement now returns the recovered ids AND their outcome, and this function
+    writes ONE batched `log_activities` row per sweep naming the count and the ids.  The row rides
+    the CALLER's transaction (the sweep task commits it together with the UPDATE), so a rolled-back
+    sweep cannot leave an activity row claiming a recovery that never happened; a sweep that
+    recovers nothing writes nothing.  The return value stays the recovered-row COUNT (the sweep
+    task's result shape and every shipped pin depend on it).
     """
     lease = _resolve_lease(lease_seconds)
     cutoff = as_bound_instant((now or utcnow()) - timedelta(seconds=lease), db)
@@ -591,10 +606,53 @@ async def requeue_stale_claims(
             claimed_at=None,
             heartbeat_at=None,
         )
-        .returning(Task.id)
+        # RETURNING reads the row AS UPDATED, so the outcome of each recovery travels with its id
+        # (probe: probes/probe_returning_status.py in the U3 L4 lane — SQLite + SQLAlchemy type the
+        # post-update value back as a `TaskStatus`).
+        .returning(Task.id, Task.status)
         .execution_options(synchronize_session=False)
     )
-    return len((await db.execute(stmt)).scalars().all())
+    recovered = (await db.execute(stmt)).all()
+    if recovered:
+        # The UPDATE's CASE has exactly two branches, so `pending` is the requeue and anything
+        # else is the terminal branch — the split is REPORTED, never collapsed into one number.
+        requeued_ids = sorted(
+            int(task_id) for task_id, status in recovered if str(status) == "pending"
+        )
+        failed_ids = sorted(
+            int(task_id) for task_id, status in recovered if str(status) != "pending"
+        )
+        parts = [f"{len(requeued_ids)} stalled run(s) requeued"]
+        if failed_ids:
+            parts.append(f"{len(failed_ids)} sent terminal (attempts exhausted)")
+        shown = requeued_ids + failed_ids
+        listed = ", ".join(f"#{task_id}" for task_id in shown[:_STALE_CLAIM_IDS_IN_SUMMARY])
+        if len(shown) > _STALE_CLAIM_IDS_IN_SUMMARY:
+            listed += f", … (+{len(shown) - _STALE_CLAIM_IDS_IN_SUMMARY} more)"
+
+        # Lazy import: this module's import graph stays exactly what it was, and the batch writer is
+        # the documented seam for "one round trip, one shared `created_at`, no Redis publish".
+        from app.services.activity_service import log_activities
+
+        await log_activities(
+            db,
+            [
+                {
+                    # The scheduler role, the same `agent_type` the cycle's own bookkeeping rows
+                    # carry: this is queue maintenance, not one agent's work.
+                    "agent_type": "orchestrator",
+                    "action": "stale_claims_requeued",
+                    "summary": f"{'; '.join(parts)}: {listed}",
+                    "level": "warning",
+                    "detail": {
+                        "requeued_ids": requeued_ids,
+                        "failed_ids": failed_ids,
+                        "lease_seconds": lease,
+                    },
+                }
+            ],
+        )
+    return len(recovered)
 
 
 # ── reads (get_agent_statuses is wired to /agents/status)

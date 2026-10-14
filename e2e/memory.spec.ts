@@ -49,7 +49,7 @@ test.describe("Memory page", () => {
     await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
     await expect(page.getByPlaceholder("Search company memory…")).toBeVisible();
     await expect(page.getByRole("button", { name: "Search" })).toBeVisible();
-    await expect(page.locator("main div.bg-gray-800")).toHaveCount(0);
+    await expect(page.locator("main li.card-surface")).toHaveCount(0);
 
     // Give a hypothetical auto-fetch a beat to fire, then prove none happened — the page must fetch
     // only on an explicit search.
@@ -72,7 +72,7 @@ test.describe("Memory page", () => {
     const mine = hits.find((h: { title: string | null }) => h.title === titleA);
     expect(mine, "the seeded fixture must be in the search response").toBeTruthy();
 
-    const cards = page.locator("main div.bg-gray-800");
+    const cards = page.locator("main li.card-surface");
     // Every hit the API returned must be rendered — no more, no less.
     await expect(cards).toHaveCount(hits.length);
     const card = cards.filter({ hasText: titleA });
@@ -84,7 +84,7 @@ test.describe("Memory page", () => {
   test("a second search renders THAT response's order, and an empty query neither fetches nor clears", async ({ page }) => {
     await page.goto("/memory");
     const input = page.getByPlaceholder("Search company memory…");
-    const cards = page.locator("main div.bg-gray-800");
+    const cards = page.locator("main li.card-surface");
 
     // first search (A)
     await input.fill(tokenA);

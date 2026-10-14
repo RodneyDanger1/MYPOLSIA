@@ -45,12 +45,22 @@ T14 (D21).  The producer half of the refund path: when the morning cycle creates
 (`finance_service.recent_failed_payments` -> `metadata.failed_payments`), so the finance agent's
 run actually RECEIVES the `pi_…` id a refund needs.  Nothing is attached when there are no such
 records — the task row is then exactly what it was before.
+
+H-03 (wave U3, backend auditor).  Both cycles used to call `run_agent_for_task` DIRECTLY — the
+run never reached `agent_runs` (whose only other production writer is the queue worker), so
+`GET /finance/summary`'s `ai_spend`, the usage ledger and the dispatch budget gate all under-counted
+every scheduled day, and the cycle's OWN call was never gated at all.  Both call sites now go
+through `_run_recorded_cycle_agent`: the D3 gate first, then a `run_type="cycle"` ledger row created
+before the model call and closed afterwards (with its accounting columns), closed `failed` when the
+run raises.  A day whose budget is full refuses the tick with a named skip + one activity row —
+nothing is charged and no row is written.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, date, datetime, time, timedelta
+import time
+from datetime import UTC, date, datetime, time as clock_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -131,7 +141,7 @@ def _morning_window(day: date, hour: int, tz: ZoneInfo) -> tuple[datetime, datet
     Shared by BOTH cycles (the name is historical): the morning cycle gates on it, and since
     L4-11 the evening cycle gates on the same shape at its own company-local hour.
     """
-    start_local = datetime.combine(day, time(hour=hour), tzinfo=tz)
+    start_local = datetime.combine(day, clock_time(hour=hour), tzinfo=tz)
     end_local = start_local + timedelta(hours=1)
     return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
@@ -158,9 +168,119 @@ def _resolve_evening_hour() -> tuple[int, str]:
     return hour, source
 
 
+async def _run_recorded_cycle_agent(
+    *,
+    agent_type: str,
+    task_dict: dict[str, Any],
+    context: dict[str, Any],
+    cycle: str,
+) -> dict[str, Any]:
+    """Run ONE cycle orchestrator call through the dispatch gate AND the run ledger (H-03).
+
+    The audit (wave U2, H-03) measured that both cycles called `run_agent_for_task` DIRECTLY: the
+    run never reached `agent_runs`, so `GET /finance/summary`'s `ai_spend`, the usage ledger and the
+    dispatch budget gate (`_common.day_spend_by_agent`, whose window is the company-local day) all
+    under-counted every scheduled day — and the cycle's own call was never gated at all.
+
+    The recorded shape deliberately mirrors the queue worker (`agent_tasks._execute_agent_task`):
+
+    1. the D3 gate runs FIRST (`assert_budget_allows`): a refused dispatch spends nothing and gets
+       no ledger row.  `BudgetStop` propagates, so each caller decides skip-vs-fail;
+    2. the run row is created and COMMITTED **before** the model call, so a process that dies
+       mid-run leaves evidence (a `running` row), never silence;
+    3. an exception closes that row `failed` (error recorded) and RE-RAISES — a crashed cycle must
+       neither swallow its failure nor leave a forever-`running` row behind;
+    4. a completed run is closed with its output, duration and accounting columns
+       (`_apply_run_usage`), which is exactly what makes its cost visible to `ai_spend` and to the
+       gate's own next decision.
+
+    `task_id` stays None with `run_type="cycle"`: a cycle run is not a queue row, which the schema
+    permits (the partial unique `ux_agent_runs_task_attempt` is `WHERE task_id IS NOT NULL`).
+
+    Returns the agent's result dict (``{}`` when the agent returned a non-dict — never a
+    fabricated shape).
+    """
+    from app.agents.crew_factory import run_agent_for_task
+    from app.core.database import get_session_factory
+    from app.services.task_service import create_agent_run, finish_agent_run
+    # The usage->column mapping has ONE definition (the queue's); re-deriving it here would fork
+    # the money rule. Same package, lazy import — the file's existing import discipline.
+    from celery_app.tasks.agent_tasks import _apply_run_usage
+
+    await assert_budget_allows(agent_type)
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        run = await create_agent_run(
+            db, agent_type, task_id=None, input_context=context, run_type="cycle"
+        )
+        await db.commit()
+        run_id = int(run.id)
+
+    started = time.monotonic()
+    try:
+        # The CLI call is blocking: off the loop, holding no DB session across it.
+        result = await asyncio.to_thread(run_agent_for_task, agent_type, task_dict, context)
+    except BaseException as exc:  # noqa: BLE001 — the run is closed as failed, then re-raised
+        duration = round(time.monotonic() - started, 2)
+        async with session_factory() as db:
+            await finish_agent_run(
+                db,
+                run_id,
+                "failed",
+                duration_secs=duration,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
+            await db.commit()
+        raise
+    duration = round(time.monotonic() - started, 2)
+
+    payload: dict[str, Any] | None = result if isinstance(result, dict) else None
+    async with session_factory() as db:
+        run_row = await finish_agent_run(
+            db, run_id, "completed", output=payload, duration_secs=duration
+        )
+        if run_row is not None:
+            _apply_run_usage(run_row, payload if payload is not None else {})
+        await db.commit()
+    return payload if payload is not None else {}
+
+
+async def _deny_cycle_tick(
+    *, cycle: str, day: date, window: dict[str, Any], code: str, reason: str
+) -> dict[str, Any]:
+    """Record a budget-refused cycle tick and return its named skip (H-03, the gate's caller half).
+
+    Refused BEFORE execution: no model call, no `agent_runs` row, no planned work — the same D2/D3
+    contract every other scheduled dispatch keeps.  The refusal is written as an ACTIVITY row
+    (one `log_activity`, so the live feed sees the tick being refused) and returned as a named skip
+    so the beat result carries it too.
+    """
+    from app.core.database import get_session_factory
+    from app.services.activity_service import log_activity
+
+    async with get_session_factory()() as db:
+        await log_activity(
+            db,
+            agent_type="orchestrator",
+            action="cycle_budget_denied",
+            summary=f"{cycle} cycle deferred: {reason}",
+            level="warning",
+            detail={"cycle": cycle, "code": code, "reason": reason, "day": day.isoformat()},
+        )
+        await db.commit()
+    logger.warning("%s cycle: budget denied (%s)", cycle, reason)
+    return {
+        "status": "skipped",
+        "reason": "budget_denied",
+        "code": code,
+        "budget": reason,
+        "window": window,
+    }
+
+
 async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
-    from app.agents.crew_factory import run_agent_for_task
     from app.core.database import get_session_factory
     from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
@@ -203,21 +323,30 @@ async def _morning_cycle() -> dict[str, Any]:
 
     # The orchestrator's CLI call is blocking: run it off the loop, and hold no DB
     # session across it (the upload pinned a connection for the whole run).
-    plan = await asyncio.to_thread(
-        run_agent_for_task,
-        "orchestrator",
-        {
-            "title": "Morning planning cycle",
-            "description": f"Generate today's task plan for {day.isoformat()}",
-            # L3-06: the caller declares the cycle — the agent reads this FIRST and only falls
-            # back to sniffing title/description for ad-hoc tasks. A model-authored plan entry
-            # whose wording contains "close"/"report"/"summary" can no longer flip this run.
-            "metadata": {"cycle": "morning"},
-        },
-        context,
-    )
-    if not isinstance(plan, dict):
-        plan = {}
+    #
+    # H-03: it goes through the DISPATCH GATE + RUN LEDGER (`_run_recorded_cycle_agent`), so the
+    # cycle's real model spend is measured where `ai_spend` and the day cap read it, and a full
+    # day refuses this tick the same way it refuses every other scheduled dispatch.
+    try:
+        plan = await _run_recorded_cycle_agent(
+            agent_type="orchestrator",
+            task_dict={
+                "title": "Morning planning cycle",
+                "description": f"Generate today's task plan for {day.isoformat()}",
+                # L3-06: the caller declares the cycle — the agent reads this FIRST and only falls
+                # back to sniffing title/description for ad-hoc tasks. A model-authored plan entry
+                # whose wording contains "close"/"report"/"summary" can no longer flip this run.
+                "metadata": {"cycle": "morning"},
+            },
+            context=context,
+            cycle="morning",
+        )
+    except BudgetStop as exc:
+        # Refused before anything ran: no model call, no ledger row, no planned or fixed work for
+        # the day (the fixed work's own gates would refuse it too — the whole day is full).
+        return await _deny_cycle_tick(
+            cycle="morning", day=day, window=window, code=exc.code, reason=exc.reason
+        )
     raw_planned = plan.get("tasks")
     planned = [entry for entry in raw_planned if isinstance(entry, dict)] if isinstance(raw_planned, list) else []
 
@@ -416,7 +545,7 @@ async def _morning_cycle() -> dict[str, Any]:
 async def _evening_cycle() -> dict[str, Any]:
     from sqlalchemy import func, select
 
-    from app.agents.crew_factory import run_agent_for_task
+    from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
     from app.core.timeutil import day_window
     from app.models.task import Task
@@ -472,19 +601,24 @@ async def _evening_cycle() -> dict[str, Any]:
     completed = counts.get("completed", 0)
     failed = counts.get("failed", 0)
 
-    result = await asyncio.to_thread(
-        run_agent_for_task,
-        "orchestrator",
-        {
-            "title": "Evening reporting cycle",
-            "description": f"Generate evening summary for {day.isoformat()}",
-            # L3-06: the caller declares the cycle; the agent reads this FIRST.
-            "metadata": {"cycle": "evening"},
-        },
-        context,
-    )
-    if not isinstance(result, dict):
-        result = {}
+    # H-03: the evening cycle's own model call is gated and recorded too (the second call site).
+    try:
+        result = await _run_recorded_cycle_agent(
+            agent_type="orchestrator",
+            task_dict={
+                "title": "Evening reporting cycle",
+                "description": f"Generate evening summary for {day.isoformat()}",
+                # L3-06: the caller declares the cycle; the agent reads this FIRST.
+                "metadata": {"cycle": "evening"},
+            },
+            context=context,
+            cycle="evening",
+        )
+    except BudgetStop as exc:
+        # Refused before the model call: no run row, no report row — the tick is a named skip.
+        return await _deny_cycle_tick(
+            cycle="evening", day=day, window=window, code=exc.code, reason=exc.reason
+        )
     summary_text = str(result.get("summary") or "Evening summary generated")
     raw_insights = result.get("insights")
     insights = [str(item) for item in raw_insights] if isinstance(raw_insights, list) else []

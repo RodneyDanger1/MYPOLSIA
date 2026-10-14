@@ -1,13 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-jest.mock("@/lib/api", () => ({
-  api: {
-    get: jest.fn(),
-    put: jest.fn(),
-    post: jest.fn(),
-    delete: jest.fn(),
-  },
-}));
+jest.mock("@/lib/api", () => {
+  const actual = jest.requireActual("@/lib/api");
+  return {
+    ...actual,
+    api: { get: jest.fn(), put: jest.fn(), post: jest.fn(), delete: jest.fn() },
+  };
+});
 
 import { api } from "@/lib/api";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
@@ -104,7 +103,11 @@ describe("DeepSeekKeySection", () => {
     mockApiDelete.mockResolvedValue(NONE_STATUS);
 
     render(<DeepSeekKeySection />);
+    // U3 / Q-19 re-aim: OLD — clicking `Remove` fired DELETE immediately. NEW — `Remove` opens a
+    // confirm (the key cannot be recovered from the app); only the confirm click fires DELETE.
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(mockApiDelete).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove key" }));
 
     await waitFor(() => expect(mockApiDelete).toHaveBeenCalledWith("/config/deepseek-key"));
     expect(await screen.findByText("Not configured")).toBeInTheDocument();

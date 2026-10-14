@@ -1,19 +1,26 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
+import { TabStrip, type TabDef } from "@/components/settings/TabStrip";
+import { Button, cn } from "@/components/ui";
 
 /**
  * Wire shape of GET / PUT /config (`CompanyConfigResponse` in the backend).
  *
  * `timezone` / `daily_cycle_hour` are `| null` on purpose: the `company_config` columns carry no
  * `NOT NULL`, the service layer documents a stored NULL as "no value" (never the 6-hour default), and
- * the response model now serves that null — the strict `string` / `number` here was an assumption the
- * server does not make. The inputs already render null as an empty box.
+ * the response model serves that null — the strict `string` / `number` here was an assumption the
+ * server does not make. The form renders null as an empty box.
  *
  * Exported (type-only — erased at build time, invisible to Next's page-export validator) so this
- * page's test can pin the nullable contract at COMPILE time: a fixture declaring `timezone: null`
+ * page's tests can pin the nullable contract at COMPILE time: a fixture declaring `timezone: null`
  * stops compiling the moment one side drops the null.
+ *
+ * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
+ * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
+ * eleven fields below, and `PUT /config` copies only the provided keys onto the row
+ * (`update_config` → `model_dump(exclude_unset=True)`), so unrendered fields keep their stored value.
  */
 export type SettingsConfig = {
   name: string;
@@ -29,135 +36,373 @@ export type SettingsConfig = {
   daily_cycle_hour: number | null;
 };
 
+export type SettingsFieldKey = keyof SettingsConfig;
+
+/** One rendered field: the wire key, the uppercase-voice label, and optional helper copy in the
+ *  live modal's convention (DOSSIER §2.2/§2.3: small uppercase copy directly under its field). */
+type FieldSpec = { key: SettingsFieldKey; label: string; helper?: string };
+
 /**
  * The repo's house error idiom: a refusal shows its code, its message and — when the server supplied
  * one — the fix hint (`ApiError.display`); anything else shows its own message. Before this page
  * adopted it, a refused save was completely invisible: the button flipped back and nothing happened,
- * so "saved" and "refused" looked identical.
+ * so "saved" and "refused" looked identical. A non-Error throw is rendered honestly (its JSON when
+ * it serializes) rather than laundered into "[object Object]".
  */
 function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.display;
-  return e instanceof Error ? e.message : String(e);
+  if (e instanceof Error) return e.message;
+  try {
+    return JSON.stringify(e) ?? String(e);
+  } catch {
+    return String(e);
+  }
+}
+
+/** The eleven fields this form owns, in render order. */
+const FIELD_KEYS: readonly SettingsFieldKey[] = [
+  "name",
+  "industry",
+  "product_type",
+  "website_url",
+  "mission",
+  "vision",
+  "description",
+  "target_market",
+  "value_prop",
+  "timezone",
+  "daily_cycle_hour",
+];
+
+const TAB_DEFS: readonly TabDef[] = [
+  { id: "company", label: "Company Profile" },
+  { id: "scheduler", label: "Scheduler" },
+  { id: "provider", label: "DeepSeek Key" },
+];
+
+/** Live's measured field density (DOSSIER §2.2: a 49 px-tall edit); labels are mono ALL-CAPS. */
+const INPUT_CLASS =
+  "mt-1 h-[49px] w-full border border-line-strong bg-surface px-3 text-sm text-ink";
+
+const COMPANY_FIELDS: readonly FieldSpec[] = [
+  {
+    key: "name",
+    label: "Company Name",
+    helper: "Saved with the rest of the form — there is no separate rename step.",
+  },
+  { key: "industry", label: "Industry" },
+  { key: "product_type", label: "Product Type" },
+  { key: "website_url", label: "Website URL" },
+  { key: "mission", label: "Mission" },
+  { key: "vision", label: "Vision" },
+  { key: "description", label: "Description" },
+  { key: "target_market", label: "Target Market" },
+  { key: "value_prop", label: "Value Proposition" },
+];
+
+const SCHEDULER_FIELDS: readonly FieldSpec[] = [
+  {
+    key: "timezone",
+    label: "Timezone",
+    helper:
+      "IANA zone name (for example America/Chicago). The server refuses an unknown zone; clear the box for no value.",
+  },
+  {
+    key: "daily_cycle_hour",
+    label: "Morning Cycle Hour (company-local)",
+    helper:
+      "0–23 in the company-local timezone above, or clear the box for no value — the server stores NULL, not a default.",
+  },
+];
+
+/** Per-field string drafts — the whole reason the hour box can be CLEARED (Q-18): a numeric state
+ *  cannot represent "empty", and a `type=number` box silently blanks non-numeric text (reverting it),
+ *  so the hour is a text box with `inputMode=numeric` and its draft is validated explicitly. */
+type Drafts = Record<SettingsFieldKey, string>;
+
+function draftsFrom(config: SettingsConfig): Drafts {
+  const drafts = {} as Drafts;
+  for (const key of FIELD_KEYS) {
+    // A wire payload can carry an ABSENT key (the type says null, the runtime decides): absent and
+    // null both render as an empty box — never the literal string "undefined" or "null".
+    const value = config[key] as unknown;
+    drafts[key] = value === null || value === undefined ? "" : String(value);
+  }
+  return drafts;
+}
+
+/** `null` = the draft is saveable. The range (0–23) stays server-enforced (`CompanyConfigUpdate`),
+ *  so the server's 422 — which NAMES the field — is the single source of truth for range violations. */
+function hourIssue(draft: string): string | null {
+  const raw = draft.trim();
+  if (raw === "") return null; // a cleared box means "no value", not midnight
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return "Enter a whole number (the server accepts 0–23), or clear the box for no value.";
+  }
+  return null;
+}
+
+/** Exactly the fields the operator CHANGED. Untouched fields are not sent, so a stored NULL is never
+ *  rewritten as ""; the hour is transmitted as a number, or as JSON null when the box was cleared. */
+function changedFields(drafts: Drafts, baseline: Drafts): Record<string, string | number | null> {
+  const body: Record<string, string | number | null> = {};
+  for (const key of FIELD_KEYS) {
+    if (drafts[key] === baseline[key]) continue;
+    if (key === "daily_cycle_hour") {
+      const raw = drafts[key].trim();
+      body[key] = raw === "" ? null : Number(raw);
+    } else {
+      body[key] = drafts[key];
+    }
+  }
+  return body;
 }
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<SettingsConfig | null>(null);
+  const [drafts, setDrafts] = useState<Drafts | null>(null);
+  const [baseline, setBaseline] = useState<Drafts | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [tab, setTab] = useState("company");
 
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+
+  // The banner timer is cleared on unmount (Q-24): no state update escapes a torn-down page, and the
+  // saved flag can never flip after the page is gone.
   useEffect(() => {
-    api
-      .get<SettingsConfig>("/config")
-      .then(setConfig)
-      .catch((e: unknown) => setError(errorText(e)))
-      .finally(() => setLoading(false));
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (savedTimer.current !== null) {
+        clearTimeout(savedTimer.current);
+        savedTimer.current = null;
+      }
+    };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<SettingsConfig>("/config")
+      .then((data) => {
+        if (cancelled) return;
+        setConfig(data);
+        setDrafts(draftsFrom(data));
+        setBaseline(draftsFrom(data));
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setLoadError(errorText(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const hourInvalid = drafts ? hourIssue(drafts.daily_cycle_hour) : null;
+  const dirty =
+    drafts !== null &&
+    baseline !== null &&
+    FIELD_KEYS.some((key) => drafts[key] !== baseline[key]);
+  const canSave =
+    config !== null && drafts !== null && baseline !== null && dirty && !saving && !hourInvalid;
+
   const save = async () => {
-    if (!config) return;
+    if (!config || !drafts || !baseline || saving || hourInvalid) return;
+    const body = changedFields(drafts, baseline);
+    if (Object.keys(body).length === 0) return; // "nothing changed" is not a write
     setSaving(true);
-    setError(null);
+    setSaveError(null);
     setSaved(false);
+    // A new save restarts the banner window: the previous timer must not hide THIS save's banner.
+    if (savedTimer.current !== null) {
+      clearTimeout(savedTimer.current);
+      savedTimer.current = null;
+    }
     try {
-      const updated = await api.put<SettingsConfig>("/config", config);
+      const updated = await api.put<SettingsConfig>("/config", body);
+      if (!mounted.current) return;
       setConfig(updated);
+      const serverDrafts = draftsFrom(updated);
+      setDrafts(serverDrafts);
+      setBaseline(serverDrafts);
       setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      savedTimer.current = setTimeout(() => {
+        savedTimer.current = null;
+        setSaved(false);
+      }, 3000);
     } catch (e: unknown) {
-      setError(errorText(e));
+      if (!mounted.current) return;
+      setSaveError(errorText(e));
     } finally {
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   };
 
-  if (loading) return <div className="p-6 text-gray-400">Loading…</div>;
-  if (!config)
-    return (
-      <div className="p-6 space-y-2">
-        <p className="text-red-400">Failed to load config</p>
-        {/* The real reason, in the server's own words — the generic line above carries none. */}
-        {error && (
-          <p className="text-red-400" role="alert">
-            {error}
-          </p>
-        )}
-      </div>
-    );
-
-  const field = (label: string, key: keyof SettingsConfig, type: "text" | "number" = "text") => (
-    <div key={key}>
-      <label className="block text-sm text-gray-400 mb-1">{label}</label>
-      <input
-        type={type}
-        value={(config[key] as string | number | null) ?? ""}
-        onChange={(e) =>
-          setConfig((c) => {
-            if (!c) return c;
-            const raw = e.target.value;
-            if (type !== "number") return { ...c, [key]: raw };
-            // A cleared box means "no value", NOT midnight: `Number("")` is 0 (ECMA-262 §7.1.4.1), so
-            // the old one-liner silently stored daily_cycle_hour = 0. Keep the previous number, and
-            // never transmit NaN (it would serialize to JSON null and silently clear the field).
-            if (raw.trim() === "") return c;
-            const parsed = Number(raw);
-            return Number.isFinite(parsed) ? { ...c, [key]: parsed } : c;
-          })
-        }
-        className="w-full bg-gray-700 text-white rounded px-3 py-2 text-sm border border-gray-600 focus:border-indigo-500 focus:outline-none"
-      />
+  const heading = (
+    <div className="border-b border-line pb-2">
+      <h1 className="text-3xl font-bold text-ink">Settings</h1>
     </div>
   );
 
-  return (
-    <div className="p-6 max-w-2xl space-y-6">
-      <h1 className="text-2xl font-bold text-white">Settings</h1>
-
-      {saved && (
-        <div className="bg-green-900/50 border border-green-500 text-green-300 px-4 py-2 rounded text-sm">
-          Settings saved successfully
+  // Q-24: "not read yet" is a skeleton with `aria-busy`, never the bare word "Loading…".
+  if (loading) {
+    return (
+      <div className="max-w-2xl space-y-4">
+        {heading}
+        <div aria-busy="true" className="space-y-2">
+          <p className="ui-label text-ink-muted">Loading company configuration…</p>
+          {[0, 1, 2].map((key) => (
+            <div key={key} className="h-[49px] animate-pulse border border-line bg-surface" />
+          ))}
         </div>
-      )}
+      </div>
+    );
+  }
+
+  // The failed read is NAMED (code + fix hint), and no fake form is drawn over it.
+  if (!config || !drafts || !baseline) {
+    return (
+      <div className="max-w-2xl space-y-4">
+        {heading}
+        <div role="alert" className="border border-alert bg-surface p-3">
+          <p className="ui-label text-alert">Failed to load config</p>
+          {loadError ? <p className="mt-1 text-sm text-ink">{loadError}</p> : null}
+        </div>
+      </div>
+    );
+  }
+
+  const fieldRow = (field: FieldSpec) => {
+    const id = `settings-field-${field.key}`;
+    const isHour = field.key === "daily_cycle_hour";
+    const invalid = isHour ? hourIssue(drafts[field.key]) : null;
+    const helperId = field.helper ? `${id}-helper` : undefined;
+    const errorId = invalid ? `${id}-error` : undefined;
+    const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+    return (
+      <div key={field.key}>
+        <label htmlFor={id} className="ui-label block text-ink-muted">
+          {field.label}
+        </label>
+        <input
+          id={id}
+          type="text"
+          inputMode={isHour ? "numeric" : undefined}
+          autoComplete="off"
+          value={drafts[field.key]}
+          onChange={(e) =>
+            setDrafts((current) =>
+              current ? { ...current, [field.key]: e.target.value } : current,
+            )
+          }
+          aria-invalid={invalid ? true : undefined}
+          aria-describedby={describedBy}
+          className={cn(INPUT_CLASS, invalid && "border-alert")}
+        />
+        {field.helper ? (
+          <p id={helperId} className="ui-label mt-1 text-ink-muted">
+            {field.helper}
+          </p>
+        ) : null}
+        {invalid ? (
+          <p id={errorId} className="mt-1 text-sm text-alert">
+            {invalid}
+          </p>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      {heading}
+
+      {saved ? (
+        <p
+          role="status"
+          className="border border-line-strong bg-surface-sunk px-3 py-2 text-sm text-ink"
+        >
+          Settings saved successfully
+        </p>
+      ) : null}
 
       {/* A refused PUT used to be invisible (the button flipped back and nothing else happened, so
           "saved" and "refused" looked the same). The banner carries the server's own refusal. */}
-      {error && (
-        <p className="text-red-400 text-sm" role="alert">
-          {error}
-        </p>
-      )}
+      {saveError ? (
+        <div role="alert" className="border border-alert bg-surface p-3">
+          <p className="ui-label text-alert">Save refused</p>
+          <p className="mt-1 text-sm text-ink">{saveError}</p>
+        </div>
+      ) : null}
 
-      <div className="bg-gray-800 rounded-lg p-5 space-y-4">
-        <h2 className="text-white font-semibold">Company Profile</h2>
-        {field("Company Name", "name")}
-        {field("Industry", "industry")}
-        {field("Product Type", "product_type")}
-        {field("Website URL", "website_url")}
-        {field("Mission", "mission")}
-        {field("Vision", "vision")}
-        {field("Description", "description")}
-        {field("Target Market", "target_market")}
-        {field("Value Proposition", "value_prop")}
-      </div>
+      <section className="card-surface">
+        <div className="px-4 pt-3">
+          <TabStrip
+            idPrefix="settings"
+            tabs={TAB_DEFS}
+            active={tab}
+            onSelect={setTab}
+            ariaLabel="Settings sections"
+          />
+        </div>
 
-      <div className="bg-gray-800 rounded-lg p-5 space-y-4">
-        <h2 className="text-white font-semibold">Scheduler</h2>
-        {field("Timezone", "timezone")}
-        {field("Morning Cycle Hour (company-local)", "daily_cycle_hour", "number")}
-      </div>
+        <div className="p-4">
+          {tab === "company" ? (
+            <div
+              role="tabpanel"
+              id="settings-panel-company"
+              aria-labelledby="settings-tab-company"
+              className="space-y-4"
+            >
+              {COMPANY_FIELDS.map((field) => fieldRow(field))}
+            </div>
+          ) : null}
 
-      {/* DeepSeek key lifecycle: save / change / remove / verify. Independent of the
-          company-profile form below (it has its own endpoints and its own save button). */}
-      <DeepSeekKeySection />
+          {tab === "scheduler" ? (
+            <div
+              role="tabpanel"
+              id="settings-panel-scheduler"
+              aria-labelledby="settings-tab-scheduler"
+              className="space-y-4"
+            >
+              {SCHEDULER_FIELDS.map((field) => fieldRow(field))}
+            </div>
+          ) : null}
 
-      <button
-        onClick={save}
-        disabled={saving}
-        className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-md text-sm"
-      >
-        {saving ? "Saving…" : "Save Settings"}
-      </button>
+          {tab === "provider" ? (
+            <div
+              role="tabpanel"
+              id="settings-panel-provider"
+              aria-labelledby="settings-tab-provider"
+            >
+              {/* Mounted only while its tab is open (the live EMAILS tab is lazy-loaded the same
+                  way, DOSSIER §2.4): leaving the tab unmounts the section, so the status is re-read
+                  fresh on return and an open Remove-confirm cannot survive in a hidden page. */}
+              <DeepSeekKeySection />
+            </div>
+          ) : null}
+        </div>
+
+        {tab !== "provider" ? (
+          <div className="border-t border-line p-4">
+            <Button variant="glossy" className="w-full" onClick={save} disabled={!canSave}>
+              {saving ? "Saving…" : "Save Settings"}
+            </Button>
+            <p className="ui-label mt-2 text-ink-muted">
+              Saves the config fields you changed — one PUT for the whole form.
+            </p>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

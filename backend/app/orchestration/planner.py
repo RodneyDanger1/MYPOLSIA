@@ -1,5 +1,18 @@
 """Polsia orchestration — the DAG planner for the morning cycle.
 
+STATUS — DELIBERATELY UNWIRED (labelled wave U3, auditor H-04, 2026-10-14).  The line above
+describes what this module was BUILT to be, not what runs: it has ZERO production callers —
+`grep -rn "app.orchestration"` over `app/ celery_app/ scripts/` returns only this package's own
+`__init__.py` re-export, and the single consumer is `backend/tests/unit/test_silent_fallbacks.py`
+(the S-06 pins).  The morning cycle does NOT run it: `daily_cycle._morning_cycle` consumes the
+orchestrator's `plan["tasks"]` directly, and `celery_app/tasks/_common.py:258-260` records that
+`assert_budget_allows` is a REIMPLEMENTATION of this module's `authorize` gate for the paths that
+actually dispatch.  It is kept (a seat never deletes it) because it is the only validated
+DAG/idempotency scheduling implementation in the repo; whether to WIRE it into the morning cycle,
+retire it, or leave it labelled as it is now is the OWNER's decision — REQUESTS U3-L5-1 (owner:
+campaign owner / parent orchestrator, wave-U3 closeout).  Do not add a parallel copy of this logic
+to "fix" the dead module: wire this module or decide to retire it.
+
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/planner_dag.py`) and wired to the
 frozen settings (`planner_max_nodes`, `claude_max_concurrency`) and to the spend gate
 (`app.agents.accounting.authorize`).

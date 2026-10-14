@@ -8,6 +8,8 @@ import { Button, Chip, cn } from "@/components/ui";
 import { api } from "@/lib/api";
 
 import { fingerprintsFrom } from "./approval";
+import { recoveryFor } from "./recovery";
+import { costUsdText, tokenText } from "./runTruth";
 import { errorText, statusChipClass, statusLabel } from "./status";
 import type { AgentTriggerResponse, ApprovalIssueResponse, TaskRow } from "./types";
 
@@ -53,14 +55,23 @@ export function TaskDetailSheet({
   }, []);
 
   const fingerprints = fingerprintsFrom(task.result_summary);
-  const parked = task.status === "awaiting_approval";
+  /**
+   * B3 (wave U3): ONE recovery grammar for this card's state — the footer below renders the
+   * single action `recoveryFor` names (run / approve) or the stated reason why there is none.
+   * Two competing CTAs on one card is the defect this replaced: the old sheet offered `Run now`
+   * on EVERY non-parked status, including completed/failed/rejected rows it cannot honestly
+   * re-run.
+   */
+  const recovery = recoveryFor(task);
   const descriptionLines = splitDescription(task.description);
 
   /**
-   * `RUN NOW` — the real verb mapping (tasks.md §2): `POST /agents/{agent_type}/trigger` CREATES
-   * a new task row (`source="manual"`) and dispatches it; it never re-runs this row, and the
-   * helper line in the action row says so. The server's `message` is rendered verbatim (it names
-   * the new task id); a refusal renders `ApiError.display`, never a friendlier rewrite.
+   * The run action (runs under the label `recoveryFor` chose — `Run now` for a queued row,
+   * `Run again` for a failed one, B3). The real verb mapping (tasks.md §2):
+   * `POST /agents/{agent_type}/trigger` CREATES a new task row (`source="manual"`) and
+   * dispatches it; it never re-runs this row, and the helper line above the button says so. The
+   * server's `message` is rendered verbatim (it names the new task id); a refusal renders
+   * `ApiError.display`, never a friendlier rewrite.
    */
   const runNow = async () => {
     setBusyAction("run");
@@ -157,19 +168,56 @@ export function TaskDetailSheet({
             <MetaRow label="Created">
               <span title={absoluteStamp(task.created_at)}>{relativeTime(task.created_at)}</span>
             </MetaRow>
-            {/* `completed_at` is added to TaskResponse by B1 this wave; until the wire carries it
-                the row is omitted (never a fabricated "completed" claim — cap-06's COMPLETED row
-                has no field today). */}
-            {task.completed_at ? (
-              <MetaRow label="Completed">
-                <span title={absoluteStamp(task.completed_at)}>{relativeTime(task.completed_at)}</span>
-              </MetaRow>
-            ) : null}
+            {/* `completed_at` lives in the Run truth section below (B4) — one place, no
+                duplication; a task that never completed shows no Completed row there either. */}
             {/* Ours-additive real wire fields (tasks.md §2); SOURCE omitted while null, PRIORITY
                 keeps the em dash for a null (never a fabricated 3). */}
             {task.source ? <MetaRow label="Source">{task.source}</MetaRow> : null}
             <MetaRow label="Priority">{task.priority ?? NOT_MEASURED}</MetaRow>
           </dl>
+
+          {/* ── Run truth (B4, wave U3) ─────────────────────────────────────────────────────
+              The measured facts off this task's rows, one layer under any price-shaped label
+              with nothing priced here. Every value is rendered exactly as the server recorded
+              it: `cost_usd` / `tokens_*` arrive as NULL when unmeasured (a null cost is the dash
+              PLUS its reason — never $0.00-for-unknown), `completed_at` exists only for a
+              completed task. An old payload without the keys behaves exactly like a null one. */}
+          <section className="mt-3" data-testid="run-truth">
+            <p className="ui-label text-ink-muted">Run truth</p>
+            <dl className="mt-1 space-y-1 border border-line bg-surface-sunk p-3">
+              {task.completed_at ? (
+                <MetaRow label="Completed">
+                  <span title={absoluteStamp(task.completed_at)}>{relativeTime(task.completed_at)}</span>
+                </MetaRow>
+              ) : task.status === "completed" ? (
+                <MetaRow label="Completed">
+                  <span title="the task is completed, but its row carries no completion timestamp">
+                    — not recorded
+                  </span>
+                </MetaRow>
+              ) : null}
+              {costUsdText(task.cost_usd) !== null ? (
+                <MetaRow label="Cost (USD)">{costUsdText(task.cost_usd)}</MetaRow>
+              ) : (
+                <MetaRow label="Cost (USD)">
+                  <span title="the API serves null when a task has no recorded run totals — unmeasured is never a zero">
+                    — not measured — the server recorded no run totals for this task
+                  </span>
+                </MetaRow>
+              )}
+              {tokenText(task.tokens_in) !== null ? (
+                <MetaRow label="Tokens in">{tokenText(task.tokens_in)}</MetaRow>
+              ) : null}
+              {tokenText(task.tokens_out) !== null ? (
+                <MetaRow label="Tokens out">{tokenText(task.tokens_out)}</MetaRow>
+              ) : null}
+            </dl>
+            <p className="mt-1 text-xs text-ink-muted">
+              Measured from this task&rsquo;s runs ledger exactly as the server recorded it — no
+              estimate and no pricing is applied here. A dash means nothing was recorded; a dash
+              is never a zero.
+            </p>
+          </section>
 
           {descriptionLines.length > 0 ? (
             <section className="mt-3">
@@ -219,8 +267,8 @@ export function TaskDetailSheet({
             </div>
           ) : null}
 
-          {parked && fingerprints.length > 0 ? (
-            <section className="mt-3 border border-line bg-surface-sunk p-3">
+          {recovery.kind === "approve" ? (
+            <section data-recovery="approve" className="mt-3 border border-line bg-surface-sunk p-3">
               <p className="ui-label text-ink">Approval</p>
               <p className="mt-1 text-sm text-ink-muted">
                 {fingerprints.length === 1
@@ -249,24 +297,22 @@ export function TaskDetailSheet({
             </section>
           ) : null}
 
-          {parked && fingerprints.length === 0 ? (
-            // An `awaiting_approval` row whose summary carries no readable fingerprint: say so,
-            // never render a control that would post garbage (tasks.md OPEN DECISION #5).
-            <p className="mt-3 border border-line-strong bg-surface-sunk p-3 text-sm text-ink-muted">
-              This task is parked awaiting approval, but its result text carries no fingerprint
-              this build can read — there is nothing to approve from here.
-            </p>
+          {recovery.kind === "run" ? (
+            <div data-recovery="run" className="mt-4 flex items-center gap-3 border-t border-line pt-3">
+              <p className="ui-label mr-auto text-ink-muted">{recovery.helper}</p>
+              <Button variant="glossy" disabled={busyAction !== null} onClick={runNow}>
+                {busyAction === "run" ? "Queueing…" : recovery.label}
+              </Button>
+            </div>
           ) : null}
 
-          {!parked ? (
-            <div className="mt-4 flex items-center gap-3 border-t border-line pt-3">
-              <p className="ui-label mr-auto text-ink-muted">
-                Run now queues a NEW task for this agent (it spends from today&rsquo;s AI budget);
-                this row is never re-run.
-              </p>
-              <Button variant="glossy" disabled={busyAction !== null} onClick={runNow}>
-                {busyAction === "run" ? "Queueing…" : "Run now"}
-              </Button>
+          {recovery.kind === "none" ? (
+            // The stated reason, in the same footer slot — for a state with no endpoint behind an
+            // action, saying why beats a control that could not work (B3; also covers the parked
+            // row whose summary carries no readable fingerprint — tasks.md OPEN DECISION #5).
+            <div data-recovery="none" className="mt-4 border-t border-line pt-3">
+              <p className="ui-label text-ink-muted">Action</p>
+              <p className="mt-1 text-sm text-ink-muted">{recovery.reason}</p>
             </div>
           ) : null}
 

@@ -19,6 +19,7 @@ from app.api.v1 import (
     ads,
     agents,
     approvals,
+    channels,
     config,
     dashboard,
     finance,
@@ -267,6 +268,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(support.router)   # R17: the customer-support inbox ingest (owner's API)
     api_v1.include_router(ops.router)       # R22: activity publish breaker stats + reset (owner)
     api_v1.include_router(approvals.router)  # T02/D1: the approval-token mint (owner)
+    api_v1.include_router(channels.router)   # wave U3 (H-01): per-channel send counters + caps (owner read)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

@@ -1,13 +1,27 @@
 import { render, screen } from "@testing-library/react";
 
-jest.mock("@/lib/api", () => ({ api: { get: jest.fn() } }));
+// Re-aimed in wave U3: the rebuilt page distinguishes a named failure through the REAL ApiError
+// class (`instanceof`), so the mock keeps the module's actual exports (requireActual spread — the
+// sibling u2 suites' convention) and replaces only `api.get`.
+jest.mock("@/lib/api", () => {
+  const actual = jest.requireActual("@/lib/api");
+  return { ...actual, api: { get: jest.fn() } };
+});
 
 import { api, type FinanceSummary } from "@/lib/api";
 import FinancePage from "@/app/finance/page";
 
 const mockApiGet = api.get as jest.MockedFunction<typeof api.get>;
 
-/** Every money field null = "not measured" (the API's own no-snapshot state). */
+/**
+ * Every money field null = "not measured" (the API's own no-snapshot state).
+ *
+ * Re-aimed in wave U3: `last_snapshot_date` is set so the summary is a MEASURED read. The rebuilt
+ * page renders the live `Not running yet` idle surface — not a grid of dashes — when NOTHING at
+ * all is measured (no snapshot date AND no money field AND no agent-run signal); this file pins
+ * absent VALUES, so the fixture keeps those tests on the value-rendering branch. Assertions
+ * unchanged.
+ */
 const baseSummary: FinanceSummary = {
   mrr_cents: null,
   arr_cents: null,
@@ -15,7 +29,7 @@ const baseSummary: FinanceSummary = {
   total_ad_spend_usd: null,
   total_expenses_month_cents: null,
   stripe_balance_cents: null,
-  last_snapshot_date: null,
+  last_snapshot_date: "2026-10-13",
 };
 
 /**
@@ -72,7 +86,9 @@ const aiSpendZero: NonNullable<FinanceSummary["ai_spend"]> = {
 };
 
 function aiSpendCard(): HTMLElement {
-  const card = screen.getByText("AI spend today", { exact: true }).closest("div.bg-gray-800");
+  // Re-aimed in wave U3 (old: `.closest("div.bg-gray-800")`, the old MetricsCard's class): the
+  // rebuilt tile carries `data-kpi-key="ai-spend"`.
+  const card = screen.getByText("AI spend today", { exact: true }).closest('[data-kpi-key="ai-spend"]');
   if (!card) throw new Error("the AI spend card must be rendered");
   return card as HTMLElement;
 }
@@ -111,8 +127,10 @@ describe("FinancePage — R24's AI spend card", () => {
     expect(aiSpendCard()).toHaveTextContent("—");
     expect(aiSpendCard()).toHaveTextContent("unmeasured spend: finance");
     expect(aiSpendCard()).not.toHaveTextContent("$0.00");
-    // The page itself never failed — the unmeasured day is a measured state, not an error.
-    expect(screen.queryByRole("alert")).toBeNull();
+    // The SUMMARY made no failure — the unmeasured day is a measured state, not an error. (The
+    // page now also reads three list endpoints; this single-body mock hands them the summary
+    // object, so the check is scoped to the summary region's own alert.)
+    expect(screen.queryByText(/Could not load the finance summary/)).toBeNull();
   });
 
   it("a measured ZERO renders $0.00 (the null law keeps 0 and 'not measured' apart)", async () => {

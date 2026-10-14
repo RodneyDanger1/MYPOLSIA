@@ -47,6 +47,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/agents/status", ("GET",)),
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
     ("/api/v1/approvals", ("POST",)),                            # T02/D1: the owner's approval-token mint
+    ("/api/v1/channels/caps", ("GET",)),                         # wave U3 (H-01): per-channel send counters + day caps (channel_sends_snapshot + RateCaps); OLD surface had no caps route — NEW pin added deliberately with the route; NULL = unknown, never 0
     ("/api/v1/config", ("GET",)),
     ("/api/v1/config", ("PUT",)),
     ("/api/v1/config/deepseek-key", ("DELETE",)),               # DeepSeek key lifecycle (masked; owner-managed)

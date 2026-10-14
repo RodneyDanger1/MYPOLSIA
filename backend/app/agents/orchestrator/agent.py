@@ -1,11 +1,13 @@
-"""The orchestrator agent — the morning plan (as a DAG) and the evening summary.
+"""The orchestrator agent — the morning plan and the evening summary.
 
 Duty (README:30): "Writes morning plan + evening summary". Called in-process by
 `celery_app.tasks.daily_cycle` for both cycles, so the same class serves two prompts and its
 output shape depends on which one ran:
 
-  * morning  -> `{summary, key_focus, tasks[], mode:"morning"}` — the task plan the DAG planner
-    materialises (lane 03 defect D-01: the original threw `tasks[]` away);
+  * morning  -> `{summary, key_focus, tasks[], mode:"morning"}` — the task plan the morning cycle
+    queues DIRECTLY (`daily_cycle._morning_cycle` reads `plan["tasks"]`; corrected in wave U3 —
+    this line used to claim "the DAG planner materialises" it, but `app/orchestration/planner.py`
+    is deliberately unwired and materialises nothing on this path; auditor H-04);
   * evening  -> `{summary, insights[], mode:"evening"}` — the run-ledger narrative the evening
     cycle writes into `daily_reports`.
 

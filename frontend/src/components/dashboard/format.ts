@@ -12,14 +12,17 @@ export const NOT_MEASURED = "—";
 
 /**
  * `DashboardSummary.kpis` is `Record<string, unknown>` on purpose — the API carries whatever the
- * company configured and the type must not pretend otherwise. A displayable value is shown as it
- * is, a missing one becomes the fallback, and anything else is stringified rather than rendered as
- * "[object Object]".
+ * company configured and the type must not pretend otherwise. A scalar renders as it is, a missing
+ * value becomes the fallback, and a shape with no single-value reading (an object or array) renders
+ * the fallback too: nothing can print one object truthfully in a one-line tile. The previous
+ * `String(value)` path laundered objects into the literal "[object Object]" that this comment
+ * always claimed to avoid — comment and code now say the same thing (audit Q-22).
  */
 export function kpiText(value: unknown, fallback: string = NOT_MEASURED): string | number {
   if (typeof value === "string" || typeof value === "number") return value;
   if (value === null || value === undefined) return fallback;
-  return String(value);
+  if (typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return fallback;
 }
 
 /** A finite number from a number-or-numeric-string reading, `null` for anything else. */

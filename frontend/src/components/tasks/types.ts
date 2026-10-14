@@ -6,13 +6,17 @@ import type { Task } from "@/lib/api";
  * declaring them here as OPTIONAL additions is additive (no shared file is changed) — the same
  * pattern the dashboard's `TasksPreview` uses for `description`.
  *
- * `completed_at` arrives in this same wave (B1 adds it to `TaskResponse`, nullable). The
- * consumer side is optional and coded defensively: null/absent means "not measured" and renders
- * as the honest absence (the row or chip is omitted), never as a zero or a fabricated date.
+ * Every optional field is coded defensively on the consumer side: null/absent means "not
+ * recorded" and renders as the honest absence or a stated reason — never as a zero, a fabricated
+ * date, or a formatted money value. (tasks.md acceptance #3's no-price rule was written when
+ * `TaskResponse` had NO per-task cost field — its GAP-NO-DATA premise died with wave U2, which
+ * added the measured `cost_usd`; wave U3 / B4 therefore surfaces it on the detail sheet ONLY as
+ * the measured ledger value, with null kept visibly distinct from a measured zero.)
  *
- * Deliberately NOT consumed: `cost_usd` / `tokens_in` / `tokens_out` (B1's other additive
- * fields). The owner ruled out credit/price display, and tasks.md acceptance #3 forbids a price
- * string on this page — so no per-task money figure is rendered anywhere in this wave.
+ * The four U2 truth fields (all nullable, default None server-side):
+ *   * `completed_at` — set only when `status == "completed"`; a failed task did not complete;
+ *   * `cost_usd` — the SUM of the task's runs-ledger costs; null = unmeasured, never zero;
+ *   * `tokens_in` / `tokens_out` — the same NULL discipline as `cost_usd`.
  */
 export type TaskRow = Task & {
   description?: string | null;
@@ -20,6 +24,9 @@ export type TaskRow = Task & {
   result_summary?: string | null;
   error_message?: string | null;
   completed_at?: string | null;
+  cost_usd?: number | null;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
 };
 
 /** `POST /agents/{agent_type}/trigger` (agents.py:54-58, 202). */

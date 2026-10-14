@@ -41,6 +41,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # documented by app/api/v1/approvals.py and tests/unit/api/test_t02_approvals.py; route
     # verified live in app.routes as [POST] on this path (wave-W2 checked 2026-10-13).
     ("POST", "/api/v1/approvals"),
+    # wave U3 (H-01): the per-channel send counters + policy caps — documented by
+    # app/api/v1/channels.py and tests/unit/test_u3_channel_caps.py, route verified live in
+    # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no caps route;
+    # NEW pin added deliberately with the route.
+    ("GET", "/api/v1/channels/caps"),
     ("GET", "/api/v1/config"),
     ("PUT", "/api/v1/config"),
     ("GET", "/api/v1/config/deepseek-key"),

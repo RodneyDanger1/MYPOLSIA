@@ -68,12 +68,14 @@ class AgentEnvelope(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 1. orchestrator — the morning plan as a DAG (+ the evening summary)
+# 1. orchestrator — the morning plan (+ the evening summary)
 # ---------------------------------------------------------------------------
 
 class TaskSpec(BaseModel):
-    """One planned task. `depends_on` references other tasks by TITLE (the planner resolves
-    titles to node ids, because a model cannot know content hashes)."""
+    """One planned task. `depends_on` references other tasks by TITLE (a model cannot know
+    content hashes). NOTE: the DAG planner that would resolve titles to node ids is currently
+    unwired — `app/orchestration/planner.py` is labelled reference-only (wave U3, auditor
+    H-04) — and today the daily cycle dispatches plan entries flat (no DAG resolution)."""
 
     title: str = Field(min_length=3, max_length=512)
     agent_type: Literal[ALL_AGENT_TYPES]  # type: ignore[valid-type]

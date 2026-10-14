@@ -1,144 +1,163 @@
 "use client";
-import { useEffect, useState } from "react";
 
-import { MetricsCard } from "@/components/dashboard/MetricsCard";
-import { api, type AiSpend, type FinanceSummary } from "@/lib/api";
+import { useCallback, useState } from "react";
 
-/**
- * `ai_spend` — the additive block R24 wired into GET /finance/summary. Its types now live in
- * `lib/api.ts` (`AiSpend` / `FinanceSummary.ai_spend`), adopted there field-for-field from the
- * backend schema (`backend/app/schemas/finance.py::AiSpendSummary`; fix-4 §2 / T15a): the unmeasured
- * marker is `unit_economics.unmeasured_spend_agents`, and `spent`/`remaining` are `float | None` — so
- * the card's suggested `spent.toFixed(2)` would throw on an unmeasured day.
- */
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
+import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
+import { FinanceListPanel, type FinanceColumn } from "@/components/finance/FinanceListPanel";
+import { FinanceSummaryGrid } from "@/components/finance/FinanceSummaryGrid";
+import { centsText, countText, textOrDash } from "@/components/finance/format";
+import { IdleNotice, ReadError, SummarySkeleton } from "@/components/finance/states";
+import { isIdleSummary } from "@/components/finance/summary";
+import type { ExpenseRow, RevenueSnapshotRow, StripeEventRow } from "@/components/finance/types";
+import { useFinanceRead } from "@/components/finance/useFinanceRead";
+import type { FinanceSummary } from "@/lib/api";
 
 /**
- * `null` is "not measured" — the summary answers null, not 0, when there is no snapshot or
- * nothing to aggregate — and it renders as an em dash. A measured 0 must NOT take that branch:
- * 0 cents is `$0.00`, a real reading, and the two states stay as different on the page as they
- * are on the wire.
- */
-function formatCentsOrDash(cents: number | null | undefined): string {
-  return cents == null ? "—" : formatCents(cents);
-}
-
-function formatUsdOrDash(usd: number | null | undefined): string {
-  return usd == null ? "—" : `$${usd.toFixed(2)}`;
-}
-
-/**
- * "AI spend today" (R24's `ai_spend` block) under the page's own null law: an absent block or an
- * unmeasured day — `spent: null`, which the backend serves when rows exist but no cost was reported —
- * renders "—", and only a measured zero renders `$0.00`. `spent`/`remaining` are nullable on the wire,
- * so this must never call `.toFixed()` on them directly.
- */
-function formatAiSpend(spend: AiSpend | null | undefined): string {
-  if (!spend || spend.spent == null) return "—";
-  return `${formatUsdOrDash(spend.spent)} of ${formatUsdOrDash(spend.limit)}`;
-}
-
-/** An agent whose day spend was NOT measurable is NAMED in the block, never priced at a fabricated
- *  $0.00 per task — so it is surfaced here as a note, not folded into the card's number. */
-function aiSpendNote(spend: AiSpend | null | undefined): string | undefined {
-  const unmeasured = spend?.unit_economics?.unmeasured_spend_agents ?? [];
-  return unmeasured.length > 0 ? `unmeasured spend: ${unmeasured.join(", ")}` : undefined;
-}
-
-/**
- * Client component on purpose.
+ * Finance — the money surface, rebuilt to the live design language (wave U3).
  *
- * This page used to be an async Server Component doing `await api.get(...)`. Next prerenders this route
- * (`○ (Static)` in the build output), so that fetch ran at BUILD time and the empty result was baked into
- * the HTML: the page showed its empty state forever, even while the API served rows. The repo's e2e run
- * caught it — `GET /api/v1/tasks` returned 11 tasks and the page still rendered "No tasks yet."
+ * Reads four REAL endpoints and nothing else: `GET /finance/summary` (the seven KPI cards) and the
+ * three list endpoints the spec verified as served-but-unused — `GET /finance/revenue`,
+ * `GET /finance/expenses`, `GET /finance/events` — each tabular, each row rendering its real
+ * fields. No chart is drawn (no series endpoint exists; an invented series is forbidden), and no
+ * polling runs (C7): one fetch per region on mount plus the explicit Refresh, which re-issues
+ * every read.
  *
- * The old `catch { return [] }` made it worse: a failed read became the words "no data", which is the one
- * thing this project forbids. Three states now, and they are different on purpose:
- *   loading  -> a skeleton, because "not read yet" is not "empty"
- *   error    -> the failure named on the page, never an empty list standing in for it
- *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ * Q-06 (the headline fix). The old page had NO loading state: while the summary read was in
+ * flight `data` was null, so all seven cards rendered their "not measured" em dash and a cold load
+ * read as "nothing was ever measured". Now the three states are disjoint and each is stated in its
+ * own words:
+ *   loading -> a seven-tile skeleton with aria-busy (the audit's own prescribed shape)
+ *   error   -> the failure NAMED (ApiError.display; a non-ApiError shows its own message), and the
+ *              value rows are REPLACED, not drawn under the banner (Q-09's class: no dash grid
+ *              beneath a failed read)
+ *   success -> values; the em dash survives ONLY for a genuinely absent value on a successful
+ *              read, where "not measured" is the truth (a real 0 still renders $0.00)
  *
- * A fourth distinction lives in the numbers: every money field is nullable, null means "not measured",
- * and it renders "—" while a real 0 renders "$0.00" (see formatCentsOrDash).
+ * On a successful read where NOTHING has been measured at all — no snapshot date, no money field,
+ * no agent-run signal — the page renders the live product's idle pattern (`Not running yet` + a
+ * next-step line) INSTEAD of a grid of dashes: that state is "not started", not "measured empty".
+ *
+ * Refused BY NAME, not drawn: the live `SETUP PAYMENTS` button and every credit/top-up/upgrade
+ * surface have no clone endpoint (no Stripe onboarding/Connect route and no credits route exist in
+ * this backend — matrix §G/§K), so nothing here shows them. The live `trend` arrows are gone too:
+ * they were inert props (Q-23), and a decoration that cannot be true is noise.
  */
+
+/** List read sizes — the endpoints' own server defaults, passed explicitly. */
+const REVENUE_LIMIT = 30;
+const EXPENSES_LIMIT = 100;
+const EVENTS_LIMIT = 100;
+
+const REVENUE_COLUMNS: FinanceColumn<RevenueSnapshotRow>[] = [
+  { key: "date", label: "Date", value: (row) => row.snapshot_date },
+  { key: "mrr", label: "MRR", value: (row) => centsText(row.mrr_cents) },
+  { key: "arr", label: "ARR", value: (row) => centsText(row.arr_cents) },
+  { key: "subscribers", label: "Subscribers", value: (row) => countText(row.active_subscribers) },
+  { key: "recorded", label: "Recorded", value: (row) => absoluteStamp(row.created_at) },
+];
+
+const EXPENSE_COLUMNS: FinanceColumn<ExpenseRow>[] = [
+  { key: "date", label: "Date", value: (row) => row.date },
+  { key: "category", label: "Category", value: (row) => row.category },
+  { key: "vendor", label: "Vendor", value: (row) => row.vendor },
+  { key: "amount", label: "Amount", value: (row) => centsText(row.amount_cents) },
+];
+
+const EVENT_COLUMNS: FinanceColumn<StripeEventRow>[] = [
+  { key: "received", label: "Received", value: (row) => absoluteStamp(row.processed_at) },
+  { key: "type", label: "Type", value: (row) => row.event_type },
+  { key: "amount", label: "Amount", value: (row) => centsText(row.amount_cents) },
+  { key: "customer", label: "Customer", value: (row) => textOrDash(row.customer_id) },
+];
 
 export default function FinancePage() {
-  const [data, setData] = useState<FinanceSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const { data, error, loading } = useFinanceRead<FinanceSummary>("/finance/summary", reloadKey);
+  const refresh = useCallback(() => setReloadKey((n) => n + 1), []);
 
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get<FinanceSummary>("/finance/summary")
-      .then((rows) => {
-        if (!cancelled) setData(rows);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // A successful status whose body is not an object at all is a broken read, named as one.
+  const summary = data !== null && typeof data === "object" && !Array.isArray(data) ? data : null;
+  const brokenBody = data !== null && summary === null;
+  const idle = summary !== null && isIdleSummary(summary);
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Finance</h1>
-        {data?.last_snapshot_date && (
-          <p className="text-gray-400 text-sm">Last snapshot: {data.last_snapshot_date}</p>
-        )}
+    <div className="space-y-4">
+      <div className="flex items-end gap-2 border-b border-line pb-1">
+        <div className="mr-auto">
+          <h1 className="text-3xl font-bold text-ink">Finance</h1>
+          {/* R1: the freshness line is data, so it exists only on a settled, non-idle read — a
+              mono-caps LAST SNAPSHOT with the date AS-IS (`last_snapshot_date` is a date, not a
+              timestamp: a relative clock derived from it would be fabricated precision). */}
+          {summary !== null && !idle ? (
+            <p className="ui-label text-ink-muted" data-testid="finance-freshness">
+              Last snapshot {summary.last_snapshot_date ?? NOT_MEASURED}
+            </p>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="link ui-label"
+          data-testid="finance-refresh"
+          onClick={refresh}
+        >
+          Refresh
+        </button>
       </div>
 
-      {error && (
-        <p className="text-red-400" role="alert">
-          Could not load the finance summary: {error}
-        </p>
-      )}
+      {loading ? <SummarySkeleton /> : null}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <MetricsCard
-          title="MRR"
-          value={formatCentsOrDash(data?.mrr_cents)}
-          trend="up"
-        />
-        <MetricsCard
-          title="ARR"
-          value={formatCentsOrDash(data?.arr_cents)}
-          trend="up"
-        />
-        <MetricsCard
-          title="Active Subscribers"
-          value={data?.active_subscribers ?? "—"}
-        />
-        <MetricsCard
-          title="Stripe Balance"
-          value={formatCentsOrDash(data?.stripe_balance_cents)}
-        />
-        <MetricsCard
-          title="Total Ad Spend"
-          value={formatUsdOrDash(data?.total_ad_spend_usd)}
-          trend="neutral"
-        />
-        <MetricsCard
-          title="Expenses (Month)"
-          value={formatCentsOrDash(data?.total_expenses_month_cents)}
-          trend="neutral"
-        />
-        {/* R24's ai_spend block — the spend the daily dispatch cap is computed from. Absent block or
-            unmeasured day -> "—"; a measured 0.00 -> "$0.00". Unmeasured agents are named, never
-            priced at a fabricated per-task cost. */}
-        <MetricsCard
-          title="AI spend today"
-          value={formatAiSpend(data?.ai_spend)}
-          subtitle={aiSpendNote(data?.ai_spend)}
-          trend="neutral"
-        />
-      </div>
+      {!loading && error !== null ? (
+        <ReadError label="the finance summary" message={error} />
+      ) : null}
+
+      {!loading && error === null && brokenBody ? (
+        <ReadError label="the finance summary" message="the server returned no summary object" />
+      ) : null}
+
+      {!loading && error === null && idle ? <IdleNotice /> : null}
+
+      {!loading && error === null && summary !== null && !idle ? (
+        <FinanceSummaryGrid summary={summary} />
+      ) : null}
+
+      <FinanceListPanel
+        title="Revenue"
+        testId="revenue"
+        path={`/finance/revenue?limit=${REVENUE_LIMIT}`}
+        limit={REVENUE_LIMIT}
+        noun="snapshot"
+        errorLabel="the revenue list"
+        emptyText="No revenue snapshots yet — the finance agent records one for each day it runs."
+        rowKey={(row) => row.id}
+        columns={REVENUE_COLUMNS}
+        reloadKey={reloadKey}
+      />
+
+      <FinanceListPanel
+        title="Expenses"
+        testId="expenses"
+        path={`/finance/expenses?limit=${EXPENSES_LIMIT}`}
+        limit={EXPENSES_LIMIT}
+        noun="expense"
+        errorLabel="the expenses list"
+        emptyText="No expenses recorded yet — the finance agent writes them from its run output."
+        rowKey={(row) => row.id}
+        columns={EXPENSE_COLUMNS}
+        reloadKey={reloadKey}
+      />
+
+      <FinanceListPanel
+        title="Stripe events"
+        testId="events"
+        path={`/finance/events?limit=${EVENTS_LIMIT}`}
+        limit={EVENTS_LIMIT}
+        noun="event"
+        errorLabel="the Stripe events list"
+        emptyText="No Stripe events received yet — the webhook records each delivery as Stripe sends it."
+        rowKey={(row) => row.id}
+        columns={EVENT_COLUMNS}
+        reloadKey={reloadKey}
+      />
     </div>
   );
 }

@@ -1,7 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-jest.mock("@/lib/api", () => ({ api: { get: jest.fn() } }));
+jest.mock("@/lib/api", () => {
+  const actual = jest.requireActual("@/lib/api");
+  return { ...actual, api: { get: jest.fn() } };
+});
 
 import { api } from "@/lib/api";
 import MemoryPage, { type Memory } from "@/app/memory/page";
@@ -53,8 +56,10 @@ describe("MemoryPage null-safe category/title (T15d)", () => {
 
     await screen.findByText("untitled");
     const chip = screen.getByText("unknown");
-    expect(chip.className).toContain("bg-gray-700");
-    expect(chip.className).not.toContain("bg-indigo");
+    // U3 re-aim: the old pin was the dark-theme `bg-gray-700` class; the rebuilt page renders the
+    // shared Chip primitive, so the semantic pin is the `soft` variant (gray) — and it must not be
+    // the `dark` variant a real category uses.
+    expect(chip).toHaveAttribute("data-variant", "soft");
     expect(screen.queryByText("null")).toBeNull();
   });
 
@@ -64,8 +69,12 @@ describe("MemoryPage null-safe category/title (T15d)", () => {
     await searchFor("alpha");
 
     expect(await screen.findByText("untitled")).toBeInTheDocument();
-    // The content is still shown in full — the null title hides nothing.
-    expect(screen.getByText(nullFields.content)).toBeInTheDocument();
+    // The content is still shown in full — the null title hides nothing. (U3: `Memory.content` is
+    // now typed `string | null` to match the renderer's hostile-null defence, so the assertion
+    // pins the literal fixture text instead of the nullable field.)
+    expect(
+      screen.getByText("the content is always present — content is required on the wire"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("null")).toBeNull();
   });
 
@@ -76,6 +85,7 @@ describe("MemoryPage null-safe category/title (T15d)", () => {
 
     expect(await screen.findByText("alpha plan")).toBeInTheDocument();
     const chip = screen.getByText("strategy");
-    expect(chip.className).toContain("bg-indigo-600/30");
+    // U3 re-aim: was the indigo class; the rebuilt page pins the `dark` Chip variant instead.
+    expect(chip).toHaveAttribute("data-variant", "dark");
   });
 });
