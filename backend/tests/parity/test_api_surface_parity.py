@@ -65,6 +65,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/memory", ("GET",)),
     ("/api/v1/memory", ("POST",)),
     ("/api/v1/memory/{memory_id}", ("DELETE",)),                # the memory-delete lane's route (R19); pinned here because R17 owns this file this wave and the lane left it unpinned
+    ("/api/v1/notifications", ("GET",)),                          # wave U2 (B1): the bell's task-derived feed — OLD surface had no notifications route (Topbar.tsx refused the feature for its absence); NEW pin added deliberately with the route
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
     ("/api/v1/outreach/prospects", ("GET",)),

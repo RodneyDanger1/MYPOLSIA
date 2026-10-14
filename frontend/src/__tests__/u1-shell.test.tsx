@@ -36,6 +36,14 @@ jest.mock("next/link", () => ({
   },
 }));
 
+// Wave U2: the topbar bell now READS `GET /api/v1/notifications` (the endpoint this wave
+// landed), so this suite mocks the read; the default answer is a true empty 200. The bell's
+// count/error/loading/unread behaviours are pinned in coder F2's `u2-social-outreach.test.tsx`.
+jest.mock("@/lib/api", () => {
+  const actual = jest.requireActual("@/lib/api");
+  return { ...actual, api: { get: jest.fn(() => Promise.resolve({ items: [], count: 0 })) } };
+});
+
 const FRONTEND_ROOT = path.resolve(__dirname, "..");
 const GLOBALS_CSS = readFileSync(path.join(FRONTEND_ROOT, "app", "globals.css"), "utf8");
 const LAYOUT_TSX = readFileSync(path.join(FRONTEND_ROOT, "app", "layout.tsx"), "utf8");
@@ -68,20 +76,25 @@ describe("topbar control cluster", () => {
     expect(screen.getByTestId("nav-menu-trigger")).toHaveTextContent("Menu");
   });
 
-  it("never shows a notification count it cannot verify, and names the reason instead", async () => {
+  it("reports only counts that were actually measured (wave U2: the notifications endpoint exists)", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
     const bell = screen.getByTestId("topbar-notifications");
 
-    // No badge, no digit anywhere on the trigger: the API has no notifications
-    // endpoint, so there is no count to render (a number here would be invented).
+    // The U1 rule held; what changed in U2 is WHERE a count may come from. The bell now reads
+    // GET /api/v1/notifications (this suite's mock answers a true empty 200): an empty read
+    // renders NO badge and no digit — a number here would still be invented.
     expect(bell.textContent ?? "").not.toMatch(/\d/);
     expect(bell).toHaveAttribute("aria-expanded", "false");
 
     await user.click(bell);
 
     expect(bell).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText(/no notifications endpoint/i)).toBeInTheDocument();
+    // OLD: the idle copy "no notifications endpoint" (removed with the endpoint).
+    // NEW: the honest empty state of the real read.
+    expect(await screen.findByTestId("notifications-empty")).toHaveTextContent(
+      /No notifications in the last 48 hours/,
+    );
   });
 
   it("EDIT explains why the Edit Dashboard sheet cannot open yet", async () => {

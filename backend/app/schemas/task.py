@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,32 @@ class TaskResponse(TimestampedORM):
     scheduled_date: datetime | None = None
     result_summary: str | None = None
     error_message: str | None = None
+
+    # ── wave U2 truth fields (ADDITIVE, all nullable, default None) ───────────────────────────
+    # The tasks page needed two facts the API could not answer: when a task finished, and what it
+    # cost.  Both are measured from rows that already exist (`agent_runs` carries the ledger; the
+    # schema has no `completed_at` column), so nothing here changes the DDL or the wire shape of
+    # the existing fields — an old client deserializing these models sees exactly its old keys plus
+    # four nullables.
+    #
+    #   * `completed_at` — set ONLY when `status == "completed"`, then it is the completion
+    #     timestamp `task_service.task_completed_at` derives (`updated_at`, the column the repo's own
+    #     completion writer stamps — `update_task_status`).  A failed task did not complete: its
+    #     `completed_at` stays null rather than wearing a synonym for `updated_at`.
+    #   * `cost_usd` — the SUM of this task's `agent_runs.cost_usd` (NUMERIC(14,4) at rest; served as
+    #     a float like every other `*_usd` response field in this repo).  NULL when the task has no
+    #     runs — unmeasured is never zero.  A measured zero (runs exist, cost recorded as 0) sums to
+    #     0.0 and IS served.
+    #   * `tokens_in` / `tokens_out` — the SUMs of `agent_runs.tokens_input` / `tokens_output`, same
+    #     NULL discipline (no runs, or no value ever recorded, => null).
+    #
+    # Filled at EVERY construction site (all four live in `app/api/v1/tasks.py` — recon:
+    # `grep -rn "TaskResponse" backend/app`): a field defined here but left unpopulated at a site
+    # with runs behind it is the defined-but-never-called defect class this wave exists to kill.
+    completed_at: datetime | None = None
+    cost_usd: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
 
 
 class TaskStatusUpdate(BaseModel):
@@ -76,3 +103,33 @@ class AgentTriggerRequest(BaseModel):
     task_title: str | None = None
     description: str | None = None
     priority: int = 3
+
+
+#: The frozen notification vocabulary (wave U2).  One Literal, one place: the route maps task
+#: statuses onto these strings and pydantic refuses anything else at response-build time — a new
+#: kind is a deliberate edit here, never a silent extra value on the wire.
+NotificationKind = Literal["task_completed", "task_failed", "awaiting_approval"]
+
+
+class NotificationItem(BaseModel):
+    """One notification, DERIVED from a task row — there is no notifications table.
+
+    `id` is stable for as long as the row is: `task:<task_id>:<kind>` is a pure function of the
+    task, so two requests inside the window return the same identifier (the bell must be able to
+    key its items).  `created_at` is the task's completion/park timestamp (see
+    `services.task_service.task_terminal_at_expr`) serialized as ISO-8601.
+    """
+
+    id: str
+    kind: NotificationKind
+    title: str
+    task_id: int
+    created_at: datetime
+
+
+class NotificationsResponse(BaseModel):
+    """`count` is the items length — served explicitly so a client never has to trust its own
+    parse of the array to know how many the server produced."""
+
+    items: list[NotificationItem]
+    count: int

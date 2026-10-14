@@ -39,8 +39,11 @@ describe("AgentsPage", () => {
 
     render(<AgentsPage />);
 
-    expect(screen.getByText("finance")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Run Now" })).toHaveLength(2);
+    // Wave U2 (coder F1 rebuild): the roster shows the humanized name (was the raw wire word
+    // "finance") and the per-row affordance is `Run now` (was `Run Now`) — old -> new recorded in
+    // the wave receipt. The pin's intent is unchanged: both rows render with one run control each.
+    expect(screen.getByText("Finance")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /run now/i })).toHaveLength(2);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -49,12 +52,18 @@ describe("AgentsPage", () => {
     mockApiPost.mockRejectedValue(new ApiError(503, "the task queue is unreachable", "E_REDIS", "start the broker"));
 
     render(<AgentsPage />);
-    fireEvent.click(screen.getAllByRole("button", { name: "Run Now" })[0]);
+    // Wave U2: the trigger passes a confirm gate now — `Run now` opens it, `Create task` fires the
+    // POST (the gate itself is pinned by u2-tasks-agents; old -> new in the wave receipt).
+    fireEvent.click(screen.getAllByRole("button", { name: /run now/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /create task/i })[0]);
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("E_REDIS");
     expect(alert).toHaveTextContent("start the broker");
-    expect(alert.className).toContain("border-red-500");
+    // The error tone: border-alert + data-tone="error" (was border-red-500; design tokens
+    // replaced the raw Tailwind palette in U1).
+    expect(alert.className).toContain("border-alert");
+    expect(alert).toHaveAttribute("data-tone", "error");
     expect(screen.queryByRole("status")).toBeNull();
   });
 
@@ -63,11 +72,14 @@ describe("AgentsPage", () => {
     mockApiPost.mockResolvedValue({ message: "Task #7 queued" });
 
     render(<AgentsPage />);
-    fireEvent.click(screen.getAllByRole("button", { name: "Run Now" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /run now/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /create task/i })[0]);
 
     const banner = await screen.findByRole("status");
     expect(banner).toHaveTextContent("Task #7 queued");
-    expect(banner.className).toContain("border-indigo-500");
+    // The queued tone: border-line-strong + data-tone="queued" (was border-indigo-500).
+    expect(banner.className).toContain("border-line-strong");
+    expect(banner).toHaveAttribute("data-tone", "queued");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

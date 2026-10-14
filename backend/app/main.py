@@ -24,6 +24,7 @@ from app.api.v1 import (
     finance,
     health,
     memory,
+    notifications,
     ops,
     outreach,
     social,
@@ -258,6 +259,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(config.router)
     api_v1.include_router(dashboard.router)
     api_v1.include_router(memory.router)
+    api_v1.include_router(notifications.router)  # wave U2: the bell's task-derived feed (derived, no table)
     api_v1.include_router(finance.router)    # /stripe/webhook is unauthenticated
     api_v1.include_router(social.router)
     api_v1.include_router(outreach.router)

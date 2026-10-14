@@ -19,9 +19,11 @@ test.describe("Social page", () => {
     if (posts.length === 0) {
       // The honest empty state, and nothing else: no cards may render for an empty feed.
       await expect(page.getByText("No posts yet.")).toBeVisible();
-      await expect(page.locator("main div.bg-gray-800")).toHaveCount(0);
+      await expect(page.locator('main [data-testid="social-post"]')).toHaveCount(0);
     } else {
-      const cards = page.locator("main div.bg-gray-800");
+      // Wave U2 (coder F2 rebuild): cards carry `data-testid="social-post"` (was
+      // div.bg-gray-800 — old -> new in the wave receipt). Same pin: every served post renders.
+      const cards = page.locator('main [data-testid="social-post"]');
       // poll, don't sample: the page may still be fetching/rendering when the branch is chosen
       await expect
         .poll(async () => cards.count(), {
@@ -73,22 +75,29 @@ test.describe("Social page", () => {
       const posts = await api.json();
       const mine = posts.find((p: { content: string }) => p.content === publishedContent);
       expect(mine, "seeded post must be served by the API").toBeTruthy();
-      const expectedDate = new Date(mine.published_at).toLocaleDateString();
+      // Wave U2: the timestamp cell is a LABELLED absolute stamp ("Published 2:30 PM · OCT 5,
+      // 2026" — format.ts absoluteStamp); the old locale-coupled toLocaleDateString() pin was
+      // retired with the card (old -> new in the wave receipt). Pin the served day + year from
+      // the API's own value, plus the label.
+      const servedWhen = new Date(mine.published_at);
 
-      const publishedCard = page.locator("main div.bg-gray-800").filter({ hasText: publishedContent });
+      const publishedCard = page.locator('main [data-testid="social-post"]').filter({ hasText: publishedContent });
       await expect(publishedCard).toHaveCount(1);
       await expect(publishedCard).toContainText("published");
-      await expect(publishedCard).toContainText(expectedDate);
+      await expect(publishedCard.getByTestId("post-timestamp")).toContainText("Published");
+      await expect(publishedCard.getByTestId("post-timestamp")).toHaveText(
+        new RegExp(`${servedWhen.getDate()}, ${servedWhen.getFullYear()}$`),
+      );
       await expect(publishedCard).toContainText("likes: 11");
       await expect(publishedCard).toContainText("reposts: 2");
 
-      const draftCard = page.locator("main div.bg-gray-800").filter({ hasText: draftContent });
+      const draftCard = page.locator('main [data-testid="social-post"]').filter({ hasText: draftContent });
       await expect(draftCard).toHaveCount(1);
       await expect(draftCard).toContainText("draft");
       await expect(draftCard).not.toContainText("likes");
 
       // Newest first (created_at DESC, id DESC): the fresh published post is the first card.
-      await expect(page.locator("main div.bg-gray-800").first()).toContainText(publishedContent);
+      await expect(page.locator('main [data-testid="social-post"]').first()).toContainText(publishedContent);
     } finally {
       const del = sqliteRun("DELETE FROM social_posts WHERE content LIKE ?", [`${PREFIX}%`]);
       expect(del.changes, "both fixture posts must be removable").toBeGreaterThanOrEqual(2);

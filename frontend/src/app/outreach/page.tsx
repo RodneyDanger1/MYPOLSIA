@@ -1,19 +1,18 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { api } from "@/lib/api";
+import { ProspectRow, type Prospect } from "@/components/outreach/ProspectRow";
+import { ApiError, api } from "@/lib/api";
 
-// `created_at` is nullable on the wire (`ProspectResponse.created_at` in `app/schemas/social.py` is
-// `datetime | None`), so the column below renders the "date unknown" placeholder for a null — the
-// same idiom the memory page uses.  `status` is `str | None` server-side as well (the
-// `prospects.status` column is nullable — 0001 has `server_default='new'` but no `NOT NULL`), so the
-// cell renders the dash for a null instead of an empty one.
-type Prospect = { id: number; email: string; first_name: string | null; company: string | null; status: string | null; created_at: string | null };
+/** The read's page size — matches the server default and the page's historical `?limit=100`. */
+const LIST_LIMIT = 100;
 
-const STATUS_STYLE: Record<string, string> = {
-  new: "text-blue-400", contacted: "text-yellow-400", replied: "text-green-400",
-  converted: "text-indigo-400", unsubscribed: "text-gray-400",
-};
+/** ApiError carries a named `.display` (code + message + fix hint); anything else shows its own
+ * message rather than a generic apology (the agents/settings pages' convention). */
+function errorText(e: unknown): string {
+  if (e instanceof ApiError) return e.display;
+  return e instanceof Error ? e.message : String(e);
+}
 
 /**
  * Client component on purpose.
@@ -26,66 +25,98 @@ const STATUS_STYLE: Record<string, string> = {
  * The old `catch { return [] }` made it worse: a failed read became the words "no data", which is the one
  * thing this project forbids. Three states now, and they are different on purpose:
  *   loading  -> a skeleton, because "not read yet" is not "empty"
- *   error    -> the failure named on the page, never an empty list standing in for it
+ *   error    -> the failure NAMED on the page (ApiError.display), never an empty list standing in for it
  *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ *
+ * Q-08: the old page had NO loading state at all — for the whole read it showed column headers over
+ * an empty body (its own docstring claimed a skeleton). This page renders a real skeleton with
+ * `aria-busy` while the read is in flight, the named failure when it fails, and the
+ * producer-naming empty copy only after a successful 200 that really returned nothing.
+ *
+ * The live Email widget's actions (`COLD OUTREACH`, `SUPPORT` + their frequency modals — DOSSIER
+ * §1.6; cap-07/cap-08) are NOT built: collecting a cadence nothing can store would be a fake
+ * capability, because the clone has no schedule/recurrence model (outreach.md R5,
+ * GAP-NO-ENDPOINT). The live `SENT` counter is likewise refused — `email_logs` rows exist but no
+ * route serves them — so no counter block renders at all, and certainly no fabricated `0`.
  */
 
 export default function OutreachPage() {
   const [data, setData] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadCount, setReloadCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    // A refresh goes back through "not read yet" on purpose: the skeleton is the one honest way
+    // to say "the list you are looking at is being replaced" without faking progress.
+    setData(null);
+    setError(null);
     api
-      .get<Prospect[]>("/outreach/prospects?limit=100")
+      .get<Prospect[]>(`/outreach/prospects?limit=${LIST_LIMIT}`)
       .then((rows) => {
         if (!cancelled) setData(rows);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(errorText(e));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadCount]);
+
+  const refresh = useCallback(() => setReloadCount((n) => n + 1), []);
+  const truncated = data !== null && data.length === LIST_LIMIT;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-bold text-white">
-        {data === null ? "Outreach" : `Outreach (${data.length})`}
-      </h1>
-      {error && (
-        <p className="text-red-400" role="alert">
+    <div className="space-y-4">
+      <div className="flex items-end gap-2 border-b border-line pb-1">
+        <h1 className="mr-auto text-3xl font-bold text-ink">Outreach</h1>
+        <button type="button" className="link ui-label" onClick={refresh} data-testid="outreach-refresh">
+          Refresh
+        </button>
+      </div>
+
+      {/* Q-12: a count of what THIS read measured — never a claimed total. A full page also says
+          the read is capped, so the cap cannot masquerade as the list's end. */}
+      {data !== null ? (
+        <p className="ui-label text-ink-muted" data-testid="outreach-count">
+          {data.length} {data.length === 1 ? "prospect" : "prospects"}
+          {truncated ? ` · showing the first ${LIST_LIMIT}` : ""}
+        </p>
+      ) : null}
+
+      {error ? (
+        <p role="alert" className="text-sm text-alert">
           Could not load prospects: {error}
         </p>
-      )}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm text-left">
-          <thead>
-            <tr className="text-gray-400 border-b border-gray-700">
-              <th className="pb-2 pr-4">Email</th>
-              <th className="pb-2 pr-4">Name</th>
-              <th className="pb-2 pr-4">Company</th>
-              <th className="pb-2 pr-4">Status</th>
-              <th className="pb-2">Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data?.map((p) => (
-              <tr key={p.id} className="border-b border-gray-800">
-                <td className="py-2 pr-4 text-white">{p.email}</td>
-                <td className="py-2 pr-4 text-gray-300">{p.first_name ?? "—"}</td>
-                <td className="py-2 pr-4 text-gray-300">{p.company ?? "—"}</td>
-                <td className={`py-2 pr-4 capitalize ${p.status ? (STATUS_STYLE[p.status] ?? "text-gray-400") : "text-gray-400"}`}>{p.status ?? "—"}</td>
-                <td className="py-2 text-gray-400">
-                  {p.created_at ? new Date(p.created_at).toLocaleDateString() : "date unknown"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!error && data !== null && data.length === 0 && <p className="text-gray-400 mt-4">No prospects yet.</p>}
-      </div>
+      ) : null}
+
+      {!error && data === null ? (
+        <div className="space-y-2" data-testid="outreach-loading" aria-busy="true">
+          <p className="ui-label text-ink-muted">Loading…</p>
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="flex items-center justify-between gap-3 border border-line px-3 py-3">
+              <div className="h-3 w-2/5 animate-pulse bg-surface-strong" />
+              <div className="h-3 w-16 animate-pulse bg-surface-strong" />
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {!error && data !== null && data.length === 0 ? (
+        <p className="text-sm text-ink-muted">
+          No prospects yet. The outreach agent finds prospects when it runs — dispatch it from the
+          Agents page.
+        </p>
+      ) : null}
+
+      {data !== null && data.length > 0 ? (
+        <ul className="card-surface" data-testid="outreach-list">
+          {data.map((prospect) => (
+            <ProspectRow key={prospect.id} prospect={prospect} />
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

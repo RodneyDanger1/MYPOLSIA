@@ -5,7 +5,7 @@ test.describe("Agents page", () => {
   test("lists all agents with Run Now button", async ({ page }) => {
     await page.goto("/agents");
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Run Now" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /run now/i }).first()).toBeVisible();
   });
 
   test("trigger button shows queued confirmation", async ({ page }) => {
@@ -32,11 +32,15 @@ test.describe("Agents page", () => {
 
     try {
       await page.goto("/agents");
-      const firstButton = page.getByRole("button", { name: "Run Now" }).first();
+      const firstButton = page.getByRole("button", { name: /run now/i }).first();
       await firstButton.click();
+      // Wave U2 (coder F1 rebuild): `Run now` opens a confirm gate; `Create task` fires the POST
+      // (old -> new in the wave receipt; the gate itself is pinned by u2-tasks-agents).
+      await page.getByRole("button", { name: /create task/i }).first().click();
       triggered = true;
-      // Expect either "Triggering…" or a success message
-      await expect(page.locator("text=/queued|Triggering/")).toBeVisible({ timeout: 5000 });
+      // Expect an acknowledgment of the click: the in-flight label, the queued banner, or the
+      // lab's honest refusal — the redis-less lab ladder settles as a named E_REDIS refusal.
+      await expect(page.locator("text=/queued|Triggering|refused/")).toBeVisible({ timeout: 5000 });
     } finally {
       // The same `finally` idiom the other fixture specs use, plus the one thing this spec forces:
       // the click's POST is still in flight when the assertion above settles (the button paints

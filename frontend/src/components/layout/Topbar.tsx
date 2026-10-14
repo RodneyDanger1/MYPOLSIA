@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, Pencil } from "lucide-react";
+import { Pencil } from "lucide-react";
 
 import { MenuNav } from "@/components/layout/MenuNav";
+import { NotificationsBell } from "@/components/layout/NotificationsPanel";
 import { TopbarPopover } from "@/components/layout/TopbarPopover";
 
 /**
@@ -15,14 +16,16 @@ import { TopbarPopover } from "@/components/layout/TopbarPopover";
  * the persistent sidebar is retired (DOSSIER cross-cutting A: the live app has no
  * nav rail; aid3 MATCH-VS-BEAT C2 forbids re-adding one).
  *
- * Two controls have no data source in this build, so they refuse by name instead
- * of pretending:
- * - the bell: no notifications endpoint exists anywhere in the API (verified:
- *   `backend/app/api/v1/*` has no notifications route and `grep -rni notification
- *   backend frontend/src` returns nothing), so it renders NO count and says so;
- * - EDIT: the live `EDIT` opens the Edit Dashboard sheet, which is not built yet,
- *   and no API stores a dashboard layout (`backend/app/schemas/company.py` carries
- *   company fields only) — so it explains that rather than opening a dead sheet.
+ * The bell is real as of wave U2: it reads `GET /api/v1/notifications` (the backend
+ * unblocker this wave landed — `backend/app/api/v1/notifications.py`), shows the
+ * endpoint's count when it measured one, and owns its three states (loading /
+ * failed / answered) in `NotificationsPanel.tsx`. Before that endpoint existed this
+ * control refused with a named idle state; it no longer has anything to refuse.
+ *
+ * EDIT still refuses by name: the live `EDIT` opens the Edit Dashboard sheet, which
+ * is not built yet, and no API stores a dashboard layout (`backend/app/schemas/
+ * company.py` carries company fields only) — so it explains that rather than
+ * opening a dead sheet.
  */
 export function Topbar() {
   return (
@@ -37,18 +40,7 @@ export function Topbar() {
           <span className="ui-label text-ink-muted">AI Business Agent</span>
         </Link>
 
-        <TopbarPopover
-          label="Notifications"
-          testId="topbar-notifications"
-          icon={<Bell size={13} />}
-          panelTitle="Notifications"
-          panelClassName="w-80"
-        >
-          <p>
-            Nothing to show. This build has no notifications endpoint, so the bell reports an
-            empty state instead of a count it cannot verify.
-          </p>
-        </TopbarPopover>
+        <NotificationsBell />
 
         <TopbarPopover
           label="Edit dashboard"

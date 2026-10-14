@@ -17,6 +17,9 @@ type WirePost = {
   engagement: Record<string, unknown> | null;
 };
 
+// Wave U2 (coder F2 restyle): the card is still found by its text, but the element is the
+// restyled `Card` (`data-testid="social-post"`) instead of the retired `div.bg-gray-800`.
+// Old -> new recorded in wave-u2/coder-f2-social-outreach/RECEIPT.md.
 describe("SocialPage", () => {
   afterEach(() => mockApiGet.mockReset());
 
@@ -32,7 +35,7 @@ describe("SocialPage", () => {
 
     render(<SocialPage />);
 
-    const card = (await screen.findByText(post.content)).closest("div.bg-gray-800");
+    const card = (await screen.findByText(post.content)).closest('[data-testid="social-post"]');
     expect(card).not.toBeNull();
     expect(card).toHaveTextContent("engagement: —");
     expect(card).not.toHaveTextContent("[object Object]");
@@ -51,7 +54,7 @@ describe("SocialPage", () => {
 
     render(<SocialPage />);
 
-    const card = (await screen.findByText(post.content)).closest("div.bg-gray-800");
+    const card = (await screen.findByText(post.content)).closest('[data-testid="social-post"]');
     expect(card).not.toBeNull();
     // These two exact strings are what e2e/social.spec.ts asserts on the rendered page.
     expect(card).toHaveTextContent("likes: 11");

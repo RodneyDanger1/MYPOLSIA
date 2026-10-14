@@ -2,10 +2,13 @@ import { test, expect } from "@playwright/test";
 import { API_BASE, LAB_DB_SKIP_REASON, PREFIX, labDbAvailable, sqliteRun } from "./_helpers";
 
 async function shownCount(page: import("@playwright/test").Page): Promise<number> {
-  const heading = page.getByRole("heading", { name: /^Outreach \(\d+\)$/ });
-  await expect(heading).toBeVisible();
-  const match = (await heading.textContent())?.match(/\((\d+)\)/);
-  expect(match, "heading must render an integer prospect count").toBeTruthy();
+  // Wave U2 (coder F2 rebuild): the retired `Outreach (N)` heading count moved to a count line
+  // that measures THIS read ("N prospects · showing the first 100" when capped — old -> new in
+  // the wave receipt). The pin is the same: an integer count the page itself rendered.
+  const count = page.getByTestId("outreach-count");
+  await expect(count).toBeVisible();
+  const match = (await count.textContent())?.match(/^(\d+)/);
+  expect(match, "the count line must render an integer prospect count").toBeTruthy();
   return Number(match![1]);
 }
 
@@ -27,7 +30,9 @@ test.describe("Outreach page", () => {
     // currently serves (rows are only ever added — there is no DELETE endpoint — so >= is stable).
     expect(shown).toBeGreaterThanOrEqual(prospects.length);
 
-    const rows = page.locator("tbody tr");
+    // Wave U2 (coder F2 rebuild): rows are list items with `data-testid="prospect-row"` (was
+    // tbody tr — old -> new in the wave receipt). Same pin: the page renders what the API serves.
+    const rows = page.locator('[data-testid="prospect-row"]');
     if (shown === 0) {
       await expect(page.getByText("No prospects yet.")).toBeVisible();
       await expect(rows).toHaveCount(0);
@@ -69,7 +74,7 @@ test.describe("Outreach page", () => {
       expect(shown).toBeGreaterThanOrEqual(1);
       await expect(page.getByText("No prospects yet.")).toHaveCount(0);
 
-      const row = page.locator("tbody tr").filter({ hasText: email });
+      const row = page.locator('[data-testid="prospect-row"]').filter({ hasText: email });
       await expect(
         row,
         `GET /api/v1/outreach/prospects serves ${email} but /outreach never renders its row — ` +

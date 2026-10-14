@@ -29,7 +29,9 @@ test.describe("Tasks page", () => {
         `/tasks shows its EMPTY state although GET /api/v1/tasks returned ${tasks.length} task(s) — ` +
           "the page is not rendering what the API serves (frozen build-time snapshot?)",
       ).toHaveCount(0);
-      const rows = page.locator("main div.bg-gray-800");
+      // Wave U2 (coder F1 rebuild): board cards are `Open task:` buttons (was div.bg-gray-800 —
+      // old -> new in the wave receipt). Same pin: the board renders every task the API serves.
+      const rows = page.locator('main [aria-label^="Open task:"]');
       // poll, don't sample: the checks above can resolve while a client-side page is still loading
       await expect
         .poll(async () => rows.count(), {
@@ -79,7 +81,9 @@ test.describe("Tasks page", () => {
       expect(task.status).toBe("failed");
       expect(task.error_message).toContain("E_REDIS");
 
-      // And the page renders it — one row: title, agent type + priority line, status badge.
+      // And the page renders it — one card: title on an `Open task:` button, agent chip + status
+      // chip (the retired "social media · Priority 3" line went with the rebuild — old -> new in
+      // the wave receipt).
       await page.goto("/tasks");
       const titleNode = page.getByText(title, { exact: true }).first();
       await expect(
@@ -87,8 +91,8 @@ test.describe("Tasks page", () => {
         `trigger named task #${taskId} ("${title}") but /tasks never renders it — ` +
           "the page is not rendering what the API serves (frozen build-time snapshot?)",
       ).toBeVisible();
-      const row = titleNode.locator("xpath=ancestor::div[contains(@class,'bg-gray-800')]");
-      await expect(row).toContainText("social media · Priority 3");
+      const row = titleNode.locator('xpath=ancestor::button[starts-with(@aria-label,"Open task:")]');
+      await expect(row).toContainText("social_media");
       await expect(row.getByText(/^(pending|in_progress|completed|failed)$/)).toBeVisible();
       await expect(row).toContainText("failed");
     } finally {

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 jest.mock("@/lib/api", () => ({ api: { get: jest.fn() } }));
 
@@ -42,16 +42,19 @@ describe("null-safe list pages (L1-11)", () => {
 
     render(<TasksPage />);
 
-    const nullCard = (await screen.findByText(nullTask.title)).closest("div.bg-gray-800");
-    expect(nullCard).not.toBeNull();
-    expect(nullCard).toHaveTextContent("Priority —");
-    expect(nullCard).toHaveTextContent("unknown");
+    // Wave U2 (coder F1 rebuild): cards are `Open task:` buttons (was div.bg-gray-800) and the
+    // card no longer prints a Priority row at all — the live board shows none (spec: tasks.md;
+    // old -> new recorded in the wave receipt). The L1-11 intent is intact: a served null status
+    // renders the muted "unknown" chip — never a blank one, never the word null.
+    const nullCard = await screen.findByRole("button", { name: `Open task: ${nullTask.title}` });
+    expect(screen.getByText("unknown")).toBeInTheDocument();
+    expect(screen.getByText("finance")).toBeInTheDocument();
     expect(nullCard).not.toHaveTextContent("Priority null");
 
-    const fineCard = screen.getByText(fineTask.title).closest("div.bg-gray-800");
-    expect(fineCard).not.toBeNull();
-    expect(fineCard).toHaveTextContent("Priority 3");
-    expect(fineCard).toHaveTextContent("pending");
+    const fineCard = screen.getByRole("button", { name: `Open task: ${fineTask.title}` });
+    expect(screen.getByText("pending")).toBeInTheDocument();
+    expect(screen.getByText("social_media")).toBeInTheDocument();
+    expect(fineCard).toBeInTheDocument();
   });
 
   it("social page renders a null status as the gray 'unknown', never an empty chip", async () => {
@@ -67,14 +70,17 @@ describe("null-safe list pages (L1-11)", () => {
 
     render(<SocialPage />);
 
+    // Wave U2 (coder F2 restyle): the card element is the restyled Card
+    // (`data-testid="social-post"`), not the retired `div.bg-gray-800` (old -> new in the wave
+    // receipt). The L1-11 pin itself is unchanged: a served null status renders the gray "unknown".
     const card = (await screen.findByText("fixture: post with a null status")).closest(
-      "div.bg-gray-800",
+      '[data-testid="social-post"]',
     );
     expect(card).not.toBeNull();
     expect(card).toHaveTextContent("unknown");
   });
 
-  it("outreach page renders a null status as the em dash in the status cell", async () => {
+  it("outreach page renders a null status as the em dash in the status chip", async () => {
     mockApiGet.mockResolvedValue([
       {
         id: 31,
@@ -88,10 +94,14 @@ describe("null-safe list pages (L1-11)", () => {
 
     render(<OutreachPage />);
 
-    const row = (await screen.findByText("null-status@example.test")).closest("tr");
+    // Wave U2 (coder F2 restyle): the 5-column table became live-style rows; the status lives in
+    // the row's chip (`data-testid="prospect-status"`) instead of `td` index 3 (old -> new in the
+    // wave receipt). The pin is unchanged: a served null status renders the em dash.
+    const row = (await screen.findByText("null-status@example.test")).closest(
+      '[data-testid="prospect-row"]',
+    );
     expect(row).not.toBeNull();
-    const statusCell = row?.querySelectorAll("td")[3];
-    expect(statusCell).toBeDefined();
-    expect(statusCell).toHaveTextContent("—");
+    const statusChip = within(row as HTMLElement).getByTestId("prospect-status");
+    expect(statusChip).toHaveTextContent("—");
   });
 });

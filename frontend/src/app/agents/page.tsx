@@ -1,108 +1,92 @@
 "use client";
+
 import { useState } from "react";
-import { useAgentStatus } from "@/hooks/useAgentStatus";
-import { ApiError, api } from "@/lib/api";
 
-const AGENT_DESCRIPTIONS: Record<string, string> = {
-  orchestrator: "Generates daily task plans and evening summaries",
-  business_planning: "Analyzes strategy, updates KPIs, identifies opportunities",
-  competitor_research: "Researches competitors and market positioning",
-  social_media: "Drafts and posts tweets, monitors engagement",
-  ads_management: "Manages Google and Meta ad campaigns",
-  email_outreach: "Finds prospects and sends personalized cold emails",
-  code_generation: "Writes code, commits to GitHub, deploys",
-  customer_support: "Reads inbox and drafts customer replies",
-  finance: "Monitors Stripe revenue, expenses, and alerts",
-};
+import { AgentsRoster } from "@/components/agents/AgentsRoster";
+import { agentLabel } from "@/components/dashboard/format";
+import { errorText } from "@/components/tasks/status";
+import type { AgentTriggerResponse } from "@/components/tasks/types";
+import { cn } from "@/components/ui";
+import { api } from "@/lib/api";
 
-/** A refusal shows its own code + fix hint; anything else its message (the repo's house idiom). */
-function errorText(e: unknown): string {
-  if (e instanceof ApiError) return e.display;
-  return e instanceof Error ? e.message : String(e);
-}
+type Banner = { agent: string; text: string; isError: boolean };
 
+/**
+ * The agents page — an OURS-DESIGN surface (agents-page.md: the live product was never observed
+ * to have one; live's Run Now is per task). Every region below is fed by a real endpoint:
+ * `GET /agents/status` (via `useAgentStatus`, the audit's model implementation — the only
+ * poller) and `POST /agents/{agent_type}/trigger` for the per-row run.
+ *
+ * Trigger flow, end to end and honest:
+ *   - `Run now` opens a confirm that NAMES the agent and says a new task will be created
+ *     (B21-lite); cancelling issues no request.
+ *   - One in-flight trigger per agent (a per-agent pending map — Q-20: previously a single
+ *     shared slot let two runs race and the loser's result vanish); the banner names the agent
+ *     it reports on.
+ *   - On 202 the server's `message` is shown verbatim and the roster is REMOUNTED (via `key`),
+ *     which performs a fresh `GET /agents/status` — the Q-20 "no refetch after a trigger" fix,
+ *     without touching the shared hook or adding a second poller.
+ *   - A refusal shows `ApiError.display` (code + how_to_fix) in the `role="alert"` banner; the
+ *     success styling is never reused for it (`data-tone` pins the two apart).
+ */
 export default function AgentsPage() {
-  const { statuses, loading, error } = useAgentStatus();
-  const [triggering, setTriggering] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  // The trigger banner has two states on purpose: a queued confirmation and a refusal used to look
-  // identical (a refusal rendered in the success-styled indigo box), so E_REDIS read as "all good".
-  const [messageIsError, setMessageIsError] = useState(false);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [confirmAgent, setConfirmAgent] = useState<string | null>(null);
+  const [banner, setBanner] = useState<Banner | null>(null);
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   const trigger = async (agentType: string) => {
-    setTriggering(agentType);
-    setMessage(null);
+    setConfirmAgent(null);
+    setPending((current) => ({ ...current, [agentType]: true }));
     try {
-      const result = await api.post<{ message: string }>(`/agents/${agentType}/trigger`);
-      setMessage(result.message);
-      setMessageIsError(false);
+      const result = await api.post<AgentTriggerResponse>(`/agents/${agentType}/trigger`, {
+        // The title makes the created row self-describing on /tasks (OPEN DECISION #1).
+        task_title: `Manual run — ${agentLabel(agentType)}`,
+        description: "Triggered from the Agents page.",
+      });
+      setBanner({ agent: agentLabel(agentType), text: result.message, isError: false });
+      setRefreshSeq((n) => n + 1);
     } catch (e) {
-      setMessage(errorText(e));
-      setMessageIsError(true);
+      setBanner({ agent: agentLabel(agentType), text: errorText(e), isError: true });
     } finally {
-      setTriggering(null);
+      setPending((current) => {
+        const next = { ...current };
+        delete next[agentType];
+        return next;
+      });
     }
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold text-white">Agents</h1>
+    <div className="space-y-4">
+      <div className="border-b border-line pb-2">
+        <h1 className="text-3xl font-bold text-ink">Agents</h1>
+      </div>
 
-      {message && (
+      {banner ? (
         <div
-          role={messageIsError ? "alert" : "status"}
-          className={
-            messageIsError
-              ? "bg-red-900/40 border border-red-500 rounded-lg px-4 py-3 text-red-300 text-sm"
-              : "bg-indigo-900/50 border border-indigo-500 rounded-lg px-4 py-3 text-indigo-200 text-sm"
-          }
+          role={banner.isError ? "alert" : "status"}
+          data-tone={banner.isError ? "error" : "queued"}
+          className={cn(
+            "border p-3",
+            banner.isError ? "border-alert bg-surface" : "border-line-strong bg-surface-sunk",
+          )}
         >
-          {message}
+          <p className={cn("ui-label", banner.isError ? "text-alert" : "text-ink")}>
+            {banner.agent} — {banner.isError ? "refused" : "queued"}
+          </p>
+          <p className="mt-1 text-sm text-ink">{banner.text}</p>
         </div>
-      )}
+      ) : null}
 
-      {loading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 9 }).map((_, i) => (
-            <div key={i} className="h-20 bg-gray-800 rounded-lg animate-pulse" />
-          ))}
-        </div>
-      ) : error ? (
-        // The hook reports the poll's failure; without this branch an outage rendered as an empty
-        // agents list — a plausible "no agents configured" state with the reason dropped.
-        <p className="text-red-400 text-sm" role="alert">
-          Could not load agent status: {error}
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {statuses.map((s) => (
-            <div
-              key={s.agent_type}
-              className="bg-gray-800 rounded-lg p-4 flex items-center justify-between"
-            >
-              <div>
-                <h3 className="text-white font-medium capitalize">
-                  {s.agent_type.replace(/_/g, " ")}
-                </h3>
-                <p className="text-gray-400 text-sm">
-                  {AGENT_DESCRIPTIONS[s.agent_type] ?? ""}
-                </p>
-                <p className="text-gray-500 text-xs mt-1">
-                  Last run: {s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "Never"} ·{" "}
-                  {s.tasks_today} tasks today
-                </p>
-              </div>
-              <button
-                onClick={() => trigger(s.agent_type)}
-                disabled={triggering === s.agent_type}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm rounded-md transition-colors"
-              >
-                {triggering === s.agent_type ? "Triggering…" : "Run Now"}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      <AgentsRoster
+        key={refreshSeq}
+        pending={pending}
+        confirmAgent={confirmAgent}
+        onRunRequest={(agentType) => setConfirmAgent(agentType)}
+        onRunCancel={() => setConfirmAgent(null)}
+        onRunConfirm={(agentType) => void trigger(agentType)}
+      />
     </div>
   );
 }

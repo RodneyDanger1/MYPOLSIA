@@ -25,9 +25,10 @@ where their consumers are.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -800,6 +801,91 @@ def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
+# ── task truth for the wire (wave U2): completed_at + the runs-ledger sums ────────────────────
+#
+# The frozen U2 contract adds four nullable TaskResponse fields.  Two facts are involved and each
+# has exactly ONE definition here, because both the tasks route (TaskResponse.completed_at, the
+# cost/token sums) and the notifications route (the completion/park timestamp the 48 h window and
+# the newest-first order run on) read them — a second definition is how the two surfaces would
+# start disagreeing about when a task "finished".
+
+
+def task_terminal_at_expr():
+    """The completion/park instant as SQL: `coalesce(tasks.updated_at, tasks.created_at)`.
+
+    `tasks` has no `completed_at` column (no DDL change rides this wave), and the repo's own
+    writer stamps the moment: `update_task_status` sets `updated_at = utcnow()` on every status
+    transition, and the worker records the outcome through exactly that service call
+    (`celery_app.tasks.agent_tasks`).  `created_at` is the fallback for a row some raw/Core writer
+    left with a NULL `updated_at` — the same last-sign-of-life chain `requeue_stale_claims` uses
+    (heartbeat_at else claimed_at else created_at), so a row is never dropped from the window or
+    ordered by a different clock than the one it is filtered on.
+
+    Dialect note: the expression is returned unbound — the caller compares it against a bound
+    instant (`app.core.timeutil.as_bound_instant`), which is what keeps SQLite (naive UTC text)
+    and PostgreSQL (timestamptz) selecting the same rows.
+    """
+    return func.coalesce(Task.updated_at, Task.created_at)
+
+
+def task_completed_at(task: Task) -> datetime | None:
+    """The python form of `task_terminal_at_expr` for an already-loaded row, gated on completion.
+
+    Returns the completion timestamp ONLY for a `completed` task; every other status (failed,
+    cancelled, still-running, awaiting approval) answers `None` — a failed task did not complete,
+    and serving its last-update time under `completed_at` would be a renamed field, not a fact.
+    """
+    if str(task.status or "") != TaskStatus.COMPLETED:
+        return None
+    return task.updated_at or task.created_at
+
+
+class TaskRunTotals(NamedTuple):
+    """One task's runs-ledger sums.  `None` means unmeasured — never a fabricated zero."""
+
+    cost_usd: Decimal | None
+    tokens_in: int | None
+    tokens_out: int | None
+
+
+async def get_task_run_totals(
+    db: AsyncSession, task_ids: Sequence[int]
+) -> dict[int, TaskRunTotals]:
+    """Per-task sums of the `agent_runs` ledger, in ONE grouped statement for the whole id set.
+
+    The tasks list serves up to 500 rows; a per-row query would make the page O(n) round trips, so
+    the route hands its whole id set over and this selects `GROUP BY task_id` once.
+
+    NULL discipline (the frozen contract): a task with NO runs is simply ABSENT from the mapping —
+    the caller serves null — and `SUM` over rows that never recorded a value is SQL NULL too, so an
+    unmeasured cost is never reported as `0`.  A MEASURED zero (runs exist, the value recorded as
+    0) sums to `0`/`Decimal("0.0000")` and IS reported.  A driver failure is the shared `E_DB`
+    refusal (`fetch_rows`), never an empty mapping standing in for "could not read".
+    """
+    ids = sorted({int(task_id) for task_id in task_ids})
+    if not ids:
+        return {}
+    stmt = (
+        select(
+            AgentRun.task_id,
+            func.sum(AgentRun.cost_usd).label("cost_usd"),
+            func.sum(AgentRun.tokens_input).label("tokens_in"),
+            func.sum(AgentRun.tokens_output).label("tokens_out"),
+        )
+        .where(AgentRun.task_id.in_(ids))
+        .group_by(AgentRun.task_id)
+    )
+    rows = await fetch_rows(db, stmt, what="task run totals")
+    return {
+        int(task_id): TaskRunTotals(
+            cost_usd=cost,
+            tokens_in=int(tokens_in) if tokens_in is not None else None,
+            tokens_out=int(tokens_out) if tokens_out is not None else None,
+        )
+        for task_id, cost, tokens_in, tokens_out in rows
+    }
+
+
 # T13/D20 removal — `get_agent_run` lived here: a labelled zero-caller (fix-5 §4; prod 0, one
 # test) with no run-detail/ops route to serve, while the shipped worker addresses runs by the id
 # `create_agent_run` returned and closes them through `finish_agent_run`.  A single-run lookup
@@ -810,6 +896,7 @@ __all__ = [
     "APPROVAL_TOKEN_METADATA_KEY",
     "VALID_AGENT_TYPES",
     "VALID_TASK_STATUSES",
+    "TaskRunTotals",
     "attach_approval_token",
     "claim_task",
     "create_agent_run",
@@ -817,10 +904,13 @@ __all__ = [
     "finish_agent_run",
     "get_agent_statuses",
     "get_task",
+    "get_task_run_totals",
     "heartbeat_task",
     "is_valid_agent_type",
     "list_tasks",
     "release_claim",
     "requeue_stale_claims",
+    "task_completed_at",
+    "task_terminal_at_expr",
     "update_task_status",
 ]

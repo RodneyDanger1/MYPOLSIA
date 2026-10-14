@@ -1,27 +1,16 @@
 "use client";
+
 import { useEffect, useState } from "react";
 
-import { api, type Task } from "@/lib/api";
+import { TaskBoard, TASKS_BOARD_LIMIT } from "@/components/tasks/TaskBoard";
+import { TaskDetailSheet } from "@/components/tasks/TaskDetailSheet";
+import { errorText } from "@/components/tasks/status";
+import type { TaskRow } from "@/components/tasks/types";
+import { Button } from "@/components/ui";
+import { api } from "@/lib/api";
 
 /**
- * The backend's documented status set (`task_service.VALID_TASK_STATUSES`): the four original
- * states plus `cancelled` (stopped deliberately — NOT the same claim as `failed`),
- * `awaiting_approval` (parked until the owner's green light, D1) and `rejected` (refused before
- * execution, nothing charged — D2's status landing this wave, T03). A null/unrecognised status
- * still falls back to the gray chip at the call site, never an empty chip.
- */
-const STATUS_STYLE: Record<string, string> = {
-  completed: "bg-green-500/20 text-green-400",
-  in_progress: "bg-blue-500/20 text-blue-400",
-  pending: "bg-yellow-500/20 text-yellow-400",
-  failed: "bg-red-500/20 text-red-400",
-  cancelled: "bg-gray-500/20 text-gray-300",
-  awaiting_approval: "bg-orange-500/20 text-orange-400",
-  rejected: "bg-rose-500/20 text-rose-400",
-};
-
-/**
- * Client component on purpose.
+ * Client component on purpose — kept from the page this replaces, because the lesson stands:
  *
  * This page used to be an async Server Component doing `await api.get(...)`. Next prerenders this route
  * (`○ (Static)` in the build output), so that fetch ran at BUILD time and the empty result was baked into
@@ -30,73 +19,95 @@ const STATUS_STYLE: Record<string, string> = {
  *
  * The old `catch { return [] }` made it worse: a failed read became the words "no data", which is the one
  * thing this project forbids. Three states now, and they are different on purpose:
- *   loading  -> a skeleton, because "not read yet" is not "empty"
- *   error    -> the failure named on the page, never an empty list standing in for it
+ *   loading  -> a skeleton with `aria-busy`, because "not read yet" is not "empty"
+ *   error    -> the named failure (`ApiError.display`: code + how_to_fix), never empty copy
  *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ *
+ * No polling here (tasks.md §3.9 / C7: live refreshes on explicit demand). The board fetches on
+ * mount, offers an explicit refresh, and re-reads once after a write that changes it (a queued
+ * run or a minted approval) — a one-shot refetch after a user action, not an auto-refresh loop.
  */
-
 export default function TasksPage() {
-  const [data, setData] = useState<Task[] | null>(null);
+  const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [reloadSeq, setReloadSeq] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     api
-      .get<Task[]>("/tasks?limit=100")
-      .then((rows) => {
-        if (!cancelled) setData(rows);
+      .get<TaskRow[]>(`/tasks?limit=${TASKS_BOARD_LIMIT}`)
+      .then((data) => {
+        if (!cancelled) setRows(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        // The previous rows (if any) stay on screen under the alert — they are real reads; the
+        // alert names why THIS read failed. No silent catch, no empty-list stand-in.
+        if (!cancelled) setError(errorText(e));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadSeq]);
+
+  const openTask = rows?.find((row) => row.id === openId) ?? null;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-bold text-white">Tasks</h1>
-      <div className="space-y-2">
-        {error && (
-          <p className="text-red-400" role="alert">
-            Could not load tasks: {error}
-          </p>
-        )}
-        {!error && data === null && (
-          <div className="space-y-2" aria-busy="true">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-16 bg-gray-800 rounded-lg animate-pulse" />
-            ))}
+    <>
+      <div aria-hidden={openTask ? true : undefined} className="space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-2 border-b border-line pb-2">
+          <h1 className="text-3xl font-bold text-ink">Tasks</h1>
+          <Button size="sm" onClick={() => setReloadSeq((n) => n + 1)}>
+            Refresh
+          </Button>
+        </div>
+
+        {error ? (
+          <div role="alert" className="border border-alert bg-surface p-3">
+            <p className="ui-label text-alert">Could not load tasks</p>
+            <p className="mt-1 text-sm text-ink">{error}</p>
           </div>
-        )}
-        {!error && data !== null && data.length === 0 && (
-          <p className="text-gray-400">No tasks yet. Agents will create tasks during their cycles.</p>
-        )}
-        {data?.map((t) => (
-          <div key={t.id} className="bg-gray-800 rounded-lg p-4 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-white font-medium">{t.title}</p>
-              <p className="text-gray-400 text-sm capitalize">
-                {t.agent_type.replace(/_/g, " ")} · Priority {t.priority ?? "—"}
-              </p>
-              <p className="text-gray-500 text-xs mt-1">
-                {/* `created_at` is nullable on the wire (api.ts): the placeholder below, not the
-                    "Invalid Date" that `new Date(null)` produces. */}
-                {t.created_at ? new Date(t.created_at).toLocaleString() : "date unknown"}
-              </p>
+        ) : null}
+
+        {error === null && rows === null ? (
+          <div aria-busy="true" className="space-y-2">
+            <p className="ui-label text-ink-muted">Loading tasks…</p>
+            <div className="grid grid-cols-1 gap-[14px] lg:grid-cols-2">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="h-[93px] animate-pulse border border-line bg-surface" />
+              ))}
             </div>
-            {/* `status` is nullable on the wire (api.ts / TaskResponse.status): a null row is
-                served, not 500'd — so the badge falls back to the same gray "unknown" chip an
-                unrecognised status gets, never an empty chip. */}
-            <span
-              className={`flex-shrink-0 px-2 py-1 rounded text-xs font-medium ${STATUS_STYLE[t.status ?? ""] ?? "bg-gray-700 text-gray-400"}`}
-            >
-              {t.status ?? "unknown"}
-            </span>
           </div>
-        ))}
+        ) : null}
+
+        {error === null && rows !== null && rows.length === 0 ? (
+          // Q-26: the sentence this repo already had — the tone the audit calls correct.
+          <p className="ui-label text-ink-muted">
+            No tasks yet. Agents will create tasks during their cycles.
+          </p>
+        ) : null}
+
+        {rows !== null && rows.length > 0 ? (
+          <>
+            {rows.length === TASKS_BOARD_LIMIT ? (
+              <p className="ui-label text-ink-muted">
+                Showing the first {TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may
+                exist
+              </p>
+            ) : null}
+            <TaskBoard rows={rows} onOpen={(task) => setOpenId(task.id)} />
+          </>
+        ) : null}
       </div>
-    </div>
+
+      {openTask ? (
+        <TaskDetailSheet
+          task={openTask}
+          onClose={() => setOpenId(null)}
+          onTaskQueued={() => setReloadSeq((n) => n + 1)}
+        />
+      ) : null}
+    </>
   );
 }

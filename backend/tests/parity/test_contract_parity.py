@@ -63,6 +63,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     ("GET", "/api/v1/ads/campaigns"),
+    # wave U2 (B1): the notifications bell's feed — derived from task rows (no table); documented by
+    # app/api/v1/notifications.py and tests/unit/test_u2_notifications.py, route verified live in
+    # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no notifications route.
+    ("GET", "/api/v1/notifications"),
     # R17: the customer-support inbox ingest — owner-authenticated submit + list
     # (documented by app/api/v1/support.py and tests/unit/api/test_support_inbox.py).
     ("POST", "/api/v1/support/inbox"),

@@ -23,10 +23,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_NOT_FOUND, ERROR_HINTS
+from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskResponse, TaskStatusUpdate
-from app.services.task_service import create_task, get_task, list_tasks, update_task_status
+from app.services.task_service import (
+    TaskRunTotals,
+    create_task,
+    get_task,
+    get_task_run_totals,
+    list_tasks,
+    task_completed_at,
+    update_task_status,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(verify_api_key)])
+
+
+def _fill_truth(response: TaskResponse, task: Task, totals: TaskRunTotals | None) -> TaskResponse:
+    """The wave-U2 truth fields on ONE response — the single fill every construction site uses.
+
+    `completed_at` is read off the row (`task_service.task_completed_at`: only a `completed` task
+    has one — a failed task did not complete).  The cost/token sums come from the runs-ledger read
+    handed in; `totals is None` means the task has NO runs and every sum stays null — unmeasured is
+    never zero (the frozen contract; see `schemas/task.py`).  Mutating the validated model is
+    deliberate: the four fields are declared on `TaskResponse` and this is the one place they are
+    set from real rows, so a site that skipped this helper would serve the defined-but-never-called
+    defect — which the U2 tests pin per site.
+    """
+    response.completed_at = task_completed_at(task)
+    if totals is not None:
+        response.cost_usd = float(totals.cost_usd) if totals.cost_usd is not None else None
+        response.tokens_in = totals.tokens_in
+        response.tokens_out = totals.tokens_out
+    return response
+
+
+async def _task_response(db: AsyncSession, task: Task) -> TaskResponse:
+    """One task -> one response, truth fields filled (used by the detail, create and patch sites)."""
+    totals = await get_task_run_totals(db, [task.id])
+    return _fill_truth(TaskResponse.model_validate(task), task, totals.get(task.id))
+
+
+async def _task_responses(db: AsyncSession, tasks: list[Task]) -> list[TaskResponse]:
+    """A page of tasks -> responses, truth fields filled from ONE grouped ledger read."""
+    totals = await get_task_run_totals(db, [task.id for task in tasks])
+    return [_fill_truth(TaskResponse.model_validate(task), task, totals.get(task.id)) for task in tasks]
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -39,7 +79,8 @@ async def list_tasks_endpoint(
 ) -> list[TaskResponse]:
     with refusal_guard():
         tasks = await list_tasks(db, status=status_filter, agent_type=agent_type, limit=limit, offset=offset)
-    return [TaskResponse.model_validate(task) for task in tasks]
+        responses = await _task_responses(db, tasks)
+    return responses
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
@@ -65,7 +106,8 @@ async def create_task_endpoint(payload: TaskCreate, db: AsyncSession = Depends(g
                     "context": {"agent_type": payload.agent_type},
                 },
             ) from exc
-    return TaskResponse.model_validate(task)
+        response = await _task_response(db, task)
+    return response
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -82,7 +124,8 @@ async def get_task_endpoint(task_id: int, db: AsyncSession = Depends(get_db)) ->
                 "context": {"task_id": task_id},
             },
         )
-    return TaskResponse.model_validate(task)
+    with refusal_guard():
+        return await _task_response(db, task)
 
 
 @router.patch("/{task_id}/status", response_model=TaskResponse)
@@ -115,4 +158,5 @@ async def update_task_status_endpoint(
                 "context": {"task_id": task_id},
             },
         )
-    return TaskResponse.model_validate(task)
+    with refusal_guard():
+        return await _task_response(db, task)

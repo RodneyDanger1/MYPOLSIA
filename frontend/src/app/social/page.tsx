@@ -1,25 +1,17 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { api } from "@/lib/api";
+import { SocialPostCard, type SocialPost } from "@/components/social/SocialPostCard";
+import { ApiError, api } from "@/lib/api";
 
-// `engagement` is `dict[str, Any] | None` server-side (`SocialPostResponse.engagement` in
-// `app/schemas/social.py`), so each counter is as untyped on the wire as the dashboard's `kpis`:
-// the type says `unknown` and `engagementValue` below narrows it for display.
-// `status` is `str | None` server-side: the `social_posts.status` column is nullable (0001 carries
-// `server_default='draft'` but no `NOT NULL`), so a null is a real served value — the row below
-// renders the gray "unknown" for it rather than an empty chip.
-type Post = { id: number; content: string; status: string | null; published_at: string | null; engagement: Record<string, unknown> | null };
+/** The read's page size — matches the server default and the page's historical `?limit=50`. */
+const LIST_LIMIT = 50;
 
-/**
- * Same narrowing the dashboard's `kpiText` applies to `kpis`: a displayable counter is shown as it
- * is (`likes: 11`, never `likes: 11.00`), a missing one becomes the em dash, and anything else is
- * stringified rather than rendered as "[object Object]".
- */
-function engagementValue(value: unknown): string | number {
-  if (typeof value === "string" || typeof value === "number") return value;
-  if (value == null) return "—";
-  return String(value);
+/** ApiError carries a named `.display` (code + message + fix hint); anything else shows its own
+ * message rather than a generic apology (the agents/settings pages' convention). */
+function errorText(e: unknown): string {
+  if (e instanceof ApiError) return e.display;
+  return e instanceof Error ? e.message : String(e);
 }
 
 /**
@@ -33,65 +25,92 @@ function engagementValue(value: unknown): string | number {
  * The old `catch { return [] }` made it worse: a failed read became the words "no data", which is the one
  * thing this project forbids. Three states now, and they are different on purpose:
  *   loading  -> a skeleton, because "not read yet" is not "empty"
- *   error    -> the failure named on the page, never an empty list standing in for it
+ *   error    -> the failure NAMED on the page (ApiError.display), never an empty list standing in for it
  *   empty    -> printed ONLY when the read succeeded and really returned nothing
+ *
+ * The live Twitter widget's actions (`TWEET`, `Delete tweet`, `CONNECT X ACCOUNT` — DOSSIER §1.5)
+ * have no endpoint here (route inventory this wave: `GET /social/posts` only, `social.py:14`) and
+ * are refused by omission rather than drawn as dead controls. The only button on this page is
+ * REFRESH, which re-issues the list read. No polling (C7).
+ *
+ * Q-12: the API serves no total, so a full page of `LIST_LIMIT` rows renders the truncation
+ * marker below the list; anything shorter renders no marker (nothing was cut off).
  */
 
 export default function SocialPage() {
-  const [data, setData] = useState<Post[] | null>(null);
+  const [data, setData] = useState<SocialPost[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadCount, setReloadCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    // A refresh goes back through "not read yet" on purpose: the skeleton is the one honest way
+    // to say "the list you are looking at is being replaced" without faking progress.
+    setData(null);
+    setError(null);
     api
-      .get<Post[]>("/social/posts?limit=50")
+      .get<SocialPost[]>(`/social/posts?limit=${LIST_LIMIT}`)
       .then((rows) => {
         if (!cancelled) setData(rows);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(errorText(e));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadCount]);
+
+  const refresh = useCallback(() => setReloadCount((n) => n + 1), []);
+  const truncated = data !== null && data.length === LIST_LIMIT;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-bold text-white">Social Media</h1>
-      <div className="space-y-3">
-        {error && (
-          <p className="text-red-400" role="alert">
-            Could not load posts: {error}
-          </p>
-        )}
-        {!error && data === null && (
-          <div className="space-y-3" aria-busy="true">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-20 bg-gray-800 rounded-lg animate-pulse" />
-            ))}
-          </div>
-        )}
-        {!error && data !== null && data.length === 0 && <p className="text-gray-400">No posts yet.</p>}
-        {data?.map((p) => (
-          <div key={p.id} className="bg-gray-800 rounded-lg p-4">
-            <p className="text-white">{p.content}</p>
-            <div className="flex gap-4 mt-2 text-sm text-gray-400">
-              <span className={`capitalize ${p.status === "published" ? "text-green-400" : p.status ? "text-yellow-400" : "text-gray-400"}`}>{p.status ?? "unknown"}</span>
-              {p.published_at && <span>{new Date(p.published_at).toLocaleDateString()}</span>}
-              {/* A null engagement is "no counters recorded yet", not an error: the em dash is the
-                  same "not measured" placeholder the finance cards use for a null reading. */}
-              {p.engagement == null ? (
-                <span>engagement: —</span>
-              ) : (
-                Object.entries(p.engagement).map(([k, v]) => (
-                  <span key={k}>{k}: {engagementValue(v)}</span>
-                ))
-              )}
-            </div>
-          </div>
-        ))}
+    <div className="space-y-4">
+      <div className="flex items-end gap-2 border-b border-line pb-1">
+        {/* Wording kept as-is: social.md OPEN DECISION #1 leaves the live title (`Twitter` vs
+            `Social`) to Riley; the restyle is token/region-level (R1: serif h1 + hairline). */}
+        <h1 className="mr-auto text-3xl font-bold text-ink">Social Media</h1>
+        <button type="button" className="link ui-label" onClick={refresh} data-testid="social-refresh">
+          Refresh
+        </button>
       </div>
+
+      {error ? (
+        <p role="alert" className="text-sm text-alert">
+          Could not load posts: {error}
+        </p>
+      ) : null}
+
+      {!error && data === null ? (
+        <div className="space-y-3" data-testid="social-loading" aria-busy="true">
+          <p className="ui-label text-ink-muted">Loading…</p>
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="h-24 animate-pulse border border-line bg-surface-strong" />
+          ))}
+        </div>
+      ) : null}
+
+      {!error && data !== null && data.length === 0 ? (
+        <p className="text-sm text-ink-muted">
+          No posts yet. The social media agent drafts posts during its cycles — run it from the
+          Agents page.
+        </p>
+      ) : null}
+
+      {data !== null && data.length > 0 ? (
+        <div className="space-y-3" data-testid="social-posts">
+          {data.map((post) => (
+            <SocialPostCard key={post.id} post={post} />
+          ))}
+          {/* Q-12: the read is capped at LIST_LIMIT and the API serves no total, so a full page
+              says exactly that instead of presenting the cap as the whole list. */}
+          {truncated ? (
+            <p className="ui-label text-ink-muted" data-testid="social-truncation">
+              Showing the first {LIST_LIMIT} — the API caps this read at {LIST_LIMIT} per request.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
