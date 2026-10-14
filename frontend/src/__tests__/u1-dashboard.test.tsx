@@ -114,6 +114,23 @@ const CAMPAIGN = {
   total_spent_usd: 1.5,
 };
 
+/** U4/B9: the caps panel mounts in the widgets column, so the page now performs the
+ *  `/channels/caps` read — answered here in the live shape (nulls included), recorded during
+ *  wave U4; the panel's own contract lives in `__tests__/u4-caps.test.tsx`. */
+const CAPS = {
+  channels: [
+    { channel: "email", sent_today: 0, cap: 50, remaining: 50 },
+    { channel: "github", sent_today: null, cap: 6, remaining: null },
+    { channel: "google_ads", sent_today: null, cap: 10, remaining: null },
+    { channel: "linkedin", sent_today: 0, cap: 4, remaining: 4 },
+    { channel: "meta_ads", sent_today: null, cap: 10, remaining: null },
+    { channel: "render", sent_today: null, cap: 3, remaining: null },
+    { channel: "stripe", sent_today: null, cap: 5, remaining: null },
+    { channel: "twitter", sent_today: 0, cap: 12, remaining: 12 },
+  ],
+  generated_at: "2026-10-14T15:30:00Z",
+};
+
 /** Every read the dashboard makes, answered per path; an unlisted path fails LOUDLY so a widget
  *  that starts reading something new cannot pass this suite silently. */
 function answerWith(overrides: Record<string, unknown> = {}) {
@@ -125,6 +142,7 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/social/posts": [POST],
     "/outreach/prospects": [PROSPECT],
     "/ads/campaigns": [CAMPAIGN],
+    "/channels/caps": CAPS,
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
     ...overrides,
   };
@@ -373,7 +391,9 @@ describe("right-column widgets", () => {
     expect(await screen.findByText(CAMPAIGN.name)).toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText("$0.00")).toBeNull();
-    expect(screen.getByText("$5")).toBeInTheDocument(); // the budget that IS recorded
+    // U4 parent money-format alignment (old -> new: "$5" -> "$5.00"): the widget renders the
+    // house shape (separators + two decimals) like every other money surface.
+    expect(screen.getByText("$5.00")).toBeInTheDocument(); // the budget that IS recorded
   });
 
   it("DailyReportPanel renders the report it read", async () => {

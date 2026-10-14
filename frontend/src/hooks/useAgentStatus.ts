@@ -10,9 +10,11 @@ import { api, type AgentStatus } from "@/lib/api";
  *    fires, that tick is skipped rather than queued, so a slow backend cannot stack requests.
  *  - A response is dropped when the component unmounted or when a newer request already landed, so
  *    a slow reply can never overwrite fresher data.
- *  - The interval stays per-hook on purpose: there is exactly one consumer (`AgentStatusGrid`) and
- *    the unit suite pins the exact call count per tick, so a shared global poller would add
- *    coordination risk for no measured gain while there is a single subscriber.
+ *  - The interval stays per-hook, not a shared global poller: the unit suite pins the exact call
+ *    count per tick, and each subscriber polls through its own hook instance — live consumers are
+ *    `AgentsRoster` (Agents page) and `PolsiaStatusCard` (dashboard); `AgentStatusGrid` is the
+ *    dead, labelled U1 leftover (see its why-comment). A shared poller would add coordination
+ *    risk for no measured gain at this subscriber count — revisit only if that changes.
  */
 export function useAgentStatus(pollIntervalMs = 30000) {
   const [statuses, setStatuses] = useState<AgentStatus[]>([]);

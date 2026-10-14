@@ -1,4 +1,8 @@
 "use client";
+
+/**
+ * Unwired since the U1 dashboard rebuild — zero non-test imports as of wave U4; kept per the campaign no-delete rule; wire-vs-retire decision recorded in REQUESTS.
+ */
 import { useAgentStatus } from "@/hooks/useAgentStatus";
 
 const STATUS_STYLE: Record<string, string> = {

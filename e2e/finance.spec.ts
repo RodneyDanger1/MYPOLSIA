@@ -143,10 +143,13 @@ test.describe("Finance page", () => {
     await expect(page.getByRole("heading", { name: "Finance" })).toBeVisible();
 
     const freshness = page.getByTestId("finance-freshness");
-    if (s.last_snapshot_date && !idleSummary(s)) {
-      // U3 format: `Last snapshot 2026-10-13` — the date AS-IS, no colon, no derived clock.
+    if (!idleSummary(s)) {
+      // The page law (app/finance/page.tsx): the freshness line exists on ANY settled, non-idle
+      // read — `Last snapshot <date>`, or `Last snapshot —` when the API has no date yet. A spec
+      // demanding absence on a dateless non-idle read was F-06 in the U4 audit; this mirrors the
+      // page instead of inventing a second truth.
       await expect(freshness).toBeVisible();
-      await expect(freshness).toHaveText(`Last snapshot ${s.last_snapshot_date}`);
+      await expect(freshness).toHaveText(`Last snapshot ${s.last_snapshot_date ?? "—"}`);
     } else {
       await expect(freshness).toHaveCount(0);
     }

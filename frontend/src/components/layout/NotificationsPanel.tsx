@@ -15,8 +15,9 @@ import { ApiError, api } from "@/lib/api";
  * unblocker; frozen contract in WAVE-PLAN):
  *
  *   200 {"items": [...], "count": N} — newest first, at most 20, window = last 48 h.
- *   item: id (stable string), kind (task_completed | task_failed | awaiting_approval),
- *         title (the task's title), task_id (int), created_at (ISO-8601).
+ *   item: id (stable string), kind (task_completed | task_failed | awaiting_approval |
+ *         run_requeued), title (the task's title — a run_requeued title names the recovered
+ *         task id), task_id (int), created_at (ISO-8601).
  *
  * What it deliberately does NOT do:
  * - never fabricates a count: the badge shows a number ONLY from a validated 200 whose `count`
@@ -86,13 +87,15 @@ export function isUnread(item: NotificationItem, lastSeenAt: number | null): boo
 
 type KindLookup = { glyph: string; label: string; chipClassName: string };
 
-/** The three contract kinds, each with its own glyph/label (✓ completed — the live popover's
- *  check glyph, DOSSIER SURFACE 7). An unknown kind is an open-string situation: rendered
+/** The FOUR contract kinds, each with its own glyph/label (✓ completed — the live popover's
+ *  check glyph, DOSSIER SURFACE 7; ↻ run_requeued — wave U4/B7: the hung-run watchdog line, one
+ *  per task a stale-claim sweep requeued). An unknown kind is an open-string situation: rendered
  *  neutral with its raw word, never recast into a known kind. */
 const KIND_LOOKUP: Record<string, KindLookup> = {
   task_completed: { glyph: "✓", label: "Completed", chipClassName: "text-green-800" },
   task_failed: { glyph: "✕", label: "Failed", chipClassName: "text-red-800" },
   awaiting_approval: { glyph: "◷", label: "Awaiting approval", chipClassName: "text-amber-800" },
+  run_requeued: { glyph: "↻", label: "Run requeued", chipClassName: "text-orange-800" },
 };
 
 export function kindLookup(kind: string): KindLookup {
@@ -172,8 +175,8 @@ export function NotificationsPanel({
   if (state.items.length === 0) {
     return (
       <p data-testid="notifications-empty" className="px-3 py-3 text-sm text-ink-muted">
-        No notifications in the last 48 hours. Items appear when a task completes, fails, or waits
-        for your approval.
+        No notifications in the last 48 hours. Items appear when a task completes, fails, waits
+        for your approval, or a stalled run is requeued.
       </p>
     );
   }

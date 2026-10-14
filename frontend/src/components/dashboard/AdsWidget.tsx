@@ -22,6 +22,14 @@ type Campaign = {
 
 const WIDGET_LIMIT = 5;
 
+/** The house money shape (finance/format.ts law): thousands separators, always two decimals;
+ *  a non-finite reading is the not-measured marker, never `$NaN`. The null guard at each call
+ *  site keeps "not recorded" distinct from a measured 0.00. */
+function usdText(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /**
  * Right column, bottom: the live `Meta Ads` widget's slot, adapted to the real surface this repo
  * has — `GET /ads/campaigns` (newest id first).
@@ -86,15 +94,11 @@ function LatestCampaign({ campaigns }: { campaigns: Campaign[] }) {
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <span className="ui-label text-ink-muted">
-          <span className="text-ink">
-            {latest.total_spent_usd === null ? "—" : `$${latest.total_spent_usd.toFixed(2)}`}
-          </span>{" "}
+          <span className="text-ink">{usdText(latest.total_spent_usd)}</span>{" "}
           spent
         </span>
         <span className="ui-label text-ink-muted">
-          <span className="text-ink">
-            {latest.daily_budget_usd === null ? "—" : `$${latest.daily_budget_usd}`}
-          </span>
+          <span className="text-ink">{usdText(latest.daily_budget_usd)}</span>
           /day budget
         </span>
       </div>

@@ -29,6 +29,23 @@ const mockGet = api.get as jest.Mock;
 
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
+/** U4/B9: the caps panel mounts in the widgets column, so the page now performs the
+ *  `/channels/caps` read — answered here in the live shape (nulls included), recorded
+ *  during wave U4; see `__tests__/u4-caps.test.tsx` for the panel's own contract. */
+const CAPS = {
+  channels: [
+    { channel: "email", sent_today: 0, cap: 50, remaining: 50 },
+    { channel: "github", sent_today: null, cap: 6, remaining: null },
+    { channel: "google_ads", sent_today: null, cap: 10, remaining: null },
+    { channel: "linkedin", sent_today: 0, cap: 4, remaining: 4 },
+    { channel: "meta_ads", sent_today: null, cap: 10, remaining: null },
+    { channel: "render", sent_today: null, cap: 3, remaining: null },
+    { channel: "stripe", sent_today: null, cap: 5, remaining: null },
+    { channel: "twitter", sent_today: 0, cap: 12, remaining: 12 },
+  ],
+  generated_at: "2026-10-14T15:30:00Z",
+};
+
 function answerWith(overrides: Record<string, unknown> = {}) {
   const paths: Record<string, unknown> = {
     "/agents/status": [
@@ -54,6 +71,7 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/social/posts": [],
     "/outreach/prospects": [],
     "/ads/campaigns": [],
+    "/channels/caps": CAPS,
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
     ...overrides,
   };

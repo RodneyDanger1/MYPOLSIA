@@ -105,19 +105,26 @@ class AgentTriggerRequest(BaseModel):
     priority: int = 3
 
 
-#: The frozen notification vocabulary (wave U2).  One Literal, one place: the route maps task
-#: statuses onto these strings and pydantic refuses anything else at response-build time — a new
-#: kind is a deliberate edit here, never a silent extra value on the wire.
-NotificationKind = Literal["task_completed", "task_failed", "awaiting_approval"]
+#: The frozen notification vocabulary (wave U2; extended wave U4/B7).  One Literal, one place: the
+#: route maps task statuses onto the three task-derived strings and projects `run_requeued` from
+#: the stale-claim sweep's own activity rows; pydantic refuses anything else at response-build
+#: time — a new kind is a deliberate edit here, never a silent extra value on the wire.
+#: U4/B7 old->new: Literal["task_completed", "task_failed", "awaiting_approval"] ->
+#: Literal["task_completed", "task_failed", "awaiting_approval", "run_requeued"].
+NotificationKind = Literal["task_completed", "task_failed", "awaiting_approval", "run_requeued"]
 
 
 class NotificationItem(BaseModel):
-    """One notification, DERIVED from a task row — there is no notifications table.
+    """One notification, DERIVED from an existing row — there is no notifications table.
 
-    `id` is stable for as long as the row is: `task:<task_id>:<kind>` is a pure function of the
-    task, so two requests inside the window return the same identifier (the bell must be able to
-    key its items).  `created_at` is the task's completion/park timestamp (see
-    `services.task_service.task_terminal_at_expr`) serialized as ISO-8601.
+    `id` is stable for as long as the SOURCE row is, and is a pure function of it:
+    `task:<task_id>:<kind>` for status-derived items; `activity:<activity_row_id>:<task_id>:run_requeued`
+    for the wave-U4 hung-run items (one per id in a `stale_claims_requeued` row's
+    `detail.requeued_ids`) — two requests inside the window return the same identifier (the bell
+    must be able to key its items).  `created_at` is the source row's own timestamp: a task's
+    completion/park instant (see `services.task_service.task_terminal_at_expr`) or the sweep
+    activity row's timestamp, serialized as ISO-8601.  A `run_requeued` title names the recovered
+    task id ("Stalled run requeued: task #<id>").
     """
 
     id: str

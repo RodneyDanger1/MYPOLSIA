@@ -1,6 +1,7 @@
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { AdsWidget } from "@/components/dashboard/AdsWidget";
 import { BusinessPanel } from "@/components/dashboard/BusinessPanel";
+import { CapsPanel } from "@/components/dashboard/CapsPanel";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
@@ -13,7 +14,8 @@ import { TasksPreview } from "@/components/dashboard/TasksPreview";
  *
  *   left rail       Polsia status card + Business mini-panel
  *   middle column   Tasks preview + Daily Report (the Documents slot)
- *   right column    Social / Outreach / Ads widgets (the Twitter / Email / Meta Ads slots)
+ *   right column    Social / Outreach / Ads widgets + the send-caps counter (B9) (the Twitter /
+ *                   Email / Meta Ads slots)
  *   feed rail       ActivityFeed (owned by the realtime lane — imported, never edited here)
  *
  * The shell (`src/app/layout.tsx`: canvas, max width, page padding, topbar) is another lane's
@@ -52,6 +54,7 @@ export default function DashboardPage() {
           <SocialWidget />
           <OutreachWidget />
           <AdsWidget />
+          <CapsPanel />
         </section>
 
         <aside aria-label="Activity feed" className="h-[640px]">

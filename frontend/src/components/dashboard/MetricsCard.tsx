@@ -1,3 +1,6 @@
+/**
+ * Unwired since the U1 dashboard rebuild — zero non-test imports as of wave U4; kept per the campaign no-delete rule; wire-vs-retire decision recorded in REQUESTS.
+ */
 interface MetricsCardProps {
   title: string;
   value: string | number;

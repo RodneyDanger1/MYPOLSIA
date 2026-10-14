@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { TaskBoard, TASKS_BOARD_LIMIT } from "@/components/tasks/TaskBoard";
 import { TaskDetailSheet } from "@/components/tasks/TaskDetailSheet";
@@ -26,12 +27,59 @@ import { api } from "@/lib/api";
  * No polling here (tasks.md §3.9 / C7: live refreshes on explicit demand). The board fetches on
  * mount, offers an explicit refresh, and re-reads once after a write that changes it (a queued
  * run or a minted approval) — a one-shot refetch after a user action, not an auto-refresh loop.
+ *
+ * Wave U4: the page consumes the bell's `?task=N` deep link it has always been pointed at. The
+ * param names a task id; once the rows arrive, that task's detail sheet opens — the same sheet
+ * the board's own cards open. An id outside the loaded set (or a junk param) is an honest
+ * no-op: nothing opens, nothing is claimed, no fake error. A `consumed` ref marks the exact
+ * param value once it has been acted on, so an unrelated refresh never re-opens a sheet the
+ * user closed, while a NEW param value (a bell click landing on this route) opens the newly
+ * requested task. The default export is a thin `Suspense` boundary: Next 14 requires one above
+ * `useSearchParams` in a statically-rendered route, and its fallback IS the loading state this
+ * page already renders while the rows are not read yet.
  */
+
+/** `/tasks?task=N` — digits only, a positive safe integer; everything else is "no request". */
+function parseTaskParam(raw: string | null): number | null {
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 export default function TasksPage() {
+  return (
+    <Suspense fallback={<TasksLoading />}>
+      <TasksPageContent />
+    </Suspense>
+  );
+}
+
+/** The not-read-yet state — shared by the Suspense fallback and the in-page rows===null state. */
+function TasksLoading() {
+  return (
+    <div aria-busy="true" className="space-y-2">
+      <p className="ui-label text-ink-muted">Loading tasks…</p>
+      <div className="grid grid-cols-1 gap-[14px] lg:grid-cols-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="h-[93px] animate-pulse border border-line bg-surface" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TasksPageContent() {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [reloadSeq, setReloadSeq] = useState(0);
+
+  // `useSearchParams` answers null where no provider is mounted (the hook's own source says so;
+  // several suites render this page unmocked) — that is "no param in the URL", never a crash.
+  const searchParams = useSearchParams();
+  const rawTaskParam = searchParams ? searchParams.get("task") : null;
+  const requestedTaskId = parseTaskParam(rawTaskParam);
+  const consumedParam = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +98,20 @@ export default function TasksPage() {
       cancelled = true;
     };
   }, [reloadSeq]);
+
+  // The deep link, consumed once per distinct param VALUE, decided by the loaded set.
+  useEffect(() => {
+    if (rawTaskParam === null) {
+      // No request in the URL: re-arm, so a later arrival of the same value counts as new.
+      consumedParam.current = null;
+      return;
+    }
+    if (rows === null || consumedParam.current === rawTaskParam) return;
+    consumedParam.current = rawTaskParam; // acted on (or honestly un-openable) — never again
+    if (requestedTaskId === null) return; // junk param: no-op
+    if (!rows.some((row) => row.id === requestedTaskId)) return; // outside the loaded set: no-op
+    setOpenId(requestedTaskId);
+  }, [rawTaskParam, requestedTaskId, rows]);
 
   const openTask = rows?.find((row) => row.id === openId) ?? null;
 
@@ -70,16 +132,7 @@ export default function TasksPage() {
           </div>
         ) : null}
 
-        {error === null && rows === null ? (
-          <div aria-busy="true" className="space-y-2">
-            <p className="ui-label text-ink-muted">Loading tasks…</p>
-            <div className="grid grid-cols-1 gap-[14px] lg:grid-cols-2">
-              {Array.from({ length: 4 }).map((_, index) => (
-                <div key={index} className="h-[93px] animate-pulse border border-line bg-surface" />
-              ))}
-            </div>
-          </div>
-        ) : null}
+        {error === null && rows === null ? <TasksLoading /> : null}
 
         {error === null && rows !== null && rows.length === 0 ? (
           // Q-26: the sentence this repo already had — the tone the audit calls correct.
