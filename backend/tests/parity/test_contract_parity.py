@@ -46,6 +46,12 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no caps route;
     # NEW pin added deliberately with the route.
     ("GET", "/api/v1/channels/caps"),
+    # wave V8 (C1): the owner <-> Polsia chat — documented by app/api/v1/chat.py and
+    # app/schemas/chat.py; routes verified live in app.routes as [POST]/[POST]/[GET] (checked
+    # 2026-10-14). OLD surface had no chat routes; NEW pins added deliberately.
+    ("POST", "/api/v1/chat"),
+    ("GET", "/api/v1/chat"),
+    ("POST", "/api/v1/chat/confirm"),
     # wave U5 (P2/B22): the bounded Auto Mode window — documented by app/api/v1/auto_mode.py and
     # tests/unit/test_u5_auto_mode.py, routes verified live in app.routes as [POST]/[GET]/[DELETE]
     # on this path (checked 2026-10-14). OLD surface had no auto-mode route; NEW pins added
@@ -62,6 +68,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/dashboard/summary"),
     ("GET", "/api/v1/dashboard/activity"),
     ("GET", "/api/v1/dashboard/reports/daily"),
+    # wave V8 (C5; WAVE-PLAN V8-D7 anticipated this route): the daily-reports LIST read,
+    # documented by app/api/v1/dashboard.py; route verified live in app.routes as [GET] on this
+    # path (checked 2026-10-14). OLD surface had only /reports/daily.
+    ("GET", "/api/v1/dashboard/reports"),
     ("GET", "/api/v1/memory"),
     ("POST", "/api/v1/memory"),
     # the memory-delete lane's route (R19) — pinned here because R17 owns this file this wave
@@ -80,6 +90,14 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # OLD surface had no runs route; NEW pins added deliberately with the routes (count 37 -> 39).
     ("GET", "/api/v1/runs"),
     ("GET", "/api/v1/runs/export"),
+    # wave V8 (C2): the owner's scheduled task prompts — documented by app/api/v1/schedules.py and
+    # app/schemas/schedule.py; routes verified live in app.routes as [GET]/[POST] on the
+    # collection and [PATCH]/[DELETE] on `/schedules/{schedule_id}` (checked 2026-10-14). OLD
+    # surface had no schedules routes; NEW pins added deliberately (count 39 -> 43).
+    ("GET", "/api/v1/schedules"),
+    ("POST", "/api/v1/schedules"),
+    ("PATCH", "/api/v1/schedules/{schedule_id}"),
+    ("DELETE", "/api/v1/schedules/{schedule_id}"),
     # wave U2 (B1): the notifications bell's feed — derived from task rows (no table); documented by
     # app/api/v1/notifications.py and tests/unit/test_u2_notifications.py, route verified live in
     # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no notifications route.
@@ -117,6 +135,9 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
     "email-inbox-sweep",
     "ads-stripe-sync",
     "task-lease-sweep",
+    # V8/C2: the every-15-min due-schedule tick (`celery_app.tasks.cadence.run_due_schedules`) —
+    # children are JUST-IN-TIME (one per due schedule per due instant), never materialized ahead.
+    "task-cadence",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -129,6 +150,9 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
 REQUIRED_SCHEDULED_TASKS = {
     "celery_app.tasks.maintenance.cleanup_old_activity",
     "celery_app.tasks.maintenance.requeue_stale_task_claims",
+    # V8/C2: the cadence tick exists AND is scheduled — the same "declared but never scheduled"
+    # defect this set exists to catch.
+    "celery_app.tasks.cadence.run_due_schedules",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus

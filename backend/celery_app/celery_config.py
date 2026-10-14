@@ -49,6 +49,9 @@ TASK_MODULES = (
     # reachable in a worker/beat process (the "declared but never loaded" defect this file
     # exists to prevent); without them the beat tick arrives as an unregistered task.
     "celery_app.tasks.night_task",
+    # V8/C2: the task cadence's module — the same registry requirement as night_task above
+    # (without it the new beat tick would arrive at a worker process as an unregistered task).
+    "celery_app.tasks.cadence",
 )
 imports = TASK_MODULES
 include = TASK_MODULES

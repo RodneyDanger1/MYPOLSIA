@@ -96,6 +96,79 @@ def test_post_tweet_with_credentials_routes_to_the_tweepy_adapter(monkeypatch):
     assert call["install_hint"]  # the refusal hint travels with the call
 
 
+# --------------------------------------------------------------- post_tweet: tiktok / youtube
+# V8/T4: the two adapters route through the SAME dispatch table; the "configured" legs stand in a
+# recorder in front of `integration_call` (this file's idiom) so the routed adapter helper and its
+# arguments are pinned without touching the provider.
+
+def test_post_tiktok_requires_a_media_url_by_name(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "tiktok_access_token", "test-value")
+    out = integrations.post_tweet("hello", platform="tiktok")
+    err = out["error"]
+    assert err["code"] == E_VALIDATION
+    assert "tiktok" in err["message"] and "image_url" in err["message"]
+    assert err["how_to_fix"]
+
+
+def test_post_tiktok_missing_token_names_it(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "tiktok_access_token", "")
+    out = integrations.post_tweet("hello", platform="tiktok",
+                                  image_url="https://cdn.example.com/v.mp4")
+    err = out["error"]
+    assert err["code"] == E_INTEGRATION
+    assert err["context"]["missing"] == ["TIKTOK_ACCESS_TOKEN"]
+    assert "TIKTOK_ACCESS_TOKEN" in err["how_to_fix"]
+
+
+def test_post_tiktok_with_token_routes_to_the_content_posting_adapter(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "tiktok_access_token", "test-value")
+    recorder = _Recorder()
+    monkeypatch.setattr(integrations, "integration_call", recorder)
+    out = integrations.post_tweet("hello tt", platform="tiktok",
+                                  image_url="https://cdn.example.com/v.mp4")
+    assert out == {"ok": True, "result": {"id": "provider-ref-1"}}
+    (call,) = recorder.calls
+    assert call["module_name"] == "httpx" and call["attribute"] == "post"
+    assert call["agent_type"] == "social_media"
+    assert call["call"] is integrations._tiktok_publish_video
+    assert call["text"] == "hello tt"
+    assert call["image_url"] == "https://cdn.example.com/v.mp4"
+
+
+def test_post_youtube_requires_a_media_url_by_name(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "youtube_access_token", "test-value")
+    out = integrations.post_tweet("hello", platform="youtube")
+    err = out["error"]
+    assert err["code"] == E_VALIDATION
+    assert "youtube" in err["message"] and "image_url" in err["message"]
+    assert err["how_to_fix"]
+
+
+def test_post_youtube_missing_token_names_it(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "youtube_access_token", "")
+    out = integrations.post_tweet("hello", platform="youtube",
+                                  image_url="https://cdn.example.com/v.mp4")
+    err = out["error"]
+    assert err["code"] == E_INTEGRATION
+    assert err["context"]["missing"] == ["YOUTUBE_ACCESS_TOKEN"]
+    assert "YOUTUBE_ACCESS_TOKEN" in err["how_to_fix"]
+
+
+def test_post_youtube_with_token_routes_to_the_videos_insert_adapter(monkeypatch):
+    monkeypatch.setattr(app_config.settings, "youtube_access_token", "test-value")
+    recorder = _Recorder()
+    monkeypatch.setattr(integrations, "integration_call", recorder)
+    out = integrations.post_tweet("hello yt", platform="youtube",
+                                  image_url="https://cdn.example.com/v.mp4")
+    assert out == {"ok": True, "result": {"id": "provider-ref-1"}}
+    (call,) = recorder.calls
+    assert call["module_name"] == "httpx" and call["attribute"] == "post"
+    assert call["agent_type"] == "social_media"
+    assert call["call"] is integrations._youtube_insert_video
+    assert call["text"] == "hello yt"
+    assert call["image_url"] == "https://cdn.example.com/v.mp4"
+
+
 # --------------------------------------------------------------- send_email
 
 def test_send_email_missing_credentials_names_them(monkeypatch):

@@ -100,6 +100,26 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     assert "recent_failed_payments" in finance_service.__all__
 
 
+def test_the_v8_schedule_service_surface_is_exactly_the_pinned_one():
+    """Wave V8/C2: the new service's public surface, pinned the day it shipped.
+
+    Same rule as the sets above: the surface may grow only when the growth is recorded (plan §7
+    C2 owns `schedule_service`; its consumers are the routes and the cadence tick)."""
+    from app.services import schedule_service
+
+    assert set(schedule_service.__all__) == {
+        "CADENCES",
+        "ClaimedSchedule",
+        "claim_due_schedules",
+        "compute_next_run",
+        "create_schedule",
+        "delete_schedule",
+        "get_schedule",
+        "list_schedules",
+        "update_schedule",
+    }
+
+
 def test_log_activities_is_exported_and_documented_as_wired():
     assert "log_activities" in activity_service.__all__
     doc = activity_service.log_activities.__doc__ or ""
@@ -197,8 +217,10 @@ def test_skipped_entries_are_written_through_one_log_activities_batch(queue_db, 
     # signature — a per-row loop over `log_activity` cannot produce this)
     assert len({row["created_at"] for row in skipped_rows}) == 1
 
-    # …and the cycle still announced itself with exactly ONE publish (the headline row)
-    assert quiet_redis.publish.await_count == 1
+    # …and the cycle's OWN announcement is still exactly ONE publish (the headline row).  The
+    # V8/C5 cycle-report email leg adds its own single, named row on top (a `log_activity`, so it
+    # publishes too): two publishes total for this run.
+    assert quiet_redis.publish.await_count == 2
     headline = [row for row in rows if row["action"] == "morning_plan_complete"]
     assert len(headline) == 1
 
@@ -208,8 +230,14 @@ def test_a_clean_plan_writes_no_batch_and_still_announces_once(queue_db, monkeyp
     assert calls == [], "no skips -> no batch call at all"
 
     rows = queue_db.query("SELECT action FROM activity_log")
-    assert [row["action"] for row in rows] == ["morning_plan_complete"]
-    assert quiet_redis.publish.await_count == 1
+    # V8/C5: the cycle-report email leg records its UNCONFIGURED state as its own named row —
+    # deliberately not silent (a scheduled report that never arrives must be explainable).  The
+    # cycle's own announcement is still exactly one row, and there is still no batch call.
+    assert [row["action"] for row in rows] == [
+        "morning_plan_complete",
+        "cycle_report_email_skipped",
+    ]
+    assert quiet_redis.publish.await_count == 2
 
 
 def test_the_evening_cycle_keeps_its_single_announcement(queue_db, monkeypatch, quiet_redis):
@@ -230,7 +258,10 @@ def test_the_evening_cycle_keeps_its_single_announcement(queue_db, monkeypatch, 
     result = queue_db.run(daily_cycle._evening_cycle())
     assert result["status"] == "completed", result
     assert calls == []
+    # V8/C5: same cycle-report email leg as the morning path (its own named skip row on top of
+    # the cycle's single announcement); still no batch call.
     assert [row["action"] for row in queue_db.query("SELECT action FROM activity_log")] == [
-        "evening_summary_complete"
+        "evening_summary_complete",
+        "cycle_report_email_skipped",
     ]
-    assert quiet_redis.publish.await_count == 1
+    assert quiet_redis.publish.await_count == 2

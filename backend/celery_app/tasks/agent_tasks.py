@@ -99,6 +99,18 @@ def is_retryable(exc: BaseException | None) -> bool:
     return True
 
 
+def _notification_outcome(task_status: str, requeued: bool) -> str:
+    """The ONE outcome the owner-notification leg routes for this attempt (V8/C5, D4).
+
+    A requeued attempt is NOT a terminal `failed`: the row is back in the queue for its retry
+    (`task_row.status = TaskStatus.PENDING` below).  Routing `requeued` — its own frozen
+    toggle, `notify_on_run_requeued` — is also what keeps the two emails from doubling: this
+    leg makes exactly ONE call per attempt, so choosing the outcome HERE is the whole edge;
+    `notify_on_failed` must never also fire for the same attempt.
+    """
+    return "requeued" if requeued else task_status
+
+
 def retry_countdown(attempts: int) -> float:
     """Exponential backoff for the Nth failed attempt, capped at 10 minutes.
 
@@ -277,6 +289,9 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
             from app.services.ads_service import record_ads_run
 
             return await record_ads_run(db, result)
+        if agent_type == "competitor_research":
+            # V8/C5 (code-gap #11 tier (a), S): the post-hoc research-budget check — record-only.
+            return await _research_budget_check(db, result)
         return {}
     except PolsiaError as exc:
         logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
@@ -290,6 +305,36 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
                 "message": f"{type(exc).__name__}: {exc}",
             },
         }
+
+
+async def _research_budget_check(db: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """V8/C5 (code-gap #11 tier (a), S): post-hoc research-budget check — record-only.
+
+    The agent holds no DB session, so the check runs HERE, on the run's own transaction,
+    after the run finished: count the research fetches the run RECORDED (`search_queries` —
+    the only fetch evidence the output carries today) and, when over the agent module's
+    per-task budget, write ONE honest `research_budget_exceeded` activity row.  NO hard
+    enforcement: the run is never blocked or failed — that needs a tool-call proxy (code-gap
+    §11 tier (b)), explicitly out of scope for this S-size wire.
+    """
+    from app.agents.competitor_research.agent import research_budget_violation
+    from app.services.activity_service import log_activity
+
+    violation = research_budget_violation(result)
+    if violation is None:
+        return {}
+    await log_activity(
+        db,
+        agent_type="competitor_research",
+        action="research_budget_exceeded",
+        summary=(
+            f"competitor_research recorded {violation['count']} research fetches; "
+            f"the per-task budget is {violation['budget']} (recorded only — no hard enforcement)"
+        ),
+        level="warning",
+        detail=violation,
+    )
+    return {}
 
 
 # ── the approval channel's worker side (D1/T02) ──────────────────────────────
@@ -455,6 +500,49 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             return {"status": "skipped", "task_id": task_id, "reason": exc.code}
         raise
 
+    # ── 1a2. company pause gate (V8/C5, V8-D6) ───────────────────────────────
+    # `company_config.dispatch_paused` is the owner's STOP (Settings' Pause/Resume Switch).
+    # It is read HERE — the one place both the scheduler fan-outs and the API "Run Now" funnel
+    # into — because `dispatch_preflight` is sync with no session (V8-D6); the resolved flag is
+    # also handed to that sync seam below so a direct caller cannot bypass the decision.  A
+    # refusal happens BEFORE anything ran (no provider call, no ledger row): the row lands
+    # `rejected` (the live product's Rejected state), exactly like the budget gate below.  A
+    # config read failure resolves to NOT paused (see `resolve_dispatch_paused`'s docstring).
+    from app.agents.crew_factory import resolve_dispatch_paused
+
+    async with session_factory() as db:
+        paused = await resolve_dispatch_paused(db)
+    if paused:
+        paused_reason = (
+            "E_POLICY_DENIED: company paused by owner (company_config.dispatch_paused=true; "
+            "resume in Settings to allow dispatch)"
+        )
+        logger.warning("run_agent_task(%s): %s", task_id, paused_reason)
+        async with session_factory() as db:
+            task_row = await update_task_status(
+                db, task_id, "rejected", error_message=paused_reason
+            )
+            if task_row is not None:
+                task_row.claimed_by = None
+                task_row.claimed_at = None
+                task_row.heartbeat_at = None
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action="dispatch_refused_paused",
+                summary=f"task {task_id}: dispatch refused — company paused by owner",
+                level="warning",
+                detail={"task_id": task_id, "reason": paused_reason},
+            )
+            await db.commit()
+        return {
+            "status": "skipped",
+            "task_id": task_id,
+            "agent_type": agent_type,
+            "task_status": "rejected",
+            "reason": paused_reason,
+        }
+
     # ── 1b. dispatch budget gate at the choke point (L4-09 / D3 / T03 / T04) ──
     # `assert_budget_allows` gated only the four SCHEDULER dispatch sites, and this wrapper is
     # the one place BOTH the scheduler fan-outs and the API "Run Now" trigger funnel into — so a
@@ -600,6 +688,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     try:
         # The agent's CLI call is blocking; run it off the loop so the heartbeat keeps
         # beating (the upload blocked the whole event loop for the CLI's lifetime, D-11).
+        # V8/C5: the pause decision was already made above (the `rejected` gate) — by the time
+        # this line runs the company is known unpaused.  The sync seam's `dispatch_paused`
+        # parameter stays for direct callers of `run_agent_for_task` and is exercised by tests.
         result = await asyncio.to_thread(run_agent_for_task, agent_type, task_dict, context)
     except Exception as exc:  # noqa: BLE001 — classified, persisted and (maybe) retried
         failure = exc
@@ -783,11 +874,11 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # wave U5 (P2+P5): the owner's terminal-outcome notification — the FROZEN lazy-imported call
     # (`notify_owner_for_terminal_outcome(db, task_id, outcome)`, P5's module), made AFTER the
     # activity commit and wrapped so it can never fail a run: the outcome is already recorded,
-    # and a notifier outage must not rewrite that truth.  `outcome` is the task's terminal
-    # status — exactly the `completed`/`failed`/`awaiting_approval` set the consumer declares
-    # (`notification_service`'s frozen docstring; `requeued` has no hook contract there yet, so
-    # a retryable failure notifies as the `failed` attempt it was).
-    notification_outcome = task_status
+    # and a notifier outage must not rewrite that truth.  V8/C5 (owner decision D4): an attempt
+    # that was REQUEUED notifies as `requeued` — its own toggle (`notify_on_run_requeued`) —
+    # and NEVER as `failed`: the retry is coming, and one leg routes exactly one outcome per
+    # attempt (the double-email edge: `notify_on_failed` must not also fire here).
+    notification_outcome = _notification_outcome(task_status, requeued)
     try:
         from app.services.notification_service import notify_owner_for_terminal_outcome
 
@@ -870,7 +961,11 @@ async def _email_inbox_sweep() -> dict[str, Any]:
     """
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
-    from app.services.support_inbox_service import attach_pending
+    from app.services.support_inbox_service import (
+        ANSWER_WINDOW_DAYS,
+        attach_pending,
+        count_expired_pending,
+    )
 
     # D3: the day's measured spend gates dispatch (audit A1/L2-F01) — same policy decision the
     # sibling sweeps take in `_create_and_enqueue`.
@@ -883,14 +978,23 @@ async def _email_inbox_sweep() -> dict[str, Any]:
     session_factory = get_session_factory()
     async with session_factory() as db:
         attached = await attach_pending(db)
+        # V8/C5 (code-gap §10.2): the named-skip half of the 14-day answer bound — items older
+        # than the window are never attached, and this count is what reports the skip BY NAME.
+        expired_count = await count_expired_pending(db)
         await db.commit()
+
+    expired = {
+        "count": expired_count,
+        "bound_days": ANSWER_WINDOW_DAYS,
+        "reason": "older_than_14_days",
+    }
 
     if attached:
         created_ids = [row["task_id"] for row in attached if row["task_created"]]
         if created_ids:
             # D2/T19 parity: a dead broker must not strand these rows `pending` (see enqueue_created).
             await enqueue_created(created_ids, label="email inbox sweep")
-        return {"status": "queued", "attached": attached}
+        return {"status": "queued", "attached": attached, "expired": expired}
 
     # Nothing pending: the pre-R17 bucket task, unchanged (`_create_and_enqueue` keeps its own
     # dedupe key + budget gate); `attached: []` is additive so one shape describes both paths.
@@ -900,6 +1004,7 @@ async def _email_inbox_sweep() -> dict[str, Any]:
         bucket=sweep_bucket(3),
     )
     result.setdefault("attached", [])
+    result.setdefault("expired", expired)
     return result
 
 

@@ -40,11 +40,11 @@ from app.services.query_helpers import fetch_scalar
 # Which local table can count a send per channel. A channel absent from both branches has no
 # local record at all -> `None` (unknown), never `0` (see module docstring).
 # U5/P1: facebook/instagram joined once their adapters could write rows via
-# `record_published_posts`. tiktok/youtube stay OUT on purpose: no adapter exists that can write a
-# row yet, so their count is UNKNOWN — the firewall refuses a configured cap it cannot verify by
-# name (`cap_unknown`, E114, fail closed) instead of proceeding on a fabricated zero. They join
-# this tuple the day their adapters land (the caps themselves already exist in RateCaps).
-_SOCIAL_CHANNELS = ("twitter", "linkedin", "facebook", "instagram")   # social_posts, 'published'
+# `record_published_posts`. V8/T4: tiktok/youtube joined the same way (their Content Posting /
+# videos.insert adapters landed) — their counts are now MEASURABLE (a real 0 until rows exist,
+# then the caps fire on real sends; before V8 they were UNKNOWN and the firewall refused their
+# configured caps by name, fail closed). A channel absent from this tuple still counts as None.
+_SOCIAL_CHANNELS = ("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube")   # social_posts, 'published'
 _EMAIL_CHANNEL = "email"                     # email_logs, status='sent'
 
 

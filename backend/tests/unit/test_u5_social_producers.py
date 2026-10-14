@@ -4,16 +4,17 @@ Same discipline as `test_send_cap_producer_e2e.py` (RD14): every leg goes throug
 `SocialMediaAgent` -> the REAL dispatch table + adapter (provider SDK faked, never the adapter) ->
 `social_service.record_published_posts` -> `channel_service.channel_sends_snapshot` -> the next send
 is DENIED by the live `RateCaps` ("3/3", "4/4", "5/5"). The document numbers (FB 3/IG 5 day caps,
-LinkedIn 4) are the ones RateCaps now ships.
+LinkedIn 4, tiktok 10, youtube 3) are the ones RateCaps now ships.
 
 RED legs: pre-U5 the agent could not dispatch any of these platforms at all (the adapter refused), so
 no row below could exist and every "cap fires" assertion fails on the old bytes.
 
-The unrun platforms (tiktok/youtube) get their OWN pin at the bottom: their caps are configured
-(policy readiness for the caps route) while no adapter can write a row — the count stays UNKNOWN
-(`None`, never a fabricated 0) and the firewall refuses an attempted send BY NAME. That is the
-honest state of an unadapted channel, and it flips to "cap fires" the day the adapter lands and
-joins `channel_service._SOCIAL_CHANNELS`.
+The tiktok/youtube pin MOVED WITH THE FEATURE (V8-D3): pre-V8 their caps were configured while no
+adapter could write a row, so their count stayed UNKNOWN (`None`, never a fabricated 0) and an
+attempted send was refused BY NAME. The V8 adapters landed and joined `channel_service.
+_SOCIAL_CHANNELS`, so the count is now MEASURABLE and the drills below prove a real (sandbox-off)
+tiktok/youtube send writes a row through the REAL producer and the cap fires at the documented
+numbers (tiktok 10/day, youtube 3/day).
 """
 from __future__ import annotations
 
@@ -27,10 +28,8 @@ import pytest
 
 import app.config as app_config
 from app.agents import integrations
-from app.agents.policy_firewall import ActionClass
-from app.agents.side_effects import request_side_effect
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_POLICY_DENIED, E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.services import social_service
 from app.services.channel_service import channel_sends_snapshot
 
@@ -41,9 +40,10 @@ TWO_HOURS_AGO = NOW - timedelta(hours=2)     # inside the day window, outside th
 class _FakeHTTPX:
     """Provider double for the REAL adapters: records calls, serves scripted/permissive responses.
 
-    Response shape mirrors the real client (`status_code`, `headers`, `.text`, `.json()`); the
-    permissive default mints a fresh provider id per call so a persisted row can never collide by
-    accident. Named, test-only: the adapters themselves run unpatched.
+    Response shape mirrors the real client (`status_code`, `headers`, `.text`, `.content`,
+    `.json()`); the permissive default mints a fresh provider id per call so a persisted row can
+    never collide by accident. V8/T4: `get` serves the YouTube media fetch (the adapter downloads
+    `image_url` before `videos.insert`). Named, test-only: the adapters themselves run unpatched.
     """
 
     def __init__(self, *responses: tuple[int, dict[str, str], str]) -> None:
@@ -54,16 +54,18 @@ class _FakeHTTPX:
         fake = self
 
         class _Response:
-            def __init__(self, status_code: int, headers: dict[str, str], text: str) -> None:
+            def __init__(self, status_code: int, headers: dict[str, str], text: str,
+                         content: bytes = b"") -> None:
                 self.status_code = status_code
                 self.headers = headers
                 self.text = text
+                self.content = content
 
             def json(self) -> Any:
                 return json.loads(self.text)
 
         def post(url: str, **kwargs: Any) -> _Response:
-            fake.calls.append({"url": url, **kwargs})
+            fake.calls.append({"method": "POST", "url": url, **kwargs})
             if fake.responses:
                 status, headers, text = fake.responses.pop(0)
                 return _Response(status, headers, text)
@@ -75,8 +77,13 @@ class _FakeHTTPX:
                 return _Response(200, {}, json.dumps({"id": f"creation-{len(fake.calls)}"}))
             return _Response(200, {}, json.dumps({"id": f"media-{len(fake.calls)}"}))
 
+        def get(url: str, **kwargs: Any) -> _Response:
+            fake.calls.append({"method": "GET", "url": url, **kwargs})
+            return _Response(200, {"content-type": "video/mp4"}, "", b"fake-video-bytes")
+
         module = types.ModuleType("httpx")
         module.post = post                              # type: ignore[attr-defined]
+        module.get = get                                # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "httpx", module)
         return fake
 
@@ -249,28 +256,88 @@ async def test_instagram_post_without_an_image_is_a_named_refusal_and_no_row(
     }
 
 
-# ── tiktok/youtube: caps configured, count UNKNOWN, refusal by name (unrun state, pinned) ───────
+# ── tiktok/youtube: the count is MEASURABLE and the caps fire (V8-D3 pin move) ──────────────────
 
-async def test_tiktok_and_youtube_counts_stay_unknown_and_the_firewall_refuses_by_name(
-    async_db_session, monkeypatch
-):
-    """No adapter can write a tiktok/youtube row yet -> the count is `None` (unknown, never 0), and
-    an attempted send is refused BY NAME (cap cannot be verified) instead of proceeding on a
-    fabricated zero."""
+async def test_tiktok_cap_fires_against_rows_the_real_producer_wrote(async_db_session, monkeypatch):
+    """9 tiktok rows -> one real Content Posting send -> 10 rows -> the 11th is refused 10/10."""
+    monkeypatch.setattr(app_config.settings, "company_timezone", "UTC")
+    monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
+    monkeypatch.setattr(integrations, "settings", types.SimpleNamespace(
+        tiktok_access_token="tt-token"))
+    fake = _FakeHTTPX((200, {}, json.dumps(
+        {"data": {"publish_id": "tt-pub-1"}, "error": {"code": "ok", "message": ""}})
+    )).install(monkeypatch)
     db = async_db_session
 
-    snapshot = await channel_sends_snapshot(db, ["tiktok", "youtube"], now=NOW)
-    assert snapshot == {
-        "tiktok": {"today": None, "hour": None},
-        "youtube": {"today": None, "hour": None},
-    }
+    monkeypatch.setattr(social_service, "utcnow", lambda: TWO_HOURS_AGO)
+    report = await social_service.record_published_posts(db, {"posted": [
+        {"platform": "tiktok", "content": f"tt seed {i}", "tweet_id": f"tt-{i}"} for i in range(9)
+    ]})
+    assert report["posts_written"] == 9
 
-    monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
+    snapshot = await channel_sends_snapshot(db, ["tiktok"], now=NOW)
+    assert snapshot["tiktok"] == {"today": 9, "hour": 0}
+
+    agent = _stub_collection(SocialMediaAgent(), _post_social(
+        "tiktok", "real tt send", image_url="https://cdn.example.com/clip.mp4"))
+    out = agent.run({"title": "post"}, {"channel_sends": snapshot})
+    assert [r["performed"] for r in out["side_effects"]] == [True]
+    assert out["posted"][0]["tweet_id"] == "tt-pub-1"                # the provider's OWN id
+    assert fake.calls[0]["url"] == "https://open.tiktokapis.com/v2/post/publish/video/init/"
+
+    monkeypatch.setattr(social_service, "utcnow", lambda: NOW)
+    persist = await social_service.record_published_posts(db, out)
+    assert persist["posts_written"] == 1
+
+    at_cap = await channel_sends_snapshot(db, ["tiktok"], now=NOW)
+    assert at_cap == {"tiktok": {"today": 10, "hour": 1}}
+
+    agent2 = _stub_collection(SocialMediaAgent(), _post_social(
+        "tiktok", "one too many", image_url="https://cdn.example.com/clip2.mp4"))
     with pytest.raises(PolsiaError) as excinfo:
-        request_side_effect(
-            "social_media", ActionClass.EXTERNAL_REVERSIBLE, "tiktok",
-            action="post", payload={"action": "post", "content": "x", "ref": "post:0"},
-            sends_today=None, sends_this_hour=None,
-        )
-    assert excinfo.value.code == E_POLICY_DENIED
-    assert "no local record" in excinfo.value.message and "tiktok" in excinfo.value.message
+        agent2.run({"title": "post"}, {"channel_sends": at_cap})
+    assert excinfo.value.code == E_RATE_LIMITED
+    assert "10/10" in excinfo.value.message and "tiktok" in excinfo.value.message
+    assert len(fake.calls) == 1                                      # the refusal sent nothing
+
+
+async def test_youtube_cap_fires_against_rows_the_real_producer_wrote(async_db_session, monkeypatch):
+    """2 youtube rows -> one real videos.insert -> 3 rows -> the 4th is refused 3/3."""
+    monkeypatch.setattr(app_config.settings, "company_timezone", "UTC")
+    monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
+    monkeypatch.setattr(integrations, "settings", types.SimpleNamespace(
+        youtube_access_token="yt-token"))
+    fake = _FakeHTTPX((200, {}, json.dumps({"id": "yt-vid-1"}))).install(monkeypatch)
+    db = async_db_session
+
+    monkeypatch.setattr(social_service, "utcnow", lambda: TWO_HOURS_AGO)
+    report = await social_service.record_published_posts(db, {"posted": [
+        {"platform": "youtube", "content": f"yt seed {i}", "tweet_id": f"yt-{i}"} for i in range(2)
+    ]})
+    assert report["posts_written"] == 2
+
+    snapshot = await channel_sends_snapshot(db, ["youtube"], now=NOW)
+    assert snapshot["youtube"] == {"today": 2, "hour": 0}
+
+    agent = _stub_collection(SocialMediaAgent(), _post_social(
+        "youtube", "real yt send", image_url="https://cdn.example.com/clip.mp4"))
+    out = agent.run({"title": "post"}, {"channel_sends": snapshot})
+    assert [r["performed"] for r in out["side_effects"]] == [True]
+    assert out["posted"][0]["tweet_id"] == "yt-vid-1"
+    assert [c["method"] for c in fake.calls] == ["GET", "POST"]      # media fetched, then inserted
+    assert fake.calls[1]["url"] == "https://www.googleapis.com/upload/youtube/v3/videos"
+
+    monkeypatch.setattr(social_service, "utcnow", lambda: NOW)
+    persist = await social_service.record_published_posts(db, out)
+    assert persist["posts_written"] == 1
+
+    at_cap = await channel_sends_snapshot(db, ["youtube"], now=NOW)
+    assert at_cap == {"youtube": {"today": 3, "hour": 1}}
+
+    agent2 = _stub_collection(SocialMediaAgent(), _post_social(
+        "youtube", "one too many", image_url="https://cdn.example.com/clip2.mp4"))
+    with pytest.raises(PolsiaError) as excinfo:
+        agent2.run({"title": "post"}, {"channel_sends": at_cap})
+    assert excinfo.value.code == E_RATE_LIMITED
+    assert "3/3" in excinfo.value.message and "youtube" in excinfo.value.message
+    assert len(fake.calls) == 2                                      # the refusal sent nothing

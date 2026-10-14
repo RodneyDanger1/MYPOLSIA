@@ -182,7 +182,9 @@ async def test_unknown_outcome_is_silent_and_reads_nothing(async_db_session, mon
 
     monkeypatch.setattr(company_service, "get_company", exploding_get_company)
 
-    assert await notify_owner_for_terminal_outcome(async_db_session, 1, "requeued") is None
+    # V8/C5 (D4): `requeued` is now a ROUTED outcome (see the requeued legs below); the unknown
+    # token pinned here is one the frozen outcome set will never carry.
+    assert await notify_owner_for_terminal_outcome(async_db_session, 1, "cancelled") is None
     assert reads == []
     assert calls == []
 
@@ -385,3 +387,129 @@ async def test_recording_failure_is_itself_swallowed(async_db_session, monkeypat
     monkeypatch.setattr(notification_service, "log_activity", exploding_log)
 
     assert await notify_owner_for_terminal_outcome(async_db_session, task.id, "failed") is None
+
+
+# ─────────────────────── requeued (V8/C5, D4 — the toggle is no longer a no-op) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_requeued_outcome_routes_via_its_own_frozen_toggle(async_db_session, monkeypatch):
+    """D4: `notify_on_run_requeued` routes the requeue branch's email (was a silent no-op)."""
+    calls = _send_recorder(monkeypatch)
+    _patch_company(monkeypatch, _config(notification_email=OWNER, notify_on_run_requeued=True))
+    task = await _make_task(
+        async_db_session, error_message="E_CLI_TIMEOUT: test-only transport failure"
+    )
+
+    assert await notify_owner_for_terminal_outcome(async_db_session, task.id, "requeued") is None
+
+    (call,) = calls
+    assert call["to"] == OWNER
+    assert "requeued" in call["subject"]
+    assert "Ship the landing page" in call["subject"]
+    assert f"#{task.id}" in call["subject"]
+    # THIS attempt's own failure line: the row keeps `error_message` through a requeue, and for a
+    # requeued outcome that line is the fresh story (the retry has not run yet), not stale detail.
+    assert "Error: E_CLI_TIMEOUT" in call["body"]
+    assert await _activity_rows(async_db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_the_failed_toggle_does_not_fire_for_a_requeued_attempt(async_db_session, monkeypatch):
+    """The double-email edge, service half: only the outcome's OWN toggle routes a call."""
+    calls = _send_recorder(monkeypatch)
+    _patch_company(monkeypatch, _config(notification_email=OWNER, notify_on_failed=True))
+    task = await _make_task(async_db_session, error_message="boom")
+
+    assert await notify_owner_for_terminal_outcome(async_db_session, task.id, "requeued") is None
+    assert calls == []
+
+
+# ───────────── the caller edge (worker): requeued fires once, failed never doubles ───────────
+
+
+def _seed_mail_company(qdb, **over) -> None:
+    async def _go():
+        async with qdb.factory() as db:
+            db.add(CompanyConfig(name="Mail Co", **over))
+            await db.commit()
+
+    qdb.run(_go())
+
+
+def _sent_recorder(monkeypatch) -> list[dict[str, Any]]:
+    from app.agents import integrations
+
+    sent: list[dict[str, Any]] = []
+
+    def fake_send_email(*, to: str, subject: str, body: str):
+        sent.append({"to": to, "subject": subject, "body": body})
+        return {"ok": True, "result": {"status_code": 202, "message_id": "sg-requeue-1"}}
+
+    monkeypatch.setattr(integrations, "send_email", fake_send_email)
+    return sent
+
+
+def test_a_requeued_attempt_emails_requeued_not_failed(
+    queue_db, install_run_spy, monkeypatch, mock_redis
+):
+    """With BOTH toggles on, ONE email goes out for a requeued attempt — the requeued one."""
+    from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+    from celery_app.tasks.agent_tasks import run_agent_task
+
+    sent = _sent_recorder(monkeypatch)
+    _seed_mail_company(
+        queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=True
+    )
+    task_id = queue_db.create_task(title="requeued mail")
+    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+
+    with pytest.raises(PolsiaError):
+        run_agent_task(task_id)  # direct call: a retryable failure re-raises the original exc
+
+    assert len(sent) == 1, "exactly one email for one requeued attempt — never two"
+    assert "requeued" in sent[0]["subject"]
+    assert "failed" not in sent[0]["subject"], "notify_on_failed must not also fire"
+    assert sent[0]["to"] == OWNER
+    assert "E_CLI_TIMEOUT" in sent[0]["body"]
+    assert queue_db.row(task_id)["status"] == "pending", "the row is requeued for its retry"
+
+
+def test_once_requeued_the_failed_toggle_fires_nothing(
+    queue_db, install_run_spy, monkeypatch, mock_redis
+):
+    from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+    from celery_app.tasks.agent_tasks import run_agent_task
+
+    sent = _sent_recorder(monkeypatch)
+    _seed_mail_company(
+        queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=False
+    )
+    task_id = queue_db.create_task(title="requeued silent")
+    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+
+    with pytest.raises(PolsiaError):
+        run_agent_task(task_id)
+
+    assert sent == [], "the attempt was requeued; its own toggle is the only one that may route it"
+
+
+def test_a_terminal_failure_still_emails_failed_exactly_once(
+    queue_db, install_run_spy, monkeypatch, mock_redis
+):
+    """The contrast leg: NOT requeued ⇒ the old `failed` contract, unchanged."""
+    from app.core.errors import E_POLICY_DENIED, PolsiaError
+    from celery_app.tasks.agent_tasks import run_agent_task
+
+    sent = _sent_recorder(monkeypatch)
+    _seed_mail_company(
+        queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=True
+    )
+    task_id = queue_db.create_task(title="terminal failure")
+    install_run_spy(error_factory=lambda: PolsiaError(E_POLICY_DENIED, "test-only terminal refusal"))
+
+    with pytest.raises(PolsiaError):
+        run_agent_task(task_id)
+
+    assert len(sent) == 1
+    assert "failed" in sent[0]["subject"] and "requeued" not in sent[0]["subject"]

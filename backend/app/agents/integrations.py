@@ -42,12 +42,25 @@ _META_HINT = (
     "with pages_manage_posts + instagram_content_publish; the page token posts as the Facebook "
     "page and publishes to its linked Instagram business account)"
 )
+_TIKTOK_HINT = (
+    "set TIKTOK_ACCESS_TOKEN (a TikTok user token authorized for the Content Posting API's "
+    "video.publish scope; direct posts also need the media URL's domain or URL prefix verified "
+    "in that TikTok app)"
+)
+_YOUTUBE_HINT = (
+    "set YOUTUBE_ACCESS_TOKEN (an OAuth token for the YouTube Data API with the youtube.upload "
+    "scope, which videos.insert requires)"
+)
 
 # Where the provider calls go. ONE pinned Graph version for both Meta platforms (aligned with the
 # facebook-business==21.0.0 pin); LinkedIn's versioned REST API documents its version per request.
+# V8/T4: TikTok's Content Posting API pins ONE path for the direct-post init; YouTube's Data API
+# upload host (`/upload/youtube/v3`) is separate from its read host.
 _LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
 _LINKEDIN_API_VERSION = "202401"
 _GRAPH_BASE = "https://graph.facebook.com/v21.0"
+_TIKTOK_POST_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+_YOUTUBE_VIDEOS_INSERT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 
 def _missing_config(*pairs: tuple[str, str]) -> list[str]:
@@ -283,6 +296,149 @@ def _instagram_create_post(text: str, image_url: str) -> Any:  # pragma: no cove
     return {"id": str(published.json().get("id") or "")}
 
 
+def _post_tiktok(text: str, *, image_url: str = "") -> dict:
+    """Post one video to TikTok through the Content Posting API's Direct Post (PULL_FROM_URL).
+
+    TikTok has no text-only post: without `image_url` (the public video URL) this refuses BY NAME
+    (E_VALIDATION) and never touches the provider. The token is read defensively (`_setting`) and
+    must carry the `video.publish` scope; PULL_FROM_URL additionally needs the media URL's domain
+    or URL prefix verified in that TikTok app. SELF_ONLY is the privacy level sent — the docs
+    require a value that matches one of the creator's `privacy_level_options`, and the
+    most-private option is the automatable default for an unattended agent (TikTok restricts
+    unaudited clients to private viewing mode anyway).
+    """
+    media_url = str(image_url or "").strip()
+    if not media_url:
+        return named_refusal(
+            E_VALIDATION,
+            "tiktok requires image_url: the Content Posting API has no text-only post",
+            how_to_fix=("set image_url on the post item to a PUBLIC https video URL on a domain "
+                        "verified in the TikTok app (PULL_FROM_URL)"),
+            platform="tiktok",
+        )
+    missing = _missing_config(("TIKTOK_ACCESS_TOKEN", _setting("tiktok_access_token")))
+    if missing:
+        return named_refusal(
+            E_INTEGRATION, f"TikTok credentials missing: {', '.join(missing)}",
+            how_to_fix=_TIKTOK_HINT, missing=missing,
+        )
+    return integration_call(
+        "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
+        call=_tiktok_publish_video, text=text, image_url=media_url,
+    )
+
+
+def _tiktok_publish_video(text: str, image_url: str) -> Any:  # pragma: no cover - provider
+    import httpx
+
+    # ONE documented call: POST /v2/post/publish/video/init/ (Direct Post). `publish_id` is
+    # TikTok's id for the publish request; the PULL_FROM_URL fetch + processing complete
+    # asynchronously (status/fetch is the documented polling endpoint — a deliberate follow-up,
+    # never faked here).
+    response = httpx.post(
+        _TIKTOK_POST_INIT_URL,
+        headers={
+            "Authorization": f"Bearer {_setting('tiktok_access_token')}",
+            "Content-Type": "application/json; charset=UTF-8",
+        },
+        json={
+            "post_info": {
+                "title": text[:2200],          # TikTok's caption limit (UTF-16 runes)
+                "privacy_level": "SELF_ONLY",
+            },
+            "source_info": {"source": "PULL_FROM_URL", "video_url": image_url},
+        },
+        timeout=30.0,
+    )
+    if response.status_code not in (200, 201):
+        # The provider's own status + text travel in the exception — `integration_call` turns
+        # this into a named E_INTEGRATION refusal that KEEPS that text (never swallowed).
+        raise RuntimeError(
+            f"TikTok publish init returned {response.status_code}: {response.text[:300]}"
+        )
+    body = response.json()
+    publish_id = str(((body.get("data") or {}).get("publish_id")) or "")
+    if not publish_id:
+        raise RuntimeError(
+            f"TikTok publish init returned no publish_id: {response.text[:300]}"
+        )
+    return {"id": publish_id}
+
+
+def _post_youtube(text: str, *, image_url: str = "") -> dict:
+    """Upload one video to YouTube through the Data API's `videos.insert`.
+
+    YouTube has no text-only post: without `image_url` (a public video-file URL) this refuses BY
+    NAME (E_VALIDATION) and never touches the provider. The token is read defensively
+    (`_setting`) and must carry the `youtube.upload` OAuth scope. The upload is ONE
+    `videos.insert` call with `uploadType=multipart` — a JSON `snippet`/`status` metadata part
+    plus the media part, as the API documents media uploads; the adapter downloads the media from
+    `image_url` first (YouTube has no PULL_FROM_URL equivalent).
+    """
+    media_url = str(image_url or "").strip()
+    if not media_url:
+        return named_refusal(
+            E_VALIDATION,
+            "youtube requires image_url: videos.insert uploads a media file and has no "
+            "text-only post",
+            how_to_fix=("set image_url on the post item to a PUBLIC https URL of the video file "
+                        "to upload (the adapter downloads it and sends the bytes to YouTube)"),
+            platform="youtube",
+        )
+    missing = _missing_config(("YOUTUBE_ACCESS_TOKEN", _setting("youtube_access_token")))
+    if missing:
+        return named_refusal(
+            E_INTEGRATION, f"YouTube credentials missing: {', '.join(missing)}",
+            how_to_fix=_YOUTUBE_HINT, missing=missing,
+        )
+    return integration_call(
+        "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
+        call=_youtube_insert_video, text=text, image_url=media_url,
+    )
+
+
+def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover - provider
+    import json
+    import uuid
+
+    import httpx
+
+    # The media must travel as BYTES: fetch the caller's public URL, then upload it as the
+    # multipart body's media part (Google's documented upload shape). `privacyStatus: "public"`
+    # is the product intent (mirrors LinkedIn's visibility PUBLIC); YouTube itself restricts
+    # uploads from unverified API projects to private viewing until the project passes its audit.
+    media = httpx.get(image_url, timeout=60.0)
+    if media.status_code != 200:
+        raise RuntimeError(
+            f"YouTube media fetch returned {media.status_code}: {media.text[:300]}"
+        )
+    boundary = f"polsia-{uuid.uuid4().hex}"
+    media_type = _response_header(media, "content-type") or "application/octet-stream"
+    metadata = json.dumps({
+        "snippet": {"title": text[:100], "description": text[:5000]},   # YouTube's own limits
+        "status": {"privacyStatus": "public"},
+    })
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
+        f"--{boundary}\r\nContent-Type: {media_type}\r\n\r\n"
+    ).encode() + media.content + f"\r\n--{boundary}--".encode()
+    response = httpx.post(
+        _YOUTUBE_VIDEOS_INSERT_URL,
+        params={"uploadType": "multipart", "part": "snippet,status"},
+        headers={
+            "Authorization": f"Bearer {_setting('youtube_access_token')}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+        },
+        content=body,
+        timeout=120.0,
+    )
+    if response.status_code not in (200, 201):
+        raise RuntimeError(
+            f"YouTube videos.insert returned {response.status_code}: {response.text[:300]}"
+        )
+    return {"id": str(response.json().get("id") or "")}
+
+
 # ---------------------------------------------------------------------------
 # The dispatch table: platform -> the ONE adapter that can really post there.
 #
@@ -296,6 +452,8 @@ _PLATFORM_ADAPTERS: dict[str, Any] = {
     "linkedin": _post_linkedin,
     "facebook": _post_facebook,
     "instagram": _post_instagram,
+    "tiktok": _post_tiktok,      # V8/T4
+    "youtube": _post_youtube,    # V8/T4
 }
 
 

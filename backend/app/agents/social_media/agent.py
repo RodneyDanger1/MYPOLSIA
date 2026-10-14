@@ -1,4 +1,5 @@
-"""The social_media agent — drafts, posts and replies on X/LinkedIn.
+"""The social_media agent — drafts, posts and replies on the company's social platforms
+(X, LinkedIn, Facebook, Instagram, TikTok, YouTube).
 
 Duty (README:33): "Draft + post tweets" / "monitors engagement". The only agent whose class name
 is pinned by a shipped test (`test_agent_tasks.py:11` patches `SocialMediaAgent.run`).
@@ -40,7 +41,7 @@ from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.schemas.agent_outputs import SocialMediaOutput
 
 ROLE = """You are the Social Media agent of an autonomous company: you run the company's public
-voice on X and LinkedIn.
+voice on X, LinkedIn, Facebook, Instagram, TikTok and YouTube.
 
 Your job this run: decide what is worth saying today, write it, and reply to the mentions that
 deserve an answer.

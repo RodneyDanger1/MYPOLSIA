@@ -170,6 +170,16 @@ class Settings(BaseSettings):
     meta_page_access_token: str = ""  # Meta page token (pages_manage_posts + IG publishing)
     meta_facebook_page_id: str = ""  # the Facebook page the page token posts as
     meta_instagram_user_id: str = ""  # the page's linked Instagram business account id
+    # V8/T4: the TikTok/YouTube adapters read these through `_setting` exactly like the V7 five;
+    # blank = unconfigured -> the adapter refuses BY NAME with the missing name listed. Values are
+    # never logged and never returned by the API.
+    tiktok_access_token: str = ""  # TikTok Content Posting API token (video.publish scope)
+    youtube_access_token: str = ""  # YouTube Data API OAuth token (youtube.upload scope)
+
+    # V8-D1 handoff (C5's sending-domain concept): the domain outreach email would send FROM this
+    # domain once real sends exist — comment-level, kept for that wave. No code path reads it yet;
+    # an honest placeholder, not a wired setting.
+    outreach_sending_domain: str = ""
 
     # --- deepseek (the agent runtime's model provider) ---
     # Read through app.services.secret_store: a key entered in the dashboard is stored

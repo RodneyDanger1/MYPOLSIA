@@ -92,7 +92,25 @@ NOT NULL DEFAULT 3, `night_task_hour` INTEGER NULL, `notification_email` VARCHAR
 four `notify_on_*` BOOLEAN NOT NULL DEFAULT false toggles — all appended after `daily_cycle_hour`
 (the ORM/migration column order).  No other row changed.  Old canonical sha256
 `e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79` ->
-`26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58` (measured by this file's own
+RE-PINNED DELIBERATELY (V8 seat c2-schema-wiring, 2026-10-14; plan §7 C2): wave V8's ONE
+migration `backend/alembic/versions/0008_chat_schedules_invoices.py` adds THREE tables (19 tables
+-> 22): `chat_messages` — C1's conversation store (`role` VARCHAR(50) with the named
+`ck_chat_messages_role` CHECK over owner|polsia, `intent` JSON nullable, `task_id` FK -> tasks.id
+nullable, `created_at` NOT NULL default now()); `task_schedules` — the cadence store (`cadence`
+VARCHAR(50) with the named `ck_task_schedules_cadence` CHECK over once|daily|weekdays|weekly,
+`hour` NOT NULL, `weekday` nullable, `enabled` BOOLEAN NOT NULL server default false,
+`next_run_at` / `last_run_at` nullable); and `invoices` (V9 consumes; no router before V9 — V8-D2)
+— `number` UNIQUE (a NEW single-column unique), money NUMERIC(12, 2) all-nullable per A-T17, the
+named `ck_invoices_status` CHECK over draft|sent|paid|void|overdue, `line_items` JSON v0.
+`company_config` gains THIRTEEN columns appended after `notify_on_run_requeued`:
+`cycle_report_email` (BOOLEAN false), six NOT NULL text fields with server default ''
+(`sender_legal_name`, `sender_postal_address`, `owner_skills`, `owner_goal`, `risk_tolerance`,
+`market_locale`), `owner_hours_per_week` INTEGER NULL, `owner_budget_usd` NUMERIC(10, 2) NULL,
+`channels_ready` JSON NOT NULL server default '[]', `confirmed_idea` JSON NULL, `checklist_state`
+JSON NOT NULL server default '{}', `dispatch_paused` BOOLEAN false (C5's pause feature).  No index
+set moved (none of the three tables carries one).  Old canonical sha256
+`26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58` ->
+`002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
@@ -112,7 +130,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58"
+DDL_SHA256 = "002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -121,12 +139,14 @@ FROZEN_TABLE_NAMES = (
     'ad_metrics',
     'agent_runs',
     'auto_mode_sessions',
+    'chat_messages',
     'company_config',
     'competitors',
     'daily_reports',
     'email_campaigns',
     'email_logs',
     'expense_records',
+    'invoices',
     'memory_entries',
     'prospects',
     'revenue_snapshots',
@@ -134,6 +154,7 @@ FROZEN_TABLE_NAMES = (
     'social_posts',
     'stripe_events',
     'support_inbox_items',
+    'task_schedules',
     'tasks',
 )
 
@@ -225,6 +246,22 @@ FROZEN_COLUMNS = {
         ('notify_on_failed', 'BOOLEAN', False, 'False', 'false', '', False),
         ('notify_on_awaiting_approval', 'BOOLEAN', False, 'False', 'false', '', False),
         ('notify_on_run_requeued', 'BOOLEAN', False, 'False', 'false', '', False),
+        # V8/0008 (C2): owner profile + sender identity + readiness; NOT NULL rows carry SERVER
+        # defaults materialising EXISTING rows ('' / [] / {} / false), the nullable rows keep
+        # NULL = "no value".
+        ('cycle_report_email', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('sender_legal_name', 'TEXT', False, "''", '', '', False),
+        ('sender_postal_address', 'TEXT', False, "''", '', '', False),
+        ('owner_skills', 'TEXT', False, "''", '', '', False),
+        ('owner_hours_per_week', 'INTEGER', True, '', '', '', False),
+        ('owner_budget_usd', 'NUMERIC(10, 2)', True, '', '', '', False),
+        ('owner_goal', 'TEXT', False, "''", '', '', False),
+        ('risk_tolerance', 'TEXT', False, "''", '', '', False),
+        ('channels_ready', 'JSON', False, 'list', '[]', '', False),
+        ('market_locale', 'TEXT', False, "''", '', '', False),
+        ('confirmed_idea', 'JSON', True, '', '', '', False),
+        ('checklist_state', 'JSON', False, 'dict', '{}', '', False),
+        ('dispatch_paused', 'BOOLEAN', False, 'False', 'false', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
         ('updated_at', 'DATETIME', True, '', 'now()', '', False),
     ),
@@ -239,6 +276,18 @@ FROZEN_COLUMNS = {
         ('spend_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
         ('updated_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
+    'chat_messages': (
+        # V8/0008 (C1's frozen table): the owner <-> Polsia conversation. `role` carries the
+        # named ck_chat_messages_role CHECK (VARCHAR(50) rendering); `intent` is the parsed
+        # exchange JSON (the pending create-task proposal rides the owner row's intent);
+        # `task_id` is a nullable FK -> tasks.id (no index; most exchanges create nothing).
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('role', 'VARCHAR(50)', False, '', '', '', False),
+        ('content', 'TEXT', False, '', '', '', False),
+        ('intent', 'JSON', True, '', '', '', False),
+        ('task_id', 'INTEGER', True, '', '', '', False),
+        ('created_at', 'DATETIME', False, '', 'now()', '', False),
     ),
     'competitors': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -302,6 +351,26 @@ FROZEN_COLUMNS = {
         ('date', 'DATE', False, '', '', '', False),
         ('external_ref', 'VARCHAR(255)', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
+    'invoices': (
+        # V8/0008 (V9 consumes; no router before V9): number UNIQUE (single-column constraint);
+        # money NUMERIC(12, 2) ALL nullable (A-T17: NULL when unmeasured); `status` carries the
+        # named ck_invoices_status CHECK; line_items is the JSON v0 itemization.
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('number', 'TEXT', False, '', '', '', True),
+        ('bill_to', 'JSON', True, '', '', '', False),
+        ('issue_date', 'DATE', False, '', '', '', False),
+        ('due_date', 'DATE', False, '', '', '', False),
+        ('net_days', 'INTEGER', False, '30', '30', '', False),
+        ('currency', 'TEXT', False, "'USD'", 'USD', '', False),
+        ('subtotal', 'NUMERIC(12, 2)', True, '', '', '', False),
+        ('tax', 'NUMERIC(12, 2)', True, '0', '0', '', False),
+        ('total', 'NUMERIC(12, 2)', True, '', '', '', False),
+        ('status', 'VARCHAR(50)', False, '', '', '', False),
+        ('payment_link', 'TEXT', True, '', '', '', False),
+        ('paid_at', 'DATETIME', True, '', '', '', False),
+        ('late_fee_note', 'TEXT', True, '', '', '', False),
+        ('line_items', 'JSON', True, '', '', '', False),
     ),
     'memory_entries': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -378,6 +447,22 @@ FROZEN_COLUMNS = {
         ('task_id', 'INTEGER', True, '', '', 'ix_support_inbox_items_task_id', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
     ),
+    'task_schedules': (
+        # V8/0008 (C2's frozen table): owner-defined recurring prompts. `cadence` carries the
+        # named ck_task_schedules_cadence CHECK; `hour` company-local 0-23; `weekday` NULL for
+        # the cadences that do not use it; `enabled` NOT NULL default FALSE (pause = false);
+        # next_run_at/last_run_at are the tick's due/ran instants; children are JUST-IN-TIME.
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('name', 'TEXT', False, '', '', '', False),
+        ('prompt', 'TEXT', False, '', '', '', False),
+        ('cadence', 'VARCHAR(50)', False, '', '', '', False),
+        ('hour', 'INTEGER', False, '', '', '', False),
+        ('weekday', 'INTEGER', True, '', '', '', False),
+        ('enabled', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('next_run_at', 'DATETIME', True, '', '', '', False),
+        ('last_run_at', 'DATETIME', True, '', '', '', False),
+        ('created_at', 'DATETIME', False, '', 'now()', '', False),
+    ),
     'tasks': (
         ('id', 'INTEGER', False, '', '', '', False),
         ('title', 'VARCHAR(512)', False, '', '', '', False),
@@ -402,6 +487,8 @@ FROZEN_COLUMNS = {
 
 FROZEN_UNIQUE_CONSTRAINTS = {
     'daily_reports.report_date',
+    # V8/0008: the invoice identity key (single-column unique on the new table).
+    'invoices.number',
     'memory_entries.chroma_id',
     'prospects.email',
     'revenue_snapshots.snapshot_date',

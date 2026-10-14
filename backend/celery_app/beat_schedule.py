@@ -1,4 +1,4 @@
-"""Beat schedule — the 9 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 10 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -26,7 +26,10 @@ Rule used here:
   must not stay unreachable for a whole cycle), so a tick older than its own slot
   collapses into the next one;
 * the publish-health tick: **every 15 min, expires 15 min** — a health snapshot delivered
-  after its own slot describes a moment that has passed; the next tick re-takes it.
+  after its own slot describes a moment that has passed; the next tick re-takes it;
+* the V8 task cadence: **every 15 min, expires 15 min** — a cadence tick delivered after its own
+  slot describes a moment that has passed; the due check + the per-child dedupe key (one child per
+  due instant) make a late tick harmless, and the next tick re-takes whatever is still due.
 
 Expired messages are dropped by the broker before dispatch; `run_agent_task` still claims
 atomically, so even a re-delivery cannot double-run a row.
@@ -61,6 +64,16 @@ beat_schedule = {
         "task": "celery_app.tasks.night_task.run_night_task",
         "schedule": crontab(minute=0),
         "options": {"queue": "scheduler", "expires": 3600},
+    },
+    # Task cadence (V8/C2): every 15 min — reads every ENABLED `task_schedules` row whose
+    # `next_run_at` is due, creates ONE task per due schedule (dedupe key
+    # `schedule:<id>:<iso-date-hour>` of the due instant in the company tz) and recomputes
+    # `next_run_at` from the COMPANY-local wall clock (never +24h — DST-safe; a disabled row is
+    # skipped and an empty due set writes nothing).
+    "task-cadence": {
+        "task": "celery_app.tasks.cadence.run_due_schedules",
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "scheduler", "expires": 900},
     },
     # Every 2h: check social mentions
     "social-mentions-sweep": {

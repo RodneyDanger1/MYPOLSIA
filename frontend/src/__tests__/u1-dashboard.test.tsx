@@ -146,6 +146,9 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
     // V7/S4: the Auto Mode panel (left rail) reads this; an unserved path fails LOUDLY.
     "/auto-mode": { active: false, session: null },
+    // V8/C3: the chat rail (new dashboard region) reads the frozen chat history; an unserved
+    // path fails LOUDLY.
+    "/chat": { items: [], total: 0 },
     ...overrides,
   };
   mockGet.mockImplementation((path: string) => {

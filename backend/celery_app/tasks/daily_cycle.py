@@ -97,6 +97,24 @@ _FIXED_MORNING_WORK: tuple[tuple[str, str, str, int], ...] = (
 )
 
 
+async def _notify_cycle_report(*, kind: str, report_date: date, summary: str) -> None:
+    """V8/C5: the cycle-report email leg — called AFTER the report's own commit.
+
+    NEVER fails the cycle: the helper it calls is contractually never-raising, and this
+    wrapper swallows even a bug in that contract (a report that was written must not be
+    un-written by an email problem).  Own short session: the step runs after the cycle's
+    report transaction has closed and committed.
+    """
+    try:
+        from app.core.database import get_session_factory
+        from app.services.notification_service import notify_owner_cycle_report
+
+        async with get_session_factory()() as db:
+            await notify_owner_cycle_report(db, kind=kind, report_date=report_date, summary=summary)
+    except Exception:  # noqa: BLE001 — never the cycle's failure
+        logger.warning("cycle report email leg failed (kind=%s)", kind, exc_info=True)
+
+
 @app.task(name="celery_app.tasks.daily_cycle.run_morning_cycle")
 def run_morning_cycle() -> dict[str, Any]:
     """Hourly Beat tick — self-gates on the company-local Morning Cycle Hour, then plans the day."""
@@ -521,6 +539,10 @@ async def _morning_cycle() -> dict[str, Any]:
         )
         await db.commit()
 
+    # V8/C5: the cycle-report email — AFTER the report transaction committed (the email must
+    # describe a committed report), never failing the cycle.
+    await _notify_cycle_report(kind="morning", report_date=day, summary=plan_text)
+
     logger.info(
         "morning cycle: created=%s duplicates=%s skipped=%s dropped_by_cap=%s day=%s",
         len(created),
@@ -654,6 +676,10 @@ async def _evening_cycle() -> dict[str, Any]:
             },
         )
         await db.commit()
+
+    # V8/C5: the cycle-report email — AFTER the report transaction committed, never failing
+    # the cycle (the same step as the morning cycle's).
+    await _notify_cycle_report(kind="evening", report_date=day, summary=summary_text)
 
     return {
         "status": "completed",

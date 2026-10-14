@@ -195,7 +195,7 @@ def _spawn_facts() -> dict[str, Any]:
     }
 
 
-def dispatch_preflight(agent_type: str) -> list[str]:
+def dispatch_preflight(agent_type: str, *, dispatch_paused: bool = False) -> list[str]:
     """Fleet-level gates that must stop dispatch BEFORE an agent is constructed.
 
     `freeze` stops everything; `throttle` stops the agents whose purpose is an external side
@@ -219,6 +219,16 @@ def dispatch_preflight(agent_type: str) -> list[str]:
         )):
             problems.append(f"kill switch throttle: {agent_type} performs external actions; reads only")
 
+    if dispatch_paused:
+        # V8-D6 / V8/C5: `company_config.dispatch_paused` — the owner's Pause/Resume Switch.
+        # This gate is SYNC with no session, so the flag is resolved asynchronously where a
+        # session exists (`resolve_dispatch_paused` below + the worker gate in `agent_tasks`)
+        # and passed in here; a direct caller bypassing the worker still hits this leg.
+        problems.append(
+            "company paused by owner: dispatch refused (company_config.dispatch_paused=true; "
+            "resume in Settings to allow dispatch)"
+        )
+
     facts = _spawn_facts()
     for problem in safety_preflight(
         kill_grade=grade, cli_present=bool(facts["cli_present"]), auth_ok=bool(facts["auth_ok"])
@@ -237,6 +247,8 @@ def run_agent_for_task(
     agent_type: str,
     task_dict: dict[str, Any] | None,
     context: dict[str, Any] | None,
+    *,
+    dispatch_paused: bool = False,
 ) -> dict[str, Any]:
     """Instantiate the mapped agent and run it.  Sync by design (CLI subprocess).
 
@@ -244,7 +256,7 @@ def run_agent_for_task(
     persists into `agent_runs` (additive: the agent's own keys are untouched).
     """
     agent_class = get_agent_class(agent_type)          # ValueError("Unknown agent ...") here
-    problems = dispatch_preflight(agent_type)
+    problems = dispatch_preflight(agent_type, dispatch_paused=dispatch_paused)
     if problems:
         raise PolsiaError(
             E_POLICY_DENIED,
@@ -271,10 +283,33 @@ def run_agent_for_task(
     return result
 
 
+async def resolve_dispatch_paused(db: Any) -> bool:
+    """The owner's pause flag from `company_config`, resolved where a session exists (V8-D6).
+
+    `dispatch_preflight` is sync and holds no DB session, so the worker resolves the flag on
+    its own session and PASSES it in; this helper is the one read path both the worker gate
+    and tests share.  Defensive on purpose (the `_configured_recipient` pattern): a missing
+    column reads as False, and a FAILED config read also resolves to False with a warning —
+    the claim that immediately preceded it proved the database reachable, and a read glitch
+    must not self-inflict a fleet-wide outage (the kill switch remains the fail-closed stop).
+    """
+    from app.services import company_service
+
+    try:
+        config = await company_service.get_company(db)
+    except Exception as exc:  # noqa: BLE001 — a read glitch is not a pause (see docstring)
+        logger.warning("dispatch pause: config read failed; treating as NOT paused (%s)", exc)
+        return False
+    if config is None:
+        return False
+    return bool(getattr(config, "dispatch_paused", False))
+
+
 __all__ = [
     "AGENT_MAP",
     "VALID_AGENT_TYPES",
     "dispatch_preflight",
     "get_agent_class",
+    "resolve_dispatch_paused",
     "run_agent_for_task",
 ]

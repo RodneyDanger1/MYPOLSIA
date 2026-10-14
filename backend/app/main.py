@@ -21,6 +21,7 @@ from app.api.v1 import (
     approvals,
     auto_mode,
     channels,
+    chat,
     config,
     dashboard,
     finance,
@@ -29,6 +30,7 @@ from app.api.v1 import (
     notifications,
     ops,
     outreach,
+    schedules,
     social,
     support,
     tasks,
@@ -268,6 +270,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(health.router)     # no auth
     api_v1.include_router(tasks.router)
     api_v1.include_router(agents.router)
+    api_v1.include_router(chat.router)       # wave V8 (C1): the owner <-> Polsia chat (message/confirm/history)
     api_v1.include_router(config.router)
     api_v1.include_router(dashboard.router)
     api_v1.include_router(memory.router)
@@ -282,6 +285,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(channels.router)   # wave U3 (H-01): per-channel send counters + caps (owner read)
     api_v1.include_router(auto_mode.router)  # wave U5 (P2/B22): the bounded Auto Mode window (start/status/stop, owner)
     api_v1.include_router(runs_router)       # wave U5 (P4/B8): the agent_runs usage ledger read + export (owner)
+    api_v1.include_router(schedules.router)  # wave V8 (C2): the owner's scheduled task prompts (CRUD; pause = PATCH enabled=false)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

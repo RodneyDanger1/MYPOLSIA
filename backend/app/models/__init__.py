@@ -7,12 +7,15 @@ from app.core.database import (
 )
 from app.models.ads import AdCampaign, AdMetric
 from app.models.auto_mode import AutoModeSession
+from app.models.chat import ChatMessage
 from app.models.company import CompanyConfig
 from app.models.competitor import Competitor
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
+from app.models.invoice import Invoice
 from app.models.memory import MemoryEntry
 from app.models.outreach import EmailCampaign, EmailLog, Prospect
 from app.models.report import ActivityLog, DailyReport
+from app.models.schedule import TaskSchedule
 from app.models.social import SocialEngagement, SocialPost
 from app.models.support import SupportInboxItem
 from app.models.task import AgentRun, Task
@@ -24,12 +27,14 @@ __all__ = [
     "AgentRun",
     "ActivityLog",
     "AutoModeSession",
+    "ChatMessage",
     "CompanyConfig",
     "Competitor",
     "DailyReport",
     "EmailCampaign",
     "EmailLog",
     "ExpenseRecord",
+    "Invoice",
     "MemoryEntry",
     "Prospect",
     "RevenueSnapshot",
@@ -38,6 +43,7 @@ __all__ = [
     "StripeEvent",
     "SupportInboxItem",
     "Task",
+    "TaskSchedule",
     "json_type",
     "string_list_type",
 ]

@@ -141,10 +141,11 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         tools_available="",
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE,
                                   ActionClass.EXTERNAL_REVERSIBLE}),
-        # U5/P1: every social platform the plan names. linkedin was already here; facebook and
-        # instagram ship adapters in U5; tiktok/youtube are policy-ready (their adapters are the
-        # named follow-up — the dispatcher refuses them BY NAME until then, and `channel_service`
-        # reports their counts as UNKNOWN, never a fabricated zero).
+        # U5/P1 + V8/C4: every social platform the plan names. linkedin/facebook/instagram ship
+        # adapters since U5; the tiktok/youtube adapters SHIPPED IN V8 (Content Posting API /
+        # videos.insert) and `channel_service` now counts their published rows — measurable after
+        # the first real publish, while an attempted send still refuses BY NAME until creds are
+        # configured.
         channels=("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube"),
     ),
     "email_outreach": AgentCapability(
@@ -381,16 +382,30 @@ class RateCaps:
     is refused by name (`cap_unknown`, E114) rather than read as zero sends. Values are policy,
     not physics."""
     per_channel_day: dict[str, int] = field(default_factory=lambda: {
+        # D5 (owner decision, V8 — code-gap §10): the email numbers stay the CLONE's — 50/day
+        # (+ 15/h below) — deliberately NOT the live product's published two-tier model ("one
+        # email a day on the shared Polsia sending domain, five a day once you connect and
+        # verify your own custom sending domain", dossier §8 line 99).  The tier needs a source
+        # of truth for "own domain verified" that this build does not have (code-gap §10 item 1
+        # is the queued resolver); shipping invented tier numbers would be policy theatre.
+        # D6 (owner decision, V8 — code-gap §12): X/Twitter stays FLAT 12/day (+ 3/h below).
+        # The live product nuances two things this flat number cannot express: the first "free
+        # launch tweet" is exempt from the daily limit, and posting from Polsia's SHARED
+        # account gets the smaller allowance while connecting your own X account raises it
+        # (dossier §8 line 98).  The live numbers themselves are NOT FINDABLE — only the shape
+        # is — so a split needs owner-decided numbers (code-gap §12); until then one documented
+        # flat clone policy applies, stated here rather than implied.
         "email": 50, "twitter": 12, "linkedin": 4, "github": 6,
         "google_ads": 10, "meta_ads": 10, "stripe": 5, "render": 3,
-        # U5/P1 social platform coverage — the documented numbers. facebook/instagram ship
-        # adapters in U5; tiktok/youtube are the documented caps for the platforms whose adapters
-        # are the named follow-up (the caps route auto-enumerates this map, which is its B9
-        # companion). `channel_service` reports their counts as UNKNOWN until an adapter can write
-        # a row, so an attempted send is refused by name — never allowed on a fabricated zero.
+        # U5/P1 + V8/C4 social platform coverage — the documented numbers (the caps route
+        # auto-enumerates this map, its B9 companion). All six platforms now ship adapters;
+        # tiktok/youtube joined the counting source in V8/C4, so their counts become measurable
+        # once a real publish writes a row — before that an attempted send is refused by name,
+        # never allowed on a fabricated zero.
         "facebook": 3, "instagram": 5, "tiktok": 10, "youtube": 3,
     })
     per_channel_hour: dict[str, int] = field(default_factory=lambda: {
+        # D5/D6: the hourly numbers keep the same decisions as the day caps above.
         "email": 15, "twitter": 3, "github": 2,
     })
 

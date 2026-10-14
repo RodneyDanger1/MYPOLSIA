@@ -13,9 +13,19 @@ Contract (frozen for wave U5 — `build/ui-reverse/wave-u5/WAVE-PLAN.md`):
   * It is a silent NO-OP unless `company_config.notification_email` is set AND the toggle
     matching the outcome is on. Unconfigured is a NAMED state (Settings owns it; no
     settings UI ships this wave), never a half-send.
-  * Outcomes arrive as exactly `completed` | `failed` | `awaiting_approval`. Anything else
-    (including `requeued`, which has a schema toggle but no hook contract yet) is a silent
-    no-op: no send, no error, not even a config read.
+  * Outcomes arrive as exactly `completed` | `failed` | `awaiting_approval` | `requeued`.
+    `requeued` was WIRED in V8/C5 (owner decision D4): the worker's requeue branch
+    (`agent_tasks._execute_agent_task`) routes THIS outcome — instead of `failed` — for an
+    attempt that was put back in the queue, so `notify_on_run_requeued` governs it and
+    `notify_on_failed` must NOT also fire for that attempt (one leg, one outcome per
+    attempt — the double-email edge). Anything else is a silent no-op: no send, no error,
+    not even a config read.
+  * `notify_owner_cycle_report(db, kind=..., report_date=..., summary=...)` (V8/C5) rides the
+    same never-raising discipline for the daily cycle's report email: the report's own
+    transaction has already committed and an email problem must never fail the cycle. Its
+    unconfigured state is deliberately NOT silent — it records ONE named
+    `cycle_report_email_skipped` row, because a scheduled report that never arrives must be
+    explainable.
 
 The send rides the existing `integrations.send_email` adapter with an explicit recipient
 (`app/agents/integrations.py:78`), whose refusal semantics are already honest: an
@@ -24,6 +34,7 @@ unconfigured SendGrid returns a named `E_INTEGRATION` refusal, never a fake succ
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -43,6 +54,7 @@ _OUTCOME_ROUTES: dict[str, tuple[str, str]] = {
     "completed": ("notify_on_completed", "completed"),
     "failed": ("notify_on_failed", "failed"),
     "awaiting_approval": ("notify_on_awaiting_approval", "awaiting approval"),
+    "requeued": ("notify_on_run_requeued", "requeued"),
 }
 
 #: Subject prefix when the company row has no usable name.
@@ -139,13 +151,15 @@ def _task_title(task: Task | None, task_id: int) -> str:
 
 
 def _recorded_error(task: Task | None, outcome: str) -> str:
-    """The task's recorded error line — only when THIS outcome is a failure.
+    """The task's recorded error line — for `failed` and `requeued` outcomes only.
 
-    `tasks.error_message` is KEPT on the row through a requeue/retry (`agent_tasks.py`
-    :730-732), so a leftover line must not ride a `completed`/`awaiting_approval` mail:
-    that would present stale detail as this outcome's story. Nothing is ever invented.
+    For `requeued` the line is THIS attempt's own failure (the run just wrote it; the retry
+    has not run yet), so it is the story of why the retry exists — never stale detail.
+    For a `completed`/`awaiting_approval` mail the column can hold a leftover line (it is
+    KEPT through a requeue/retry, `agent_tasks.py`), which must not ride: that would present
+    stale detail as this outcome's story. Nothing is ever invented.
     """
-    if outcome != "failed":
+    if outcome not in ("failed", "requeued"):
         return ""
     return str(getattr(task, "error_message", None) or "").strip()
 
@@ -203,4 +217,160 @@ async def _record_failure(
         )
 
 
-__all__ = ["notify_owner_for_terminal_outcome"]
+# ── cycle-report email (V8/C5) ───────────────────────────────────────────────────────────────
+
+#: cycle kind -> the human label used in the subject. `morning`/`evening` are the two cycle
+#: reports the daily cycle writes (`daily_reports.morning_plan` / `.evening_summary`).
+_CYCLE_REPORT_KINDS: dict[str, str] = {"morning": "Morning", "evening": "Evening"}
+
+
+async def notify_owner_cycle_report(
+    db: AsyncSession, *, kind: str, report_date: date, summary: str
+) -> None:
+    """Email the owner the day's cycle report; NEVER raises — the cycle outranks this leg.
+
+    Called by `daily_cycle` AFTER the report's own transaction has committed (the email must
+    describe a committed report).  Contract, mirroring `notify_owner_for_terminal_outcome`:
+
+      * configured (`company_config.cycle_report_email` on AND `notification_email` set) ->
+        one send via the same `integrations.send_email` adapter;
+      * unconfigured -> ONE honest `cycle_report_email_skipped` activity row naming exactly
+        which piece is missing (a scheduled report that never arrives must be explainable);
+      * any failure (adapter refusal, adapter raise, config read failure) -> ONE
+        `cycle_report_email_failed` row, then return normally.
+    """
+    try:
+        await _notify_cycle_report(db, kind=kind, report_date=report_date, summary=summary)
+    except _NotificationFailure as failure:
+        await _record_cycle_row(
+            db,
+            "cycle_report_email_failed",
+            kind,
+            report_date,
+            level="warning",
+            note=str(failure.error.get("code") or "refused"),
+            detail={"error": failure.error},
+        )
+    except PolsiaError as exc:
+        await _record_cycle_row(
+            db,
+            "cycle_report_email_failed",
+            kind,
+            report_date,
+            level="warning",
+            note=exc.code,
+            detail={
+                "error": {"code": exc.code, "message": exc.message, "how_to_fix": exc.how_to_fix}
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — a cycle-report email must never fail the cycle
+        await _record_cycle_row(
+            db,
+            "cycle_report_email_failed",
+            kind,
+            report_date,
+            level="warning",
+            note=type(exc).__name__,
+            detail={"error": {"code": type(exc).__name__, "message": str(exc)}},
+        )
+
+
+def _cycle_skip_reason(config: Any) -> str | None:
+    """Why this cycle report will not be emailed, or `None` when it will be."""
+    if config is None:
+        return "company config is not seeded; cycle_report_email is off"
+    if not bool(getattr(config, "cycle_report_email", False)):
+        return "cycle_report_email is off"
+    recipient = str(getattr(config, "notification_email", None) or "").strip()
+    if not recipient:
+        return "notification_email is not set"
+    return None
+
+
+async def _notify_cycle_report(
+    db: AsyncSession, *, kind: str, report_date: date, summary: str
+) -> None:
+    """The cycle-report send leg — raises for the funnel above; returns None for every skip."""
+    if kind not in _CYCLE_REPORT_KINDS:
+        await _record_cycle_row(
+            db,
+            "cycle_report_email_skipped",
+            kind,
+            report_date,
+            level="info",
+            note=f"unknown cycle report kind {kind!r}",
+            detail={
+                "reason": (
+                    f"unknown cycle report kind {kind!r}; expected one of "
+                    + ", ".join(sorted(_CYCLE_REPORT_KINDS))
+                )
+            },
+        )
+        return
+    config = await company_service.get_company(db)
+    reason = _cycle_skip_reason(config)
+    if reason is not None:
+        await _record_cycle_row(
+            db,
+            "cycle_report_email_skipped",
+            kind,
+            report_date,
+            level="info",
+            note=reason,
+            detail={"reason": reason},
+        )
+        return
+
+    # `_cycle_skip_reason` above answers a reason for a None config, so reaching this line proves
+    # the row exists; the assert documents that invariant for the type checker.
+    assert config is not None
+    recipient = str(config.notification_email or "").strip()
+    label = _CYCLE_REPORT_KINDS[kind]
+    subject = f"[{_subject_prefix(config)}] {label} report {report_date.isoformat()}"
+    body_text = str(summary or "").strip() or "(no summary recorded)"
+    body = f"{label} report for {report_date.isoformat()}.\n\n{body_text}"
+
+    # Lazy import on purpose (the same rule the terminal-outcome leg follows above).
+    from app.agents import integrations
+
+    result = integrations.send_email(to=recipient, subject=subject, body=body)
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise _NotificationFailure(_refusal_error(result))
+
+
+async def _record_cycle_row(
+    db: AsyncSession,
+    action: str,
+    kind: str,
+    report_date: date,
+    *,
+    level: str,
+    note: str,
+    detail: dict[str, Any],
+) -> None:
+    """Record ONE cycle-report row, then return — never raises (the `_record_failure` rule).
+
+    The commit is owned HERE for the same reason the failure recorder owns it: this leg runs
+    after the cycle's own commit and nothing else commits after it. If even the recording
+    fails it is logged and swallowed — the never-raise contract outranks the record.
+    """
+    outcome_word = "skipped" if action.endswith("_skipped") else "failed"
+    try:
+        await log_activity(
+            db,
+            agent_type="orchestrator",
+            action=action,
+            summary=(
+                f"cycle report email ({kind} {report_date.isoformat()}) {outcome_word}: {note}"
+            ),
+            level=level,
+            detail={"kind": kind, "report_date": report_date.isoformat(), **detail},
+        )
+        await db.commit()
+    except Exception:
+        logger.exception(
+            "cycle report email: could not record %s for %s %s", action, kind, report_date
+        )
+
+
+__all__ = ["notify_owner_cycle_report", "notify_owner_for_terminal_outcome"]

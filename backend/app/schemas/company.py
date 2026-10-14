@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -50,6 +51,23 @@ class CompanyConfigResponse(ORMModel):
     notify_on_failed: bool = False
     notify_on_awaiting_approval: bool = False
     notify_on_run_requeued: bool = False
+    # V8/0008 (C2): owner profile + sender identity + readiness.  The NOT NULL columns carry
+    # materialised server defaults ('' / false / [] / {}) so every row serves a real value;
+    # `owner_hours_per_week` / `owner_budget_usd` / `confirmed_idea` are nullable — None means
+    # "no value" and is served as null, never fabricated.
+    cycle_report_email: bool = False
+    sender_legal_name: str = ""
+    sender_postal_address: str = ""
+    owner_skills: str = ""
+    owner_hours_per_week: int | None = None
+    owner_budget_usd: float | None = None
+    owner_goal: str = ""
+    risk_tolerance: str = ""
+    channels_ready: list[str] = []
+    market_locale: str = ""
+    confirmed_idea: dict[str, Any] | None = None
+    checklist_state: dict[str, Any] = {}
+    dispatch_paused: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -98,6 +116,25 @@ class CompanyConfigUpdate(BaseModel):
     notify_on_failed: bool | None = None
     notify_on_awaiting_approval: bool | None = None
     notify_on_run_requeued: bool | None = None
+    # V8/0008: the V8 fields.  The NOT NULL columns at rest carry canonical "unset" values
+    # ('' / false / [] / {}), so a JSON `null` for them is NORMALISED to that canonical value by
+    # the validators below instead of flushing a NULL into a NOT NULL column (the same
+    # single-representation rule `notification_email`/`timezone` already keep).  `owner_budget_usd`
+    # is accepted as a wire number and stored as an exact `Decimal` (money is exact at rest,
+    # A-T17).  Present-but-null on the nullable fields clears them.
+    cycle_report_email: bool | None = None
+    sender_legal_name: str | None = None
+    sender_postal_address: str | None = None
+    owner_skills: str | None = None
+    owner_hours_per_week: int | None = None
+    owner_budget_usd: Decimal | None = None
+    owner_goal: str | None = None
+    risk_tolerance: str | None = None
+    channels_ready: list[str] | None = None
+    market_locale: str | None = None
+    confirmed_idea: dict[str, Any] | None = None
+    checklist_state: dict[str, Any] | None = None
+    dispatch_paused: bool | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -128,3 +165,44 @@ class CompanyConfigUpdate(BaseModel):
         if value is None or not value.strip():
             return None
         return value.strip()
+
+    @field_validator(
+        "sender_legal_name",
+        "sender_postal_address",
+        "owner_skills",
+        "owner_goal",
+        "risk_tolerance",
+        "market_locale",
+        mode="before",
+    )
+    @classmethod
+    def _none_is_the_empty_string(cls, value: Any) -> Any:
+        """`null` for a NOT NULL text field stores the canonical '' ("not configured")."""
+        return "" if value is None else value
+
+    @field_validator("cycle_report_email", "dispatch_paused", mode="before")
+    @classmethod
+    def _none_is_false(cls, value: Any) -> Any:
+        """`null` for a NOT NULL boolean stores FALSE (the column's own default — one
+        representation of "off", never a NULL a later reader has to special-case)."""
+        return False if value is None else value
+
+    @field_validator("channels_ready", mode="before")
+    @classmethod
+    def _none_is_the_empty_list(cls, value: Any) -> Any:
+        """`null` for the NOT NULL compatibility list stores [] (the column's server default)."""
+        return [] if value is None else value
+
+    @field_validator("checklist_state", mode="before")
+    @classmethod
+    def _none_is_the_empty_object(cls, value: Any) -> Any:
+        """`null` for the NOT NULL checklist stores {} (the column's server default)."""
+        return {} if value is None else value
+
+    @field_validator("owner_budget_usd", mode="before")
+    @classmethod
+    def _budget_wire_number_is_exact(cls, value: Any) -> Any:
+        """Money stays exact at rest (A-T17): a wire float is stored via `Decimal(str(v))`."""
+        if value is None or isinstance(value, Decimal):
+            return value
+        return Decimal(str(value))

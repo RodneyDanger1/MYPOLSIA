@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, false, func
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -58,6 +59,46 @@ class CompanyConfig(Base):
         Boolean, nullable=False, server_default=false(), default=False
     )
     notify_on_run_requeued: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    # ── Owner profile + sender identity + readiness (V8 migration 0008; frozen names) ──────
+    # Every NOT NULL column carries a SERVER default (the 0007 doctrine): that is what lets
+    # SQLite ALTER TABLE ... ADD COLUMN accept it AND materialises a value for every EXISTING
+    # row.  The six text fields default to '' — '' is their honest "not configured".  The two
+    # JSON fields default to the empty list/object so consumers (readiness checklist, cycle
+    # report) never handle NULL for them.  `cycle_report_email` (the cycle-report email opt-in)
+    # and `dispatch_paused` (C5's pause feature rides this column) are NOT NULL server default
+    # FALSE.  `owner_hours_per_week` / `owner_budget_usd` / `confirmed_idea` stay NULLABLE:
+    # NULL is "no value", and money keeps the A-T17 "NULL when unmeasured" rule.
+    cycle_report_email: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    sender_legal_name: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="", default=""
+    )
+    sender_postal_address: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="", default=""
+    )
+    owner_skills: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="", default=""
+    )
+    owner_hours_per_week: Mapped[int | None] = mapped_column(Integer)
+    owner_budget_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    owner_goal: Mapped[str] = mapped_column(Text, nullable=False, server_default="", default="")
+    risk_tolerance: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="", default=""
+    )
+    channels_ready: Mapped[list[str]] = mapped_column(
+        json_type(), nullable=False, server_default="[]", default=list
+    )
+    market_locale: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="", default=""
+    )
+    confirmed_idea: Mapped[dict[str, Any] | None] = mapped_column(json_type())
+    checklist_state: Mapped[dict[str, Any]] = mapped_column(
+        json_type(), nullable=False, server_default="{}", default=dict
+    )
+    dispatch_paused: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
     created_at: Mapped[datetime | None] = mapped_column(

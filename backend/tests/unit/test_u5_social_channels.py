@@ -9,14 +9,15 @@ What this pins (and why it can only pass after U5/P1 — the RED legs):
     every variable), when instagram lacks its REQUIRED `image_url` (E_VALIDATION, provider never
     called), and when the provider itself errors (provider text kept);
   * `RateCaps.per_channel_day` carries the documented per-platform numbers, the social_media
-    capability covers every shipped platform, and the schema Literal admits facebook/instagram
-    while still rejecting an unwired platform.
+    capability covers every shipped platform, and the schema Literal admits every wired platform
+    (facebook/instagram here; tiktok/youtube added by V8 — `test_v8_tiktok_youtube.py`) while
+    still rejecting an unwired platform.
 
 Doubles are test-only and named. `sys.modules["httpx"]` is a fake whose call surface mirrors the real
 client (`post(url, headers=/json=/data=, timeout=)` -> response with `.status_code`, `.headers`,
-`.text`, `.json()`); the SETTINGS surface is a `SimpleNamespace` because `app/config.py` has no
-LINKEDIN_*/META_* fields yet (this lane cannot edit config.py — the adapters read those fields
-DEFENSIVELY via getattr and refuse by name until the fields land; see the lane receipt REQUESTS).
+`.text`, `.json()`); the SETTINGS surface is a `SimpleNamespace` so each drill controls the exact
+credential values (the adapters read the `*_access_token` / `*_urn` settings through `_setting`,
+which falls back to "" for anything absent and then refuses by name).
 No test can touch the network: the provider legs are only ever reached with the fake installed.
 """
 from __future__ import annotations
@@ -259,7 +260,7 @@ def test_social_capability_channels_cover_every_platform_the_plan_names():
     assert channels == ("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube")
 
 
-# ── schema: additive only — facebook/instagram admitted, unwired platforms still rejected ───────
+# ── schema: additive only — wired platforms admitted, unwired platforms still rejected ───────────
 
 def test_schema_admits_the_new_platforms_and_keeps_unwired_ones_out():
     facebook = SocialPostDraft(platform="facebook", content="hello")
@@ -268,8 +269,11 @@ def test_schema_admits_the_new_platforms_and_keeps_unwired_ones_out():
                                 image_url="https://cdn.example.com/i.jpg")
     assert instagram.image_url == "https://cdn.example.com/i.jpg"
     assert PostedItem(platform="facebook", content="gone out", tweet_id="1_2").tweet_id == "1_2"
+    # V8/T4 pin move (old -> new): tiktok was the pinned "not yet wired" platform until its
+    # adapter landed — that acceptance now lives in `test_v8_tiktok_youtube.py`; the promise
+    # stays honest with a platform that has no adapter at all.
     with pytest.raises(ValidationError):
-        SocialPostDraft(platform="tiktok", content="not yet wired")   # the promise stays honest
+        SocialPostDraft(platform="mastodon", content="not wired anywhere")
 
 
 # ── agent level: sandbox turns no-adapter attempts into labelled drafts (never a raise) ──────────
@@ -280,8 +284,9 @@ def _stub_collection(agent: Any, payload: dict[str, Any]) -> Any:
 
 
 def test_sandboxed_facebook_and_tiktok_attempts_become_labelled_drafts(monkeypatch):
-    """Sandbox is the firewall's answer for a channel with no adapter yet: a labelled draft, no
-    raise, and the integration is never reached."""
+    """Sandbox is the firewall's answer for every channel, adapter or not: a labelled draft, no
+    raise, and the integration is never reached. (tiktok gained its adapter in V8 — the sandbox
+    semantics are platform-independent.)"""
     from app.agents.social_media.agent import SocialMediaAgent
 
     monkeypatch.setattr(app_config.settings, "sandbox_mode", True)
@@ -292,7 +297,7 @@ def test_sandboxed_facebook_and_tiktok_attempts_become_labelled_drafts(monkeypat
     monkeypatch.setattr(integrations, "post_tweet", _explode)
     agent = _stub_collection(SocialMediaAgent(), {"action": "post", "posts": [
         {"platform": "facebook", "content": "fb draft"},
-        {"platform": "tiktok", "content": "unwired platform"},
+        {"platform": "tiktok", "content": "sandboxed tiktok draft"},
     ]})
     out = agent.run({"title": "post"}, {})
 

@@ -28,7 +28,7 @@ row already exists would stay pending forever (every tick would re-hit the same 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -37,7 +37,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.core.timeutil import as_bound_instant, dialect_name
+from app.core.timeutil import as_bound_instant, dialect_name, now_utc
 from app.models.support import SupportInboxItem
 from app.models.task import Task
 from app.services.query_helpers import fetch_scalars
@@ -57,6 +57,14 @@ MAX_PROVIDER_MESSAGE_ID_LEN = 240
 #: The columns of `tasks.dedupe_key` rows this service creates — greppable so a reader can
 #: find every producer of the shape.
 DEDUPE_KEY_PREFIX = "support-inbox-"
+
+#: The ANSWER window (V8/C5, code-gap §10.2): the support function only ANSWERS mail received
+#: in the last 14 days (dossier §11 line 128, verbatim).  The bound is enforced at the ATTACH
+#: path (`attach_pending`) — NOT at submit — because a submit-time refusal cannot bound a
+#: later dispatch (a stored, in-window item may sit pending through budget denials and only
+#: be attached days later).  Expired items are never dropped: they stay `pending`, the owner
+#: read keeps showing them, and the 3h sweep reports the named skip with this bound stated.
+ANSWER_WINDOW_DAYS = 14
 
 
 def inbox_task_dedupe_key(provider_message_id: str) -> str:
@@ -195,10 +203,17 @@ async def list_items(
     return await fetch_scalars(db, stmt, what="support inbox items")
 
 
-async def attach_pending(db: AsyncSession) -> list[dict[str, Any]]:
+async def attach_pending(db: AsyncSession, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """Attach every pending item to its own deduped CS task; mark it dispatched. Flush-only.
 
     Oldest first (`coalesce(received_at, created_at), id` — deterministic on both dialects).
+    V8/C5 (code-gap §10.2): only items INSIDE the `ANSWER_WINDOW_DAYS` window are attached —
+    the documented rule is "it only answers mail received in the last 14 days", enforced at
+    the ATTACH (answer) path, because a submit-time refusal could not bound a later dispatch.
+    Expired items are never attached, never marked, never dropped: they stay `pending`, the
+    owner read still shows them, and the sweep reports the named skip via
+    `count_expired_pending` (`older_than_14_days`, bound stated).  `now` is injectable for
+    deterministic tests; production passes nothing (the wall clock).
     For each item, ONE `customer_support` task is created under the per-item dedupe key,
     carrying exactly the RD12 payload shape:
 
@@ -218,13 +233,15 @@ async def attach_pending(db: AsyncSession) -> list[dict[str, Any]]:
     # see app/api/v1/agents.py:77); _common imports nothing from celery itself.
     from celery_app.tasks._common import create_task_deduped
 
+    arrived = func.coalesce(SupportInboxItem.received_at, SupportInboxItem.created_at)
+    cutoff = as_bound_instant((now or now_utc()) - timedelta(days=ANSWER_WINDOW_DAYS), db)
     pending = list(
         (
             await db.execute(
                 select(SupportInboxItem)
-                .where(SupportInboxItem.status == "pending")
+                .where(SupportInboxItem.status == "pending", arrived >= cutoff)
                 .order_by(
-                    func.coalesce(SupportInboxItem.received_at, SupportInboxItem.created_at).asc(),
+                    arrived.asc(),
                     SupportInboxItem.id.asc(),
                 )
             )
@@ -299,11 +316,35 @@ async def attach_pending(db: AsyncSession) -> list[dict[str, Any]]:
     return attached
 
 
+async def count_expired_pending(db: AsyncSession, *, now: datetime | None = None) -> int:
+    """How many PENDING items are older than the answer window (V8/C5, code-gap §10.2).
+
+    The named-skip half of the bound: `attach_pending` refuses to attach these, and the 3h
+    sweep (`celery_app/tasks/agent_tasks._email_inbox_sweep`) reports this count in its
+    result as `expired = {"count": n, "bound_days": 14, "reason": "older_than_14_days"}` —
+    the skip is named, bounded and countable, and nothing is lost (items stay pending).
+    """
+    arrived = func.coalesce(SupportInboxItem.received_at, SupportInboxItem.created_at)
+    cutoff = as_bound_instant((now or now_utc()) - timedelta(days=ANSWER_WINDOW_DAYS), db)
+    return int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(SupportInboxItem)
+                .where(SupportInboxItem.status == "pending", arrived < cutoff)
+            )
+        ).scalar()
+        or 0
+    )
+
+
 __all__ = [
+    "ANSWER_WINDOW_DAYS",
     "DEDUPE_KEY_PREFIX",
     "MAX_PROVIDER_MESSAGE_ID_LEN",
     "VALID_STATUSES",
     "attach_pending",
+    "count_expired_pending",
     "inbox_task_dedupe_key",
     "list_items",
     "submit_item",

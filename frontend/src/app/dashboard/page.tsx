@@ -3,6 +3,7 @@ import { AdsWidget } from "@/components/dashboard/AdsWidget";
 import { AutoModePanel } from "@/components/auto_mode/AutoModePanel";
 import { BusinessPanel } from "@/components/dashboard/BusinessPanel";
 import { CapsPanel } from "@/components/dashboard/CapsPanel";
+import { ChatRail } from "@/components/chat/ChatRail";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
@@ -11,13 +12,17 @@ import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
 
 /**
- * The dashboard, rebuilt as the live product's four-region composition (agent1 dossier §1.3–1.8):
+ * The dashboard, rebuilt as the live product's region composition (agent1 dossier §1.3–1.8):
  *
  *   left rail       Polsia status card + Auto Mode panel + Business mini-panel
  *   middle column   Tasks preview + Daily Report (the Documents slot)
  *   right column    Social / Outreach / Ads widgets + the send-caps counter (B9) (the Twitter /
  *                   Email / Meta Ads slots)
  *   feed rail       ActivityFeed (owned by the realtime lane — imported, never edited here)
+ *   chat rail       ChatRail (V8/C3) — OUR chat surface. Mounted as its OWN region beneath the
+ *                   feed column at 2xl, the position the measured live anatomy puts the
+ *                   composer under the feed rail (ui-gap §1.8); full-width at lg. No existing
+ *                   region's content or order was touched.
  *
  * The shell (`src/app/layout.tsx`: canvas, max width, page padding, topbar) is another lane's
  * file; this page only composes the regions inside it.
@@ -64,6 +69,16 @@ export default function DashboardPage() {
 
         <aside aria-label="Activity feed" className="h-[640px]">
           <ActivityFeed />
+        </aside>
+
+        {/* V8/C3: the chat rail is its own region (client component, mounted the way
+            ActivityFeed is). At 2xl it takes the feed column's next row — the live anatomy
+            puts the chat under the feed rail; at lg it runs full-width under the grid. */}
+        <aside
+          aria-label="Chat rail"
+          className="h-[640px] lg:col-span-2 2xl:col-span-1 2xl:col-start-4"
+        >
+          <ChatRail />
         </aside>
       </div>
     </div>

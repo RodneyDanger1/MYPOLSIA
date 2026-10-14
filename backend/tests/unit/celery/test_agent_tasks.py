@@ -104,7 +104,7 @@ def test_worker_injects_channel_sends_for_the_agents_own_channels(
 
     assert outcome["status"] == "completed"
     # U5/P1 pin move (old -> new): the capability gained the social platforms behind their
-    # adapters (facebook/instagram shipped, tiktok/youtube policy-ready) — recorded in the
+    # adapters (all six shipped; tiktok/youtube joined in V8/C4) — recorded in the
     # wave-u5/coder-p1-social receipt.
     assert seen["channels"] == ("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube")
     assert seen["now"] is None                            # the caller does not pin the clock

@@ -55,6 +55,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/auto-mode", ("GET",)),
     ("/api/v1/auto-mode", ("POST",)),
     ("/api/v1/channels/caps", ("GET",)),                         # wave U3 (H-01): per-channel send counters + day caps (channel_sends_snapshot + RateCaps); OLD surface had no caps route — NEW pin added deliberately with the route; NULL = unknown, never 0
+    # wave V8 (C1): the owner <-> Polsia chat — POST message, POST confirm, GET history. OLD
+    # surface had no chat routes; NEW pins added deliberately (count 41 -> 44). Owner-key.
+    ("/api/v1/chat", ("GET",)),
+    ("/api/v1/chat", ("POST",)),
+    ("/api/v1/chat/confirm", ("POST",)),
     ("/api/v1/config", ("GET",)),
     ("/api/v1/config", ("PUT",)),
     ("/api/v1/config/deepseek-key", ("DELETE",)),               # DeepSeek key lifecycle (masked; owner-managed)
@@ -62,6 +67,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/config/deepseek-key", ("PUT",)),
     ("/api/v1/config/deepseek-key/verify", ("POST",)),
     ("/api/v1/dashboard/activity", ("GET",)),
+    ("/api/v1/dashboard/reports", ("GET",)),                     # wave V8 (C5; WAVE-PLAN V8-D7 anticipated it): the daily-reports LIST surface — OLD surface had only /reports/daily; NEW pin added deliberately with the route. Owner-key.
     ("/api/v1/dashboard/reports/daily", ("GET",)),
     ("/api/v1/dashboard/summary", ("GET",)),
     ("/api/v1/finance/events", ("GET",)),
@@ -82,6 +88,13 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # (csv/json; row count == total). Owner-key.
     ("/api/v1/runs", ("GET",)),
     ("/api/v1/runs/export", ("GET",)),
+    # wave V8 (C2): the owner's scheduled task prompts — GET/POST the collection, PATCH/DELETE the
+    # item (`/schedules/{schedule_id}`); pause = PATCH enabled=false. OLD surface had no schedules
+    # routes; NEW pins added deliberately (count 44 -> 48). Owner-key.
+    ("/api/v1/schedules", ("GET",)),
+    ("/api/v1/schedules", ("POST",)),
+    ("/api/v1/schedules/{schedule_id}", ("DELETE",)),
+    ("/api/v1/schedules/{schedule_id}", ("PATCH",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)
