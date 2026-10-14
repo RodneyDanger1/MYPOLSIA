@@ -60,7 +60,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, date, datetime, time as clock_time, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as clock_time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -203,6 +204,7 @@ async def _run_recorded_cycle_agent(
     from app.agents.crew_factory import run_agent_for_task
     from app.core.database import get_session_factory
     from app.services.task_service import create_agent_run, finish_agent_run
+
     # The usage->column mapping has ONE definition (the queue's); re-deriving it here would fork
     # the money rule. Same package, lazy import — the file's existing import discipline.
     from celery_app.tasks.agent_tasks import _apply_run_usage

@@ -20,9 +20,9 @@ is an assertion about what was really committed.
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 from app.config import settings
 from celery_app.tasks.maintenance import requeue_stale_task_claims

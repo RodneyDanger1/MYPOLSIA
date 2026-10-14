@@ -34,7 +34,9 @@ from app.api.v1 import (
     tasks,
     ws,
 )
-from app.api.v1.runs import router as runs_router  # wave U5 (P4): the agent_runs ledger read + export
+from app.api.v1.runs import (
+    router as runs_router,  # wave U5 (P4): the agent_runs ledger read + export
+)
 from app.config import settings
 from app.core.database import dispose_engine
 from app.core.errors import E_AUTH, ERROR_HINTS, PolsiaError, http_status_for, to_http_detail

@@ -433,9 +433,10 @@ def test_unset_hour_defaults_to_23_and_the_edges_0_and_23_gate(night_db, monkeyp
 
 def _write_company_hour(db: NightDB, hour: int) -> None:
     """Change the stored hour through the app's factory (a real writer, not raw SQL)."""
+    from sqlalchemy import select
+
     from app.core.database import get_session_factory
     from app.models.company import CompanyConfig
-    from sqlalchemy import select
 
     async def _update() -> None:
         async with get_session_factory()() as session:
@@ -479,9 +480,10 @@ def test_invalid_stored_hour_or_limit_is_a_named_refusal_with_no_writes(night_db
 
 
 def _set_company_limit(db: NightDB, limit: int) -> None:
+    from sqlalchemy import select
+
     from app.core.database import get_session_factory
     from app.models.company import CompanyConfig
-    from sqlalchemy import select
 
     async def _update() -> None:
         async with get_session_factory()() as session:

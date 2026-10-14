@@ -78,8 +78,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
