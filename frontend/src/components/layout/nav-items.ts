@@ -4,6 +4,7 @@ import {
   BriefcaseBusiness,
   Database,
   DollarSign,
+  Gauge,
   Mail,
   Megaphone,
   Settings,
@@ -16,8 +17,8 @@ import type { LucideIcon } from "lucide-react";
  *
  * The live product has no persistent nav rail — its IA lives in the top-right
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
- * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes nine
- * pages, so the dropdown carries those nine routes; the labels stay as short as
+ * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes ten
+ * pages, so the dropdown carries those ten routes; the labels stay as short as
  * the live menu items.
  */
 export type NavItem = {
@@ -36,6 +37,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/outreach", label: "Outreach", icon: Mail },
   { href: "/ads", label: "Ads", icon: Megaphone },
   { href: "/finance", label: "Finance", icon: DollarSign },
+  { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/memory", label: "Memory", icon: Database },
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const;

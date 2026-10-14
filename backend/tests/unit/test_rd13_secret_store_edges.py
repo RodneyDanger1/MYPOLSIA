@@ -9,8 +9,10 @@ Decisions pinned here (see the module docstring, sections "CORRUPT vs EMPTY" and
 * key absent / explicit JSON `null` / blank string = "no usable stored value" -> env fallback
   (`_FILE_CACHE`'s own `None` semantics);
 * an unreadable file is an honest `E_STORAGE` refusal too;
-* staleness caused by ANOTHER process editing the file is documented behaviour, refreshed by
-  the next set/clear (and by process start) — pinned as such, not "fixed";
+* a rewrite or a deletion caused by ANOTHER process is OBSERVED by the very next read
+  (V7-T06): the cache records each value's file identity — (st_mtime_ns, st_size), or an
+  explicit absent observation — and re-checks it with ONE stat per read; this supersedes
+  the pre-T06 pin that served the stale cache until the next set/clear;
 * racing in-process writers keep the FILE atomic (temp + os.replace) AND the cache coherent
   with it (the RD13 lock): after the dust settles, `get_deepseek_api_key()` returns exactly
   what the file holds.
@@ -153,27 +155,36 @@ def test_failed_clear_is_a_named_E_STORAGE_refusal_not_a_KeyError(
     assert json.loads(key_file.read_text(encoding="utf-8"))["deepseek_api_key"] == FAKE_KEY
 
 
-# ── documented staleness (another process edits the file) ────────────────────────────────────
+# ── out-of-process edits are observed (V7-T06) ────────────────────────────────────
 
 
-def test_file_missing_under_a_warm_cache_serves_the_cache_until_set_or_clear(
+def test_file_missing_under_a_warm_cache_is_observed_on_the_next_read(
     key_file: Path,
 ) -> None:
+    """V7-T06 supersedes the pre-T06 pin: an out-of-band REMOVAL is observed by the very
+    next read (the cache records the absent identity) and falls through to env/None."""
     secret_store.set_deepseek_api_key(FAKE_KEY)
-    key_file.unlink()  # out-of-band removal: documented as unobserved until set/clear
+    key_file.unlink()  # out-of-band removal: observed on the very next read
 
-    assert secret_store.get_deepseek_api_key() == FAKE_KEY
-    assert secret_store.deepseek_key_status()["source"] == "stored"
+    assert secret_store.get_deepseek_api_key() is None
+    assert secret_store.deepseek_key_status()["source"] == "none"
 
-    secret_store.clear_deepseek_api_key()  # the refresh point
+    secret_store.clear_deepseek_api_key()  # still idempotent on an already-missing file
     assert secret_store.get_deepseek_api_key() is None
 
 
-def test_second_process_edit_is_not_observed_until_set_or_clear(key_file: Path) -> None:
+def test_second_process_edit_is_observed_on_the_next_read(key_file: Path) -> None:
+    """V7-T06: a rewrite by ANOTHER process is observed by the very next read — the cache
+    records each value's file identity and re-checks it with one stat per read."""
     secret_store.set_deepseek_api_key(FAKE_KEY)
     key_file.write_text(json.dumps({"deepseek_api_key": "sk-rd13-other-process"}), encoding="utf-8")
+    st = key_file.stat()
+    bumped = st.st_mtime_ns + 5_000_000_000  # +5s: explicitly newer, beats coarse clocks
+    os.utime(key_file, ns=(bumped, bumped))
 
-    assert secret_store.get_deepseek_api_key() == FAKE_KEY      # documented: stale is expected
+    on_disk = json.loads(key_file.read_text(encoding="utf-8"))["deepseek_api_key"]
+    assert on_disk != FAKE_KEY, "precondition: the out-of-process edit changed the value"
+    assert secret_store.get_deepseek_api_key() == on_disk  # V7-T06: observed on the next read
 
     secret_store.set_deepseek_api_key("sk-rd13-winner")          # any set refreshes
     assert secret_store.get_deepseek_api_key() == "sk-rd13-winner"

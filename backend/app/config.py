@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     google_ads_customer_id: str = ""
     meta_ads_access_token: str = ""
     meta_ads_account_id: str = ""
+    # Channel publishing (V7-T10): app/agents/integrations.py reads all five through
+    # `_setting`; blank = unconfigured -> the adapter refuses BY NAME with the missing
+    # names listed.  Values are never logged and never returned by the API.
+    linkedin_access_token: str = ""  # LinkedIn app token (w_member_social/w_organization_social)
+    linkedin_author_urn: str = ""  # posting author: urn:li:person:… or urn:li:organization:…
+    meta_page_access_token: str = ""  # Meta page token (pages_manage_posts + IG publishing)
+    meta_facebook_page_id: str = ""  # the Facebook page the page token posts as
+    meta_instagram_user_id: str = ""  # the page's linked Instagram business account id
 
     # --- deepseek (the agent runtime's model provider) ---
     # Read through app.services.secret_store: a key entered in the dashboard is stored

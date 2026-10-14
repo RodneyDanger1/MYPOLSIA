@@ -12,11 +12,13 @@ import { PanelError, PanelSkeleton } from "./states";
  * workspace's agents from `GET /agents/status` (the endpoint answers one row per agent type —
  * exactly nine, even on an empty database).
  *
- * What is deliberately NOT here, because nothing in this repo backs it:
+ * What is deliberately NOT here:
  *  - the ASCII robot mascot (an art asset this clone does not have — drawing one would be fiction);
- *  - the `AUTO MODE` / `NIGHT TASK` pills (no endpoint or config field exposes an auto-mode or
- *    night-task state; a pill that toggles nothing is a fake affordance, so it is refused by name
- *    rather than drawn).
+ *  - the `AUTO MODE` / `NIGHT TASK` pills: both states ARE backed now (`GET /auto-mode`, with
+ *    POST/DELETE to control it; the `night_task_*` config fields) and are controlled from the
+ *    Auto Mode panel below this card and from Settings — drawing duplicate pills here would be a
+ *    second, drifting control. (The old claim that nothing exposed these states was false ever
+ *    since the U5 routes landed; removed in wave V7 / F-03.)
  *
  * Everything shown is read off the nine status rows: whether any agent's latest run is still
  * `running`, the newest `last_run_at`, and how many agents have tasks created today.

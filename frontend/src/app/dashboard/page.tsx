@@ -1,5 +1,6 @@
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { AdsWidget } from "@/components/dashboard/AdsWidget";
+import { AutoModePanel } from "@/components/auto_mode/AutoModePanel";
 import { BusinessPanel } from "@/components/dashboard/BusinessPanel";
 import { CapsPanel } from "@/components/dashboard/CapsPanel";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
@@ -12,7 +13,7 @@ import { TasksPreview } from "@/components/dashboard/TasksPreview";
 /**
  * The dashboard, rebuilt as the live product's four-region composition (agent1 dossier §1.3–1.8):
  *
- *   left rail       Polsia status card + Business mini-panel
+ *   left rail       Polsia status card + Auto Mode panel + Business mini-panel
  *   middle column   Tasks preview + Daily Report (the Documents slot)
  *   right column    Social / Outreach / Ads widgets + the send-caps counter (B9) (the Twitter /
  *                   Email / Meta Ads slots)
@@ -42,6 +43,10 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 2xl:grid-cols-[280px_minmax(0,1fr)_320px_340px]">
         <aside aria-label="Workspace status" className="space-y-6">
           <PolsiaStatusCard />
+          {/* V7-T14: the Auto Mode controls sit directly under the status card — the real state
+              lives in GET/POST/DELETE /api/v1/auto-mode (the card above deliberately does not
+              duplicate it; see its comment). */}
+          <AutoModePanel />
           <BusinessPanel />
         </aside>
 

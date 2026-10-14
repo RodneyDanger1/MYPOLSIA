@@ -292,6 +292,8 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/ads/campaigns": [CAMPAIGN],
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
     "/channels/caps": LIVE_CAPS,
+    // V7/S4: the Auto Mode panel (left rail) reads this; an unserved path fails LOUDLY.
+    "/auto-mode": { active: false, session: null },
     ...overrides,
   };
   mockGet.mockImplementation((path: string) => {

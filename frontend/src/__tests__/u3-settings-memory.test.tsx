@@ -121,11 +121,17 @@ describe("settings — labels associated (Q-14, settings.md ACC 1)", () => {
 });
 
 describe("settings — underline tabs (spec R2, live §2.1)", () => {
-  it("renders all three tabs, exposes tab semantics, and switches panels", async () => {
+  it("renders all four tabs, exposes tab semantics, and switches panels", async () => {
     await renderSettings();
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Company Profile", "Scheduler", "DeepSeek Key"]);
+    // V7/S4 added the Emails tab (3rd); the End-key assertion below still lands on the LAST tab.
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Company Profile",
+      "Scheduler",
+      "Emails",
+      "DeepSeek Key",
+    ]);
     expect(screen.getByRole("tab", { name: "Company Profile" })).toHaveAttribute(
       "aria-selected",
       "true",

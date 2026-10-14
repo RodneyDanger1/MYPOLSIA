@@ -12,6 +12,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   redis:
@@ -24,6 +29,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   backend:
@@ -62,6 +72,11 @@ services:
       retries: 12
       start_period: 30s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   celery_worker:
@@ -91,6 +106,11 @@ services:
     healthcheck:
       disable: true
     command: celery -A celery_app.worker worker --loglevel=info --concurrency=4
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   celery_beat:
@@ -116,6 +136,11 @@ services:
     healthcheck:
       disable: true
     command: celery -A celery_app.worker beat --loglevel=info --schedule /app/celerybeat/celerybeat-schedule
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   frontend:
@@ -137,12 +162,18 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   nginx:
     image: nginx:alpine
+    # V7-T08 (D1): published on the loopback interface only — never on every host NIC.
     ports:
-      - "80:80"
+      - "127.0.0.1:80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     # F1: same gate — nginx is the entry point; it must not come up before the API it proxies.
@@ -151,6 +182,11 @@ services:
         condition: service_healthy
       frontend:
         condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:

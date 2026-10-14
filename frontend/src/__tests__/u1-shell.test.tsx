@@ -56,6 +56,7 @@ const MENU_ROUTES = [
   "/outreach",
   "/ads",
   "/finance",
+  "/usage",
   "/memory",
   "/settings",
 ] as const;
@@ -111,7 +112,7 @@ describe("topbar control cluster", () => {
 });
 
 describe("MENU nav dropdown", () => {
-  it("is collapsed until pressed, then carries all nine routes", async () => {
+  it("is collapsed until pressed, then carries all ten routes", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
 
@@ -124,7 +125,7 @@ describe("MENU nav dropdown", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const nav = screen.getByRole("navigation", { name: "Main" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(9);
+    expect(links).toHaveLength(10);
     expect(links.map((link) => link.getAttribute("href"))).toEqual([...MENU_ROUTES]);
     for (const item of NAV_ITEMS) {
       expect(within(nav).getByRole("link", { name: new RegExp(item.label, "i") })).toBeInTheDocument();
@@ -415,7 +416,7 @@ describe("design tokens", () => {
 });
 
 describe("MenuNav standalone", () => {
-  it("renders the same nine routes as the shared nav table", async () => {
+  it("renders the same ten routes as the shared nav table", async () => {
     const user = userEvent.setup();
     render(<MenuNav />);
     await user.click(screen.getByTestId("nav-menu-trigger"));

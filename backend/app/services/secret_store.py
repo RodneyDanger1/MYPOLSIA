@@ -40,11 +40,16 @@ deployment state.
 
 THE CACHE
 ---------
-Reads are cached in-process, keyed by resolved path, and invalidated by
-`set_deepseek_api_key` / `clear_deepseek_api_key` (the only writers this process knows
-about).  An edit of the file made by some other process is therefore not observed
-until the next set/clear or process start — documented here rather than hidden behind
-a stat() on every read.
+Reads are cached in-process, keyed by resolved path AND by the identity of the file the
+value was read from: `(st_mtime_ns, st_size)`, or an explicit absent observation for a
+missing file.  Every read costs ONE stat; when the identity a read observes still equals
+the one cached with the value, the cache is served — otherwise the read-and-cache step
+re-runs under the write lock (re-stat, re-read, re-cache).  A rewrite or a deletion made
+by ANOTHER process (the API rotating the key while a worker keeps running) is therefore
+observed by the very next read (V7-T06 — superseding the earlier behaviour, which was
+invalidated only by this process's set/clear).  A writer that rewrites the file with a
+byte-identical length AND a rolled-back `st_mtime_ns` is not distinguishable from no
+change — stated, not papered over.
 
 In-process coherence (RD13): the write path (temp file -> `os.replace` -> cache update)
 and the read-and-cache path share ONE lock, so two racing writers can no longer leave
@@ -119,10 +124,33 @@ _STORAGE_HINT = ERROR_HINTS.get(
     "check the file's permissions, or delete the store file and re-enter the key in Settings",
 )
 
-#: resolved-path -> stored value (None = "no usable stored value").  Cache-keying by
-#: path (not a single slot) means a test or a re-configuration pointing at a different
-#: file can never be served another file's cached value.
-_FILE_CACHE: dict[str, str | None] = {}
+#: The identity of the store file as observed by a stat(): `(st_mtime_ns, st_size)`, or the
+#: explicit `_ABSENT_IDENTITY` sentinel when the path did not exist.  Recorded alongside
+#: each cached value, so a read can tell "the file changed under me" (V7-T06) from "current".
+_FileIdentity = tuple[int, int] | Literal["absent"]
+_ABSENT_IDENTITY: Literal["absent"] = "absent"
+
+#: resolved-path -> (file identity, stored value (None = "no usable stored value")).  The
+#: identity is what lets each read notice an out-of-process rewrite/deletion with ONE stat;
+#: cache-keying by path (not a single slot) still means a test or a re-configuration
+#: pointing at a different file can never be served another file's cached value.
+_FILE_CACHE: dict[str, tuple[_FileIdentity, str | None]] = {}
+
+
+def _observed_identity(path: Path) -> _FileIdentity:
+    """`(st_mtime_ns, st_size)` of `path` as observed right now, or `_ABSENT_IDENTITY`.
+
+    ONE stat per read is the accepted, documented cost of noticing out-of-process
+    rotations (V7-T06): `st_mtime_ns` defeats coarse mtime resolution and `st_size` catches
+    a same-tick rewrite that changed the byte length.  A path that does not exist (or whose
+    parent is not a directory) is an OBSERVATION — `_ABSENT_IDENTITY` — not an error; any
+    other stat failure propagates to the caller, which refuses by name.
+    """
+    try:
+        stat = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return _ABSENT_IDENTITY
+    return (stat.st_mtime_ns, stat.st_size)
 
 #: Serializes (a) set's temp-write -> replace -> chmod -> cache update, (b) clear's
 #: unlink -> cache update, and (c) the read-file-and-cache path below.  One lock, so
@@ -197,24 +225,42 @@ def mask_secret(value: str) -> str:
 
 
 def _stored_key(path: Path) -> str | None:
-    """The value persisted at `path` (cached per path), or None when nothing is stored.
+    """The value persisted at `path`, cached per path + observed identity, or None.
 
-    The read-and-cache step runs under `_WRITE_LOCK` with a double-check after acquiring
-    it, so a reader that started during a write either sees the pre-write cache entry or
-    waits and sees the completed write — it can never cache a value the file no longer
-    holds (RD13).  Corruption is refused by NAME (`E_STORAGE`): invalid JSON, a JSON
-    document that is not an object, or a non-string value under the key (see the module
-    docstring, "CORRUPT vs EMPTY").
+    Freshness (V7-T06): every call observes the file identity with ONE stat; a cache entry
+    whose recorded identity still matches is served as-is, otherwise the read-and-cache
+    step re-runs under `_WRITE_LOCK` with a double-check after acquiring it (RD13: a racing
+    in-process write can never leave the cache serving a value the file does not hold).
+    The identity is stat()ed BEFORE the bytes are read and cached with them, so a rewrite
+    landing mid-read makes the NEXT read's stat disagree and refresh — never the reverse.
+    Corruption is refused by NAME (`E_STORAGE`): invalid JSON, a JSON document that is not
+    an object, or a non-string value under the key (see the module docstring, "CORRUPT vs
+    EMPTY").
     """
     cache_key = str(path)
-    if cache_key in _FILE_CACHE:
-        return _FILE_CACHE[cache_key]
+    try:
+        observed: _FileIdentity | None = _observed_identity(path)
+    except OSError:
+        observed = None  # cannot even stat: force the locked path, which refuses honestly
+    entry = _FILE_CACHE.get(cache_key)
+    if entry is not None and observed is not None and entry[0] == observed:
+        return entry[1]
     with _WRITE_LOCK:
-        if cache_key in _FILE_CACHE:  # another thread cached it while we waited
-            return _FILE_CACHE[cache_key]
+        try:
+            observed = _observed_identity(path)  # re-stat under the lock (double-check basis)
+        except OSError as exc:
+            raise PolsiaError(
+                E_STORAGE,
+                f"could not stat the stored DeepSeek key file: {type(exc).__name__}: {exc}",
+                how_to_fix=_STORAGE_HINT,
+                context={"path": str(path)},
+            ) from exc
+        entry = _FILE_CACHE.get(cache_key)
+        if entry is not None and entry[0] == observed:  # refreshed while we waited
+            return entry[1]
         value: str | None = None
         try:
-            if path.is_file():
+            if observed != _ABSENT_IDENTITY and path.is_file():
                 raw_document = path.read_text(encoding="utf-8")
                 try:
                     document = json.loads(raw_document)
@@ -270,7 +316,7 @@ def _stored_key(path: Path) -> str | None:
                 how_to_fix=_STORAGE_HINT,
                 context={"path": str(path)},
             ) from exc
-        _FILE_CACHE[cache_key] = value
+        _FILE_CACHE[cache_key] = (observed, value)
         return value
 
 
@@ -324,7 +370,11 @@ def set_deepseek_api_key(value: str) -> None:
                 os.close(handle)
             os.replace(temp, path)
             _best_effort_chmod(path)
-            _FILE_CACHE[str(path)] = cleaned  # invalidate: next read sees the new value
+            # V7-T06: cache the value TOGETHER with the identity a reader will observe.
+            # os.replace moves the file without touching its bytes' mtime/size (probed on
+            # this Windows host), so this stat is exactly what the next reader's stat sees;
+            # any LATER third-party rewrite is noticed by the identity mismatch.
+            _FILE_CACHE[str(path)] = (_observed_identity(path), cleaned)
     except OSError as exc:
         # Leave no orphan temp file behind, and keep the previous value live: the
         # cache is updated only after the replace succeeded.
@@ -348,7 +398,9 @@ def clear_deepseek_api_key() -> None:
     try:
         with _WRITE_LOCK:  # RD13: same critical section as set() — see _WRITE_LOCK
             path.unlink(missing_ok=True)
-            _FILE_CACHE[str(path)] = None  # invalidate: next read falls through to env/None
+            # V7-T06: an explicit absent observation — the next read falls through to
+            # env/None; if the file is (re)created meanwhile, the mismatch refreshes.
+            _FILE_CACHE[str(path)] = (_ABSENT_IDENTITY, None)
     except OSError as exc:
         raise PolsiaError(
             E_STORAGE,

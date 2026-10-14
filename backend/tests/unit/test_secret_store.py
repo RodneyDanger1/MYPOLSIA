@@ -149,10 +149,16 @@ def test_cache_is_invalidated_by_set_and_clear(key_file: Path) -> None:
     secret_store.set_deepseek_api_key(FAKE_KEY)
     assert secret_store.get_deepseek_api_key() == FAKE_KEY  # set() invalidated the miss
 
-    # An out-of-band edit is NOT observed (documented: the cache is path-keyed and only
-    # set/clear invalidate) — this pins the documented behaviour instead of pretending.
+    # V7-T06: an out-of-band edit IS observed — the cache records the file identity it read
+    # and every read re-checks it with one stat (superseding the pre-T06 pinned behaviour).
     key_file.write_text(json.dumps({"deepseek_api_key": "sk-rd9-out-of-band"}), encoding="utf-8")
-    assert secret_store.get_deepseek_api_key() == FAKE_KEY
+    st = key_file.stat()
+    bumped = st.st_mtime_ns + 5_000_000_000  # +5s: explicitly newer, beats coarse clocks
+    os.utime(key_file, ns=(bumped, bumped))
+
+    on_disk = json.loads(key_file.read_text(encoding="utf-8"))["deepseek_api_key"]
+    assert on_disk != FAKE_KEY, "precondition: the out-of-band edit changed the value"
+    assert secret_store.get_deepseek_api_key() == on_disk
 
     secret_store.set_deepseek_api_key("sk-rd9-cache-invalidation-4444")  # set() re-reads fresh
     assert secret_store.get_deepseek_api_key() == "sk-rd9-cache-invalidation-4444"

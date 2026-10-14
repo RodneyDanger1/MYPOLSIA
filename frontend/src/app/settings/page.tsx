@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
+import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
+import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
 import { TabStrip, type TabDef } from "@/components/settings/TabStrip";
 import { Button, cn } from "@/components/ui";
 
@@ -13,14 +15,21 @@ import { Button, cn } from "@/components/ui";
  * the response model serves that null — the strict `string` / `number` here was an assumption the
  * server does not make. The form renders null as an empty box.
  *
+ * The U5 columns (`night_task_*`, `notification_email`, the four `notify_on_*`) are declared
+ * OPTIONAL on purpose: this page's test fixtures (and the pre-U5 ones they inherited) declare full
+ * `SettingsConfig` literals without these keys, so a REQUIRED key would stop them compiling — while
+ * the runtime reads an absent key as exactly what the server's own defaults serve (booleans OFF,
+ * hour/email "no value"). The response model always serves all eight.
+ *
  * Exported (type-only — erased at build time, invisible to Next's page-export validator) so this
  * page's tests can pin the nullable contract at COMPILE time: a fixture declaring `timezone: null`
  * stops compiling the moment one side drops the null.
  *
  * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
  * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
- * eleven fields below, and `PUT /config` copies only the provided keys onto the row
- * (`update_config` → `model_dump(exclude_unset=True)`), so unrendered fields keep their stored value.
+ * twelve text fields below plus the five booleans and two night-task numbers — and `PUT /config`
+ * copies only the provided keys onto the row (`update_config` → `model_dump(exclude_unset=True)`),
+ * so unrendered fields keep their stored value.
  */
 export type SettingsConfig = {
   name: string;
@@ -34,9 +43,31 @@ export type SettingsConfig = {
   product_type: string | null;
   timezone: string | null;
   daily_cycle_hour: number | null;
+  night_task_enabled?: boolean;
+  night_task_limit?: number;
+  night_task_hour?: number | null;
+  notification_email?: string | null;
+  notify_on_completed?: boolean;
+  notify_on_failed?: boolean;
+  notify_on_awaiting_approval?: boolean;
+  notify_on_run_requeued?: boolean;
 };
 
-export type SettingsFieldKey = keyof SettingsConfig;
+/** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
+ *  address (booleans ride `Switch`, the night hour/limit ride `RadioList` — not text drafts). */
+export type SettingsFieldKey =
+  | "name"
+  | "mission"
+  | "vision"
+  | "description"
+  | "target_market"
+  | "value_prop"
+  | "website_url"
+  | "industry"
+  | "product_type"
+  | "timezone"
+  | "daily_cycle_hour"
+  | "notification_email";
 
 /** One rendered field: the wire key, the uppercase-voice label, and optional helper copy in the
  *  live modal's convention (DOSSIER §2.2/§2.3: small uppercase copy directly under its field). */
@@ -59,7 +90,8 @@ function errorText(e: unknown): string {
   }
 }
 
-/** The eleven fields this form owns, in render order. */
+/** The twelve text fields this form owns (render order is per panel: COMPANY/SCHEDULER/EMAIL
+ *  field lists below; this master list drives drafts + the changed-field computation). */
 const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "name",
   "industry",
@@ -72,11 +104,24 @@ const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "value_prop",
   "timezone",
   "daily_cycle_hour",
+  "notification_email",
 ];
+
+/** The five booleans this form sends (Switch-controlled; never stringified on the wire). */
+const BOOL_KEYS = [
+  "night_task_enabled",
+  "notify_on_completed",
+  "notify_on_failed",
+  "notify_on_awaiting_approval",
+  "notify_on_run_requeued",
+] as const;
+type BoolKey = (typeof BOOL_KEYS)[number];
+type Bools = Record<BoolKey, boolean>;
 
 const TAB_DEFS: readonly TabDef[] = [
   { id: "company", label: "Company Profile" },
   { id: "scheduler", label: "Scheduler" },
+  { id: "emails", label: "Emails" },
   { id: "provider", label: "DeepSeek Key" },
 ];
 
@@ -115,9 +160,19 @@ const SCHEDULER_FIELDS: readonly FieldSpec[] = [
   },
 ];
 
+const EMAIL_FIELDS: readonly FieldSpec[] = [
+  {
+    key: "notification_email",
+    label: "Notification Email",
+    helper:
+      'Owner notifications are sent here. Leave blank for none — the server stores blank as "not configured". The address is stored as given: the server does not police the format, and the mail provider refuses a malformed one when a notification is attempted.',
+  },
+];
+
 /** Per-field string drafts — the whole reason the hour box can be CLEARED (Q-18): a numeric state
  *  cannot represent "empty", and a `type=number` box silently blanks non-numeric text (reverting it),
- *  so the hour is a text box with `inputMode=numeric` and its draft is validated explicitly. */
+ *  so the hour is a text box with `inputMode=numeric` and its draft is validated explicitly. The
+ *  notification address rides the same machinery (blank = "no value"; the server normalizes it). */
 type Drafts = Record<SettingsFieldKey, string>;
 
 function draftsFrom(config: SettingsConfig): Drafts {
@@ -129,6 +184,30 @@ function draftsFrom(config: SettingsConfig): Drafts {
     drafts[key] = value === null || value === undefined ? "" : String(value);
   }
   return drafts;
+}
+
+function boolsFrom(config: SettingsConfig): Bools {
+  // The bool columns are NOT NULL at rest (server default FALSE); an absent key on the wire (an
+  // older fixture) reads the same as the server's own OFF.
+  return {
+    night_task_enabled: config.night_task_enabled === true,
+    notify_on_completed: config.notify_on_completed === true,
+    notify_on_failed: config.notify_on_failed === true,
+    notify_on_awaiting_approval: config.notify_on_awaiting_approval === true,
+    notify_on_run_requeued: config.notify_on_run_requeued === true,
+  };
+}
+
+function nightFrom(config: SettingsConfig): NightDraft {
+  const hour =
+    typeof config.night_task_hour === "number" && Number.isInteger(config.night_task_hour)
+      ? config.night_task_hour
+      : null;
+  const limit =
+    typeof config.night_task_limit === "number" && Number.isInteger(config.night_task_limit)
+      ? config.night_task_limit
+      : null;
+  return { hour, limit };
 }
 
 /** `null` = the draft is saveable. The range (0–23) stays server-enforced (`CompanyConfigUpdate`),
@@ -144,9 +223,18 @@ function hourIssue(draft: string): string | null {
 }
 
 /** Exactly the fields the operator CHANGED. Untouched fields are not sent, so a stored NULL is never
- *  rewritten as ""; the hour is transmitted as a number, or as JSON null when the box was cleared. */
-function changedFields(drafts: Drafts, baseline: Drafts): Record<string, string | number | null> {
-  const body: Record<string, string | number | null> = {};
+ *  rewritten as ""; the morning hour is transmitted as a number, or as JSON null when the box was
+ *  cleared. Booleans leave as JSON booleans and the night-task numbers as JSON numbers — the server
+ *  validates every one of them (422 naming the field) and `exclude_unset` means only these keys land. */
+function changedFields(
+  drafts: Drafts,
+  baseline: Drafts,
+  bools: Bools,
+  baseBools: Bools,
+  night: NightDraft,
+  baseNight: NightDraft,
+): Record<string, string | number | boolean | null> {
+  const body: Record<string, string | number | boolean | null> = {};
   for (const key of FIELD_KEYS) {
     if (drafts[key] === baseline[key]) continue;
     if (key === "daily_cycle_hour") {
@@ -156,6 +244,11 @@ function changedFields(drafts: Drafts, baseline: Drafts): Record<string, string 
       body[key] = drafts[key];
     }
   }
+  for (const key of BOOL_KEYS) {
+    if (bools[key] !== baseBools[key]) body[key] = bools[key];
+  }
+  if (night.hour !== baseNight.hour) body.night_task_hour = night.hour;
+  if (night.limit !== baseNight.limit) body.night_task_limit = night.limit;
   return body;
 }
 
@@ -163,6 +256,10 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<SettingsConfig | null>(null);
   const [drafts, setDrafts] = useState<Drafts | null>(null);
   const [baseline, setBaseline] = useState<Drafts | null>(null);
+  const [bools, setBools] = useState<Bools | null>(null);
+  const [baseBools, setBaseBools] = useState<Bools | null>(null);
+  const [night, setNight] = useState<NightDraft | null>(null);
+  const [baseNight, setBaseNight] = useState<NightDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -193,8 +290,15 @@ export default function SettingsPage() {
       .then((data) => {
         if (cancelled) return;
         setConfig(data);
-        setDrafts(draftsFrom(data));
-        setBaseline(draftsFrom(data));
+        const serverDrafts = draftsFrom(data);
+        setDrafts(serverDrafts);
+        setBaseline(serverDrafts);
+        const serverBools = boolsFrom(data);
+        setBools(serverBools);
+        setBaseBools(serverBools);
+        const serverNight = nightFrom(data);
+        setNight(serverNight);
+        setBaseNight(serverNight);
       })
       .catch((e: unknown) => {
         if (!cancelled) setLoadError(errorText(e));
@@ -211,13 +315,31 @@ export default function SettingsPage() {
   const dirty =
     drafts !== null &&
     baseline !== null &&
-    FIELD_KEYS.some((key) => drafts[key] !== baseline[key]);
+    bools !== null &&
+    baseBools !== null &&
+    night !== null &&
+    baseNight !== null &&
+    (FIELD_KEYS.some((key) => drafts[key] !== baseline[key]) ||
+      BOOL_KEYS.some((key) => bools[key] !== baseBools[key]) ||
+      night.hour !== baseNight.hour ||
+      night.limit !== baseNight.limit);
   const canSave =
     config !== null && drafts !== null && baseline !== null && dirty && !saving && !hourInvalid;
 
   const save = async () => {
-    if (!config || !drafts || !baseline || saving || hourInvalid) return;
-    const body = changedFields(drafts, baseline);
+    if (
+      !config ||
+      !drafts ||
+      !baseline ||
+      !bools ||
+      !baseBools ||
+      !night ||
+      !baseNight ||
+      saving ||
+      hourInvalid
+    )
+      return;
+    const body = changedFields(drafts, baseline, bools, baseBools, night, baseNight);
     if (Object.keys(body).length === 0) return; // "nothing changed" is not a write
     setSaving(true);
     setSaveError(null);
@@ -234,6 +356,12 @@ export default function SettingsPage() {
       const serverDrafts = draftsFrom(updated);
       setDrafts(serverDrafts);
       setBaseline(serverDrafts);
+      const serverBools = boolsFrom(updated);
+      setBools(serverBools);
+      setBaseBools(serverBools);
+      const serverNight = nightFrom(updated);
+      setNight(serverNight);
+      setBaseNight(serverNight);
       setSaved(true);
       savedTimer.current = setTimeout(() => {
         savedTimer.current = null;
@@ -269,7 +397,7 @@ export default function SettingsPage() {
   }
 
   // The failed read is NAMED (code + fix hint), and no fake form is drawn over it.
-  if (!config || !drafts || !baseline) {
+  if (!config || !drafts || !baseline || !bools || !baseBools || !night || !baseNight) {
     return (
       <div className="max-w-2xl space-y-4">
         {heading}
@@ -320,6 +448,16 @@ export default function SettingsPage() {
         ) : null}
       </div>
     );
+  };
+
+  const notifyValues: Record<NotifyKey, boolean> = {
+    notify_on_completed: bools.notify_on_completed,
+    notify_on_failed: bools.notify_on_failed,
+    notify_on_awaiting_approval: bools.notify_on_awaiting_approval,
+    notify_on_run_requeued: bools.notify_on_run_requeued,
+  };
+  const setNotify = (key: NotifyKey, next: boolean) => {
+    setBools((current) => (current === null ? current : { ...current, [key]: next }));
   };
 
   return (
@@ -375,6 +513,34 @@ export default function SettingsPage() {
               className="space-y-4"
             >
               {SCHEDULER_FIELDS.map((field) => fieldRow(field))}
+              <NightTaskSection
+                enabled={bools.night_task_enabled}
+                hour={night.hour}
+                limit={night.limit}
+                onEnabledChange={(next) =>
+                  setBools((current) =>
+                    current === null ? current : { ...current, night_task_enabled: next },
+                  )
+                }
+                onHourChange={(next) =>
+                  setNight((current) => (current === null ? current : { ...current, hour: next }))
+                }
+                onLimitChange={(next) =>
+                  setNight((current) => (current === null ? current : { ...current, limit: next }))
+                }
+              />
+            </div>
+          ) : null}
+
+          {tab === "emails" ? (
+            <div
+              role="tabpanel"
+              id="settings-panel-emails"
+              aria-labelledby="settings-tab-emails"
+              className="space-y-4"
+            >
+              {EMAIL_FIELDS.map((field) => fieldRow(field))}
+              <EmailsSection values={notifyValues} onChange={setNotify} />
             </div>
           ) : null}
 

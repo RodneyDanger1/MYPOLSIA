@@ -268,3 +268,147 @@
     color: hsl(var(--link) / 0.85);
   }
 }
+
+/* ============================================================================
+   WAVE V7 primitives (seat S1) — Switch, RadioList, Tabs, DataTable recipes.
+   Appended below the U1 block above, editing none of it. Every value is an
+   existing token: --accent/--accent-ink (the .chip-accent pair), --surface,
+   --surface-strong, --surface-sunk, --line, --line-strong, --ink, --ink-muted.
+   ============================================================================ */
+@layer components {
+  /* Two-segment ON/OFF switch, ~92x26 squared (spec: sheets-and-composer.md §5):
+     whole-control 1px dark border + a divider between the segments; ON = the
+     --accent fill pair exactly like .chip-accent; OFF = the soft-grey family.
+     The segment matching aria-checked keeps full strength + a pressed inset;
+     the other steps down within the same tokens. */
+  .seg-switch {
+    display: inline-flex;
+    width: 92px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid hsl(var(--line-strong));
+    border-radius: 2px;
+    overflow: hidden;
+    background-color: hsl(var(--surface));
+    cursor: pointer;
+  }
+
+  .seg-switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .seg-switch-seg {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .seg-switch-seg + .seg-switch-seg {
+    border-left: 1px solid hsl(var(--line-strong));
+  }
+
+  .seg-switch-on {
+    background-color: hsl(var(--accent));
+    color: hsl(var(--accent-ink));
+  }
+
+  .seg-switch-off {
+    background-color: hsl(var(--surface-strong));
+    color: hsl(var(--ink-muted));
+  }
+
+  .seg-switch[aria-checked="true"] .seg-switch-on,
+  .seg-switch[aria-checked="false"] .seg-switch-off {
+    box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.35);
+  }
+
+  .seg-switch[aria-checked="false"] .seg-switch-on {
+    background-color: hsl(var(--accent) / 0.35);
+    color: hsl(var(--ink-muted));
+  }
+
+  .seg-switch[aria-checked="true"] .seg-switch-off {
+    background-color: hsl(var(--surface-sunk));
+  }
+
+  /* Segmented BOXED tabs (spec §2): active = white + 1px border; inactive =
+     light-grey fill; shared hairlines via the 1px overlap. */
+  .seg-tabs {
+    display: inline-flex;
+    align-items: stretch;
+  }
+
+  .seg-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    padding: 0 0.75rem;
+    border: 1px solid hsl(var(--line));
+    background-color: hsl(var(--surface-strong));
+    color: hsl(var(--ink-muted));
+    cursor: pointer;
+  }
+
+  .seg-tab + .seg-tab {
+    margin-left: -1px;
+  }
+
+  .seg-tab-active {
+    background-color: hsl(var(--surface));
+    border-color: hsl(var(--line-strong));
+    color: hsl(var(--ink));
+  }
+
+  /* Radio list (spec §6): popover-friendly rows — no panel/chrome beyond the
+     --line hairlines; label + right-aligned note in the mono-caps voice. */
+  .radio-list {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .radio-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.5rem 0;
+    border: none;
+    border-bottom: 1px solid hsl(var(--line));
+    background-color: transparent;
+    text-align: left;
+    cursor: pointer;
+    color: hsl(var(--ink));
+  }
+
+  .radio-item:last-child {
+    border-bottom: none;
+  }
+
+  .radio-item-marker {
+    flex: 0 0 auto;
+    width: 0.8125rem;
+    height: 0.8125rem;
+    border: 1px solid hsl(var(--line-strong));
+    border-radius: 2px;
+    background-color: hsl(var(--surface));
+  }
+
+  .radio-item-checked .radio-item-marker {
+    background-color: hsl(var(--accent));
+    border-color: hsl(var(--accent));
+  }
+
+  .radio-item-label {
+    flex: 1 1 auto;
+  }
+
+  .radio-item-note {
+    flex: 0 0 auto;
+    color: hsl(var(--ink-muted));
+  }
+}

@@ -73,6 +73,8 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/ads/campaigns": [],
     "/channels/caps": CAPS,
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
+    // V7/S4: the Auto Mode panel (left rail) reads this; an unserved path fails LOUDLY.
+    "/auto-mode": { active: false, session: null },
     ...overrides,
   };
   mockGet.mockImplementation((path: string) => {

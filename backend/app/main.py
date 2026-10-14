@@ -187,7 +187,14 @@ def create_app() -> FastAPI:
         # (X-Request-ID) has the server side") and the machine-readable refusal code were
         # invisible on exactly the split-origin client the default `cors_origins`
         # (http://localhost:3000) describes — same-origin nginx deployments never needed them.
-        expose_headers=["X-Polsia-Error-Code", "X-Request-ID", "X-Response-Time-ms"],
+        # V7-T07: X-Polsia-Row-Count (runs export, app/api/v1/runs.py) joins the list so a
+        # cross-origin client reads the declared total under the same contract as the rest.
+        expose_headers=[
+            "X-Polsia-Error-Code",
+            "X-Request-ID",
+            "X-Response-Time-ms",
+            "X-Polsia-Row-Count",
+        ],
     )
 
     @application.middleware("http")

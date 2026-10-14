@@ -26,14 +26,15 @@ THE SEMANTICS (frozen by the wave-U5 contract; tests/unit/test_u5_auto_mode.py p
     fabricated 0.00).
   * every close stamps the final measured spend into `spend_usd`; unmeasured stays NULL.
 
-RACE NOTE (honest, not hidden): the frozen migration carries only an index on `started_at`, so
-no DB constraint can encode "one active row" (`ends_at > now` is not a column).  The check and
-the insert run in ONE transaction; on SQLite writes serialize, on PostgreSQL two TRUE-concurrent
-POSTs under READ COMMITTED could in principle both pass the check.  The route is owner-key-only
-(single operator), the worker hooks never create sessions, and every closer keys on
-``stopped_at IS NULL`` + window-covers-now, so a duplicate could not silently thrive: the next
-status read names the window and `close_live_sessions` closes every live row with a recorded
-reason.
+RACE NOTE (measured, fixed in V7): the frozen migration carries only an index on `started_at`, so
+no DB constraint can encode "one active row" (`ends_at > now` is not a column). Historically the
+check and the insert ran in one transaction; on SQLite writes serialize, but the V7 close drill
+PROVED that on PostgreSQL two TRUE-concurrent POSTs under READ COMMITTED BOTH pass the check
+(sessions 2 and 3, 2026-10-14 — raw: polsia-work/build/ui-reverse/wave-v7/drills.txt). The fix
+is `_acquire_start_window_lock`: a transaction-scoped `pg_advisory_xact_lock` taken BEFORE the
+check-then-insert, so the second starter blocks until the first commits and then refuses the
+named `E_VALIDATION`. No schema change; SQLite (unit harness) is an explicit no-op. The live
+re-drill after the fix is the whole-flow proof.
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ from typing import Any
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
+from sqlalchemy import text as sa_text
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +67,33 @@ STOP_REASONS = frozenset(
 #: Duration bounds: 1 hour .. 5 days (frozen).
 MIN_DURATION_HOURS = 1.0
 MAX_DURATION_HOURS = 120.0
+
+#: PostgreSQL advisory-lock key serializing `start_session`'s check-then-insert. The frozen
+#: schema cannot encode "one active row" (see the module RACE NOTE), so cross-process
+#: serialization rides a transaction-scoped lock instead of a constraint. The value is a fixed
+#: 8-byte constant ("POLSIAV7" as hex) — collisions with other subsystems are impossible in
+#: this tree because no other module takes advisory locks.
+_POSTGRES_START_WINDOW_LOCK_KEY = 0x504F4C5349415637
+
+
+async def _acquire_start_window_lock(db: AsyncSession) -> None:
+    """Serialize the start path across PostgreSQL processes (V7 drill-proven fix).
+
+    Two TRUE-concurrent POSTs on live PG were measured BOTH passing the active-window check
+    under READ COMMITTED (sessions 2 and 3, 2026-10-14). This helper, called before the
+    check-then-insert, makes the second starter BLOCK until the first transaction commits; its
+    follow-up SELECT then observes the committed window and refuses `E_VALIDATION` by name.
+    Transaction-scoped (`pg_advisory_xact_lock`): released on commit/rollback of the request's
+    own transaction, no unlock bookkeeping. A no-op on non-PostgreSQL binds — SQLite serializes
+    writers, and the unit harness must keep running it.
+    """
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    await db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": _POSTGRES_START_WINDOW_LOCK_KEY},
+    )
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -232,6 +261,7 @@ async def start_session(
     """
     duration = validate_duration_hours(duration_hours)
     moment = now or utcnow()
+    await _acquire_start_window_lock(db)
     await close_stale_sessions(db, now=moment)
     live = await get_live_session(db, now=moment)
     if live is not None:

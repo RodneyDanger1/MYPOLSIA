@@ -103,26 +103,35 @@ export function TasksPreview() {
   );
 }
 
+/**
+ * V7-T17: the preview card is a real LINK to the shipped deep link — `app/tasks/page.tsx`
+ * (U4) consumes `?task=N` and opens that task's detail sheet. The live card's look is kept
+ * byte-for-byte (the article keeps its exact classes; the anchor adds `block` only so the
+ * click target keeps the article's box). An anchor and not an onClick handler, so
+ * middle-click / open-in-new-tab get the real navigation semantics.
+ */
 function TaskCard({ task }: { task: TaskRow }) {
   const statusText = STATUS_TEXT[task.status ?? ""] ?? "text-ink-muted";
   return (
-    <article className="border border-line bg-surface-sunk p-3">
-      <h3 className="truncate text-base font-bold leading-snug text-ink">{task.title}</h3>
-      {task.description ? (
-        <p className="mt-1 line-clamp-2 text-sm text-ink-muted">- {task.description}</p>
-      ) : null}
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-2">
-          <Chip variant="dark">{agentLabel(task.agent_type)}</Chip>
-          <Chip variant="soft" className={statusText}>
-            {task.status ?? "unknown"}
-          </Chip>
-        </span>
-        <span className="ui-label flex items-center gap-3 text-ink-muted">
-          <span className="text-ink">Priority {task.priority ?? "—"}</span>
-          <span>{relativeTime(task.created_at)}</span>
-        </span>
-      </div>
-    </article>
+    <Link href={`/tasks?task=${task.id}`} className="block">
+      <article className="border border-line bg-surface-sunk p-3">
+        <h3 className="truncate text-base font-bold leading-snug text-ink">{task.title}</h3>
+        {task.description ? (
+          <p className="mt-1 line-clamp-2 text-sm text-ink-muted">- {task.description}</p>
+        ) : null}
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <Chip variant="dark">{agentLabel(task.agent_type)}</Chip>
+            <Chip variant="soft" className={statusText}>
+              {task.status ?? "unknown"}
+            </Chip>
+          </span>
+          <span className="ui-label flex items-center gap-3 text-ink-muted">
+            <span className="text-ink">Priority {task.priority ?? "—"}</span>
+            <span>{relativeTime(task.created_at)}</span>
+          </span>
+        </div>
+      </article>
+    </Link>
   );
 }
