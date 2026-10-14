@@ -31,6 +31,7 @@ _CONNECT_TIMEOUT_S = float(getattr(settings, "redis_connect_timeout_seconds", 1.
 _SOCKET_TIMEOUT_S = float(getattr(settings, "redis_socket_timeout_seconds", 1.0))
 
 _client: aioredis.Redis | None = None
+_subscriber: aioredis.Redis | None = None
 
 
 def get_redis() -> aioredis.Redis:
@@ -49,8 +50,36 @@ def get_redis() -> aioredis.Redis:
     return _client
 
 
+def get_redis_subscriber() -> aioredis.Redis:
+    """Return the SUBSCRIBER client: same process, one knob deliberately different — no socket read timeout.
+
+    Why (U6-F01, measured live): the bounded client above is right for PUBLISH and request paths —
+    fail in <=1s and let the caller's breaker own recovery.  A pubsub READER is the opposite
+    workload: `pubsub.listen()` blocks between messages by design, so the 1s socket timeout fired
+    on every quiet second, redis-py raised `TimeoutError`, and `app/api/v1/ws.py` treated it as a
+    socket error — every dashboard visit showed `connection closed (code 1000)` + RECONNECTING and
+    the feed never streamed a live event.  This client keeps a bounded CONNECT (a dead Redis still
+    refuses fast) but leaves the read blocking: a real outage closes the TCP stream, the relay
+    ends, and the frontend's shipped reconnect logic runs — the behaviour its states were built for.
+    """
+    global _subscriber
+    if _subscriber is None:
+        _subscriber = aioredis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=_CONNECT_TIMEOUT_S,
+            retry=Retry(NoBackoff(), 0),
+            retry_on_timeout=False,
+        )
+    return _subscriber
+
+
 async def close_redis() -> None:
-    global _client
+    global _client, _subscriber
     if _client is not None:
         await _client.aclose()
         _client = None
+    if _subscriber is not None:
+        await _subscriber.aclose()
+        _subscriber = None

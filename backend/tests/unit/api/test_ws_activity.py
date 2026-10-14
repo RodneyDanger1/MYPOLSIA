@@ -96,6 +96,10 @@ def payload() -> dict:
 
 
 def _wire(monkeypatch, pubsub: FakePubSub) -> FakePubSub:
+    # U6-F01: subscribe_activity now reads the dedicated subscriber factory. These relay tests
+    # patch BOTH names so they stay focused on the relay; the routing itself (subscriber vs
+    # shared) is pinned in tests/unit/test_redis_subscriber_client.py.
+    monkeypatch.setattr(events, "get_redis_subscriber", lambda: FakeRedis(pubsub))
     monkeypatch.setattr(events, "get_redis", lambda: FakeRedis(pubsub))
     return pubsub
 

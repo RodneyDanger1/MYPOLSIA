@@ -24,7 +24,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import settings
-from app.core.redis_client import get_redis  # noqa: F401  (re-exported for patching)
+from app.core.redis_client import (  # noqa: F401  (re-exported for patching)
+    get_redis,
+    get_redis_subscriber,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +151,14 @@ def activity_payload(
 
 
 async def subscribe_activity():
-    """Return a pubsub object already subscribed to the activity channel."""
-    client = get_redis()
+    """Return a pubsub object already subscribed to the activity channel.
+
+    Uses `get_redis_subscriber` (NOT the bounded `get_redis`): the shared client's 1s socket
+    timeout is right for publish/request paths and fatal for a blocking `listen()` — U6-F01: every
+    quiet second raised TimeoutError and ws.py closed the dashboard socket (code 1000) in a
+    reconnect loop while the feed never streamed.  See the factory's docstring for the full why.
+    """
+    client = get_redis_subscriber()
     pubsub = client.pubsub()
     await pubsub.subscribe(ACTIVITY_CHANNEL)
     return pubsub
