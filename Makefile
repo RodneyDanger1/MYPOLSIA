@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-backend migrate seed test lint dev-backend dev-frontend dev-e2e
+.PHONY: up down build logs shell-backend migrate seed test lint dev-backend dev-frontend dev-e2e backup restore
 
 up:
 	docker-compose up -d
@@ -71,3 +71,43 @@ dev-frontend:
 
 dev-e2e:
 	cd e2e && BASE_URL="$${BASE_URL:-http://localhost}" $${E2E_SQLITE:+env E2E_SQLITE="$$E2E_SQLITE"} npx playwright test
+
+# ── W10 (H1/D4): backup / restore ─────────────────────────────────────────────────────────────
+# `make backup` snapshots the LIVE stack into backups/ (gitignored): a pg_dump of the postgres
+# service (backups/polsia-<date>.sql) plus one tar per DATA volume — backend_data (the DeepSeek
+# key store + the chroma parent), chroma_data (the vector store), celery_beat_data (the beat
+# clock), redis_data (the broker AOF).  Volume names carry the compose PROJECT prefix
+# (`polsia_` — the repo directory's name); each one is checked with `docker volume inspect`
+# BEFORE the tar because `docker run -v <name>:/d` CREATES a missing volume — without the guard
+# a mistyped name would tar an EMPTY volume into a green-looking, worthless backup.  These two
+# targets use the `docker compose` v2 plugin binary; the older targets above keep their historic
+# `docker-compose` spelling.  `$$` is Make's escape for a literal `$` (the file's existing
+# style), so `$$(date +%F)` / `$$(pwd)` are evaluated by the shell at run time.
+BACKUP_VOLUMES = backend_data chroma_data celery_beat_data redis_data
+
+backup:
+	mkdir -p backups
+	docker compose exec -T postgres pg_dump -U polsia polsia > backups/polsia-$$(date +%F).sql
+	@echo "backup: backups/polsia-$$(date +%F).sql written"
+	@for vol in $(BACKUP_VOLUMES); do \
+		docker volume inspect polsia_$$vol >/dev/null 2>&1 || { echo "make backup: refusing — docker volume polsia_$$vol not found; is the stack up (docker compose up -d)?" >&2; exit 1; }; \
+		docker run --rm -v polsia_$$vol:/d -v "$$(pwd)/backups":/b alpine tar czf /b/$$vol.tgz -C /d . || exit 1; \
+		echo "backup: backups/$$vol.tgz written"; \
+	done
+
+# `make restore SRC=backups` is INSTRUCTIONS-AS-TARGET: it verifies the dump exists, then PRINTS
+# the scratch-project drill — the README ("Volumes & Backup") carries the full steps.  It never
+# touches the live stack: restore is a DRILL, run against a scratch compose project.
+restore:
+	@if [ -z "$(SRC)" ]; then \
+		echo "make restore: SRC is required — SRC=<dir holding a make-backup output>, e.g. make restore SRC=backups" >&2; exit 1; \
+	fi
+	@ls "$(SRC)"/polsia-*.sql >/dev/null 2>&1 || { \
+		echo "make restore: no polsia-*.sql found in $(SRC) — run 'make backup' first, or point SRC at a real backup dir" >&2; exit 1; \
+	}
+	@echo "RESTORE IS A DRILL — run it against a SCRATCH compose project, never the live stack. Full steps: README.md, 'Volumes & Backup'."
+	@echo "  1. scratch project in its own dir, start from empty: docker compose -p scratch down -v"
+	@echo "  2. seed each data volume from its tar: docker run --rm -v scratch_<volume>:/d -v \"$$(pwd)/$(SRC)\":/b alpine sh -c \"tar xzf /b/<volume>.tgz -C /d\""
+	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U polsia polsia < $(SRC)/polsia-<date>.sql"
+	@echo "  4. boot the scratch stack: docker compose -p scratch up -d"
+	@echo "  5. smoke: curl -fsS http://localhost/api/v1/health && load one dashboard page"

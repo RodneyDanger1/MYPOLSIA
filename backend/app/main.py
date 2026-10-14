@@ -24,6 +24,7 @@ from app.api.v1 import (
     chat,
     config,
     dashboard,
+    data,
     economics,
     finance,
     health,
@@ -300,6 +301,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(planner.router)    # V9 (B1): the idea planner — propose/confirm/status (owner)
     api_v1.include_router(invoices.router)   # V9 (B4): invoices v1 — create/list/get/send/void (owner)
     api_v1.include_router(economics.router)  # V9 (B7): keyless macro context — inflation/CPI/FX (owner)
+    api_v1.include_router(data.router)       # wave V10 (H1/D7): the data portability surface — export ZIP + guarded wipe (owner)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

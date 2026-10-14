@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { BACKEND_URL, PREFIX, backendRequest } from "./_helpers";
+import { BACKEND_URL, LAB_DB_SKIP_REASON, PREFIX, backendRequest, labDbAvailable } from "./_helpers";
 
 // Unique per RUN: the fixture titles/content carry these tokens so reruns cannot mistake an older
 // run's rows for their own.  (Memory fixtures are deliberately NOT auto-deleted here: the row also
@@ -14,7 +14,13 @@ const titleA = `${PREFIX} memory alpha ${tokenA}`;
 const titleB = `${PREFIX} memory beta ${tokenB}`;
 
 test.describe("Memory page", () => {
+  // V10 parent guard: this spec seeds fixtures through the LAB backend (:8000, the sqlite+chroma
+  // docker-free stack) — without the lab it errors on ECONNREFUSED instead of skipping. Same
+  // named-skip contract the sibling fixture specs use (skips BY NAME, never a raw connection error).
+  test.skip(!labDbAvailable(), LAB_DB_SKIP_REASON);
+
   test.beforeAll(async () => {
+    if (!labDbAvailable()) return; // the tests above are skipped by name in this shape
     // Real write flow: POST /api/v1/memory stores + indexes. `request` is test-scoped (illegal in
     // beforeAll), so use an equivalent context with the same X-API-Key.
     const ctx = await backendRequest();

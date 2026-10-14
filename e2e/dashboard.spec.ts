@@ -25,13 +25,19 @@ test.describe("Dashboard", () => {
     await expect(rail.getByText("Last run", { exact: true })).toBeVisible();
   });
 
-  test("MENU dropdown carries the nine routes", async ({ page }) => {
+  // V10/H2 re-aim: this test said "nine routes" with a count(9) assertion, but the menu's real
+  // list (nav-items.ts NAV_ITEMS) carries ELEVEN links today — Planner + Usage landed since this
+  // spec was written. Title, count and spot-checks were re-aimed to the actual list; the stale
+  // claim is quoted here so the correction is auditable.
+  test("MENU dropdown carries the eleven routes", async ({ page }) => {
     await page.goto("/dashboard");
     await page.getByTestId("nav-menu-trigger").click();
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect(nav.getByRole("link", { name: "Tasks" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Finance" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Agents" })).toBeVisible();
-    await expect(nav.getByRole("link")).toHaveCount(9);
+    await expect(nav.getByRole("link", { name: "Planner" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Usage" })).toBeVisible();
+    await expect(nav.getByRole("link")).toHaveCount(11);
   });
 });

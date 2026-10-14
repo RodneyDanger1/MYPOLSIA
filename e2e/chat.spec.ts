@@ -6,9 +6,9 @@ import { API_BASE } from "./_helpers";
  * its OWN GET /api/v1/chat read, renders the persisted transcript, and a real send round-trips
  * through POST /api/v1/chat into the transcript.
  *
- * SOFT-MARKED until the V10 e2e lab round: F-04 — the e2e lab run predates this lane's commit
- * (the rail did not exist when the lab last ran), so this spec is WRITTEN now and FIRST EXECUTED
- * at V10. The V10 seat removes the `test.fixme` mark below and runs it against the live stack.
+ * V10/H2: the fixme mark is REMOVED and this spec runs against the live stack. Locators were
+ * re-verified against today's rail markup (Composer aria-label "Message", the SEND button's
+ * SEND/SENDING… label, `[data-role]` transcript rows) — no drift since V8.
  *
  * The send probe is a status question — the deterministic intent router answers those from
  * EXISTING reads (no free-roaming tools, no money movement). This spec never clicks CONFIRM:
@@ -22,7 +22,7 @@ type HistoryBody = {
 };
 
 test.describe("Chat rail", () => {
-  test.fixme(
+  test(
     "reads GET /chat, renders the transcript, and a real send lands with its reply (V10 lab)",
     async ({ page, request }) => {
       const api = await request.get(`${API_BASE}/api/v1/chat?limit=50`);
@@ -48,9 +48,16 @@ test.describe("Chat rail", () => {
         .poll(() => apiCalls.filter((c) => c.startsWith("GET")).length)
         .toBeGreaterThan(0);
 
-      // The persisted transcript is on screen; an empty store states its emptiness honestly.
+      // The persisted transcript is on screen. NOTE (V10 live-learned): the wire poll above only
+      // proves the request FIRED — on a cold stack the response lands a beat later, so each
+      // row-presence check is a POLL, never an instant count() (which raced the render and red the
+      // first V10 lab run).
       for (const item of body.items) {
-        expect(await rail.getByText(item.content, { exact: true }).count()).toBeGreaterThan(0);
+        await expect
+          .poll(async () => rail.getByText(item.content, { exact: true }).count(), {
+            timeout: 10_000,
+          })
+          .toBeGreaterThan(0);
       }
       if (body.items.length === 0) {
         await expect(rail.getByText(/No messages yet/)).toBeVisible();
@@ -76,9 +83,14 @@ test.describe("Chat rail", () => {
         )
         .toBeGreaterThan(postsBefore);
 
-      // Our message AND a Polsia reply are in the transcript, and no failure alert rendered.
-      expect(await rail.getByText(probe, { exact: true }).count()).toBeGreaterThan(0);
-      expect(await rail.locator('[data-role="polsia"]').count()).toBeGreaterThan(0);
+      // Our message AND a Polsia reply are in the transcript — the optimistic rows land when the
+      // 201 does, so both presence checks POLL (same race as above), and no failure alert rendered.
+      await expect
+        .poll(async () => rail.getByText(probe, { exact: true }).count(), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+      await expect
+        .poll(async () => rail.locator('[data-role="polsia"]').count(), { timeout: 10_000 })
+        .toBeGreaterThan(0);
       await expect(rail.getByRole("alert")).toHaveCount(0);
     },
   );

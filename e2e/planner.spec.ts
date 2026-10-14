@@ -5,10 +5,9 @@ import { API_BASE } from "./_helpers";
  * V9/B5 — the planner page, the menu pin move and the first-dollar checklist, against the live
  * stack.
  *
- * SOFT-MARKED until the V10 e2e lab round, the way every sibling spec of this wave is: the endpoints
- * this page reads are written in the SAME wave (seats b1-planner / b2-money-pins), and the lab's
- * last run predates them (F-04). The V10 seat removes the `test.fixme` below and runs this spec on
- * the lab stack.
+ * V10/H2: BOTH fixme marks are REMOVED and this spec runs against the live stack (the endpoints it
+ * reads landed with V9 and answered live in the V10 lab round; every locator below was verified
+ * against today's markup before the marks came off).
  *
  * What this spec deliberately does NOT do: click PROPOSE. A propose is a real model call plus web
  * fetches — money spent inside a lab run — and the wave's e2e pass is about the surface, not about
@@ -28,7 +27,7 @@ type StatusBody = {
 };
 
 test.describe("Planner", () => {
-  test.fixme("reaches /planner from the MENU and renders the flow, the checklist and the propose control (V10 lab)", async ({
+  test("reaches /planner from the MENU and renders the flow, the checklist and the propose control (V10 lab)", async ({
     page,
     request,
   }) => {
@@ -39,6 +38,13 @@ test.describe("Planner", () => {
     const response = await page.goto("/dashboard");
     expect(response?.status()).toBe(200);
 
+    // Watch the wire BEFORE navigating into /planner: the page's own status read fires on mount.
+    const apiCalls: string[] = [];
+    page.on("request", (r) => {
+      const url = r.url();
+      if (url.includes("/api/v1/planner")) apiCalls.push(`${r.method()} ${url}`);
+    });
+
     // The nav pin this wave moved: the Planner route is reachable from the one MENU dropdown.
     await page.getByTestId("nav-menu-trigger").click();
     const plannerLink = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /planner/i });
@@ -48,11 +54,7 @@ test.describe("Planner", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Planner" })).toBeVisible();
 
     // The page does its OWN status read (a static page would be a snapshot, not a planner).
-    const apiCalls: string[] = [];
-    page.on("request", (r) => {
-      const url = r.url();
-      if (url.includes("/api/v1/planner")) apiCalls.push(`${r.method()} ${url}`);
-    });
+    await expect.poll(() => apiCalls.filter((c) => c.startsWith("GET")).length).toBeGreaterThan(0);
 
     // One of the two honest states, matching what the status endpoint actually answers.
     if (status.confirmed === null) {
@@ -83,7 +85,7 @@ test.describe("Planner", () => {
     ).toHaveCount(11);
   });
 
-  test.fixme("the finance Planning panel renders its own read or names the refusal (V10 lab)", async ({ page }) => {
+  test("the finance Planning panel renders its own read or names the refusal (V10 lab)", async ({ page }) => {
     await page.goto("/finance");
     await expect(page.getByRole("heading", { level: 1, name: "Finance" })).toBeVisible();
 

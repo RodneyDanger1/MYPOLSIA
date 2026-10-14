@@ -133,6 +133,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/invoices/{invoice_id}/send"),
     ("POST", "/api/v1/invoices/{invoice_id}/void"),
     ("GET", "/api/v1/economics/context"),
+    # wave V10 (H1/D7): the data portability surface — documented by app/api/v1/data.py and
+    # tests/unit/api/test_v10_data_export.py; GET /data/export (ZIP) + DELETE /data (dry-run /
+    # single-use-token wipe). The count comment chain continues: Count 51 -> 60 -> 62.
+    ("GET", "/api/v1/data/export"),
+    ("DELETE", "/api/v1/data"),
 ]
 
 DOCUMENTED_AGENTS = {

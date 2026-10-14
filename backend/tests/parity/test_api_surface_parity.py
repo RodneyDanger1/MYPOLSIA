@@ -129,6 +129,12 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/planner/confirm", ("POST",)),
     ("/api/v1/planner/propose", ("POST",)),
     ("/api/v1/planner/status", ("GET",)),
+    # wave V10 (H1/D7): the data portability surface — GET /data/export (ZIP: MANIFEST + the 8
+    # members) and DELETE /data (dry-run counts; the single-use-token wipe).  OLD surface had no
+    # data routes; NEW pins added deliberately WITH the routes.  Documented /api/v1 count
+    # 60 -> 62; EXPECTED_ROUTES total (the 62 above + `/` + `/ws/activity`) 62 -> 64.
+    ("/api/v1/data", ("DELETE",)),
+    ("/api/v1/data/export", ("GET",)),
     ("/ws/activity", None),                                    # websocket: methods is None
 ]
 

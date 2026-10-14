@@ -5,9 +5,8 @@ import { API_BASE } from "./_helpers";
  * V7/S5 — the /usage ledger page (V7-T15): page 200, the ledger table present, the export
  * affordance present.
  *
- * SOFT-MARKED until the V10 e2e lab round: F-04 — the e2e lab run predates this lane's commit
- * (the page did not exist when the lab last ran), so this spec is WRITTEN now and FIRST EXECUTED
- * at V10. The V10 seat removes the `test.fixme` mark below and runs it against the live stack.
+ * V10/H2: the fixme mark is REMOVED and this spec runs against the live stack (the page and the
+ * runs contract it reads both answered live in the V10 lab round; assertions re-verified).
  *
  * Every expectation is derived from the SAME API body the page reads — GET /api/v1/runs serves
  * `{items, total}` with `total` the full filtered count, and the page's declared-total footer
@@ -22,7 +21,7 @@ type RunsBody = {
 };
 
 test.describe("Usage ledger page", () => {
-  test.fixme(
+  test(
     "the ledger renders GET /runs with a truthful declared total and an export affordance (V10 lab)",
     async ({ page, request }) => {
       const api = await request.get(`${API_BASE}/api/v1/runs?limit=50&offset=0`);

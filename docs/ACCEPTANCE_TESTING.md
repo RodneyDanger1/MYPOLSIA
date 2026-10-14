@@ -78,7 +78,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Feature | Acceptance criteria | Test type |
 |---|---|---|
 | Docker stack starts | All 7 services healthy after `make up` | Manual / `docker-build.yml` CI |
-| Database migrations | `make init-db` succeeds, all 17 tables present | Manual |
+| Database migrations | `make init-db` succeeds, all 22 tables present | Manual |
 | Health endpoint | `GET /api/v1/health` → `{"status":"ok"}` | E2E |
 | Authentication | Requests without `X-API-Key` return 401 | Unit (all API tests) |
 | WebSocket | Connect to `WS /ws/activity`, receive events from agent runs | Unit + E2E |

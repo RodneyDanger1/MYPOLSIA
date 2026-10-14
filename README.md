@@ -19,7 +19,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
               │                       │                   │
      ┌────────▼────────┐   ┌──────────▼──────┐  ┌────────▼──────┐
      │  PostgreSQL 16  │   │  Redis + Celery  │  │  ChromaDB     │
-     │  (17 tables)    │   │  (task queue)    │  │  (vector mem) │
+     │  (22 tables)    │   │  (task queue)    │  │  (vector mem) │
      └─────────────────┘   └──────────────────┘  └───────────────┘
 ```
 
@@ -156,6 +156,18 @@ quietly relaxed. Each one names its measurement.
   OAuth client secret of a client this deployment does not ship) — and
   `CELERY_WORKER_CONCURRENCY`, documented as owned by the docker-compose launch command
   (`--concurrency=4`), not the app (R20/R23). `DEBUG`/`LOG_JSON` are consumed by `app/main.py` (R22).
+- **F-02 (the default API key) is half-closed by design; the key ROTATION is deliberately not
+  executed.** The fresh-eyes defect sweep (F-02: `build/ui-reverse/u6-research/fresh-eyes/DEFECT-SWEEP.md`
+  §F-02; ruled on in `build/ui-reverse/u6-analysis/U6-MAJOR-REPORT.md` item 2) measured the owner API
+  protected only by the compose/Dockerfile default key while nginx published port 80 on `0.0.0.0`.
+  The loopback half shipped (V7-T08, D1): nginx binds `127.0.0.1:80:80` only, so the network exposure
+  the sweep measured is closed. Rotating `API_KEY`/`NEXT_PUBLIC_API_KEY` away from the shipped default
+  is **deliberately not executed** — re-measured 2026-10-14 (V10, hash-only): `API_KEY` is still the
+  default (sha256 prefix `7e9f8fd111`) and `.env` overrides no `NEXT_PUBLIC_API_KEY` — because a
+  rotation needs a coordinated `.env` change plus a frontend rebuild while the loopback bind already
+  removes the measured exposure. Do it BEFORE ever publishing this stack beyond localhost: set both
+  to a private value and rebuild the frontend image (they must match; see "Running the stack without
+  Docker" above).
 
 ## Development
 
@@ -264,7 +276,7 @@ polsia/
 │   │   │   └── finance/
 │   │   ├── api/v1/          # REST endpoints + WebSocket
 │   │   ├── core/            # DB, Redis, ChromaDB, events, security
-│   │   ├── models/          # SQLAlchemy ORM (17 tables)
+│   │   ├── models/          # SQLAlchemy ORM (22 tables)
 │   │   ├── schemas/         # Pydantic request/response models
 │   │   └── services/        # Business logic layer
 │   ├── celery_app/          # Celery worker, Beat schedule, tasks
@@ -274,7 +286,7 @@ polsia/
 │       └── integration/     # Testcontainers (real Postgres + Redis)
 ├── frontend/
 │   └── src/
-│       ├── app/             # Next.js 14 pages (9 routes)
+│       ├── app/             # Next.js 14 pages (ELEVEN routes)
 │       ├── components/      # ActivityFeed, MetricsCard, AgentStatusGrid, Sidebar
 │       ├── hooks/           # useActivityFeed (WebSocket), useAgentStatus (polling)
 │       └── lib/             # Typed API client
@@ -285,6 +297,55 @@ polsia/
 ├── docker-compose.ci.yml    # CI override (CLAUDE_CLI_MOCK=true, no nginx)
 └── Makefile
 ```
+
+## Volumes & Backup (five volumes, one command)
+
+The stack's state lives in five named Docker volumes; `make backup` snapshots all of it into
+`backups/` (gitignored):
+
+| Volume | Holds |
+|--------|-------|
+| `postgres_data` | the PostgreSQL 16 data directory — every table (tasks, runs, reports, invoices, chat, memory rows, company config) |
+| `backend_data` | `/app/data` — the DeepSeek **key store** (`data/deepseek_api_key.json`) plus backend runtime files; `chroma_data` nests under it |
+| `chroma_data` | `/app/data/chroma` — the ChromaDB vector store (rebuildable from `memory_entries`, backed up anyway) |
+| `celery_beat_data` | `/app/celerybeat` — the beat clock (when each periodic entry last fired) |
+| `redis_data` | the Redis AOF — the Celery broker's queue state |
+
+```bash
+make backup                     # backups/polsia-<date>.sql + backups/<volume>.tgz (4 data volumes)
+make restore SRC=backups        # prints the drill steps; verifies the dump exists first
+```
+
+`make backup` requires the stack to be up (`docker-compose up -d`) and REFUSES by name when a
+volume is missing — `docker run -v` would otherwise CREATE a missing volume and tar it empty, i.e.
+a green-looking, worthless backup. Verify what landed: the `.sql` should be non-trivial in size,
+and `tar tzf backups/backend_data.tgz` should list files.
+
+### Restore drill (scratch compose project — never the live stack)
+
+1. Scratch project: its own directory with its own copy of `docker-compose.yml`; start from
+   empty with `docker compose -p scratch down -v`.
+2. Seed each data volume from its tar (volume names take the SCRATCH project's prefix):
+   `docker run --rm -v scratch_<volume>:/d -v "$(pwd)/backups":/b alpine sh -c "tar xzf /b/<volume>.tgz -C /d"`
+   — once for `backend_data`, `chroma_data`, `celery_beat_data` and `redis_data`.
+3. Load the dump: `docker compose -p scratch up -d postgres`, then
+   `docker compose -p scratch exec -T postgres psql -U polsia polsia < backups/polsia-<date>.sql`.
+4. Boot it: `docker compose -p scratch up -d`.
+5. Smoke: `curl -fsS http://localhost/api/v1/health` returns `{"status":"ok"}`, and ONE dashboard
+   page renders real restored rows (not the empty state).
+
+### Data export & wipe
+
+- `GET /api/v1/data/export` (owner key) streams a ZIP — `MANIFEST.json` (member names + row
+  counts as exported) + CSVs (tasks, agent_runs, activity_log, revenue_snapshots, invoices,
+  task_schedules) + JSON (memory_entries, chat_messages). The DeepSeek key store and `.env`
+  contents are never in it.
+- `DELETE /api/v1/data?dry_run=true` reports WOULD-delete counts (deletes nothing; no token
+  needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
+  and keeps `company_config` + the key store. The token is **single-use**, minted through
+  `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 62 routes (the
+  60 documented through V9 plus these two), pinned route-by-route in `backend/tests/parity/`.
 
 ## CI/CD
 
