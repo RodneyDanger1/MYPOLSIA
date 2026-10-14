@@ -37,7 +37,7 @@ from app.schemas.report import (
 )
 from app.services.activity_service import get_recent_activity
 from app.services.query_helpers import agent_rollup_expr, fetch_one, fetch_scalars
-from app.services.report_service import get_daily_report
+from app.services.report_service import build_cash_block, get_daily_report
 
 logger = logging.getLogger(__name__)
 
@@ -134,12 +134,19 @@ async def dashboard_daily_report(
     report_date: date | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> DailyReportResponse | None:
-    """200 with `null` when no report exists for the day (NOT 404)."""
+    """200 with `null` when no report exists for the day (NOT 404).
+
+    V9 B2: the response also carries the live `cash_block` (cash/tax) — composed here from the
+    existing finance reads, so the block reflects the CURRENT money state next to the day's
+    report text; a missing input renders null + reason on the block itself.
+    """
     with refusal_guard():
         report = await get_daily_report(db, report_date or today_in())
-    if report is None:
-        return None
-    return DailyReportResponse.model_validate(report)
+        if report is None:
+            return None
+        response = DailyReportResponse.model_validate(report)
+        response.cash_block = await build_cash_block(db)
+    return response
 
 
 @router.get("/reports")

@@ -5,6 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui";
 import { api } from "@/lib/api";
 
+import { NOT_MEASURED } from "./format";
+// V9/B5: the cash/tax block prints money, so it uses the ONE house money formatter the finance
+// surfaces share ($1,234.56 / em dash for null) rather than a private dialect.
+import { usdText } from "@/components/finance/format";
+
 import { DocumentsOverlay } from "./DocumentsOverlay";
 import { PanelError, PanelSkeleton } from "./states";
 
@@ -24,6 +29,26 @@ type DailyReport = {
   tasks_completed: number;
   tasks_failed: number;
   updated_at: string | null;
+  /** V9/B2's additive cash/tax block (the daily report builder's new field). Optional AND
+   *  nullable: an older report row predates the block and a fresh builder that could not measure
+   *  any input serves null — both mean "not measured", and neither may render as $0.00. */
+  cash_block?: CashBlock | null;
+};
+
+/** The cash block's wire shape (plan §9 B2): money inputs are nullable-with-a-reason. Money here is
+ *  DOLLARS, not cents — the house names every cents field `*_cents` (mrr_cents, amount_cents,
+ *  stripe_balance_cents), and this block's fields carry no such suffix. */
+type CashBlock = {
+  cash_on_hand: number | null;
+  in_30d: number | null;
+  out_30d: number | null;
+  tax_set_aside: number | null;
+  next_tax_dates: string[] | null;
+  safe_harbor_note: string | null;
+  /** B2's tax guardrails, additive: the per-deployment sales-tax reading and a field-level reason. */
+  sales_tax_note?: string | null;
+  cash_reason?: string | null;
+  reason?: string | null;
 };
 
 /**
@@ -132,6 +157,101 @@ function ReportBody({ report }: { report: DailyReport }) {
           No summary text was recorded for this report.
         </p>
       )}
+      <CashTaxBlock block={report.cash_block ?? null} />
     </div>
+  );
+}
+
+/** The per-field reason a null money input carries on the wire (B2's "null + reason" rule). The
+ *  block may name one reason for the whole block or one per field; whichever is present is what the
+ *  reader gets, and when neither is there the sentence says exactly that. */
+function fieldReason(block: CashBlock, field: string): string | null {
+  const perField = (block as unknown as Record<string, unknown>)[`${field}_reason`];
+  if (typeof perField === "string" && perField !== "") return perField;
+  if (typeof block.cash_reason === "string" && block.cash_reason !== "") return block.cash_reason;
+  if (typeof block.reason === "string" && block.reason !== "") return block.reason;
+  return null;
+}
+
+/**
+ * The cash/tax block (plan §9 B2): cash on hand, the next 30 days in and out, what is set aside for
+ * tax, the four quarterly dates and the safe-harbor note — each read straight off the daily report.
+ *
+ * Null-honest: an input the builder could not measure renders the em dash plus the reason, NEVER a
+ * zero (a `$0.00` here would read as "the business has no cash" — a different and much worse
+ * claim). When the whole block is null (no report builder ran, or none of its inputs exist) the
+ * section says so instead of disappearing, because a silently missing money panel is the failure
+ * mode this project keeps fixing.
+ *
+ * The tax line is PERSISTENT: it renders with the block in BOTH states — populated and unmeasured —
+ * so the one surface that shows money earmarked for tax always carries its disclaimer.
+ */
+function CashTaxBlock({ block }: { block: CashBlock | null }) {
+  const moneyRows: ReadonlyArray<{ label: string; field: keyof CashBlock; testId: string }> = [
+    { label: "Cash on hand", field: "cash_on_hand", testId: "cash-on-hand" },
+    { label: "In — next 30 days", field: "in_30d", testId: "cash-in-30d" },
+    { label: "Out — next 30 days", field: "out_30d", testId: "cash-out-30d" },
+    { label: "Set aside for tax", field: "tax_set_aside", testId: "cash-tax-set-aside" },
+  ];
+
+  if (block === null) {
+    return (
+      <section className="mt-3 border-t border-line pt-2" data-testid="cash-tax-block">
+        <h3 className="ui-label text-ink-muted">Cash &amp; tax</h3>
+        <p className="mt-1 text-sm text-ink-muted" data-testid="cash-block-unmeasured">
+          Cash block not measured — no cash inputs have been measured for this report yet. The
+          builder serves null rather than 0 for every input it could not read.
+        </p>
+        <TaxDisclaimer />
+      </section>
+    );
+  }
+
+  const dates = Array.isArray(block.next_tax_dates) ? block.next_tax_dates : [];
+
+  return (
+    <section className="mt-3 border-t border-line pt-2" data-testid="cash-tax-block">
+      <h3 className="ui-label text-ink-muted">Cash &amp; tax</h3>
+      <dl className="mt-1 space-y-1">
+        {moneyRows.map(({ label, field, testId }) => {
+          const reason = block[field] === null ? fieldReason(block, String(field)) : null;
+          return (
+            <div key={testId} className="flex items-baseline justify-between gap-3">
+              <dt className="ui-label text-ink-muted">{label}</dt>
+              <dd className="ui-label text-ink" data-testid={testId}>
+                {usdText(block[field] as number | null | undefined)}
+                {reason ? <span className="ml-1 text-ink-muted">{reason}</span> : null}
+              </dd>
+            </div>
+          );
+        })}
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="ui-label text-ink-muted">Next tax dates</dt>
+          <dd className="ui-label text-ink" data-testid="cash-next-tax-dates">
+            {dates.length > 0 ? dates.join(" · ") : NOT_MEASURED}
+          </dd>
+        </div>
+      </dl>
+      <p className="mt-1 text-sm text-ink-muted" data-testid="cash-safe-harbor">
+        {block.safe_harbor_note && block.safe_harbor_note !== ""
+          ? block.safe_harbor_note
+          : "No safe-harbor note was recorded for this report."}
+      </p>
+      {block.sales_tax_note && block.sales_tax_note !== "" ? (
+        <p className="mt-1 text-sm text-ink-muted" data-testid="sales-tax-note">
+          {block.sales_tax_note}
+        </p>
+      ) : null}
+      <TaxDisclaimer />
+    </section>
+  );
+}
+
+/** One string, one place: the disclaimer cannot drift. */
+function TaxDisclaimer() {
+  return (
+    <p className="ui-label mt-1 text-ink-muted" data-testid="tax-disclaimer">
+      Not tax advice — verify with MN Revenue.
+    </p>
   );
 }

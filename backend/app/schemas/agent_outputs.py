@@ -270,11 +270,34 @@ class EmailDraft(BaseModel):
     sendgrid_id: str | None = Field(default=None, max_length=255)     # None while sandboxed
 
 
+class FollowUpDraft(BaseModel):
+    """ONE planned follow-up touch (R4 OUTREACH-2/3, V9/B3).
+
+    Additive: `EmailOutreachOutput.follow_ups` defaults to `[]`, so every pre-V9 payload
+    validates unchanged.  When present, each entry names the prospect, the touch number
+    (`step` — a follow-up is never the first touch, so 2..10), how many days AFTER THE SEND
+    it is due (`due_in_days` — the chain's cadence: 2-4, then ~4, then ~5 per Appendix A6)
+    and the NEW angle it opens with (never "just checking in").  `step`/`due_in_days` are
+    the numbers the chain's plumbing reads: `outreach_service.record_sent_emails` persists
+    the earliest `due_in_days` per prospect as `email_logs.follow_up_due`, which the
+    every-3h follow-up sweep fires.
+    """
+
+    prospect_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
+    step: int = Field(default=2, ge=2, le=10)
+    due_in_days: int = Field(ge=1, le=90)
+    angle: str = Field(min_length=1, max_length=300)
+
+
 class EmailOutreachOutput(AgentEnvelope):
     action: Literal["find", "draft", "send", "noop"] = "draft"
     prospects: list[ProspectDraft] = Field(default_factory=list, max_length=50)
     emails: list[EmailDraft] = Field(default_factory=list, max_length=25)
     follow_ups_scheduled: int = Field(default=0, ge=0, le=1000)
+    # V9/B3: the chain, additive — each entry is one planned follow-up touch (FollowUpDraft).
+    # Default `[]`: an output without the key keeps its exact old meaning, and the worker's
+    # persist path writes `follow_up_due` from these entries only when they are stated.
+    follow_ups: list[FollowUpDraft] = Field(default_factory=list, max_length=25)
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +681,7 @@ __all__ = [
     "FailureCode",
     "FailedPayment",
     "FinanceOutput",
+    "FollowUpDraft",
     "OrchestratorPlan",
     "PostedItem",
     "ProspectDraft",

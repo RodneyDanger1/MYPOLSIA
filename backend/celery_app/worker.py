@@ -23,5 +23,7 @@ app.config_from_object("celery_app.celery_config")  # this also installs beat_sc
 import celery_app.tasks.agent_tasks  # noqa: E402,F401
 import celery_app.tasks.cadence  # noqa: E402,F401  (V8/C2: same registry requirement as above)
 import celery_app.tasks.daily_cycle  # noqa: E402,F401
+import celery_app.tasks.dunning  # noqa: E402,F401  (V9/B4: same registry requirement as above)
+import celery_app.tasks.followups  # noqa: E402,F401  (V9/B3: same registry requirement as above)
 import celery_app.tasks.maintenance  # noqa: E402,F401
 import celery_app.tasks.night_task  # noqa: E402,F401  (U5/P3: same registry requirement as above)

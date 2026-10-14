@@ -43,6 +43,10 @@ class DailyReportResponse(ORMModel):
     insights: list[str] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # V9 B2: the cash/tax block is COMPOSED by the daily-report route from live finance reads
+    # (report_service.build_cash_block) — it is not a `daily_reports` column, so the ORM row
+    # leaves it at this default and the route fills it in.  None = not attached (no report).
+    cash_block: dict[str, Any] | None = None
 
 
 class DashboardSummaryResponse(BaseModel):

@@ -146,7 +146,7 @@ async def get_full_context(
     tz_name: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """{} when no company row exists; otherwise company/kpis/goals/yesterday/todays_tasks.
+    """{} when no company row exists; otherwise company/kpis/goals/yesterday/todays_tasks/idea_brief.
 
     Never cached when empty (see module docstring).  The returned dict is always a
     copy, so a caller cannot mutate the cached context or another caller's view.
@@ -218,6 +218,11 @@ async def get_full_context(
         "goals": company.goals or {},
         "yesterday_summary": evening_summary,
         "todays_tasks": todays_tasks,
+        # V9/B1 rule (e), additive: the business idea the owner confirmed via
+        # /api/v1/planner/confirm (`company_config.confirmed_idea`, 0008).  None = nothing
+        # confirmed yet; the key is ALWAYS present so planner-gated consumers (the morning
+        # plan's "tie every task to a milestone in idea_brief" rule) read one stable shape.
+        "idea_brief": company.confirmed_idea,
         "as_of": today_in(tz).isoformat(),
     }
 
@@ -278,6 +283,26 @@ def build_context_prompt(context: dict[str, Any] | None) -> str:
         else:
             for value in goals:
                 lines.append(f"- {value}")
+
+    idea_brief = context.get("idea_brief")
+    if isinstance(idea_brief, dict):
+        # V9/B1: the confirmed idea renders into every prompt this builder serves (the
+        # agent-layer path carries the key through the context dict; base_agent.py is
+        # frozen-read for seat b1, so this renderer is the honest in-territory path).
+        lines.append("")
+        lines.append("CONFIRMED IDEA (idea_brief):")
+        for label, key in (
+            ("IDEA", "name"),
+            ("ONE-LINER", "one_liner"),
+            ("BUYER", "buyer"),
+            ("CHANNEL", "channel"),
+        ):
+            value = idea_brief.get(key)
+            if value:
+                lines.append(f"{label}: {value}")
+        band = idea_brief.get("price_band")
+        if isinstance(band, list) and len(band) == 2:
+            lines.append(f"PRICE BAND: {band[0]}-{band[1]}")
 
     yesterday = context.get("yesterday_summary")
     if yesterday:

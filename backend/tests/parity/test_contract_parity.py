@@ -81,7 +81,18 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/finance/revenue"),
     ("GET", "/api/v1/finance/expenses"),
     ("GET", "/api/v1/finance/events"),
+    # wave V9 (B2, V9-D3): the planning view — documented by app/api/v1/finance.py
+    # (build_planning_view) and tests/unit/test_v9_planning.py; route verified live in app.routes
+    # as [GET] on this path (checked 2026-10-14). OLD surface had no planning route.
+    ("GET", "/api/v1/finance/planning"),
     ("POST", "/api/v1/finance/stripe/webhook"),
+    # wave V9 (B2, V9-D3): the money-core surface of wave V9 — the DATED pricing-catalog snapshot
+    # read (documented by app/api/v1/pricing.py), the per-agent quality read (app/api/v1/ops.py)
+    # and the site PACKAGE export (app/api/v1/site.py); routes verified live in app.routes as
+    # [GET]/[GET]/[POST] on these paths (checked 2026-10-14). OLD surface had none of them.
+    ("GET", "/api/v1/pricing"),
+    ("GET", "/api/v1/ops/agent-quality"),
+    ("POST", "/api/v1/site/package"),
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     ("GET", "/api/v1/ads/campaigns"),
@@ -110,6 +121,18 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # incident (documented by app/api/v1/ops.py and tests/unit/api/test_r22_ops_events.py).
     ("GET", "/api/v1/ops/events/stats"),
     ("POST", "/api/v1/ops/events/reset"),
+    # wave V9 settle (V9-D3, parent): the planner / invoices / economics routes — documented by
+    # app/api/v1/planner.py, app/api/v1/invoices.py, app/api/v1/economics.py and their unit
+    # suites; verified live in app.routes (checked 2026-10-14). Count 51 -> 60.
+    ("GET", "/api/v1/planner/status"),
+    ("POST", "/api/v1/planner/propose"),
+    ("POST", "/api/v1/planner/confirm"),
+    ("GET", "/api/v1/invoices"),
+    ("POST", "/api/v1/invoices"),
+    ("GET", "/api/v1/invoices/{invoice_id}"),
+    ("POST", "/api/v1/invoices/{invoice_id}/send"),
+    ("POST", "/api/v1/invoices/{invoice_id}/void"),
+    ("GET", "/api/v1/economics/context"),
 ]
 
 DOCUMENTED_AGENTS = {
@@ -138,6 +161,10 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
     # V8/C2: the every-15-min due-schedule tick (`celery_app.tasks.cadence.run_due_schedules`) —
     # children are JUST-IN-TIME (one per due schedule per due instant), never materialized ahead.
     "task-cadence",
+    # V9/B3: the outreach follow-up sweep (every 3 h; per-log dedupe key).
+    "email-followups",
+    # V9/B4 (parent settle): the invoice dunning ladder (daily; once-per-step activity ledger).
+    "invoice-dunning",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -153,6 +180,10 @@ REQUIRED_SCHEDULED_TASKS = {
     # V8/C2: the cadence tick exists AND is scheduled — the same "declared but never scheduled"
     # defect this set exists to catch.
     "celery_app.tasks.cadence.run_due_schedules",
+    # V9/B3 + V9/B4 (parent settle): the follow-up sweep and the dunning ladder are declared AND
+    # scheduled — the same defect class.
+    "celery_app.tasks.followups.run_follow_up_sweep",
+    "celery_app.tasks.dunning.run_dunning_ladder",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus

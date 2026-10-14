@@ -139,6 +139,15 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/dashboard/summary": SUMMARY,
     "/tasks": [TASK_ROW],
     "/dashboard/reports/daily": REPORT,
+    // V9/B5 fixture addition (recorded in the lane receipt): BusinessPanel's GROSS MARGIN row reads
+    // the planning view's margin_template. The row renders a MEASURED margin here, so this suite's
+    // em-dash count (absent MRR + absent churn) is unchanged — no assertion was touched.
+    "/finance/planning": {
+      burn_line_items: [],
+      capacity: null,
+      margin_template: { price: 500, ai_cost: 20, human_hours: 3, human_rate: 40, margin: 0.38 },
+      pricing_guardrails: [],
+    },
     "/social/posts": [POST],
     "/outreach/prospects": [PROSPECT],
     "/ads/campaigns": [CAMPAIGN],

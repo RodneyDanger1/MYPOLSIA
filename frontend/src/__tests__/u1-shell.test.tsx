@@ -52,6 +52,9 @@ const MENU_ROUTES = [
   "/dashboard",
   "/agents",
   "/tasks",
+  // V9/B5 moved this pin 10 -> 11 in the SAME commit that added the Planner nav item: the
+  // dropdown is generated from NAV_ITEMS, so the count here is a claim about the real table.
+  "/planner",
   "/social",
   "/outreach",
   "/ads",
@@ -112,7 +115,7 @@ describe("topbar control cluster", () => {
 });
 
 describe("MENU nav dropdown", () => {
-  it("is collapsed until pressed, then carries all ten routes", async () => {
+  it("is collapsed until pressed, then carries all eleven routes", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
 
@@ -125,7 +128,7 @@ describe("MENU nav dropdown", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const nav = screen.getByRole("navigation", { name: "Main" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(10);
+    expect(links).toHaveLength(11);
     expect(links.map((link) => link.getAttribute("href"))).toEqual([...MENU_ROUTES]);
     for (const item of NAV_ITEMS) {
       expect(within(nav).getByRole("link", { name: new RegExp(item.label, "i") })).toBeInTheDocument();
@@ -191,7 +194,8 @@ describe("MENU nav dropdown", () => {
     expect(nav).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: /dashboard/i })).toHaveFocus();
 
-    for (let i = 0; i < 10; i += 1) {
+    // Eleven items, so eleven tabs leave the panel (the pin moved with the nav table).
+    for (let i = 0; i < 11; i += 1) {
       await user.tab();
     }
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
@@ -416,7 +420,7 @@ describe("design tokens", () => {
 });
 
 describe("MenuNav standalone", () => {
-  it("renders the same ten routes as the shared nav table", async () => {
+  it("renders the same eleven routes as the shared nav table", async () => {
     const user = userEvent.setup();
     render(<MenuNav />);
     await user.click(screen.getByTestId("nav-menu-trigger"));

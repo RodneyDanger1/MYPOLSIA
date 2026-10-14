@@ -59,7 +59,42 @@ export function DeepSeekKeyOnboarding() {
     }
   };
 
-  if (configured !== false || dismissed) return null;
+  if (configured !== false || dismissed) {
+    // V9/B5 — the key-OK state gains its next step (plan §9 B5: the "Plan my company" link after
+    // the key lands). Additive: the NOT-configured banner below is untouched, and so is the rule
+    // that an UNKNOWN status renders nothing at all. Same dismissal, so the pair is never a nag.
+    if (configured === true && !dismissed) {
+      return (
+        <div
+          role="status"
+          data-testid="planner-onboarding"
+          className="card-surface flex items-start justify-between gap-4 px-4 py-3"
+        >
+          <div>
+            <p className="flex items-center gap-2">
+              <Chip variant="accent">Ready</Chip>
+              <span className="text-sm font-bold text-ink">The agents are switched on</span>
+            </p>
+            <p className="mt-1 text-sm text-ink-muted">
+              A DeepSeek key is configured. The planner can research candidate businesses and draft
+              them against your hours and budget — nothing runs from a proposal until you confirm it.
+            </p>
+            <Link href="/planner" className="link mt-2 inline-block text-xs">
+              Plan my company
+            </Link>
+          </div>
+          <button
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="ui-label text-ink-muted hover:text-ink"
+          >
+            ×
+          </button>
+        </div>
+      );
+    }
+    return null;
+  }
 
   return (
     <div

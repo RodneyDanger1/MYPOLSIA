@@ -24,13 +24,18 @@ from app.api.v1 import (
     chat,
     config,
     dashboard,
+    economics,
     finance,
     health,
+    invoices,
     memory,
     notifications,
     ops,
     outreach,
+    planner,
+    pricing,
     schedules,
+    site,
     social,
     support,
     tasks,
@@ -286,6 +291,15 @@ def create_app() -> FastAPI:
     api_v1.include_router(auto_mode.router)  # wave U5 (P2/B22): the bounded Auto Mode window (start/status/stop, owner)
     api_v1.include_router(runs_router)       # wave U5 (P4/B8): the agent_runs usage ledger read + export (owner)
     api_v1.include_router(schedules.router)  # wave V8 (C2): the owner's scheduled task prompts (CRUD; pause = PATCH enabled=false)
+    # wave V9 (B2, V9-D3): the money surfaces this seat owns — the pricing-catalog read, the
+    # finance planning view, the agent-quality read (ops) and the static-site package export.
+    api_v1.include_router(pricing.router)    # V9: the 50-row pricing catalog read (owner)
+    api_v1.include_router(site.router)       # V9 (R5 #4): site PACKAGE export — no hosting, no promises (owner)
+    # wave V9 settle (V9-D3): the remaining writers' routers, wired here in ONE parent commit with
+    # their parity-pin moves — parallel-write timing makes a per-seat main.py owner nondeterministic.
+    api_v1.include_router(planner.router)    # V9 (B1): the idea planner — propose/confirm/status (owner)
+    api_v1.include_router(invoices.router)   # V9 (B4): invoices v1 — create/list/get/send/void (owner)
+    api_v1.include_router(economics.router)  # V9 (B7): keyless macro context — inflation/CPI/FX (owner)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

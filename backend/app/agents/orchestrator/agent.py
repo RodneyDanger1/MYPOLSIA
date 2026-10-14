@@ -47,6 +47,7 @@ Rules for the plan:
   uses these for scheduling and for the pre-dispatch budget gate.
 - `acceptance` states the observable condition that means the task succeeded.
 - Never plan work with no KPIs or revenue link, and never plan the same task twice in a day.
+- Every planned task must tie to a milestone in idea_brief or be justified in one sentence.
 
 Set `key_focus` to the single theme that matters most today and `summary` to a 2-4 sentence plan
 narrative a founder could read on a dashboard."""
@@ -68,6 +69,68 @@ cannot tie to a row above.
 
 Set `tasks` to [] (planning happens in the morning) and `key_focus` to the single thing to watch
 tomorrow. Use status="partial" if the ledger you were given is incomplete."""
+
+#: The 7-day success-rate floor the morning report's ONE weekly quality line reacts to (§9 B2(e)).
+WEEKLY_QUALITY_FLOOR = 0.8
+
+
+def weekly_quality_drop(quality: Any) -> dict[str, Any] | None:
+    """The weekly quality drop record, or None when nothing is below the floor.
+
+    `quality` is the runtime-supplied 7-day snapshot (`{agent_type: {success_rate, runs_7d}}`,
+    the same measurement `GET /api/v1/ops/agent-quality` reports).  The orchestrator holds no DB
+    session BY DESIGN — a planner that can act is a planner that can be injected into acting — so
+    the measurement arrives through the run's context (the worker-side injection pattern
+    `context["channel_sends"]` already uses).  An absent or unmeasured snapshot yields None: no
+    line, no guess.
+
+    Deterministic: agents with a measured rate below `WEEKLY_QUALITY_FLOOR` are ordered
+    worst-first (ties by name); the record names the floor, each breaching agent's rate, and the
+    ONE line the morning plan carries.  The runtime that supplies the snapshot is also what
+    records the `agent_quality_drop` activity row (cross-file need recorded in the wave's
+    STATE.md — agents hold no session, so a row cannot be written from here).
+    """
+    if not isinstance(quality, dict):
+        return None
+    breachers: list[tuple[float, str, Any]] = []
+    for agent_type, stats in quality.items():
+        if not isinstance(stats, dict):
+            continue
+        rate = stats.get("success_rate")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            continue
+        if float(rate) < WEEKLY_QUALITY_FLOOR:
+            breachers.append((float(rate), str(agent_type), stats.get("runs_7d")))
+    if not breachers:
+        return None
+    breachers.sort(key=lambda item: (item[0], item[1]))
+    rate, agent_type, runs = breachers[0]
+    runs_note = (
+        f" over {int(runs)} runs"
+        if isinstance(runs, int) and not isinstance(runs, bool)
+        else ""
+    )
+    others = len(breachers) - 1
+    more = f" (+{others} more agent(s) below the floor)" if others else ""
+    line = (
+        f"Weekly quality watch: {agent_type} succeeded on {rate:.0%} of its last-7-day runs"
+        f"{runs_note} — below the {WEEKLY_QUALITY_FLOOR:.0%} floor{more}; review before scaling "
+        "work to it."
+    )
+    return {
+        "floor": WEEKLY_QUALITY_FLOOR,
+        "line": line,
+        "agents": [
+            {"agent_type": name, "success_rate": value, "runs_7d": count}
+            for value, name, count in breachers
+        ],
+    }
+
+
+def weekly_quality_line(quality: Any) -> str | None:
+    """The ONE deterministic line the morning report carries — or None (see `weekly_quality_drop`)."""
+    drop = weekly_quality_drop(quality)
+    return None if drop is None else str(drop["line"])
 
 
 class OrchestratorAgent(BasePolsiaAgent):
@@ -127,6 +190,19 @@ class OrchestratorAgent(BasePolsiaAgent):
             payload.setdefault("insights", [])
             payload["planned_task_count"] = len(tasks)
             payload["plan_titles"] = [t.get("title") for t in tasks]
+            # §9 B2(e): ONE weekly quality line — appended AFTER the model's narrative so it
+            # cannot be dropped: the 7-day measurement is deterministic and its absence from the
+            # report would be the silence the contract forbids.  The structured drop rides on the
+            # payload for the runtime that records the `agent_quality_drop` activity row.
+            quality_drop = weekly_quality_drop(
+                context.get("agent_quality") if isinstance(context, dict) else None
+            )
+            if quality_drop is not None:
+                summary = str(payload.get("summary") or "").strip()
+                payload["summary"] = (
+                    f"{summary} {quality_drop['line']}".strip() if summary else str(quality_drop["line"])
+                )
+                payload["agent_quality_drop"] = quality_drop
         else:
             discarded = [t for t in (payload.get("tasks") or []) if isinstance(t, dict)]
             payload["tasks"] = []
@@ -142,4 +218,4 @@ class OrchestratorAgent(BasePolsiaAgent):
         return self.attach_run_meta(payload, assembled=assembled)
 
 
-__all__ = ["EVENING_PROMPT", "MORNING_PROMPT", "OrchestratorAgent"]
+__all__ = ["EVENING_PROMPT", "MORNING_PROMPT", "WEEKLY_QUALITY_FLOOR", "OrchestratorAgent", "weekly_quality_drop", "weekly_quality_line"]

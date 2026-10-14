@@ -8,6 +8,7 @@ import {
   Mail,
   Megaphone,
   Settings,
+  Target,
   Twitter,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -17,9 +18,9 @@ import type { LucideIcon } from "lucide-react";
  *
  * The live product has no persistent nav rail — its IA lives in the top-right
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
- * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes ten
- * pages, so the dropdown carries those ten routes; the labels stay as short as
- * the live menu items.
+ * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes eleven
+ * pages (V9/B5 added Planner), so the dropdown carries those eleven routes; the
+ * labels stay as short as the live menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -33,6 +34,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: BarChart2 },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/tasks", label: "Tasks", icon: BriefcaseBusiness },
+  // V9/B5: the planner (plan §9 B1/B5) sits right after Tasks — the two work surfaces.
+  { href: "/planner", label: "Planner", icon: Target },
   { href: "/social", label: "Social", icon: Twitter },
   { href: "/outreach", label: "Outreach", icon: Mail },
   { href: "/ads", label: "Ads", icon: Megaphone },

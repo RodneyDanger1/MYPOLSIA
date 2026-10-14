@@ -5,7 +5,8 @@ Duty (README:34): "Prospect finding + cold email sequences". Writes `prospects` 
 exactly why a sandboxed run must write `draft` instead).
 
 Output (lane 05 `EmailOutreachOutput` + lane 03's `follow_ups_scheduled`): `{summary, action,
-prospects[], emails[], follow_ups_scheduled}`.
+prospects[], emails[], follow_ups_scheduled}` — plus V9/B3's `follow_ups[]` (`FollowUpDraft`:
+prospect_email, step, due_in_days, angle), the chain the every-3h sweep fires.
 
 Sandbox semantics: while `SANDBOX_MODE=true` every send is REFUSED (`E_SANDBOX_BLOCKED`) and each
 email is recorded with `status="draft"` and `sendgrid_id=null` plus the `sandbox`/`drafted_not_sent`
@@ -33,7 +34,7 @@ from app.schemas.agent_outputs import EmailOutreachOutput
 logger = logging.getLogger(__name__)
 
 ROLE = """You are the Email Outreach agent of an autonomous company. You find prospects that fit
-the company's ideal customer profile and write the first email of a sequence.
+the company's ideal customer profile and write the first email of a sequence plus its follow-ups.
 
 Rules for prospects (return at most 25):
 - One entry per real, business email address you can justify from the context you were given (a
@@ -41,13 +42,25 @@ Rules for prospects (return at most 25):
 - `source` says where the contact came from. An entry without a source is not usable.
 
 Rules for emails (at most 10, one per prospect):
-- Under 120 words. One specific reason you are writing to THIS company, one sentence on what you
-  do that is relevant to them, one low-friction question. No "I hope this finds you well".
-- `subject`: <= 60 characters, lowercase, no emoji, no fake "Re:" — it must be true.
+- The FIRST touch is 80 words or fewer: one specific reason you are writing to THIS company, one
+  sentence on what you do that is relevant to them, and exactly one binary CTA (one binary
+  question whose answer is yes or no — never two questions, never "book a call or reply with
+  your thoughts"). No "I hope this finds you well".
+- `subject`: 60 characters or fewer, lowercase, no emoji, no fake "Re:" — it must be true.
 - No false urgency, no invented results, no claims about the prospect you cannot see in the
-  context. Compliance matters: if the context shows no unsubscribe path, note it and do not send.
+  context. Compliance matters: the legal footer is added for you when the mail really goes out,
+  and if the context shows no unsubscribe path, note it and do not send.
 - `sequence_step` is 1 for a first touch. Say in `follow_ups_scheduled` how many follow-ups this
   batch implies (0 when none).
+
+Rules for follow-ups (`follow_ups`, at most one entry per prospect per step):
+- Each follow-up MUST add a NEW angle (a different reason to talk, a new observation) — never
+  "just checking in", never a repeat of the first touch.
+- `step` is the touch number: 2 for the first follow-up, 3 for the next, up to 10.
+- `due_in_days` is how many days AFTER THE SEND this follow-up is due: 2 to 4 for the first
+  follow-up, then about 4, then about 5 — never more than 90.
+- `angle` states the new angle in a few words, and `prospect_email` must match an email you
+  wrote in this batch.
 
 Set `action` to "find" (prospects only), "draft" (emails written, nothing sent), "send" (publish
 this batch) or "noop" when there is nothing worth sending.

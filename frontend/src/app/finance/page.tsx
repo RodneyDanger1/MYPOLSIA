@@ -5,11 +5,12 @@ import { useCallback, useState } from "react";
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { FinanceListPanel, type FinanceColumn } from "@/components/finance/FinanceListPanel";
 import { FinanceSummaryGrid } from "@/components/finance/FinanceSummaryGrid";
-import { centsText, countText, textOrDash } from "@/components/finance/format";
-import { IdleNotice, ReadError, SummarySkeleton } from "@/components/finance/states";
+import { centsText, countText, textOrDash, usdText } from "@/components/finance/format";
+import { IdleNotice, ListSkeleton, ReadError, SummarySkeleton } from "@/components/finance/states";
 import { isIdleSummary } from "@/components/finance/summary";
 import type { ExpenseRow, RevenueSnapshotRow, StripeEventRow } from "@/components/finance/types";
 import { useFinanceRead } from "@/components/finance/useFinanceRead";
+import { Card, Chip } from "@/components/ui";
 import type { FinanceSummary } from "@/lib/api";
 
 /**
@@ -70,6 +71,297 @@ const EVENT_COLUMNS: FinanceColumn<StripeEventRow>[] = [
   { key: "customer", label: "Customer", value: (row) => textOrDash(row.customer_id) },
 ];
 
+/* -------------------------------------------------------------------------------------------
+ * V9/B5 — the Planning panel (plan §9 B2's `GET /api/v1/finance/planning`).
+ *
+ * The endpoint answers the burn line items, the capacity reading from the owner's hours, and the
+ * margin template — with anything it could not measure served as `null` PLUS the reason. This panel
+ * is that contract rendered, and it never improves on it:
+ *   - a null input is the em dash (the project's one "not measured" marker) and, when the payload
+ *     names a reason, the reason is printed next to it;
+ *   - a whole segment that came back null says "not measured" and why, instead of a grid of dashes;
+ *   - `pricing_guardrails` (R3's anti-patterns) render as flag chips WHEN PRESENT — an empty list is
+ *     a real answer and simply has no warnings to show;
+ *   - a body carrying none of the planning fields at all (a wrong or truncated read) is named as
+ *     such rather than rendered as three empty segments.
+ * ----------------------------------------------------------------------------------------- */
+
+/** See `BusinessPanel.marginPercentText` for why the unit is disambiguated rather than assumed:
+ *  B2's contract pins the field name, not whether a fraction or a percent is on the wire. */
+function planningPercentText(value: number): string {
+  if (!Number.isFinite(value)) return NOT_MEASURED;
+  // Fraction vs already-a-percent: see `BusinessPanel.marginPercentText`. One decimal for the
+  // fraction branch, the server's own digits for the percent branch.
+  if (Math.abs(value) <= 1) return `${(value * 100).toFixed(1)}%`;
+  return `${value}%`;
+}
+
+type BurnLineItem = {
+  label: string;
+  monthly_usd: number | null;
+  source: string | null;
+  reason?: string | null;
+};
+
+type PlanningCapacity = {
+  hours_per_client_lo: number | null;
+  hours_per_client_hi: number | null;
+  max_clients: number | null;
+  mrr_at_capacity: number | null;
+  break_even_clients: number | null;
+};
+
+type MarginTemplate = {
+  price: number | null;
+  ai_cost: number | null;
+  human_hours: number | null;
+  human_rate: number | null;
+  margin: number | null;
+};
+
+type PlanningView = {
+  burn_line_items?: BurnLineItem[] | null;
+  burn_reason?: string | null;
+  capacity?: PlanningCapacity | null;
+  capacity_reason?: string | null;
+  margin_template?: MarginTemplate | null;
+  margin_reason?: string | null;
+  pricing_guardrails?: string[] | null;
+  reason?: string | null;
+};
+
+/* -------------------------------------------------------------------------------------------
+ * Market context (parent scope amendment, owner-driven): ONE compact mono line fed by
+ * `GET /api/v1/economics/context`, whose frozen shape is
+ *   {inflation: {value, period, source, fetched_at} | null (+ reason), fx: <same> | null (+ reason),
+ *    generated_at}
+ * The line shows the facts that EXIST with their source label and fetched-at date, and states the
+ * reason for any section the endpoint could not measure. A failed read is named as a failure. No
+ * value is ever inferred, rounded, unit-guessed or hidden.
+ * ----------------------------------------------------------------------------------------- */
+
+type MarketFact = {
+  value?: string | number | null;
+  period?: string | null;
+  /** fx-shape (V9 settle): the frankfurter section carries a DATE + a rates map, no `value`. */
+  date?: string | null;
+  rates?: Record<string, number> | null;
+  source?: string | null;
+  fetched_at?: string | null;
+  /** Present inside the section when the value is answered-but-null — the dash's explanation. */
+  reason?: string | null;
+};
+
+type MarketContext = {
+  inflation?: MarketFact | null;
+  inflation_reason?: string | null;
+  fx?: MarketFact | null;
+  fx_reason?: string | null;
+  generated_at?: string | null;
+  reason?: string | null;
+};
+
+/** One fact, in the order the reader needs it: value, period, source label, fetch stamp. */
+function marketFactText(label: string, fact: MarketFact | null | undefined, reason: string | null): string {
+  if (!fact) {
+    return `${label} ${NOT_MEASURED} not measured: ${reason ?? "the read gave no reason"}`;
+  }
+  // The fx section measures RATES, not a single value; render the map rather than dropping it.
+  const ratesText =
+    fact.rates && typeof fact.rates === "object"
+      ? Object.entries(fact.rates)
+          .map(([code, rate]) => `${code} ${rate}`)
+          .join(" · ")
+      : null;
+  const absent = fact.value === null || fact.value === undefined;
+  const parts: string[] = [absent ? (ratesText ?? NOT_MEASURED) : String(fact.value)];
+  if (fact.period) parts.push(fact.period);
+  if (fact.date) parts.push(fact.date);
+  if (fact.source) parts.push(`source ${fact.source}`);
+  if (fact.fetched_at) parts.push(`fetched ${absoluteStamp(fact.fetched_at)}`);
+  // A null value answered INSIDE the section carries its own reason — the dash must be explained.
+  if (absent && !ratesText && fact.reason) parts.push(fact.reason);
+  return `${label} ${parts.join(" · ")}`;
+}
+
+function MarketContextStrip({ reloadKey }: { reloadKey: number }) {
+  const { data, error, loading } = useFinanceRead<MarketContext>("/economics/context", reloadKey);
+
+  if (loading) {
+    return (
+      <p className="ui-label text-ink-muted" aria-busy="true" data-testid="market-context-loading">
+        {/* Q-06's law applies to every region on this page: a loading state says "Loading…", it
+            never prints the not-measured marker (which means "read, and nothing was there"). */}
+        Market context: Loading…
+      </p>
+    );
+  }
+  if (error !== null) {
+    // Named, in the alert voice colour, but NOT an ARIA alert: this page's one live alert region is
+    // the summary's own failure, and an auxiliary read that fails must inform without hijacking it.
+    return (
+      <p className="text-sm text-alert" data-testid="market-context-error">
+        Market context could not be read: {error}
+      </p>
+    );
+  }
+
+  const context = data ?? {};
+  return (
+    <p className="ui-label text-ink-muted" data-testid="market-context">
+      <span data-testid="market-context-inflation">
+        {marketFactText("Inflation", context.inflation, context.inflation_reason ?? context.reason ?? null)}
+      </span>
+      {" · "}
+      <span data-testid="market-context-fx">
+        {marketFactText("FX", context.fx, context.fx_reason ?? context.reason ?? null)}
+      </span>
+      {context.generated_at ? <>{" · "}as of {absoluteStamp(context.generated_at)}</> : null}
+    </p>
+  );
+}
+
+/** A bare reading, in its own element so the marker is exactly the marker (nothing appended to it
+ *  that would make "—" unreadable as one value). */
+function Reading({ text }: { text: string }) {
+  return <span className="ui-label text-ink">{text}</span>;
+}
+
+function moneyOrDash(value: number | null | undefined): string {
+  return usdText(value);
+}
+
+function NumberRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="ui-label text-ink-muted">{label}</dt>
+      <dd>
+        <Reading text={value} />
+      </dd>
+    </div>
+  );
+}
+
+function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
+  const { data, error, loading } = useFinanceRead<PlanningView>("/finance/planning", reloadKey);
+  const view = data !== null && typeof data === "object" && !Array.isArray(data) ? data : null;
+
+  const recognised =
+    view !== null &&
+    (view.burn_line_items !== undefined ||
+      view.capacity !== undefined ||
+      view.margin_template !== undefined ||
+      view.pricing_guardrails !== undefined);
+
+  return (
+    <Card title="Planning" data-testid="finance-planning">
+      {loading ? <ListSkeleton testId="finance-planning-loading" /> : null}
+      {!loading && error !== null ? (
+        // The same sentence `ReadError` prints, without its `role="alert"`: this page owns exactly
+        // one live alert region (the summary's), and u3-finance pins that an auxiliary read failing
+        // must not raise a second one. The failure is still NAMED here, in the alert voice.
+        <p className="text-sm text-alert" data-testid="planning-read-error">
+          Could not load the finance planning view: {error}
+        </p>
+      ) : null}
+
+      {!loading && error === null && view !== null && !recognised ? (
+        <p className="text-sm text-ink-muted" data-testid="planning-unrecognised">
+          The planning read answered without any planning fields — no burn items, capacity or margin
+          inputs came back, so there is nothing on this read to show.
+        </p>
+      ) : null}
+
+      {!loading && error === null && view !== null && recognised ? (
+        <div className="space-y-3">
+          {/* Burn line items */}
+          {Array.isArray(view.burn_line_items) && view.burn_line_items.length > 0 ? (
+            <ul className="space-y-1" data-testid="planning-burn">
+              {view.burn_line_items.map((item, index) => (
+                <li key={`${item.label}-${index}`} className="flex items-baseline justify-between gap-3">
+                  <span className="ui-label text-ink-muted">{item.label}</span>
+                  <span className="text-right">
+                    <Reading text={moneyOrDash(item.monthly_usd)} />
+                    <span className="ml-2 text-xs text-ink-muted">
+                      {item.monthly_usd === null
+                        ? (item.reason ?? "no reason was recorded for this input")
+                        : item.source
+                          ? item.source
+                          : "source not recorded"}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-ink-muted" data-testid="planning-burn-empty">
+              No burn line items were measured{view.burn_reason ? ` — ${view.burn_reason}` : ""}.
+            </p>
+          )}
+
+          {/* Capacity from the owner's available hours */}
+          {view.capacity ? (
+            <dl className="space-y-1" data-testid="planning-capacity">
+              <NumberRow
+                label="Hours per client"
+                value={`${countText(view.capacity.hours_per_client_lo)}–${countText(
+                  view.capacity.hours_per_client_hi,
+                )}`}
+              />
+              <NumberRow label="Max clients" value={countText(view.capacity.max_clients)} />
+              <NumberRow label="MRR at capacity" value={usdText(view.capacity.mrr_at_capacity)} />
+              <NumberRow label="Break-even clients" value={countText(view.capacity.break_even_clients)} />
+            </dl>
+          ) : (
+            <p className="text-sm text-ink-muted" data-testid="planning-capacity-unmeasured">
+              Capacity is not measured — {view.capacity_reason ?? "the owner's hours per week are not configured"}.
+            </p>
+          )}
+
+          {/* The margin template */}
+          {view.margin_template ? (
+            <dl className="space-y-1" data-testid="planning-margin">
+              <NumberRow label="Price" value={usdText(view.margin_template.price)} />
+              <NumberRow label="AI cost" value={usdText(view.margin_template.ai_cost)} />
+              <NumberRow label="Human hours" value={countText(view.margin_template.human_hours)} />
+              <NumberRow label="Human rate" value={usdText(view.margin_template.human_rate)} />
+              <NumberRow
+                label="Margin"
+                value={
+                  view.margin_template.margin === null
+                    ? NOT_MEASURED
+                    : planningPercentText(view.margin_template.margin)
+                }
+              />
+            </dl>
+          ) : (
+            <p className="text-sm text-ink-muted" data-testid="planning-margin-unmeasured">
+              The margin template is not measured — {view.margin_reason ?? "no price or cost inputs are configured"}.
+            </p>
+          )}
+
+          {/* R3's pricing-model guardrails: rendered when present, silent when empty */}
+          {Array.isArray(view.pricing_guardrails) && view.pricing_guardrails.length > 0 ? (
+            <ul className="flex flex-wrap gap-2" data-testid="planning-guardrails">
+              {view.pricing_guardrails.map((warning, index) => (
+                <li key={`${warning}-${index}`}>
+                  <Chip variant="soft" className="text-amber-800">
+                    {warning}
+                  </Chip>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* The market strip is its own read with its own three states, so it renders in EVERY
+          planning state above — a broken planning read must not take the market line with it. */}
+      <MarketContextStrip reloadKey={reloadKey} />
+    </Card>
+  );
+}
+
 export default function FinancePage() {
   const [reloadKey, setReloadKey] = useState(0);
   const { data, error, loading } = useFinanceRead<FinanceSummary>("/finance/summary", reloadKey);
@@ -119,6 +411,10 @@ export default function FinancePage() {
       {!loading && error === null && summary !== null && !idle ? (
         <FinanceSummaryGrid summary={summary} />
       ) : null}
+
+      {/* V9/B5: the planning panel reads its own endpoint and keeps its own three states, so a
+          failed planning read cannot blank the finance page (and vice versa). */}
+      <FinancePlanningPanel reloadKey={reloadKey} />
 
       <FinanceListPanel
         title="Revenue"

@@ -8,7 +8,10 @@ such an item.  This service is the ingest that populates it:
 * `submit_item`    — the owner (via `POST /api/v1/support/inbox`) or a future IMAP poller
   stores one message.  `provider_message_id` is the unique ingest key: a re-submitted id
   returns the STORED row unchanged (at-least-once delivery must not duplicate, and must
-  never overwrite a stored customer message with whatever arrived second).
+  never overwrite a stored customer message with whatever arrived second).  R4 OUTREACH-3
+  (V9/B3): the ingest ALSO stamps `replied_at` on the matching prospect's unstamped
+  `email_logs` rows (`stamp_prospect_replied` below) — one reply stops the follow-up chain,
+  because the every-3h sweep (`celery_app/tasks/followups.py`) filters on that column.
 * `attach_pending` — the 3h sweep's helper (`celery_app/tasks/agent_tasks.py`,
   `_email_inbox_sweep`): oldest-first pending items become one deduped CS task each,
   carrying `metadata.inbox_item` in the RD12 shape; the item is then marked `dispatched`
@@ -38,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant, dialect_name, now_utc
+from app.models.outreach import EmailLog, Prospect
 from app.models.support import SupportInboxItem
 from app.models.task import Task
 from app.services.query_helpers import fetch_scalars
@@ -98,6 +102,48 @@ def _require_text(field: str, value: object, *, max_len: int | None = None) -> s
     return text
 
 
+async def stamp_prospect_replied(
+    db: AsyncSession, *, from_address: str, now: datetime | None = None
+) -> dict[str, Any]:
+    """R4 OUTREACH-3 (V9/B3): an ingested message FROM a stored prospect is a REPLY — stamp it.
+
+    One answer stops the whole chain: EVERY `email_logs` row of the matched prospect that has
+    not been stamped yet gets `replied_at` = this instant — the exact column the every-3h
+    follow-up sweep filters on (`replied_at IS NULL` in
+    `celery_app/tasks/followups.py`), so no future follow-up for that prospect can fire.
+    Rows already stamped keep their original instant: a second reply is not a new stop, and
+    re-stamping would rewrite WHEN the chain actually stopped.
+
+    Matching is a case-insensitive compare on the full address (`prospects.email` is stored
+    as given; mailboxes differ only by case in practice).  No match is an ANSWER, not an
+    error — an inbound message from a non-prospect is simply not a chain event, and the
+    report says so: `{"matched": False, "prospect_id": None, "stamped": 0}`.  Flush only —
+    the caller commits (this service's transaction discipline).
+    """
+    address = (from_address or "").strip().lower()
+    if not address:
+        return {"matched": False, "prospect_id": None, "stamped": 0}
+    prospect_id = (
+        await db.execute(select(Prospect.id).where(func.lower(Prospect.email) == address).limit(1))
+    ).scalar_one_or_none()
+    if prospect_id is None:
+        return {"matched": False, "prospect_id": None, "stamped": 0}
+    stamped_ids = (
+        await db.execute(
+            update(EmailLog)
+            .where(EmailLog.prospect_id == prospect_id, EmailLog.replied_at.is_(None))
+            .values(replied_at=as_bound_instant(now or now_utc(), db))
+            .returning(EmailLog.id)
+            .execution_options(synchronize_session=False)
+        )
+    ).scalars().all()
+    logger.info(
+        "reply from prospect %s: %d email log(s) stamped replied_at — the follow-up chain stops",
+        address, len(stamped_ids),
+    )
+    return {"matched": True, "prospect_id": int(prospect_id), "stamped": len(stamped_ids)}
+
+
 async def submit_item(
     db: AsyncSession,
     *,
@@ -153,6 +199,11 @@ async def submit_item(
     )
     created = (await db.execute(stmt)).scalars().one_or_none()
     if created is not None:
+        # V9/B3 (R4 OUTREACH-3): a message FROM a stored prospect is a REPLY — stamp its chain
+        # in the SAME transaction as the ingest, so `replied_at` can never lag the reply it
+        # reports (the every-3h follow-up sweep filters on that column).  A duplicate delivery
+        # (the `existing` branch below) never re-stamps: it is not a new reply.
+        await stamp_prospect_replied(db, from_address=from_addr)
         return created
 
     existing = (
@@ -347,5 +398,6 @@ __all__ = [
     "count_expired_pending",
     "inbox_task_dedupe_key",
     "list_items",
+    "stamp_prospect_replied",
     "submit_item",
 ]

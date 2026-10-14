@@ -18,6 +18,7 @@ Three measured problems this module fixes:
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -38,8 +39,12 @@ from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, today_in
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
+from app.models.invoice import Invoice, InvoiceStatus
 from app.models.task import AgentRun
+from app.services.activity_service import log_activity
 from app.services.query_helpers import db_refusal, fetch_scalars
+
+logger = logging.getLogger(__name__)
 
 
 def money(value: Any) -> Decimal | None:
@@ -642,6 +647,15 @@ async def record_stripe_event(
     )
     created = (await db.execute(stmt)).scalars().one_or_none()
     if created is not None:
+        # V9/B4 additive hook — a NEWLY INGESTED failed-payment delivery also flips OUR invoice
+        # rows by `payment_link` match (plan §9 B4).  On the create leg ONLY: a replay of the
+        # same delivery re-reads the existing row and flips nothing twice.  Never raises (see
+        # `_flip_invoices_safely`): the webhook's 200 contract and Stripe's retry storm survive
+        # an additive-path failure, while the failure itself is still NAMED in the activity feed.
+        if event_type in FAILED_PAYMENT_EVENT_TYPES:
+            await _flip_invoices_safely(
+                db, event_id=stripe_event_id, event_type=event_type, payload=stored_payload
+            )
         return created
     # Replay: return the row that already exists.  `populate_existing` so a session
     # holding an older copy of that event cannot hand back stale fields.
@@ -714,8 +728,169 @@ async def recent_failed_payments(db: AsyncSession, limit: int = 20) -> list[dict
     ]
 
 
+# ── V9/B4 — the invoice webhook flip (ADDITIVE) ──────────────────────────────────────────────
+#: Length under which a string is not trusted as a real payment-link identifier/URL for the
+#: containment match (`plink_…` ids and `https://…` urls are both comfortably longer).
+_PAYMENT_LINK_MIN_TOKEN = 8
+
+
+def _payment_link_candidates(payload: Any) -> list[str]:
+    """Every payment-link identifier a failed-payment delivery names, in order, deduped.
+
+    Shape-driven, like `extract_payment_intent_id`: `data.object.payment_link` is Stripe's
+    reference to the link that produced the failed payment — a string id/url in the common
+    case, or an expanded object (then its `url`/`id`).  Anything else answers `[]` — there is
+    no candidate to fabricate one from.
+    """
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    data_object = data.get("object") if isinstance(data, dict) else None
+    if not isinstance(data_object, dict):
+        return []
+    raw = data_object.get("payment_link")
+    candidates: list[str] = []
+    if isinstance(raw, str) and raw.strip():
+        candidates.append(raw.strip())
+    elif isinstance(raw, dict):
+        for key in ("url", "id"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+    return list(dict.fromkeys(candidates))
+
+
+def _link_matches(stored: str, candidate: str) -> bool:
+    """Equality, or containment when BOTH sides are long enough to be a real token.
+
+    The same link may be stored as its `buy.stripe.com` URL while a delivery names the
+    `plink_…` id (or the reverse); a containment check bridges that without ever matching on
+    short, accidental substrings.
+    """
+    if stored == candidate:
+        return True
+    if len(stored) >= _PAYMENT_LINK_MIN_TOKEN and len(candidate) >= _PAYMENT_LINK_MIN_TOKEN:
+        return candidate in stored or stored in candidate
+    return False
+
+
+async def apply_failed_payment_to_invoices(
+    db: AsyncSession, *, event_id: str, event_type: str, payload: Any
+) -> dict[str, Any]:
+    """Flip OUR invoice rows to `overdue` for a failed-payment delivery — or name the miss.
+
+    ADDITIVE consumer of the failed-payment deliveries (`FAILED_PAYMENT_EVENT_TYPES`): the
+    `invoice.payment_failed` webhook path already persisted the event; when the delivery names
+    a `payment_link`, every invoice row whose stored `payment_link` matches flips
+    `sent -> overdue` — but ONLY from `sent` (draft/paid/void/overdue rows are left alone and
+    the no-flip is recorded too, never silent).  A delivery that matches NOTHING writes an
+    `invoice_payment_failed_unmatched` activity row naming the candidates — the plan's rule:
+    "no match possible becomes an activity row noting the miss — never silent".
+    """
+    candidates = _payment_link_candidates(payload)
+    rows = await fetch_scalars(
+        db, select(Invoice).where(Invoice.payment_link.is_not(None)), what="invoices with links"
+    )
+    matched: list[tuple[Invoice, str]] = []
+    for row in rows:
+        stored = str(row.payment_link or "")
+        hit = next((cand for cand in candidates if _link_matches(stored, cand)), None)
+        if hit is not None:
+            matched.append((row, hit))
+    if not matched:
+        named = ", ".join(candidates) if candidates else "none named by the delivery"
+        await log_activity(
+            db,
+            "finance",
+            "invoice_payment_failed_unmatched",
+            summary=(
+                f"failed payment {event_id} matched no invoice "
+                f"(payment_link candidates: {named})"
+            ),
+            level="warning",
+            detail={
+                "event_id": event_id,
+                "event_type": event_type,
+                "candidates": candidates,
+                "matched": 0,
+            },
+        )
+        return {"matched": 0, "flipped": []}
+    flipped: list[int] = []
+    for row, hit in matched:
+        from_status = row.status.value if isinstance(row.status, InvoiceStatus) else str(row.status)
+        if from_status == InvoiceStatus.SENT.value:
+            # The transition matrix's one enforcement point (lazy import: keeps this module's
+            # existing import graph untouched — the additive rule).
+            from app.services.invoice_service import transition_invoice
+
+            await transition_invoice(db, row, InvoiceStatus.OVERDUE)
+            await log_activity(
+                db,
+                "finance",
+                "invoice_payment_failed",
+                summary=f"Invoice {row.number} marked overdue: payment failed ({event_id})",
+                level="warning",
+                detail={
+                    "invoice_id": row.id,
+                    "number": row.number,
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "from_status": from_status,
+                    "matched_link": hit,
+                },
+            )
+            flipped.append(int(row.id))
+        else:
+            await log_activity(
+                db,
+                "finance",
+                "invoice_payment_failed_noop",
+                summary=(
+                    f"failed payment {event_id} matched invoice {row.number} but it is "
+                    f"{from_status}: no flip"
+                ),
+                detail={
+                    "invoice_id": row.id,
+                    "number": row.number,
+                    "event_id": event_id,
+                    "from_status": from_status,
+                },
+            )
+    return {"matched": len(matched), "flipped": flipped}
+
+
+async def _flip_invoices_safely(
+    db: AsyncSession, *, event_id: str, event_type: str, payload: Any
+) -> None:
+    """`apply_failed_payment_to_invoices` behind the webhook's 200 contract — never raises.
+
+    A broken flip must not 5xx the delivery (that is what triggers Stripe's retry storm), but
+    it must not be silent either: the failure is recorded as an activity row (and logged) —
+    the event row itself is already persisted, well-formed, and is returned to the caller.
+    """
+    try:
+        await apply_failed_payment_to_invoices(
+            db, event_id=event_id, event_type=event_type, payload=payload
+        )
+    except Exception as exc:  # noqa: BLE001 - documented contract: never raises
+        logger.exception("invoice flip for %s failed", event_id)
+        try:
+            await log_activity(
+                db,
+                "finance",
+                "invoice_payment_failed_flip_error",
+                summary=f"invoice flip for {event_id} failed: {type(exc).__name__}: {exc}",
+                level="warning",
+                detail={"event_id": event_id, "error": f"{type(exc).__name__}: {exc}"},
+            )
+        except Exception:  # noqa: BLE001 - a broken session cannot carry the record; the log does
+            logger.exception("invoice flip error row for %s could not be written", event_id)
+
+
 __all__ = [
     "FAILED_PAYMENT_EVENT_TYPES",
+    "apply_failed_payment_to_invoices",
     "extract_payment_intent_id",
     "get_ai_spend_summary",
     "get_finance_summary",

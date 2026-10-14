@@ -1,4 +1,4 @@
-"""Beat schedule — the 10 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 12 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -29,7 +29,15 @@ Rule used here:
   after its own slot describes a moment that has passed; the next tick re-takes it;
 * the V8 task cadence: **every 15 min, expires 15 min** — a cadence tick delivered after its own
   slot describes a moment that has passed; the due check + the per-child dedupe key (one child per
-  due instant) make a late tick harmless, and the next tick re-takes whatever is still due.
+  due instant) make a late tick harmless, and the next tick re-takes whatever is still due;
+* the V9 outreach follow-ups: **every 3 h, expires 3 h (one full period)** — the due check
+  (`follow_up_due <= now`, unanswered, `status='sent'`) plus the per-log dedupe key
+  (`followup:<log id>`) make a late tick harmless and a re-delivered tick a no-op, and the
+  next tick re-takes whatever is still due.
+* the V9 invoice dunning: **daily, expires 6 h** — the ladder is date-keyed and each step fires AT
+  MOST ONCE (the activity-row ledger), so a late tick cannot double-send and the next day re-takes
+  whatever is still due; the 6 h bound keeps a backlog from replaying stale steps into a new day's
+  schedule.
 
 Expired messages are dropped by the broker before dispatch; `run_agent_task` still claims
 atomically, so even a re-delivery cannot double-run a row.
@@ -87,6 +95,17 @@ beat_schedule = {
         "schedule": crontab(minute=30, hour="*/3"),
         "options": {"queue": "agents", "expires": 10800},
     },
+    # V9/B3: the outreach follow-up sweep — every 3 h, expires one full period.  It reads the
+    # overdue `email_logs` rows (`follow_up_due <= now`, `replied_at IS NULL`, `status='sent'`)
+    # and creates ONE deduped follow-up task per prospect (key `followup:<log id>`, one task
+    # per prospect per tick); nothing due writes nothing.  Queue `agents` — its children are
+    # email_outreach agent runs.  Registry note: the module's TASK_MODULES line is settle
+    # wiring (see `celery_app/tasks/followups.py`'s docstring).
+    "email-followups": {
+        "task": "celery_app.tasks.followups.run_follow_up_sweep",
+        "schedule": crontab(minute=0, hour="*/3"),
+        "options": {"queue": "agents", "expires": 10800},
+    },
     # Every 6h: sync ad metrics + Stripe failed payments
     "ads-stripe-sync": {
         "task": "celery_app.tasks.agent_tasks.run_ads_stripe_sync",
@@ -120,5 +139,13 @@ beat_schedule = {
         "task": "celery_app.tasks.maintenance.check_activity_publish_health",
         "schedule": crontab(minute="*/15"),
         "options": {"queue": "maintenance", "expires": 900},
+    },
+    # Daily 13:00 UTC (08:00 company-CT): the invoice dunning ladder — pre-due -3d, due day, +5,
+    # +15, +30 final. NEW entry — V9/B4 (parent settle; the ladder's once-per-step ledger makes a
+    # late or re-delivered tick harmless, and `expires` 6 h collapses deep backlogs).
+    "invoice-dunning": {
+        "task": "celery_app.tasks.dunning.run_dunning_ladder",
+        "schedule": crontab(minute=0, hour=13),
+        "options": {"queue": "agents", "expires": 21600},
     },
 }

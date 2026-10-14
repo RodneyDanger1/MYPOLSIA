@@ -229,6 +229,87 @@ async def _with_channel_sends(db: Any, agent_type: str, context: dict[str, Any])
     return {**context, "channel_sends": snapshot}
 
 
+async def _with_agent_quality(db: Any, agent_type: str, context: dict[str, Any]) -> dict[str, Any]:
+    """`context` plus the 7-day per-agent quality snapshot (V9/B2(e) worker hook).
+
+    Why worker-side: the orchestrator's ONE weekly quality line reads `context["agent_quality"]`
+    (`weekly_quality_drop` in the orchestrator agent), and agents hold no database session. The
+    SAME measurement `GET /api/v1/ops/agent-quality` serves is taken here, once, before an
+    orchestrator run — one producer, no duplicated aggregation.
+
+    A producer that cannot answer leaves the key ABSENT and warns: "unmeasured" must stay
+    distinguishable from "measured good" — an injected empty snapshot would silence the line.
+    Non-orchestrator runs return the context untouched (only the orchestrator reads this key).
+    """
+    if agent_type != "orchestrator":
+        return context
+    try:
+        from app.api.v1.ops import _agent_quality_rows
+
+        rows = await _agent_quality_rows(db)
+        snapshot = {
+            str(row["agent_type"]): {
+                "success_rate": row["success_rate"],
+                "runs_7d": row["runs_7d"],
+            }
+            for row in rows
+        }
+    except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated snapshot
+        logger.warning(
+            "code=agent_quality_unavailable: %s runs without the 7-day quality snapshot (%s)",
+            agent_type,
+            exc,
+            exc_info=True,
+        )
+        return context
+    return {**context, "agent_quality": snapshot}
+
+
+async def _log_quality_drop(db: Any, agent_type: str, drop: Any) -> bool:
+    """Record ONE `agent_quality_drop` activity row per week (V9/B2(e); True when written).
+
+    The orchestrator agent COMPUTES the record (`weekly_quality_drop`) but holds no session; the
+    worker owns the DB, so the row is written here on the run's own transaction. Dedupe on the
+    ledger itself: any `agent_quality_drop` row within the last 7 days makes this a no-op —
+    "once per week" is the plan's contract, and the ledger is the only clock it needs. A
+    non-dict (absent) drop is a no-op, not an error.
+    """
+    if not isinstance(drop, dict):
+        return False
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from app.core.timeutil import now_utc
+    from app.models.report import ActivityLog
+    from app.services.activity_service import log_activity
+    from app.services.query_helpers import fetch_one
+
+    week_ago = now_utc() - timedelta(days=7)
+    recent = await fetch_one(
+        db,
+        select(func.count())
+        .select_from(ActivityLog)
+        .where(
+            ActivityLog.action == "agent_quality_drop",
+            ActivityLog.created_at >= week_ago,
+        ),
+        what="recent agent quality drops",
+    )
+    count = int(recent[0]) if recent is not None else 0
+    if count:
+        return False
+    await log_activity(
+        db,
+        agent_type=agent_type,
+        action="agent_quality_drop",
+        summary=str(drop.get("line") or "7-day success rate below the floor"),
+        level="warning",
+        detail=drop,
+    )
+    return True
+
+
 async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any]) -> dict[str, Any]:
     """Persist what a finished run ACTUALLY performed, and report what happened.
 
@@ -624,6 +705,10 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
         # producer (agents hold no database session). Copy-on-write, own channels only.
         context = await _with_channel_sends(db, agent_type, context)
+        # V9/B2(e) worker hook: the 7-day per-agent quality snapshot the orchestrator's ONE
+        # weekly line reads — same "the worker owns the DB, the agent does not" reasoning as
+        # the channel counts above.
+        context = await _with_agent_quality(db, agent_type, context)
         # L2-03 seam: `tasks.attempts` — incremented by the claim — is the execution number this
         # run is; it lands on `agent_runs.attempt` so a retried run is distinguishable from its
         # predecessors (migration 0002's `ux_agent_runs_task_attempt` is only live once this is
@@ -762,6 +847,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         level="warning",
                         detail=persist_error,
                     )
+        if run_status == "completed" and isinstance(result, dict):
+            # V9/B2(e): the weekly quality drop's activity row — once per week, ledger-deduped.
+            await _log_quality_drop(db, agent_type, result.get("agent_quality_drop"))
         run_row = await finish_agent_run(
             db,
             run_id,

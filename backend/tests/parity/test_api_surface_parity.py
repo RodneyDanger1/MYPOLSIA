@@ -72,6 +72,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/dashboard/summary", ("GET",)),
     ("/api/v1/finance/events", ("GET",)),
     ("/api/v1/finance/expenses", ("GET",)),
+    # wave V9 (B2, V9-D3): the planning view (burn/capacity/margin + guardrails + tax notes,
+    # catalog provenance on the payload). OLD surface had no planning route — NEW pin added
+    # deliberately with the route. Owner-key.
+    ("/api/v1/finance/planning", ("GET",)),
     ("/api/v1/finance/revenue", ("GET",)),
     ("/api/v1/finance/stripe/webhook", ("POST",)),             # unauthenticated by design
     ("/api/v1/finance/summary", ("GET",)),
@@ -80,9 +84,16 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/memory", ("POST",)),
     ("/api/v1/memory/{memory_id}", ("DELETE",)),                # the memory-delete lane's route (R19); pinned here because R17 owns this file this wave and the lane left it unpinned
     ("/api/v1/notifications", ("GET",)),                          # wave U2 (B1): the bell's task-derived feed — OLD surface had no notifications route (Topbar.tsx refused the feature for its absence); NEW pin added deliberately with the route
+    # wave V9 (B2, V9-D3): the per-agent quality/economics read over the runs ledger (null-honest,
+    # deterministic). OLD surface had no agent-quality route — NEW pin added deliberately with the
+    # route. Owner-key, sibling of the R22 breaker rows below.
+    ("/api/v1/ops/agent-quality", ("GET",)),
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
     ("/api/v1/outreach/prospects", ("GET",)),
+    # wave V9 (B2, V9-D3): the DATED pricing-catalog snapshot read (provenance on the payload).
+    # OLD surface had no pricing route — NEW pin added deliberately with the route. Owner-key.
+    ("/api/v1/pricing", ("GET",)),
     # wave U5 (P4/B8): the usage-ledger read + export — OLD surface had no runs route; NEW pins
     # added deliberately (count 39 -> 41): GET /runs (filters, {items,total}) and GET /runs/export
     # (csv/json; row count == total). Owner-key.
@@ -95,6 +106,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/schedules", ("POST",)),
     ("/api/v1/schedules/{schedule_id}", ("DELETE",)),
     ("/api/v1/schedules/{schedule_id}", ("PATCH",)),
+    # wave V9 (B2, V9-D3; R5 #4): the static-site PACKAGE export — writes site-<slug>/ under
+    # backend/data/exports and returns the paths (NO hosting, no promises). OLD surface had no
+    # site route; NEW pin added deliberately with the route (count 48 -> 52 total this wave for
+    # B2's four). Owner-key.
+    ("/api/v1/site/package", ("POST",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)
@@ -102,6 +118,17 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/tasks", ("POST",)),
     ("/api/v1/tasks/{task_id}", ("GET",)),
     ("/api/v1/tasks/{task_id}/status", ("PATCH",)),               # T12/D20 (build/decisions/DECISIONS.md): the typed status write TaskStatusUpdate documents — OLD surface had no status route; NEW pin added deliberately with the route
+    # wave V9 settle (V9-D3, parent): the planner / invoices / economics routers, wired by the
+    # parent commit after their writers settled — each documented by its module + wave tests.
+    ("/api/v1/economics/context", ("GET",)),
+    ("/api/v1/invoices", ("GET",)),
+    ("/api/v1/invoices", ("POST",)),
+    ("/api/v1/invoices/{invoice_id}", ("GET",)),
+    ("/api/v1/invoices/{invoice_id}/send", ("POST",)),
+    ("/api/v1/invoices/{invoice_id}/void", ("POST",)),
+    ("/api/v1/planner/confirm", ("POST",)),
+    ("/api/v1/planner/propose", ("POST",)),
+    ("/api/v1/planner/status", ("GET",)),
     ("/ws/activity", None),                                    # websocket: methods is None
 ]
 

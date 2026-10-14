@@ -68,6 +68,14 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     },
     "/tasks": [],
     "/dashboard/reports/daily": null,
+    // V9/B5 fixture addition (recorded in the lane receipt): the Business panel's GROSS MARGIN row
+    // reads the planning view, so the page-level fixture map gains the row the render needs.
+    "/finance/planning": {
+      burn_line_items: [],
+      capacity: null,
+      margin_template: { price: 500, ai_cost: 20, human_hours: 3, human_rate: 40, margin: 0.38 },
+      pricing_guardrails: [],
+    },
     "/social/posts": [],
     "/outreach/prospects": [],
     "/ads/campaigns": [],

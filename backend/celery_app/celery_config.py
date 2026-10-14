@@ -52,6 +52,11 @@ TASK_MODULES = (
     # V8/C2: the task cadence's module — the same registry requirement as night_task above
     # (without it the new beat tick would arrive at a worker process as an unregistered task).
     "celery_app.tasks.cadence",
+    # V9/B3: the outreach follow-up sweep — same registry requirement as above (without this line
+    # the beat tick arrives at a worker process as an unregistered task).
+    "celery_app.tasks.followups",
+    # V9/B4 (parent settle): the invoice dunning ladder — same registry requirement.
+    "celery_app.tasks.dunning",
 )
 imports = TASK_MODULES
 include = TASK_MODULES

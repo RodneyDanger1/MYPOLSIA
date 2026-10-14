@@ -5,8 +5,39 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui";
 import { api, type DashboardSummary } from "@/lib/api";
 
-import { kpiText, moneyText, percentText } from "./format";
+import { NOT_MEASURED, kpiText, moneyText, percentText } from "./format";
 import { PanelError, PanelSkeleton } from "./states";
+
+/** The failure text for a read: `ApiError.display` (code + message + the server's fix hint) when the
+ *  error carries one — read STRUCTURALLY, because this panel is also rendered by suites that mock
+ *  `@/lib/api` down to `{api}`, where an `instanceof ApiError` check would throw. Anything else
+ *  shows its own message. */
+function readErrorText(e: unknown): string {
+  const display = (e as { display?: unknown } | null | undefined)?.display;
+  if (typeof display === "string" && display !== "") return display;
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** The planning view's margin template, as `GET /finance/planning` serves it (plan §9 B2). Typed
+ *  for the two fields this panel reads; every input is `number | null` (unmeasured = null + the
+ *  reason the endpoint names, never 0). */
+type PlanningView = {
+  margin_template?: { margin?: number | null } | null;
+  margin_reason?: string | null;
+  reason?: string | null;
+};
+
+/** A margin reading as a percentage. B2's contract does not pin the unit, so the reading is
+ *  disambiguated the only honest way available: a value inside [-1, 1] is a fraction (0.38 → 38.0%)
+ *  and anything else is already a percentage. Both land on the same rendered truth; a value neither
+ *  convention can express is not a reading at all and never prints. */
+function marginPercentText(value: number): string {
+  if (!Number.isFinite(value)) return NOT_MEASURED;
+  // A fraction (|v| ≤ 1) is scaled and shown to one decimal; a value that already IS a percentage
+  // is printed exactly as the server sent it — no false precision is added either way.
+  if (Math.abs(value) <= 1) return `${(value * 100).toFixed(1)}%`;
+  return `${value}%`;
+}
 
 /**
  * The left rail's business mini-panel — the live `Business` widget's slot, fed by
@@ -22,6 +53,11 @@ import { PanelError, PanelSkeleton } from "./states";
 export function BusinessPanel() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** V9 v1.1: the gross-margin row's own reading. `error` and `reason` are separate on purpose — a
+   *  failed read is named as a failure, an answered-but-unmeasured margin is named as unmeasured. */
+  const [margin, setMargin] = useState<{ value: number | null; reason: string | null; error: string | null }>(
+    { value: null, reason: null, error: null },
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -38,18 +74,46 @@ export function BusinessPanel() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<PlanningView>("/finance/planning")
+      .then((view) => {
+        if (cancelled) return;
+        const raw = view?.margin_template?.margin;
+        setMargin({
+          value: typeof raw === "number" && Number.isFinite(raw) ? raw : null,
+          reason: view?.margin_reason ?? view?.reason ?? null,
+          error: null,
+        });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setMargin({ value: null, reason: null, error: readErrorText(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const loading = summary === null && !error;
 
   return (
     <Card title="Business">
       {loading ? <PanelSkeleton rows={4} /> : null}
       {!loading && error ? <PanelError label="the dashboard summary" message={error} /> : null}
-      {!loading && !error && summary ? <BusinessRows summary={summary} /> : null}
+      {!loading && !error && summary ? <BusinessRows summary={summary} margin={margin} /> : null}
     </Card>
   );
 }
 
-function BusinessRows({ summary }: { summary: DashboardSummary }) {
+function BusinessRows({
+  summary,
+  margin,
+}: {
+  summary: DashboardSummary;
+  margin: { value: number | null; reason: string | null; error: string | null };
+}) {
   // The response model defaults `kpis` to `{}` server-side; the belt-and-braces `?? {}` only guards
   // against a transport that dropped the key entirely (a missing group must not throw).
   const kpis: Record<string, unknown> = summary.kpis ?? {};
@@ -67,13 +131,37 @@ function BusinessRows({ summary }: { summary: DashboardSummary }) {
   ];
 
   return (
-    <dl className="space-y-1">
-      {rows.map((row) => (
-        <div key={row.label} className="flex items-baseline justify-between gap-3">
-          <dt className="ui-label text-ink-muted">{row.label}</dt>
-          <dd className="ui-label text-ink">{row.value}</dd>
+    <>
+      <dl className="space-y-1">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-baseline justify-between gap-3">
+            <dt className="ui-label text-ink-muted">{row.label}</dt>
+            <dd className="ui-label text-ink">{row.value}</dd>
+          </div>
+        ))}
+        {/* V9 v1.1 — the GROSS MARGIN row. Its input is the planning view's margin template
+            (`GET /finance/planning`), not the dashboard summary: the margin is a planning-input
+            reading (price, AI cost, human hours × rate), so until those inputs exist the row is the
+            em dash PLUS the reason, and a read that failed is named here — never a made-up 0%. */}
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="ui-label text-ink-muted">Gross margin</dt>
+          <dd className="ui-label text-ink" data-testid="gross-margin-value">
+            {margin.value === null ? NOT_MEASURED : marginPercentText(margin.value)}
+          </dd>
         </div>
-      ))}
-    </dl>
+      </dl>
+      {margin.error !== null ? (
+        <p className="mt-2 text-xs text-ink-muted" data-testid="margin-read-error">
+          Gross margin could not be read: {margin.error}
+        </p>
+      ) : null}
+      {margin.error === null && margin.value === null ? (
+        <p className="mt-2 text-xs text-ink-muted" data-testid="margin-unmeasured">
+          {/* The sentence states the truth of the row, then the server's own reason when it named
+              one — the sentence is not the reason, it is what the dash means. */}
+          Gross margin is not measured yet — {margin.reason ?? "the planning inputs have not been measured yet"}.
+        </p>
+      ) : null}
+    </>
   );
 }

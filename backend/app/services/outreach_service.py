@@ -15,6 +15,7 @@ send-log read with no route/UI; the shipped email write path (agent -> worker ->
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.core.timeutil import dialect_name
+from app.core.timeutil import as_bound_instant, dialect_name
 from app.models.outreach import EmailLog, Prospect
 from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
 
@@ -100,6 +101,52 @@ async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Pros
         raise
 
 
+def _follow_up_due_at(
+    result: dict[str, Any], item: dict[str, Any], sent_at: datetime, db: AsyncSession
+) -> datetime | None:
+    """`sent_at` + the earliest due_in_days this send's prospect states — or None.
+
+    V9/B3: the output's `follow_ups[]` (`schemas.FollowUpDraft`) is the chain — one entry per
+    planned touch, each with `due_in_days` measured AFTER THE SEND.  The earliest entry for
+    THIS prospect is the touch the every-3h sweep must fire first, so it becomes
+    `email_logs.follow_up_due`.  A prospect with no entry — or an entry whose `due_in_days`
+    will not parse as a positive int — states no chain here: NULL.  The column is only ever
+    written from a stated number, and a malformed one is a named warning, not a guess.
+    """
+    address = str(item.get("prospect_email") or "").strip().lower()
+    if not address:
+        return None
+    due_days: list[int] = []
+    for entry in (result or {}).get("follow_ups") or []:
+        if isinstance(entry, dict):
+            entry_address = str(entry.get("prospect_email") or "").strip().lower()
+            raw = entry.get("due_in_days")
+        else:  # a Pydantic `FollowUpDraft` handed in by a direct caller
+            entry_address = str(getattr(entry, "prospect_email", "") or "").strip().lower()
+            raw = getattr(entry, "due_in_days", None)
+        if entry_address != address:
+            continue
+        if raw is None:
+            # absent due_in_days is not a stated cadence (the FollowUpDraft schema requires
+            # it; a raw dict can still omit it) — nothing to bind, nothing to warn about
+            continue
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "code=follow_up_due_unparseable: prospect=%s due_in_days=%r (chain ignored)",
+                address, raw,
+            )
+            continue
+        if days > 0:
+            due_days.append(days)
+    if not due_days:
+        return None
+    # Dialect-correct bind (the claim path's rule): SQLite compares naive UTC text, PostgreSQL
+    # an aware instant — the sweep reads the column with the same convention (`as_bound_instant`).
+    return as_bound_instant(sent_at + timedelta(days=min(due_days)), db)
+
+
 async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[str, Any]:
     """Persist the emails an email_outreach run REALLY sent — the worker calls this after `run()`.
 
@@ -123,6 +170,11 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
     vanished-duplicate race) stays batch-fatal: a session that may be poisoned must not be
     driven on. When at least one item was skipped the report is `ok=False` with the first
     skip's named error — visible in the run output and the worker's existing warning path.
+
+    V9/B3 (follow-up chain): a row this send writes also carries `follow_up_due` = `sent_at` +
+    the EARLIEST `due_in_days` the output's `follow_ups[]` states for its prospect — the number
+    the every-3h follow-up sweep (`celery_app/tasks/followups.py`) reads.  No stated chain ->
+    NULL, never a guessed date.
     """
     report: dict[str, Any] = {
         "ok": True,
@@ -185,6 +237,7 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
             # database and `RETURNING id` comes back empty.  No savepoint: a savepoint released
             # as the OUTERMOST transaction commits on SQLite (pysqlite legacy control), which
             # would break the "flush only — the worker owns the commit" contract.
+            sent_at = utcnow()
             created_id = (
                 await db.execute(
                     insert_fn(EmailLog)
@@ -194,7 +247,8 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                         body=str(item.get("body") or ""),
                         sendgrid_id=sendgrid_id,
                         status="sent",
-                        sent_at=utcnow(),
+                        sent_at=sent_at,
+                        follow_up_due=_follow_up_due_at(result, item, sent_at, db),
                     )
                     .on_conflict_do_nothing(
                         index_elements=["sendgrid_id"],

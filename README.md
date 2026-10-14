@@ -41,6 +41,8 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 
 Each agent runs on the provider-selectable runtime: DeepSeek-first (V4.1 Flash via the OpenAI-compatible API — enter the key in Settings or the dashboard banner; it is stored at `backend/data/deepseek_api_key.json`, masked, and changeable) with the Claude Code CLI (`claude -p "..." --output-format json`) as the fallback, which needs no API key — it authenticates via OAuth stored at `~/.claude`.
 
+Agent supervision tiers — auto / review / approve / human-only — each mapped to the code path that enforces it: [`docs/SUPERVISION.md`](docs/SUPERVISION.md).
+
 ## Prerequisites
 
 - Docker + Docker Compose

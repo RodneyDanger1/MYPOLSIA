@@ -42,14 +42,19 @@ import json
 import logging
 import math
 import time
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
 from app.core.errors import E_VALIDATION, ERROR_HINTS
+from app.core.timeutil import day_window, today_in
+from app.models.finance import ExpenseRecord
+from app.models.task import AgentRun
 from app.schemas.finance import (
     ExpenseRecordResponse,
     FinanceSummaryResponse,
@@ -57,6 +62,8 @@ from app.schemas.finance import (
     StripeEventResponse,
     StripeWebhookResponse,
 )
+from app.services import pricing_service
+from app.services.company_service import get_company
 from app.services.finance_service import (
     extract_payment_intent_id,
     get_ai_spend_summary,
@@ -66,6 +73,7 @@ from app.services.finance_service import (
     list_stripe_events,
     record_stripe_event,
 )
+from app.services.query_helpers import fetch_rows
 
 logger = logging.getLogger(__name__)
 
@@ -319,3 +327,283 @@ async def stripe_webhook(
             payment_intent_id=payment_intent_id,
         )
     return StripeWebhookResponse(received=True)
+
+
+# ── GET /finance/planning (V9 B2, plan §9 lines 451-456) ──────────────────────────────────────
+# The frozen object: burn_line_items / capacity / margin_template, inputs read from config and
+# the pricing catalog.  Anything unmeasured is null + a reason in `reasons` — NEVER 0.  The
+# planning math answers with the LOW band of the confirmed idea's price (conservative), and every
+# derived figure names the row or field it came from.
+
+#: Days of run-ledger history the AI-cost allocation reads.
+AI_SPEND_WINDOW_DAYS = 30
+
+
+def margin_fraction(price: Any, ai_cost: Any, human_hours: Any, human_rate: Any) -> float | None:
+    """`(price - (ai_cost + human_hours * human_rate)) / price` — null unless every input is measured.
+
+    A non-positive contribution is not a margin (the offer loses money per unit), so it is refused
+    as `None` rather than reported as a negative percentage that reads like a margin.
+    """
+    if any(value is None for value in (price, ai_cost, human_hours, human_rate)):
+        return None
+    price_f = float(price)
+    contribution = price_f - (float(ai_cost) + float(human_hours) * float(human_rate))
+    if price_f <= 0 or contribution <= 0:
+        return None
+    return contribution / price_f
+
+
+def break_even_clients(
+    burn_usd: Any, price: Any, ai_cost: Any, human_hours: Any, human_rate: Any
+) -> int | None:
+    """Clients needed to cover monthly burn at the given contribution — null when unmeasurable."""
+    if burn_usd is None or any(
+        value is None for value in (price, ai_cost, human_hours, human_rate)
+    ):
+        return None
+    contribution = float(price) - (float(ai_cost) + float(human_hours) * float(human_rate))
+    if contribution <= 0:
+        return None
+    return math.ceil(float(burn_usd) / contribution)
+
+
+def pricing_guardrails_for(idea: Any, pricing_model: Any) -> list[str]:
+    """R3's pricing-model anti-patterns as deterministic warnings (empty when clean).
+
+    Inspects STRUCTURED fields first (`pricing_model` / `model` / `billing` on the confirmed idea
+    or the company's pricing model), then the idea's own text; each warning names the term it
+    matched, so a warning is never an invented accusation.  Anti-patterns (RESEARCH §4d /
+    Appendix A2): hourly billing (speed earns less), uncapped flat fees (AI usage eats the
+    margin), performance/rev-share (attribution disputes — avoid in v1).
+    """
+    evidence: list[str] = []
+    if isinstance(idea, dict):
+        evidence.extend(
+            value
+            for key in ("name", "one_liner", "unit_cost_sketch", "pricing_model", "model", "billing")
+            if isinstance((value := idea.get(key)), str)
+        )
+    elif isinstance(idea, str):
+        evidence.append(idea)
+    if isinstance(pricing_model, dict):
+        evidence.extend(
+            value
+            for key in ("model", "type", "billing", "pricing_model")
+            if isinstance((value := pricing_model.get(key)), str)
+        )
+    elif isinstance(pricing_model, str):
+        evidence.append(pricing_model)
+    text = " ".join(evidence).lower()
+    if not text:
+        return []
+
+    warnings: list[str] = []
+    if "hourly" in text or "/hr" in text or "per hour" in text:
+        matched = "hourly" if "hourly" in text else ("/hr" if "/hr" in text else "per hour")
+        warnings.append(
+            f"Hourly pricing punishes speed (matched {matched!r}): as delivery gets faster the same "
+            "work earns less. Prefer fixed-scope productized tiers with usage caps (R3; RESEARCH §4d)."
+        )
+    capped = "usage cap" in text or "caps" in text or ("capped" in text and "uncapped" not in text)
+    if ("flat" in text or "fixed fee" in text) and not capped:
+        warnings.append(
+            "Flat fee with no usage cap: variable AI usage comes straight out of the margin when "
+            "the fee is fixed. Add an explicit usage cap or a metered tier (R3; RESEARCH §4d)."
+        )
+    if "rev-share" in text or "revenue share" in text or "% of revenue" in text or "performance" in text:
+        warnings.append(
+            "Performance / rev-share pricing needs attribution this business cannot settle yet "
+            "(attribution disputes are common) — avoid it in v1 (R3; Appendix A2)."
+        )
+    return warnings
+
+
+async def _burn_line_items(db: AsyncSession, reasons: dict[str, str]) -> list[dict[str, Any]]:
+    """The current month's measured expenses, one line per category (source-named)."""
+    month_start = today_in().replace(day=1)
+    month_end = (month_start + timedelta(days=32)).replace(day=1)
+    rows = await fetch_rows(
+        db,
+        select(ExpenseRecord.category, func.sum(ExpenseRecord.amount_cents))
+        .where(ExpenseRecord.date >= month_start, ExpenseRecord.date < month_end)
+        .group_by(ExpenseRecord.category)
+        .order_by(ExpenseRecord.category),
+        what="planning burn line items",
+    )
+    if not rows:
+        reasons["burn_line_items"] = (
+            f"no expense records for {month_start:%Y-%m} — monthly burn is unmeasured"
+        )
+        return []
+    items: list[dict[str, Any]] = []
+    for category, total_cents in rows:
+        if total_cents is None:
+            reasons[f"burn_line_items.{category}"] = "expenses in this category carry no measured amount"
+            continue
+        items.append(
+            {
+                "label": str(category or "uncategorized"),
+                "monthly_usd": round(float(total_cents) / 100, 2),
+                "source": f"expense_records {month_start:%Y-%m}",
+            }
+        )
+    return items
+
+
+async def _ai_spend_window_usd(db: AsyncSession) -> float | None:
+    """Measured AI spend over the last 30 company-local days — or None when it was never measured.
+
+    No runs in the window: the ledger has nothing, so the spend is UNMEASURED (not $0.00).  Runs
+    exist but none reported a cost: also unmeasured (the column staying NULL is documented).
+    """
+    start, _ = day_window(db, today_in() - timedelta(days=AI_SPEND_WINDOW_DAYS - 1))
+    rows = await fetch_rows(
+        db,
+        select(AgentRun.cost_usd).where(AgentRun.started_at >= start),
+        what="ai spend window",
+    )
+    costs = [float(row[0]) for row in rows if row[0] is not None]
+    if not costs:
+        return None
+    return sum(costs)
+
+
+async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
+    """The frozen planning object (plan §9 lines 451-456) with the tax + guardrail additions.
+
+    The capacity inputs (hours per client) come from the DATED catalog snapshot; the response
+    therefore carries the computed `catalog_as_of` / `staleness_days` / `stale` provenance so the
+    numbers can never read as live market truth (owner amendment, wave V9).
+    """
+    reasons: dict[str, str] = {}
+    today = today_in()
+    provenance = pricing_service.catalog_provenance(today)
+    company = await get_company(db)
+    burn_line_items = await _burn_line_items(db, reasons)
+    burn_total = (
+        round(sum(item["monthly_usd"] for item in burn_line_items), 2) if burn_line_items else None
+    )
+
+    idea = (
+        company.confirmed_idea
+        if company is not None and isinstance(company.confirmed_idea, dict)
+        else None
+    )
+    price: float | None = None
+    price_band = idea.get("price_band") if isinstance(idea, dict) else None
+    if (
+        isinstance(price_band, (list, tuple))
+        and price_band
+        and isinstance(price_band[0], (int, float))
+        and not isinstance(price_band[0], bool)
+    ):
+        price = float(price_band[0])
+    if price is None:
+        reasons["margin_template.price"] = (
+            "no confirmed idea with a numeric price band is configured (run the planner and "
+            "confirm a candidate)"
+        )
+
+    row = pricing_service.match_idea_row(
+        str(idea.get("name") or "") if isinstance(idea, dict) else None
+    )
+    hours = row.get("hours") if isinstance(row, dict) else None
+    hours_lo: float | None = None
+    hours_hi: float | None = None
+    if isinstance(hours, dict) and hours.get("low") is not None and hours.get("high") is not None:
+        hours_lo, hours_hi = float(hours["low"]), float(hours["high"])
+    else:
+        reason = (
+            f"the catalog row {row['service']!r} states no workload hours"
+            if isinstance(row, dict)
+            else "no catalog row matches the confirmed idea, so hours per client are unmeasured"
+        )
+        reasons["capacity.hours_per_client_lo"] = reason
+        reasons["capacity.hours_per_client_hi"] = reason
+
+    owner_hours = company.owner_hours_per_week if company is not None else None
+    monthly_hours: float | None = None
+    if isinstance(owner_hours, (int, float)) and not isinstance(owner_hours, bool):
+        monthly_hours = round(float(owner_hours) * 52 / 12, 2)
+    if monthly_hours is None:
+        reasons["capacity.max_clients"] = "owner_hours_per_week is not set in the company profile"
+
+    max_clients: int | None = None
+    if monthly_hours is not None and hours_hi:
+        max_clients = math.floor(monthly_hours / hours_hi)
+    elif "capacity.max_clients" not in reasons:
+        reasons["capacity.max_clients"] = (
+            "hours per client are unmeasured, so capacity cannot be divided honestly"
+        )
+
+    ai_spend = await _ai_spend_window_usd(db)
+    ai_cost: float | None = None
+    if max_clients and ai_spend is not None:
+        ai_cost = round(ai_spend / max_clients, 4)
+    elif ai_spend is None:
+        reasons["margin_template.ai_cost"] = (
+            f"no AI cost measured in the last {AI_SPEND_WINDOW_DAYS} days (no runs reported a cost)"
+        )
+    else:
+        reasons["margin_template.ai_cost"] = (
+            "no client capacity is measured, so the measured AI spend cannot be allocated per client"
+        )
+
+    human_rate: float | None = None
+    reasons["margin_template.human_rate"] = (
+        "no human hourly rate is configured anywhere (the owner profile carries hours, not a rate)"
+    )
+
+    margin = margin_fraction(price, ai_cost, hours_hi, human_rate)
+    if margin is None:
+        reasons["margin_template.margin"] = (
+            "needs a measured price, ai_cost, human_hours and human_rate — see the fields above"
+        )
+
+    mrr_at_capacity: float | None = None
+    if max_clients is not None and price is not None:
+        mrr_at_capacity = round(max_clients * price, 2)
+    else:
+        reasons["capacity.mrr_at_capacity"] = (
+            "needs both a measured client capacity and the confirmed idea's price band"
+        )
+
+    break_even = break_even_clients(burn_total, price, ai_cost, hours_hi, human_rate)
+    if break_even is None:
+        reasons["capacity.break_even_clients"] = (
+            "needs measured monthly burn and a positive per-client contribution (see the fields above)"
+        )
+
+    return {
+        "burn_line_items": burn_line_items,
+        "capacity": {
+            "hours_per_client_lo": hours_lo,
+            "hours_per_client_hi": hours_hi,
+            "max_clients": max_clients,
+            "mrr_at_capacity": mrr_at_capacity,
+            "break_even_clients": break_even,
+            "hours_per_client_source": str(row["service"]) if isinstance(row, dict) else None,
+        },
+        "margin_template": {
+            "price": price,
+            "ai_cost": ai_cost,
+            "human_hours": hours_hi,
+            "human_rate": human_rate,
+            "margin": margin,
+        },
+        "reasons": reasons,
+        "pricing_guardrails": pricing_guardrails_for(
+            idea, company.pricing_model if company is not None else None
+        ),
+        "sales_tax_note": pricing_service.SALES_TAX_NOTE,
+        "tax_disclaimer": pricing_service.TAX_DISCLAIMER,
+        **provenance,
+    }
+
+
+@router.get("/planning", dependencies=[Depends(verify_api_key)])
+async def finance_planning(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """The planning view: burn line items, capacity, margin template, guardrails, tax notes."""
+    with refusal_guard():
+        return await build_planning_view(db)
