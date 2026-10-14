@@ -470,6 +470,36 @@ async def claim_task(
     )
 
 
+async def claimable_task_ids(db: AsyncSession, *, limit: int) -> list[int]:
+    """The next `limit` task ids the dispatcher's claim would take, in the claim's OWN order.
+
+    READ-ONLY, by design: this is the selection half of `claim_task` (same `_claimable_filter`,
+    same `priority, coalesce(scheduled_date, created_at), id` ordering) exposed for the scheduled
+    drain (the night-task tick).  It does NOT move a row: `claim_task` accepts only `pending`
+    rows, so a caller that pre-claimed here would make every dispatched run skip with
+    `E_TASK_NOT_RUNNABLE` — the state transition belongs to the claim path alone, which is how
+    "each row transitions through the existing claim path (no parallel semantics)" is kept true.
+
+    The caller owns the transaction (one read, one commit) and the broker hand-off
+    (`_common.enqueue_created`, after the commit).  `limit` is a positive int — `bool` is
+    rejected explicitly (it IS an int subclass; `True` must not silently mean 1) and anything
+    below 1 is a caller-side value error, not a named refusal.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"claimable_task_ids requires a positive int limit, got {limit!r}")
+    stmt = (
+        select(Task.id)
+        .where(*_claimable_filter(db, task_id=None, agent_type=None))
+        .order_by(
+            Task.priority.asc(),
+            func.coalesce(Task.scheduled_date, Task.created_at).asc(),
+            Task.id.asc(),
+        )
+        .limit(limit)
+    )
+    return [int(task_id) for task_id in (await db.execute(stmt)).scalars().all()]
+
+
 async def heartbeat_task(db: AsyncSession, task_id: int, worker: str) -> Task:
     """Renew THIS worker's claim.  Raises a named refusal when it no longer holds it.
 
@@ -957,6 +987,7 @@ __all__ = [
     "TaskRunTotals",
     "attach_approval_token",
     "claim_task",
+    "claimable_task_ids",
     "create_agent_run",
     "create_task",
     "finish_agent_run",

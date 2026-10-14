@@ -47,6 +47,13 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/agents/status", ("GET",)),
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
     ("/api/v1/approvals", ("POST",)),                            # T02/D1: the owner's approval-token mint
+    # wave U5 (P2/B22): the bounded Auto Mode window — OLD surface had no auto-mode route; NEW
+    # pins added deliberately with the routes (count 36 -> 39): POST start (ends_at = now +
+    # duration, 1 h..5 d), GET status (live counters; lazy duration_end close), DELETE stop early
+    # (stop_reason user_stop). Owner-key; one active session.
+    ("/api/v1/auto-mode", ("DELETE",)),
+    ("/api/v1/auto-mode", ("GET",)),
+    ("/api/v1/auto-mode", ("POST",)),
     ("/api/v1/channels/caps", ("GET",)),                         # wave U3 (H-01): per-channel send counters + day caps (channel_sends_snapshot + RateCaps); OLD surface had no caps route — NEW pin added deliberately with the route; NULL = unknown, never 0
     ("/api/v1/config", ("GET",)),
     ("/api/v1/config", ("PUT",)),
@@ -70,6 +77,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
     ("/api/v1/outreach/prospects", ("GET",)),
+    # wave U5 (P4/B8): the usage-ledger read + export — OLD surface had no runs route; NEW pins
+    # added deliberately (count 39 -> 41): GET /runs (filters, {items,total}) and GET /runs/export
+    # (csv/json; row count == total). Owner-key.
+    ("/api/v1/runs", ("GET",)),
+    ("/api/v1/runs/export", ("GET",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)

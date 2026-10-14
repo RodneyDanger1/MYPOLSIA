@@ -378,11 +378,13 @@ def test_models_compile_to_pg_types_and_sqlite_types():
     assert "VARCHAR[]" in pg_ddl, "list columns must be varchar[] on PostgreSQL"
     assert "JSON" in sqlite_ddl and "ARRAY" not in sqlite_ddl
     assert "metadata JSONB" in pg_ddl or "metadata JSON" in pg_ddl
-    assert len(Base.metadata.tables) == 18, sorted(Base.metadata.tables)
+    assert len(Base.metadata.tables) == 19, sorted(Base.metadata.tables)
     # 17 -> 18: `support_inbox_items`, added by alembic 0004 (R17) — the CS inbox ingest the
     # RD12 receipt §7 names as the remaining schema decision.  It has its own migration, which
     # is what section 11's "the migration declares" clause is about; the pinned COUNT moves
     # deliberately in the same commit as the migration.
+    # 18 -> 19: `auto_mode_sessions` (P2's Auto Mode window), added by alembic 0007 (U5) —
+    # same rule: the count moves in the same commit as the migration.
 
 
 # --------------------------------------------------------------------------- #

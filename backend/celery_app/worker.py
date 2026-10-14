@@ -17,9 +17,10 @@ from celery_app import celery_config
 app = Celery("polsia", include=list(celery_config.TASK_MODULES))
 app.config_from_object("celery_app.celery_config")  # this also installs beat_schedule
 
-# Eager registration of the three task modules.  Each of them does
+# Eager registration of the task modules.  Each of them does
 # `from celery_app.worker import app` — safe here because `app` is already bound above —
 # and each `@app.task` decorator registers its name on this app.
 import celery_app.tasks.agent_tasks  # noqa: E402,F401
 import celery_app.tasks.daily_cycle  # noqa: E402,F401
 import celery_app.tasks.maintenance  # noqa: E402,F401
+import celery_app.tasks.night_task  # noqa: E402,F401  (U5/P3: same registry requirement as above)

@@ -19,6 +19,7 @@ from app.api.v1 import (
     ads,
     agents,
     approvals,
+    auto_mode,
     channels,
     config,
     dashboard,
@@ -33,6 +34,7 @@ from app.api.v1 import (
     tasks,
     ws,
 )
+from app.api.v1.runs import router as runs_router  # wave U5 (P4): the agent_runs ledger read + export
 from app.config import settings
 from app.core.database import dispose_engine
 from app.core.errors import E_AUTH, ERROR_HINTS, PolsiaError, http_status_for, to_http_detail
@@ -269,6 +271,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(ops.router)       # R22: activity publish breaker stats + reset (owner)
     api_v1.include_router(approvals.router)  # T02/D1: the approval-token mint (owner)
     api_v1.include_router(channels.router)   # wave U3 (H-01): per-channel send counters + caps (owner read)
+    api_v1.include_router(auto_mode.router)  # wave U5 (P2/B22): the bounded Auto Mode window (start/status/stop, owner)
+    api_v1.include_router(runs_router)       # wave U5 (P4/B8): the agent_runs usage ledger read + export (owner)
     application.include_router(api_v1)
     application.include_router(ws.router)
 

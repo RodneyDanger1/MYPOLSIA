@@ -44,6 +44,11 @@ TASK_MODULES = (
     "celery_app.tasks.agent_tasks",
     "celery_app.tasks.daily_cycle",
     "celery_app.tasks.maintenance",
+    # U5/P3: the night task's module.  Registry lines are REQUIRED, not cosmetic — worker.py's
+    # eager imports and this tuple are the two mechanisms that make a module's @app.task
+    # reachable in a worker/beat process (the "declared but never loaded" defect this file
+    # exists to prevent); without them the beat tick arrives as an unregistered task.
+    "celery_app.tasks.night_task",
 )
 imports = TASK_MODULES
 include = TASK_MODULES
@@ -107,9 +112,11 @@ worker_max_tasks_per_child = settings.celery_max_tasks_per_child
 # command owns it" story.  An operator changes concurrency in the compose command, not here.
 worker_concurrency = None  # explicit so app.conf cannot inherit a celery default (R22 pin)
 
-# Routing (unchanged — these three routes did load in the upload)
+# Routing (unchanged — these three routes did load in the upload) + the U5 night task, which
+# rides the scheduler queue exactly like its beat entry's options say.
 task_routes = {
     "celery_app.tasks.daily_cycle.*": {"queue": "scheduler"},
+    "celery_app.tasks.night_task.*": {"queue": "scheduler"},
     "celery_app.tasks.agent_tasks.*": {"queue": "agents"},
     "celery_app.tasks.maintenance.*": {"queue": "maintenance"},
 }

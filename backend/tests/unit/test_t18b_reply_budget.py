@@ -230,11 +230,13 @@ def test_a_real_worker_run_records_the_budget_skips_in_its_stored_output(queue_d
 
 def test_ratecaps_defaults_are_untouched_by_the_budget():
     """D22: only the DOCUMENTED per-run bound was implemented; every shipped cap default stands
-    exactly as W2 measured it (`policy_firewall.py:378-384`)."""
+    exactly as W2 measured it, plus the U5/P1 social-platform rows (a DELIBERATE, documented U5
+    change recorded old->new in the wave-u5/coder-p1-social receipt — still not the budget's)."""
     caps = RateCaps()
     assert caps.per_channel_day == {
         "email": 50, "twitter": 12, "linkedin": 4, "github": 6,
         "google_ads": 10, "meta_ads": 10, "stripe": 5, "render": 3,
+        "facebook": 3, "instagram": 5, "tiktok": 10, "youtube": 3,
     }
     assert caps.per_channel_hour == {"email": 15, "twitter": 3, "github": 2}
     assert MAX_REPLIES_PER_RUN == 10, "the documented bound (dossier §8)"

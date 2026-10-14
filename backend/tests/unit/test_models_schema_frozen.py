@@ -81,6 +81,19 @@ PostgreSQL one — found live in the Docker pass, alongside the legacy-store tes
 `c1135b452c323bab11f2ea835cd28a82066c9b73bdb46d7647403d6a624c4e8e` ->
 `e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (wave U5, 2026-10-14; P3 schema lane): the night-task/notification schema
+landed in `backend/alembic/versions/0007_auto_mode_night_notifications.py` — exactly the "new
+alembic revision" this docstring demands.  TWO deliberate moves: (1) the NEW table
+`auto_mode_sessions` (P2's frozen Auto Mode window; 18 tables -> 19) with its
+`ix_auto_mode_sessions_started_at` index; (2) `company_config` gains EIGHT columns (P3 night task +
+P5 notifications): `night_task_enabled` BOOLEAN NOT NULL DEFAULT false, `night_task_limit` INTEGER
+NOT NULL DEFAULT 3, `night_task_hour` INTEGER NULL, `notification_email` VARCHAR(255) NULL, and the
+four `notify_on_*` BOOLEAN NOT NULL DEFAULT false toggles — all appended after `daily_cycle_hour`
+(the ORM/migration column order).  No other row changed.  Old canonical sha256
+`e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79` ->
+`26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -99,7 +112,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "e27736fb375a19e401e589b80a25b410e03ef3b4185c403adfa946bfdde5cb79"
+DDL_SHA256 = "26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -107,6 +120,7 @@ FROZEN_TABLE_NAMES = (
     'ad_campaigns',
     'ad_metrics',
     'agent_runs',
+    'auto_mode_sessions',
     'company_config',
     'competitors',
     'daily_reports',
@@ -200,6 +214,29 @@ FROZEN_COLUMNS = {
         ('industry', 'VARCHAR(100)', True, '', '', '', False),
         ('timezone', 'VARCHAR(50)', True, "'UTC'", 'UTC', '', False),
         ('daily_cycle_hour', 'INTEGER', True, '6', '6', '', False),
+        # U5/0007 (P3 + P5): the night-task + notification settings; bools NOT NULL with server
+        # defaults so EXISTING rows migrate materialised (the ORM `false()` element renders the
+        # `false` server-default string, `DEFAULT 0` on SQLite / `DEFAULT false` on PostgreSQL).
+        ('night_task_enabled', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('night_task_limit', 'INTEGER', False, '3', '3', '', False),
+        ('night_task_hour', 'INTEGER', True, '', '', '', False),
+        ('notification_email', 'VARCHAR(255)', True, '', '', '', False),
+        ('notify_on_completed', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('notify_on_failed', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('notify_on_awaiting_approval', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('notify_on_run_requeued', 'BOOLEAN', False, 'False', 'false', '', False),
+        ('created_at', 'DATETIME', True, '', 'now()', '', False),
+        ('updated_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
+    'auto_mode_sessions': (
+        # U5/0007 (P2's frozen table): a WINDOW, not a parent (no task FK by design).
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('started_at', 'DATETIME', False, '', 'now()', 'ix_auto_mode_sessions_started_at', False),
+        ('ends_at', 'DATETIME', False, '', '', '', False),
+        ('stopped_at', 'DATETIME', True, '', '', '', False),
+        ('stop_reason', 'VARCHAR(50)', True, '', '', '', False),
+        ('tasks_run', 'INTEGER', False, '0', '0', '', False),
+        ('spend_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
         ('updated_at', 'DATETIME', True, '', 'now()', '', False),
     ),
@@ -378,6 +415,8 @@ FROZEN_INDEXES = {
     ('ix_agent_runs_agent_type', ('agent_type',), False),
     ('ix_agent_runs_started_at', ('started_at',), False),
     ('ix_agent_runs_task_id', ('task_id',), False),
+    # U5/0007 (P2): the Auto Mode window's covering read ("sessions covering instant T").
+    ('ix_auto_mode_sessions_started_at', ('started_at',), False),
     ('ix_support_inbox_items_status', ('status',), False),
     ('ix_support_inbox_items_task_id', ('task_id',), False),
     ('ix_tasks_created_at', ('created_at',), False),

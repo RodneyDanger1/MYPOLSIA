@@ -141,7 +141,11 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         tools_available="",
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE,
                                   ActionClass.EXTERNAL_REVERSIBLE}),
-        channels=("twitter", "linkedin"),
+        # U5/P1: every social platform the plan names. linkedin was already here; facebook and
+        # instagram ship adapters in U5; tiktok/youtube are policy-ready (their adapters are the
+        # named follow-up — the dispatcher refuses them BY NAME until then, and `channel_service`
+        # reports their counts as UNKNOWN, never a fabricated zero).
+        channels=("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube"),
     ),
     "email_outreach": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
@@ -372,12 +376,19 @@ def configured_approval_secret() -> bytes:
 @dataclass
 class RateCaps:
     """Per-channel send caps. Counters come from the DB via `app.services.channel_service`
-    (`social_posts` for twitter/linkedin, `email_logs` for email) so caps survive restarts —
-    a channel with NO local send record is UNKNOWN, and a cap it cannot verify is refused by
-    name (`cap_unknown`, E114) rather than read as zero sends. Values are policy, not physics."""
+    (`social_posts` for twitter/linkedin/facebook/instagram, `email_logs` for email) so caps
+    survive restarts — a channel with NO local send record is UNKNOWN, and a cap it cannot verify
+    is refused by name (`cap_unknown`, E114) rather than read as zero sends. Values are policy,
+    not physics."""
     per_channel_day: dict[str, int] = field(default_factory=lambda: {
         "email": 50, "twitter": 12, "linkedin": 4, "github": 6,
         "google_ads": 10, "meta_ads": 10, "stripe": 5, "render": 3,
+        # U5/P1 social platform coverage — the documented numbers. facebook/instagram ship
+        # adapters in U5; tiktok/youtube are the documented caps for the platforms whose adapters
+        # are the named follow-up (the caps route auto-enumerates this map, which is its B9
+        # companion). `channel_service` reports their counts as UNKNOWN until an adapter can write
+        # a row, so an attempted send is refused by name — never allowed on a fabricated zero.
+        "facebook": 3, "instagram": 5, "tiktok": 10, "youtube": 3,
     })
     per_channel_hour: dict[str, int] = field(default_factory=lambda: {
         "email": 15, "twitter": 3, "github": 2,

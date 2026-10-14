@@ -95,6 +95,7 @@ class SocialMediaAgent(BasePolsiaAgent):
         content: str,
         context: dict[str, Any],
         performed: int = 0,
+        image_url: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Attempt one external action through the firewall.
 
@@ -138,7 +139,11 @@ class SocialMediaAgent(BasePolsiaAgent):
         receipt: dict[str, Any] = side_effect_receipt(outcome, action=action, ref=ref,
                                                       extra={"platform": platform})
         if outcome.allowed:                                     # only reachable outside sandbox
-            result = integrations.post_tweet(content, platform=platform)
+            # U5/P1: media rides ONLY when the item carries it, so a text post keeps the exact
+            # `post_tweet(content, platform=...)` call shape every caller and test double mirrors;
+            # instagram requires the field and its adapter refuses by name without it.
+            media = {"image_url": image_url} if image_url else {}
+            result = integrations.post_tweet(content, platform=platform, **media)
             receipt["integration"] = result
             if result.get("ok"):
                 published = result.get("result") or {}
@@ -181,10 +186,14 @@ class SocialMediaAgent(BasePolsiaAgent):
         for index, post in enumerate(posts if action == "post" else []):
             platform = str(post.get("platform") or "twitter")
             content = str(post.get("content") or "")
+            # U5/P1: instagram needs a media URL; the optional field rides through only when the
+            # item carries one (text posts keep the unchanged call shape).
+            image_url = str(post.get("image_url") or "")
             receipt, published_item = self._publish(
                 payload, action=action, ref=f"post:{index}", platform=platform,
                 content=content, context=context,
                 performed=performed_by_channel.get(platform, 0),
+                image_url=image_url,
             )
             receipts.append(receipt)
             if published_item is not None:

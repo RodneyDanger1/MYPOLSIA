@@ -103,11 +103,18 @@ def test_worker_injects_channel_sends_for_the_agents_own_channels(
     outcome = execute_body(queue_db.create_task(agent_type="social_media"))
 
     assert outcome["status"] == "completed"
-    assert seen["channels"] == ("twitter", "linkedin")   # the capability's channels, no others
+    # U5/P1 pin move (old -> new): the capability gained the social platforms behind their
+    # adapters (facebook/instagram shipped, tiktok/youtube policy-ready) — recorded in the
+    # wave-u5/coder-p1-social receipt.
+    assert seen["channels"] == ("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube")
     assert seen["now"] is None                            # the caller does not pin the clock
     assert calls[0]["context"]["channel_sends"] == {
         "twitter": {"today": 2, "hour": 1},
         "linkedin": {"today": 2, "hour": 1},
+        "facebook": {"today": 2, "hour": 1},
+        "instagram": {"today": 2, "hour": 1},
+        "tiktok": {"today": 2, "hour": 1},
+        "youtube": {"today": 2, "hour": 1},
     }
 
 

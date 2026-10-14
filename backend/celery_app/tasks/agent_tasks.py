@@ -490,6 +490,18 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     task_row.claimed_by = None
                     task_row.claimed_at = None
                     task_row.heartbeat_at = None
+                # wave U5 (P2/B22): the day's budget is exhausted — a live Auto Mode window
+                # closes HERE, with the named `day_cap` reason, in the SAME transaction as the
+                # rejection, before this delivery returns.  A gate INTERRUPTS a session; it
+                # never bypasses it.  Only a window COVERING now is closed; an expired-but-open
+                # row stays for the lazy `duration_end` read (calling it `day_cap` would be a
+                # lie about why it ended).
+                from app.services.auto_mode_service import (
+                    STOP_REASON_DAY_CAP,
+                    close_live_sessions,
+                )
+
+                await close_live_sessions(db, reason=STOP_REASON_DAY_CAP)
                 await db.commit()
             return {
                 "status": "skipped",
@@ -757,7 +769,37 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued,
                             "manual_override": bool(manual_override)},
                 )
+
+            # wave U5 (P2/B22): the active window's task counter — ONE UPDATE folded into this
+            # same transaction (the same commit as the activity row above, no extra round trip).
+            # Only a window COVERING now is touched: a task whose terminal write falls outside
+            # every window changes nothing, and a lease-lost run never reaches here (it wrote no
+            # outcome, so it is not a finished task).
+            from app.services.auto_mode_service import increment_tasks_run
+
+            await increment_tasks_run(db)
         await db.commit()
+
+    # wave U5 (P2+P5): the owner's terminal-outcome notification — the FROZEN lazy-imported call
+    # (`notify_owner_for_terminal_outcome(db, task_id, outcome)`, P5's module), made AFTER the
+    # activity commit and wrapped so it can never fail a run: the outcome is already recorded,
+    # and a notifier outage must not rewrite that truth.  `outcome` is the task's terminal
+    # status — exactly the `completed`/`failed`/`awaiting_approval` set the consumer declares
+    # (`notification_service`'s frozen docstring; `requeued` has no hook contract there yet, so
+    # a retryable failure notifies as the `failed` attempt it was).
+    notification_outcome = task_status
+    try:
+        from app.services.notification_service import notify_owner_for_terminal_outcome
+
+        async with session_factory() as notify_db:
+            await notify_owner_for_terminal_outcome(notify_db, task_id, notification_outcome)
+    except Exception:  # noqa: BLE001 — a notifier failure must never rewrite a recorded outcome
+        logger.warning(
+            "task %s: terminal-outcome notification failed (outcome=%s)",
+            task_id,
+            notification_outcome,
+            exc_info=True,
+        )
 
     return {
         "status": task_status,

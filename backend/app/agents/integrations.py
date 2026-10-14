@@ -31,19 +31,65 @@ _PYGITHUB_HINT = "pip install PyGithub and set GITHUB_TOKEN"
 _STRIPE_HINT = "pip install stripe and set STRIPE_SECRET_KEY"
 _ADS_HINT = ("pip install google-ads==24.1.0 facebook-business==21.0.0 and set the "
              "GOOGLE_ADS_* / META_ADS_* credentials")
+_HTTPX_HINT = "pip install httpx==0.28.1 (already pinned in requirements.txt)"
+_LINKEDIN_HINT = (
+    "set LINKEDIN_ACCESS_TOKEN and LINKEDIN_AUTHOR_URN (a LinkedIn app token with "
+    "w_member_social/w_organization_social plus the author urn, e.g. urn:li:person:XXXX or "
+    "urn:li:organization:YYYY)"
+)
+_META_HINT = (
+    "set META_PAGE_ACCESS_TOKEN, META_FACEBOOK_PAGE_ID and META_INSTAGRAM_USER_ID (one Meta app "
+    "with pages_manage_posts + instagram_content_publish; the page token posts as the Facebook "
+    "page and publishes to its linked Instagram business account)"
+)
+
+# Where the provider calls go. ONE pinned Graph version for both Meta platforms (aligned with the
+# facebook-business==21.0.0 pin); LinkedIn's versioned REST API documents its version per request.
+_LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
+_LINKEDIN_API_VERSION = "202401"
+_GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 
 def _missing_config(*pairs: tuple[str, str]) -> list[str]:
     return [name for name, value in pairs if not str(value or "").strip()]
 
 
-def post_tweet(text: str, *, platform: str = "twitter") -> dict:
-    """Post one status update. Sandbox never reaches here (the firewall refuses first)."""
-    if platform != "twitter":
+def _setting(name: str, default: str = "") -> str:
+    """`settings.<name>` read DEFENSIVELY, the `configured_approval_secret` pattern.
+
+    WHY getattr: the U5 platform credentials (`linkedin_*`, `meta_page_*`, `meta_facebook_page_id`,
+    `meta_instagram_user_id`) are not fields on `Settings` yet — `app/config.py` belongs to another
+    U5 lane — and pydantic-settings' `extra="ignore"` means an env var alone cannot activate a
+    field that does not exist. Read this way the adapter needs no edit when the fields land, and
+    until then the credential check refuses BY NAME (E_INTEGRATION, `missing=[...]`) instead of
+    pretending. Never returns None.
+    """
+    value = getattr(settings, name, default)
+    return value if isinstance(value, str) else str(value or "")
+
+
+def _response_header(response: Any, name: str) -> str:
+    """One response header, case-insensitively (real `httpx.Headers` and plain mapping doubles).
+
+    Same discipline as the SendGrid `X-Message-Id` read below: a provider id that arrives only as
+    a header must be found by its case-insensitive name, or the caller gets "" — never an invented
+    id.
+    """
+    headers = getattr(response, "headers", None) or {}
+    items = getattr(headers, "items", None)
+    if not callable(items):
+        return ""
+    wanted = name.lower()
+    return next((str(value) for key, value in items() if str(key).lower() == wanted), "")
+
+
+def _post_twitter(text: str, *, image_url: str = "") -> dict:
+    """Post one status update to X/Twitter. Sandbox never reaches here (the firewall refuses first)."""
+    if image_url:
         return named_refusal(
-            E_VALIDATION, f"post_tweet adapter does not handle platform {platform!r}",
-            how_to_fix="add the platform adapter or route it through the channel it supports",
-            platform=platform,
+            E_VALIDATION, "twitter adapter does not upload media yet",
+            how_to_fix="post text only, or extend the adapter with the v1.1 media upload flow",
+            platform="twitter", image_url=image_url,
         )
     missing = _missing_config(
         ("TWITTER_API_KEY", settings.twitter_api_key),
@@ -73,6 +119,205 @@ def _tweepy_create_tweet(text: str) -> Any:  # pragma: no cover - requires the p
     )
     response = client.create_tweet(text=text)
     return {"id": str(response.data.get("id"))}
+
+
+def _post_linkedin(text: str, *, image_url: str = "") -> dict:
+    """Post one text update to LinkedIn through the versioned REST API (`/rest/posts`).
+
+    Credentials are read defensively (`_setting`): LINKEDIN_ACCESS_TOKEN + LINKEDIN_AUTHOR_URN.
+    A media post is refused BY NAME — LinkedIn's images API is a deliberate follow-up, never a
+    silent drop of the image.
+    """
+    if image_url:
+        return named_refusal(
+            E_VALIDATION, "linkedin adapter does not upload media yet",
+            how_to_fix="post text only, or extend the adapter with LinkedIn's images API "
+                       "(initializeUpload -> upload -> attach)",
+            platform="linkedin", image_url=image_url,
+        )
+    missing = _missing_config(
+        ("LINKEDIN_ACCESS_TOKEN", _setting("linkedin_access_token")),
+        ("LINKEDIN_AUTHOR_URN", _setting("linkedin_author_urn")),
+    )
+    if missing:
+        return named_refusal(
+            E_INTEGRATION, f"LinkedIn credentials missing: {', '.join(missing)}",
+            how_to_fix=_LINKEDIN_HINT, missing=missing,
+        )
+    return integration_call(
+        "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
+        call=_linkedin_create_post, text=text,
+    )
+
+
+def _linkedin_create_post(text: str) -> Any:  # pragma: no cover - requires the provider
+    import httpx
+
+    response = httpx.post(
+        _LINKEDIN_POSTS_URL,
+        headers={
+            "Authorization": f"Bearer {_setting('linkedin_access_token')}",
+            "Content-Type": "application/json",
+            "LinkedIn-Version": _LINKEDIN_API_VERSION,
+            "X-Restli-Protocol-Version": "2.0.0",
+        },
+        json={
+            "author": _setting("linkedin_author_urn"),
+            "commentary": text,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        },
+        timeout=30.0,
+    )
+    if response.status_code not in (200, 201):
+        # The provider's own status + text travel in the exception — `integration_call` turns this
+        # into a named E_INTEGRATION refusal that KEEPS that text (never swallowed).
+        raise RuntimeError(f"LinkedIn API returned {response.status_code}: {response.text[:300]}")
+    return {"id": _response_header(response, "x-restli-id")}
+
+
+def _post_facebook(text: str, *, image_url: str = "") -> dict:
+    """Post one text update to the Facebook PAGE feed.
+
+    ONE Meta unit with instagram: both read the same `META_PAGE_ACCESS_TOKEN` — the page token is
+    what posts as the page and what publishes to its linked Instagram business account.
+    """
+    if image_url:
+        return named_refusal(
+            E_VALIDATION, "facebook adapter does not upload media yet",
+            how_to_fix="post text only, or extend the adapter with the page /photos edge",
+            platform="facebook", image_url=image_url,
+        )
+    missing = _missing_config(
+        ("META_PAGE_ACCESS_TOKEN", _setting("meta_page_access_token")),
+        ("META_FACEBOOK_PAGE_ID", _setting("meta_facebook_page_id")),
+    )
+    if missing:
+        return named_refusal(
+            E_INTEGRATION, f"Facebook credentials missing: {', '.join(missing)}",
+            how_to_fix=_META_HINT, missing=missing,
+        )
+    return integration_call(
+        "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
+        call=_facebook_create_post, text=text,
+    )
+
+
+def _facebook_create_post(text: str) -> Any:  # pragma: no cover - requires the provider
+    import httpx
+
+    page_id = _setting("meta_facebook_page_id")
+    response = httpx.post(
+        f"{_GRAPH_BASE}/{page_id}/feed",
+        data={"message": text, "access_token": _setting("meta_page_access_token")},
+        timeout=30.0,
+    )
+    if response.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Facebook Graph API returned {response.status_code}: {response.text[:300]}"
+        )
+    return {"id": str(response.json().get("id") or "")}
+
+
+def _post_instagram(text: str, *, image_url: str = "") -> dict:
+    """Publish one Instagram media post (container -> publish), the API's ONLY posting flow.
+
+    Instagram has no text-only post: without `image_url` this refuses BY NAME (E_VALIDATION) and
+    never touches the provider — a fabricated success here would be the worst possible lie.
+    """
+    if not str(image_url or "").strip():
+        return named_refusal(
+            E_VALIDATION,
+            "instagram requires image_url: the Content Publishing API has no text-only post",
+            how_to_fix=("set image_url on the post item to a PUBLIC https image URL the "
+                        "Instagram account can fetch"),
+            platform="instagram",
+        )
+    missing = _missing_config(
+        ("META_PAGE_ACCESS_TOKEN", _setting("meta_page_access_token")),
+        ("META_INSTAGRAM_USER_ID", _setting("meta_instagram_user_id")),
+    )
+    if missing:
+        return named_refusal(
+            E_INTEGRATION, f"Instagram credentials missing: {', '.join(missing)}",
+            how_to_fix=_META_HINT, missing=missing,
+        )
+    return integration_call(
+        "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
+        call=_instagram_create_post, text=text, image_url=str(image_url),
+    )
+
+
+def _instagram_create_post(text: str, image_url: str) -> Any:  # pragma: no cover - provider
+    import httpx
+
+    token = _setting("meta_page_access_token")
+    user_id = _setting("meta_instagram_user_id")
+    container = httpx.post(
+        f"{_GRAPH_BASE}/{user_id}/media",
+        data={"image_url": image_url, "caption": text, "access_token": token},
+        timeout=30.0,
+    )
+    if container.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Instagram media container returned {container.status_code}: {container.text[:300]}"
+        )
+    creation_id = str(container.json().get("id") or "")
+    if not creation_id:
+        raise RuntimeError("Instagram media container returned no id")
+    published = httpx.post(
+        f"{_GRAPH_BASE}/{user_id}/media_publish",
+        data={"creation_id": creation_id, "access_token": token},
+        timeout=30.0,
+    )
+    if published.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Instagram publish returned {published.status_code}: {published.text[:300]}"
+        )
+    return {"id": str(published.json().get("id") or "")}
+
+
+# ---------------------------------------------------------------------------
+# The dispatch table: platform -> the ONE adapter that can really post there.
+#
+# U5/P1 replaced the old "twitter only" guard with this map. An unknown platform is refused BY
+# NAME (never coerced to twitter, never a crash); each adapter refuses by name when it is not
+# configured. Adding a platform = adding its adapter here (+ its RateCaps row and, when it can
+# write rows, its entry in `channel_service._SOCIAL_CHANNELS`).
+# ---------------------------------------------------------------------------
+_PLATFORM_ADAPTERS: dict[str, Any] = {
+    "twitter": _post_twitter,
+    "linkedin": _post_linkedin,
+    "facebook": _post_facebook,
+    "instagram": _post_instagram,
+}
+
+
+def post_tweet(text: str, *, platform: str = "twitter", image_url: str = "") -> dict:
+    """Post one status update on `platform` — the ONE entry point the social agent calls.
+
+    Each adapter owns its full contract (lazy import, credential refusal, real provider call) and
+    every one of them refuses by NAME when it cannot really post. `image_url` is optional at this
+    boundary: an adapter that cannot post media refuses by name when it is set (never a silent
+    drop), and instagram REQUIRES it (its API has no text-only publish).
+    """
+    adapter = _PLATFORM_ADAPTERS.get(platform)
+    if adapter is None:
+        return named_refusal(
+            E_VALIDATION, f"post_tweet adapter does not handle platform {platform!r}",
+            how_to_fix=(
+                f"add a {platform!r} adapter to _PLATFORM_ADAPTERS or route it through a channel "
+                f"it supports; supported platforms: {', '.join(sorted(_PLATFORM_ADAPTERS))}"
+            ),
+            platform=platform,
+        )
+    return adapter(text, image_url=image_url)
 
 
 def send_email(*, to: str, subject: str, body: str) -> dict:

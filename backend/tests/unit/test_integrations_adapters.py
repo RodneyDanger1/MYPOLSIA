@@ -54,13 +54,18 @@ class _Recorder:
 # --------------------------------------------------------------- post_tweet
 
 def test_post_tweet_refuses_any_platform_other_than_twitter():
-    """The platform guard is a named E_VALIDATION refusal, not a silent coercion."""
-    out = integrations.post_tweet("hello", platform="linkedin")
+    """The platform guard is a named E_VALIDATION refusal, not a silent coercion.
+
+    U5/P1 pin move (old -> new): this used `platform="linkedin"`, which U5 wired to a real
+    adapter — the pinned SUBJECT (an unwired platform refuses by name) is unchanged, the platform
+    value moved to one that stays unwired (`myspace`). The linkedin ROUTE is pinned in
+    `tests/unit/test_u5_social_channels.py`."""
+    out = integrations.post_tweet("hello", platform="myspace")
     assert out["ok"] is False
     err = out["error"]
     assert err["code"] == E_VALIDATION
-    assert "does not handle platform 'linkedin'" in err["message"]
-    assert err["context"] == {"platform": "linkedin"}
+    assert "does not handle platform 'myspace'" in err["message"]
+    assert err["context"] == {"platform": "myspace"}
     assert err["how_to_fix"]
 
 

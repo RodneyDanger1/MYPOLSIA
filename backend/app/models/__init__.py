@@ -6,6 +6,7 @@ from app.core.database import (
     Base as Base,  # noqa: E402  (load-bearing re-export: importing app.models is what registers every table on Base.metadata, which alembic/env.py and tests/integration/conftest.py depend on — the `as Base` spelling marks it as an intentional re-export rather than a dead import)
 )
 from app.models.ads import AdCampaign, AdMetric
+from app.models.auto_mode import AutoModeSession
 from app.models.company import CompanyConfig
 from app.models.competitor import Competitor
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
@@ -22,6 +23,7 @@ __all__ = [
     "AdMetric",
     "AgentRun",
     "ActivityLog",
+    "AutoModeSession",
     "CompanyConfig",
     "Competitor",
     "DailyReport",

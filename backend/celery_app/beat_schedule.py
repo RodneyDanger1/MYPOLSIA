@@ -1,4 +1,4 @@
-"""Beat schedule — the 8 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 9 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -49,6 +49,16 @@ beat_schedule = {
     # milliseconds and a change in Settings takes effect without a beat restart (the T2 pattern).
     "evening-cycle": {
         "task": "celery_app.tasks.daily_cycle.run_evening_cycle",
+        "schedule": crontab(minute=0),
+        "options": {"queue": "scheduler", "expires": 3600},
+    },
+    # Night task (U5/P3): hourly, expires 1 h — the SAME self-gate pattern as the cycles.  The
+    # task reads `company_config.night_task_hour` (company-local; NULL -> the documented 23:00
+    # default) and, when `night_task_enabled` is on, hands the dispatcher its next <= limit rows
+    # plus ONE receipt; DISABLED it returns {"status": "off"} and writes nothing.  A tick older
+    # than its own hour is superseded by the next check (the T2 rationale).
+    "night-task": {
+        "task": "celery_app.tasks.night_task.run_night_task",
         "schedule": crontab(minute=0),
         "options": {"queue": "scheduler", "expires": 3600},
     },

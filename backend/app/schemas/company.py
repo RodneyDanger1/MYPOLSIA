@@ -39,6 +39,17 @@ class CompanyConfigResponse(ORMModel):
     industry: str | None = None
     timezone: str | None = None
     daily_cycle_hour: int | None = None
+    # U5 (P3/P5 frozen names): the night-task surface + owner-notification settings.  The bool
+    # columns are NOT NULL at rest (server default FALSE), so the response serves a real value for
+    # every row; `night_task_hour`/`notification_email` are nullable — None means "unset".
+    night_task_enabled: bool = False
+    night_task_limit: int = 3
+    night_task_hour: int | None = None
+    notification_email: str | None = None
+    notify_on_completed: bool = False
+    notify_on_failed: bool = False
+    notify_on_awaiting_approval: bool = False
+    notify_on_run_requeued: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -72,6 +83,21 @@ class CompanyConfigUpdate(BaseModel):
     # Both fields stay optional-and-nullable: a bare `int = Field(ge=0, le=23)` would 422 an absent
     # key, and the settings page PUTs the whole object.
     daily_cycle_hour: int | None = Field(default=None, ge=0, le=23)
+    # U5 (P3): the night-task surface.  `night_task_limit` carries the 1..5 bound the plan freezes;
+    # `night_task_hour` the same 0..23 bound as the morning hour (company-local, NULL = unset →
+    # the tick resolves the documented 23:00 default).  Present-but-null clears the value.
+    night_task_enabled: bool | None = None
+    night_task_limit: int | None = Field(default=None, ge=1, le=5)
+    night_task_hour: int | None = Field(default=None, ge=0, le=23)
+    # U5 (P5's frozen name): the owner-notification address + the four terminal-outcome toggles.
+    # No format policing here — a malformed address is refused BY THE PROVIDER (recorded, never
+    # raising into a run); blank is normalised to None so "cleared in Settings" stores the
+    # documented "not configured" state (same rule as the timezone validator below).
+    notification_email: str | None = None
+    notify_on_completed: bool | None = None
+    notify_on_failed: bool | None = None
+    notify_on_awaiting_approval: bool | None = None
+    notify_on_run_requeued: bool | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -89,3 +115,16 @@ class CompanyConfigUpdate(BaseModel):
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(f"{value!r} is not a known IANA timezone") from exc
         return value
+
+    @field_validator("notification_email")
+    @classmethod
+    def _blank_email_is_unset(cls, value: str | None) -> str | None:
+        """`None`/blank = "not configured" — the same rule as `timezone` above (U5/P5).
+
+        The settings page PUTs the whole object and sends `""` when the operator clears the box;
+        storing `""` would make the column disagree with its own documented NULL-as-unset state
+        (and P5's consumer reads falsy as "unconfigured" anyway — one representation, not two).
+        """
+        if value is None or not value.strip():
+            return None
+        return value.strip()

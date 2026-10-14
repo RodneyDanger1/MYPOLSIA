@@ -46,6 +46,13 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no caps route;
     # NEW pin added deliberately with the route.
     ("GET", "/api/v1/channels/caps"),
+    # wave U5 (P2/B22): the bounded Auto Mode window — documented by app/api/v1/auto_mode.py and
+    # tests/unit/test_u5_auto_mode.py, routes verified live in app.routes as [POST]/[GET]/[DELETE]
+    # on this path (checked 2026-10-14). OLD surface had no auto-mode route; NEW pins added
+    # deliberately with the routes (count 34 -> 37).
+    ("POST", "/api/v1/auto-mode"),
+    ("GET", "/api/v1/auto-mode"),
+    ("DELETE", "/api/v1/auto-mode"),
     ("GET", "/api/v1/config"),
     ("PUT", "/api/v1/config"),
     ("GET", "/api/v1/config/deepseek-key"),
@@ -68,6 +75,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     ("GET", "/api/v1/ads/campaigns"),
+    # wave U5 (P4/B8): the usage-ledger read + export — documented by app/api/v1/runs.py and
+    # tests/unit/test_u5_runs.py, routes verified live in app.routes as [GET] on these paths.
+    # OLD surface had no runs route; NEW pins added deliberately with the routes (count 37 -> 39).
+    ("GET", "/api/v1/runs"),
+    ("GET", "/api/v1/runs/export"),
     # wave U2 (B1): the notifications bell's feed — derived from task rows (no table); documented by
     # app/api/v1/notifications.py and tests/unit/test_u2_notifications.py, route verified live in
     # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no notifications route.

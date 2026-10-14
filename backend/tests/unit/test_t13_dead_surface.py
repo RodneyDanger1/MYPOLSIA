@@ -84,11 +84,16 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     # `get_task_run_totals` + its `TaskRunTotals` result type (the grouped agent_runs sums).
     # OLD set = the 16 names below without these four; NEW set adds exactly those four; delta
     # recorded in the wave-U2 B1 receipt §"Deliberate pin updates".
+    # wave U5/P3 (2026-10-14) extended it once more with `claimable_task_ids` — the read-only
+    # dispatcher-order selection the Night Task's bounded drain consumes (the state transition
+    # stays on the existing claim path; this export is the selection read only). OLD set = the 20
+    # names below without it; NEW set adds exactly that name; the delta is recorded in the
+    # wave-U5 P3 receipt.
     assert {
         "APPROVAL_TOKEN_METADATA_KEY", "VALID_AGENT_TYPES", "VALID_TASK_STATUSES",
-        "attach_approval_token", "claim_task", "create_agent_run", "create_task", "finish_agent_run",
-        "get_agent_statuses", "get_task", "heartbeat_task", "is_valid_agent_type", "list_tasks",
-        "release_claim", "requeue_stale_claims", "update_task_status",
+        "attach_approval_token", "claim_task", "claimable_task_ids", "create_agent_run", "create_task",
+        "finish_agent_run", "get_agent_statuses", "get_task", "heartbeat_task", "is_valid_agent_type",
+        "list_tasks", "release_claim", "requeue_stale_claims", "update_task_status",
         "TaskRunTotals", "get_task_run_totals", "task_completed_at", "task_terminal_at_expr",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__

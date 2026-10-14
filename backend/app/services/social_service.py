@@ -92,6 +92,11 @@ async def record_published_posts(db: AsyncSession, result: dict[str, Any]) -> di
             if not isinstance(item, dict):
                 report["skipped_invalid"] += 1
                 continue
+            # NAMING (U5/P1): `tweet_id` is the platform-GENERIC provider id — the column name
+            # predates the multi-platform dispatch (it now carries X tweet ids, LinkedIn
+            # `urn:li:share:` ids and Meta graph ids alike) and is kept because renaming the
+            # column needs a migration; the dedupe key `(platform, tweet_id)` is what makes it
+            # per-platform correct. A future rename is a schema ticket, never a behavior change.
             tweet_id = str(item.get("tweet_id") or "").strip()
             if not tweet_id:
                 # No provider id = the integration never confirmed a send; never counted.

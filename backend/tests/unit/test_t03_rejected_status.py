@@ -104,17 +104,17 @@ def _revision_graph() -> dict[str, str | None]:
 
 
 def test_the_migration_chain_is_linear_with_a_single_head():
-    """0006 is the ONE head; walking down visits every revision exactly once, in order."""
+    """0007 is the ONE head; walking down visits every revision exactly once, in order."""
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0006"], f"expected a single head (0006), found {heads}"
+    assert heads == ["0007"], f"expected a single head (0007), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0006"
+    cursor: str | None = "0007"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
-    assert order == ["0006", "0005", "0004", "0003", "0002", "0001"], order
+    assert order == ["0007", "0006", "0005", "0004", "0003", "0002", "0001"], order
     assert len(order) == len(graph), "the chain must not branch"
 
 
@@ -298,7 +298,10 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
 
     con = sqlite3.connect(db_path.as_posix())
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0006"
+        # W1 round trip, U5 re-pin: `head` is 0007 since `0007_auto_mode_night_notifications.py`
+        # (deliberate old -> new: "0006" -> "0007"); the 0005/0006 legs below are unchanged and
+        # still assert THIS revision's own moves.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0007"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

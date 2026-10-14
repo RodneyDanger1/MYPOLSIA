@@ -161,11 +161,17 @@ class CompetitorReport(AgentEnvelope):
 # ---------------------------------------------------------------------------
 
 class SocialPostDraft(BaseModel):
-    platform: Literal["twitter", "linkedin"] = "twitter"
+    platform: Literal["twitter", "linkedin", "facebook", "instagram"] = "twitter"
     content: str = Field(min_length=1, max_length=1000)
     hashtags: list[str] = Field(default_factory=list, max_length=5)
     scheduled_for: str | None = None  # ISO-8601 or null = "as soon as approved"
     reply_to_mention: str | None = None
+    # U5/P1: instagram's Content Publishing API has no text-only post, so an image post — and ONLY
+    # an image post — carries this. None = the text path exactly as before; the agent forwards the
+    # field only when it is present. tiktok/youtube stay OUT of the platform Literal until their
+    # adapters land: the schema is the model-facing promise, and policy-side readiness (RateCaps,
+    # capability channels) is a separate surface.
+    image_url: str | None = Field(default=None, max_length=2000)
 
 
 class PostedItem(BaseModel):
@@ -173,7 +179,7 @@ class PostedItem(BaseModel):
     draft and leaves `posted` empty."""
 
     content: str = Field(min_length=1, max_length=1000)
-    platform: Literal["twitter", "linkedin"] = "twitter"
+    platform: Literal["twitter", "linkedin", "facebook", "instagram"] = "twitter"
     tweet_id: str | None = None
     post_id: str | None = None
 
