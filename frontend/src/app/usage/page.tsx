@@ -6,6 +6,7 @@ import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { countText, textOrDash } from "@/components/finance/format";
 import { ListSkeleton, ReadError } from "@/components/finance/states";
 import { ExportButton } from "@/components/usage/ExportButton";
+import { OpsPanel } from "@/components/usage/OpsPanel";
 import { useRuns, type RunsRow } from "@/components/usage/useRuns";
 import { Button, Card, DataTable, type Column } from "@/components/ui";
 
@@ -28,6 +29,10 @@ import { Button, Card, DataTable, type Column } from "@/components/ui";
  * States follow the house idioms (finance page): loading is a busy skeleton, a failure is NAMED
  * on the panel (`ReadError`, ApiError.display) and never replaces the rest of the page with a
  * blank — and there is no polling (C7); the explicit Refresh is the only re-read.
+ *
+ * Below the ledger, the Ops panel (V11 unit 2) surfaces the activity breaker's per-process
+ * counters with a guarded reset and the deterministic per-agent quality read —
+ * `components/usage/OpsPanel.tsx` carries the process-boundary truth in its copy.
  */
 
 /** The server's own list-page default (`runs.py` DEFAULT_LIMIT=50), passed explicitly. */
@@ -159,6 +164,11 @@ export default function UsagePage() {
           />
         ) : null}
       </Card>
+
+      {/* V11-W6 (unit 2): the operator surfaces for the ledger's writers. The breaker card reads
+          and resets the API process's counters (per-process truth spelled out in its copy); the
+          quality card is the deterministic per-agent read. */}
+      <OpsPanel />
     </div>
   );
 }

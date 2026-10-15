@@ -246,6 +246,11 @@ export const api = {
     apiFetch<T>(path, { ...init, method: "POST", body: JSON.stringify(body ?? {}) }),
   put: <T>(path: string, body?: unknown, init?: ApiFetchOptions) =>
     apiFetch<T>(path, { ...init, method: "PUT", body: JSON.stringify(body ?? {}) }),
+  /** V11/W3 — the frozen interface of UNIT2-PLAN: a verbatim mirror of `put`, method "PATCH".
+   *  Added FIRST (before the invoice/schedule pages) because W5's task-status control consumes it.
+   *  Covered by `src/__tests__/u11-schedules.test.tsx` ("api.patch — the REAL client method"). */
+  patch: <T>(path: string, body?: unknown, init?: ApiFetchOptions) =>
+    apiFetch<T>(path, { ...init, method: "PATCH", body: JSON.stringify(body ?? {}) }),
   delete: <T>(path: string, init?: ApiFetchOptions) =>
     apiFetch<T>(path, { ...init, method: "DELETE" }),
 };
@@ -376,4 +381,96 @@ export type FinanceSummary = {
    *  Optional AND nullable for the same reason as the money fields above: an absent block is
    *  "not measured" and must render as the em dash, never as a fabricated `$0.00`. */
   ai_spend?: AiSpend | null;
+};
+
+/* ── V11/W3 — invoices (wiring audit F2) ─────────────────────────────────────────────────────── */
+/** One invoice row — the wire shape of `app.schemas.invoice.InvoiceResponse`
+ *  (`backend/app/schemas/invoice.py`), served by `GET /invoices` and returned by the create /
+ *  send / void routes (`backend/app/api/v1/invoices.py` :64/:85/:103/:122). Money is
+ *  `number | null`: the service stores an absent wire value as NULL (never a fabricated 0), so
+ *  a renderer must branch on null before formatting — the em-dash law. `status` is an open
+ *  string server-side (`str`), today one of draft|sent|paid|void|overdue; an unknown word
+ *  renders as itself rather than being disguised. `paid_at` is `datetime | None`. */
+export type Invoice = {
+  id: number;
+  number: string;
+  bill_to: Record<string, unknown> | null;
+  issue_date: string;
+  due_date: string;
+  net_days: number;
+  currency: string;
+  subtotal: number | null;
+  tax: number | null;
+  total: number | null;
+  status: string;
+  payment_link: string | null;
+  paid_at: string | null;
+  late_fee_note: string | null;
+  line_items: Record<string, unknown>[] | null;
+};
+
+/** `POST /invoices` body — `InvoiceCreateRequest` declared in `backend/app/api/v1/invoices.py`
+ *  (:33-49; the request models live in the router because the schemas package is frozen).
+ *  Every field optional: `bill_to`/`line_items` are free-form JSON the service stores verbatim,
+ *  absent money stays absent on the wire (`null` stays `null`, never coerced to 0). */
+export type InvoiceCreate = {
+  bill_to?: Record<string, unknown>;
+  line_items?: Record<string, unknown>[];
+  issue_date?: string;
+  due_date?: string;
+  net_days?: number;
+  currency?: string;
+  subtotal?: number;
+  tax?: number;
+  total?: number;
+  payment_link?: string;
+};
+
+/* ── V11/W3 — schedules (wiring audit F1) ────────────────────────────────────────────────────── */
+/** The frozen cadence value set of `app.schemas.schedule.Cadence` (once|daily|weekdays|weekly). */
+export type ScheduleCadence = "once" | "daily" | "weekdays" | "weekly";
+
+/** One schedule row — `app.schemas.schedule.ScheduleResponse` (`backend/app/schemas/schedule.py`),
+ *  served by GET/POST/PATCH/DELETE `/schedules` (`backend/app/api/v1/schedules.py` :39/:50/:70/:84).
+ *  `hour` is the COMPANY-LOCAL wall-clock hour (0-23); `weekday` (0-6, Monday=0) applies to
+ *  `weekly` only and is null otherwise; `enabled=false` IS the pause (a paused row carries a
+ *  cleared `next_run_at`). `next_run_at`/`last_run_at`/`created_at` are `datetime | None` —
+ *  null renders as the em dash, never an invented instant. */
+export type Schedule = {
+  id: number;
+  name: string;
+  prompt: string;
+  cadence: string;
+  hour: number;
+  weekday: number | null;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at: string | null;
+};
+
+/** `GET /schedules` — `ScheduleListResponse`: the rows plus the server's own count. */
+export type ScheduleList = { items: Schedule[]; total: number };
+
+/** `POST /schedules` body — `ScheduleCreate` (`app/schemas/schedule.py` :21-29). `enabled`
+ *  defaults FALSE server-side: a schedule is created PAUSED unless the client states otherwise. */
+export type ScheduleCreate = {
+  name: string;
+  prompt: string;
+  cadence: ScheduleCadence;
+  hour: number;
+  weekday?: number;
+  enabled?: boolean;
+};
+
+/** `PATCH /schedules/{id}` body — `ScheduleUpdate` (:32-40); only the PROVIDED keys are applied
+ *  (`exclude_unset`), so the page sends exactly the fields the user changed. Pause = `{enabled:
+ *  false}`; `weekday: null` clears the column (legal only for cadences that do not use it). */
+export type ScheduleUpdate = {
+  name?: string;
+  prompt?: string;
+  cadence?: ScheduleCadence;
+  hour?: number;
+  weekday?: number | null;
+  enabled?: boolean;
 };

@@ -90,6 +90,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ops/agent-quality", ("GET",)),
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
+    ("/api/v1/ops/sandbox", ("GET",)),                           # V11 unit 2: read-only SANDBOX_MODE flag behind the UI banner; OLD surface had no sandbox route — NEW pin added deliberately with the route (parent-surgical)
     ("/api/v1/outreach/prospects", ("GET",)),
     # wave V11 (W1, audit B9/B10): the PUBLIC one-click opt-out a compliant footer links to —
     # unauthenticated BY DESIGN (a recipient has no owner key), which is why the outreach router's

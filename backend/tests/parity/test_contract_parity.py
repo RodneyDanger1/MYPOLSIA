@@ -124,6 +124,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # incident (documented by app/api/v1/ops.py and tests/unit/api/test_r22_ops_events.py).
     ("GET", "/api/v1/ops/events/stats"),
     ("POST", "/api/v1/ops/events/reset"),
+    # V11 unit 2 (parent-surgical): the read-only SANDBOX_MODE flag behind the UI banner
+    # (documented by app/api/v1/ops.py and tests/unit/api/test_v11_ops_sandbox.py).
+    ("GET", "/api/v1/ops/sandbox"),
     # wave V9 settle (V9-D3, parent): the planner / invoices / economics routes — documented by
     # app/api/v1/planner.py, app/api/v1/invoices.py, app/api/v1/economics.py and their unit
     # suites; verified live in app.routes (checked 2026-10-14). Count 51 -> 60.

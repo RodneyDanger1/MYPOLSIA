@@ -4,6 +4,10 @@
 over the `agent_runs` ledger — runs_7d, success_rate, last_failure_at, cost_per_completed_task,
 null-honest.
 
+...plus GET /api/v1/ops/sandbox (V11 unit 2, capability audit B1/B2): the read-only
+`SANDBOX_MODE` flag. The shipped default is sandboxed and until this route nothing outside the
+process could say so — the UI showed an apparently-broken product with no explanation.
+
 WHY this file exists: `events.publish_stats()` and `reset_publish_breaker()` shipped with the
 activity circuit breaker (the "a skip is never silent" contract, `app/core/events.py:44-61`) and
 had ZERO production callers — the counters and the recovery lever were reachable only from tests.
@@ -29,6 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.config import settings
 from app.core import events
 from app.core.timeutil import day_window, today_in
 from app.models.task import AgentRun
@@ -48,6 +53,19 @@ async def reset_event_publish_breaker() -> dict[str, Any]:
     """Clear the breaker and its counters after an incident; returns the fresh (clean) stats."""
     events.reset_publish_breaker()
     return events.publish_stats()
+
+
+# ── GET /ops/sandbox (V11 unit 2) ─────────────────────────────────────────────────────────────
+
+
+@router.get("/sandbox")
+async def read_sandbox_state() -> dict[str, Any]:
+    """Whether external actions are sandboxed (`settings.SANDBOX_MODE`).
+
+    Read-only BY DESIGN: flipping the flag stays a deliberate `.env` + restart action — but the
+    product must be able to SAY sandbox is on instead of silently drafting everything.
+    """
+    return {"sandbox_mode": bool(settings.sandbox_mode)}
 
 
 # ── GET /ops/agent-quality (V9 B2, S1 #8/#9) ──────────────────────────────────────────────────

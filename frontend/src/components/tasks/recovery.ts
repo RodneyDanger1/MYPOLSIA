@@ -18,8 +18,10 @@ import type { TaskRow } from "./types";
  *     work: `completed` (nothing to recover — the live product's RETRY-on-a-done-task is the
  *     defect this rule kills), `in_progress` (no stop/advance endpoint), `rejected` /
  *     `cancelled` (no requeue/edit endpoint exists anywhere in the API), null or unrecognised
- *     status words (no truthful action can be named). `PATCH /tasks/{id}/status` exists
- *     server-side but the api client has no PATCH method — so no control is drawn for it.
+ *     status words (no truthful action can be named). `PATCH /tasks/{id}/status` exists AND is
+ *     drawn — but by the separate `TaskStatusControl` (wave V11 unit 2), NOT by this grammar:
+ *     a status write is not a recovery action, so it gets its own section and this table stays
+ *     exactly one action per state.
  */
 export type Recovery =
   | { kind: "run"; label: string; helper: string }

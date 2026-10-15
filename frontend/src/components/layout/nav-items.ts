@@ -2,9 +2,12 @@ import {
   BarChart2,
   Bot,
   BriefcaseBusiness,
+  CalendarClock,
   Database,
   DollarSign,
+  FileText,
   Gauge,
+  LifeBuoy,
   Mail,
   Megaphone,
   Settings,
@@ -18,9 +21,10 @@ import type { LucideIcon } from "lucide-react";
  *
  * The live product has no persistent nav rail — its IA lives in the top-right
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
- * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes eleven
- * pages (V9/B5 added Planner), so the dropdown carries those eleven routes; the
- * labels stay as short as the live menu items.
+ * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
+ * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
+ * count claim moves with the table (eleven -> fourteen), labels stay as short as the live
+ * menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -36,10 +40,19 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/tasks", label: "Tasks", icon: BriefcaseBusiness },
   // V9/B5: the planner (plan §9 B1/B5) sits right after Tasks — the two work surfaces.
   { href: "/planner", label: "Planner", icon: Target },
+  // V11 unit 2: the schedule CRUD surface (wiring audit F1) — schedules ran via cadence.py with
+  // no UI at all until this wave; managed next to the planner that proposes the work.
+  { href: "/schedules", label: "Schedules", icon: CalendarClock },
   { href: "/social", label: "Social", icon: Twitter },
   { href: "/outreach", label: "Outreach", icon: Mail },
+  // V11 unit 2: the support inbox mirror (wiring audit F4) — the customer_support channel had no
+  // in-app view until this wave.
+  { href: "/support", label: "Support", icon: LifeBuoy },
   { href: "/ads", label: "Ads", icon: Megaphone },
   { href: "/finance", label: "Finance", icon: DollarSign },
+  // V11 unit 2: invoices + dunning are visible billing surfaces (wiring audit F2) — they shipped
+  // backend-only in V9; the page sits beside Finance.
+  { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/memory", label: "Memory", icon: Database },
   { href: "/settings", label: "Settings", icon: Settings },

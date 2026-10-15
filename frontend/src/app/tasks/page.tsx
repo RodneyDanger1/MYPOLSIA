@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 
 import { TaskBoard, TASKS_BOARD_LIMIT } from "@/components/tasks/TaskBoard";
 import { TaskDetailSheet } from "@/components/tasks/TaskDetailSheet";
+import { NewTaskDialog } from "@/components/tasks/NewTaskDialog";
 import { errorText } from "@/components/tasks/status";
 import type { TaskRow } from "@/components/tasks/types";
 import { Button } from "@/components/ui";
@@ -37,6 +38,12 @@ import { api } from "@/lib/api";
  * requested task. The default export is a thin `Suspense` boundary: Next 14 requires one above
  * `useSearchParams` in a statically-rendered route, and its fallback IS the loading state this
  * page already renders while the rows are not read yet.
+ *
+ * Wave V11 unit 2: the `New task` control (wiring audit F7) opens `NewTaskDialog`, which POSTs
+ * the real create schema; a 201 triggers the same one-shot refetch a queued run does, so the
+ * new row appears in the board without inventing one optimistically. The status write lives on
+ * the detail surfaces (sheet + `/tasks/[id]`) and reaches this board through the same
+ * `onTaskQueued` refetch.
  */
 
 /** `/tasks?task=N` — digits only, a positive safe integer; everything else is "no request". */
@@ -72,6 +79,7 @@ function TasksPageContent() {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
 
   // `useSearchParams` answers null where no provider is mounted (the hook's own source says so;
@@ -117,12 +125,19 @@ function TasksPageContent() {
 
   return (
     <>
-      <div aria-hidden={openTask ? true : undefined} className="space-y-4">
+      <div aria-hidden={openTask || dialogOpen ? true : undefined} className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-2 border-b border-line pb-2">
           <h1 className="text-3xl font-bold text-ink">Tasks</h1>
-          <Button size="sm" onClick={() => setReloadSeq((n) => n + 1)}>
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Bevel on purpose: the board carries no primary action (u2 ACC 3 pin); the dialog's
+                one glossy CTA lives inside the dialog. */}
+            <Button size="sm" onClick={() => setDialogOpen(true)}>
+              New task
+            </Button>
+            <Button size="sm" onClick={() => setReloadSeq((n) => n + 1)}>
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {error ? (
@@ -159,6 +174,13 @@ function TasksPageContent() {
           task={openTask}
           onClose={() => setOpenId(null)}
           onTaskQueued={() => setReloadSeq((n) => n + 1)}
+        />
+      ) : null}
+
+      {dialogOpen ? (
+        <NewTaskDialog
+          onClose={() => setDialogOpen(false)}
+          onCreated={() => setReloadSeq((n) => n + 1)}
         />
       ) : null}
     </>

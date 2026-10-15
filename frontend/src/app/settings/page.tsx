@@ -2,8 +2,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
+import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
 import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
+import { PricingSection } from "@/components/settings/PricingSection";
+import { SitePackageSection } from "@/components/settings/SitePackageSection";
 import { TabStrip, type TabDef } from "@/components/settings/TabStrip";
 import { Button, Switch, cn } from "@/components/ui";
 
@@ -27,7 +30,7 @@ import { Button, Switch, cn } from "@/components/ui";
  *
  * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
  * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
- * twelve text fields below plus the six booleans and two night-task numbers — and `PUT /config`
+ * fourteen text fields below plus the six booleans and two night-task numbers — and `PUT /config`
  * copies only the provided keys onto the row (`update_config` → `model_dump(exclude_unset=True)`),
  * so unrendered fields keep their stored value.
  */
@@ -57,10 +60,18 @@ export type SettingsConfig = {
    *  E_POLICY_DENIED). Optional-and-nullable like the notify booleans on purpose: an older fixture
    *  without the key reads as the server's own OFF, never a crash. */
   dispatch_paused?: boolean | null;
+  /** V11/W4 (B13): the CAN-SPAM sender identity — the two fields the compliance refusals point at
+   *  ("set sender_legal_name and sender_postal_address … in the company config — Settings ->
+   *  Company", `backend/app/services/email_compliance.py:86`). Both are NOT NULL text columns at
+   *  rest (server default ''), so the wire serves a string and a cleared box stores ''; absent
+   *  reads as the server's own '' like the booleans above (pre-W4 fixtures keep compiling). */
+  sender_legal_name?: string | null;
+  sender_postal_address?: string | null;
 };
 
 /** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
- *  address (booleans ride `Switch`, the night hour/limit ride `RadioList` — not text drafts). */
+ *  address and the two V11/W4 sender-identity fields (booleans ride `Switch`, the night
+ *  hour/limit ride `RadioList` — not text drafts). */
 export type SettingsFieldKey =
   | "name"
   | "mission"
@@ -73,7 +84,9 @@ export type SettingsFieldKey =
   | "product_type"
   | "timezone"
   | "daily_cycle_hour"
-  | "notification_email";
+  | "notification_email"
+  | "sender_legal_name"
+  | "sender_postal_address";
 
 /** One rendered field: the wire key, the uppercase-voice label, and optional helper copy in the
  *  live modal's convention (DOSSIER §2.2/§2.3: small uppercase copy directly under its field). */
@@ -97,12 +110,15 @@ function errorText(e: unknown): string {
 }
 
 /** The twelve text fields this form owns (render order is per panel: COMPANY/SCHEDULER/EMAIL
- *  field lists below; this master list drives drafts + the changed-field computation). */
+ *  field lists below; this master list drives drafts + the changed-field computation). V11/W4
+ *  added the two sender-identity fields (B13) — they ride the identical only-changed-keys PUT. */
 const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "name",
   "industry",
   "product_type",
   "website_url",
+  "sender_legal_name",
+  "sender_postal_address",
   "mission",
   "vision",
   "description",
@@ -145,7 +161,19 @@ const COMPANY_FIELDS: readonly FieldSpec[] = [
   },
   { key: "industry", label: "Industry" },
   { key: "product_type", label: "Product Type" },
-  { key: "website_url", label: "Website URL" },
+  { key: "website_url", label: "Website URL", helper: "Shown exactly as stored — including any placeholder the seed wrote; edit it here to replace it." },
+  {
+    key: "sender_legal_name",
+    label: "Sender Legal Name",
+    helper:
+      "Your legal sender identity for outreach email and invoice footers. Compliance refusals name this field (sender_legal_name) until it is set — this is the box they point at.",
+  },
+  {
+    key: "sender_postal_address",
+    label: "Sender Postal Address",
+    helper:
+      "The physical mailing address a CAN-SPAM footer must carry (sender_postal_address). Same one-PUT save as the rest of the form.",
+  },
   { key: "mission", label: "Mission" },
   { key: "vision", label: "Vision" },
   { key: "description", label: "Description" },
@@ -602,6 +630,14 @@ export default function SettingsPage() {
           </div>
         ) : null}
       </section>
+
+      {/* V11/W4: the sections that finish the owner's control panel, BELOW the form card on
+          purpose — the pinned u3/u7 suites assert the tab list is exactly the four above and that
+          `tabpanel` is singular, so these are plain sections, not tabs. None of them fires a
+          request on mount (same tests pin that too): every read/write below is click-triggered. */}
+      <DataSection />
+      <PricingSection />
+      <SitePackageSection />
     </div>
   );
 }

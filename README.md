@@ -288,7 +288,7 @@ polsia/
 │       └── integration/     # Testcontainers (real Postgres + Redis)
 ├── frontend/
 │   └── src/
-│       ├── app/             # Next.js 14 pages (ELEVEN routes)
+│       ├── app/             # Next.js 14 pages (FOURTEEN routes)
 │       ├── components/      # ActivityFeed, MetricsCard, AgentStatusGrid, Sidebar
 │       ├── hooks/           # useActivityFeed (WebSocket), useAgentStatus (polling)
 │       └── lib/             # Typed API client

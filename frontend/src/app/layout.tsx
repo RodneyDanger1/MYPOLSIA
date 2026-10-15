@@ -4,6 +4,7 @@ import "./globals.css";
 import { Topbar } from "@/components/layout/Topbar";
 import { ActivityStrip } from "@/components/shell/ActivityStrip";
 import { CommandPalette } from "@/components/shell/CommandPalette";
+import { SandboxBanner } from "@/components/system/SandboxBanner";
 
 export const metadata: Metadata = {
   title: "Polsia — AI Business Agent",
@@ -30,6 +31,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </a>
         <Topbar />
         <ActivityStrip />
+        {/* V11-W6: app-wide sandbox-mode banner. Reads GET /ops/sandbox once; renders only when the
+            flag is true, and renders NOTHING on false or a failed read (silence, so a working app
+            never looks broken). */}
+        <SandboxBanner />
         {/* V8b-D1 (parent mount): the Ctrl+K palette. Renders nothing until opened. */}
         <CommandPalette />
         <main id="content" tabIndex={-1} className="mx-auto w-full max-w-[1600px] px-4 py-6">
