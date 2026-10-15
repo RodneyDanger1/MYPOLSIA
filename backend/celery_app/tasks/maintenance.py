@@ -40,6 +40,23 @@ sweep:
         "task": "celery_app.tasks.maintenance.reconcile_stranded_pending_tasks",
         "schedule": crontab(minute="*/5"),
     }
+
+`close_stale_agent_runs` is the fifth job (wave v15 / E3 item 3-01, BUG-DIGEST MAJOR §B5):
+`agent_runs` rows stuck `running` forever.  The ledger's ONLY closer is
+`task_service.finish_agent_run`, which a dead worker never reaches — so every run a crashed
+worker started sat `running` for the age of the database, invisible to every maintenance tick.
+This sweep closes rows whose `started_at` is older than `AGENT_RUN_STALE_AFTER_SECONDS` (24x
+the shipped CLI cap) through that same service call, with the named reason on the row
+(`raw_log`) and one batched activity row per sweep; `duration_secs`/`cost_usd` are left exactly
+as recorded — a run that never finished has no measured duration and its cost stays NULL when
+unmeasured (A-T17), while a MEASURED cost keeps counting against the day cap unchanged.
+Idempotent by construction: closed rows are no longer `running`, so the next tick is a no-op.
+`rearm_paused_released_tasks` is the sixth job (wave v15 / E3 item 3-03, §B7 + decision #2):
+the resume half of the paused-dispatch contract — while the company is NOT paused it
+re-dispatches `pending` rows the pause gate released (marker `tasks.metadata.paused_release`)
+through `run_agent_task.delay`, clearing the marker on acceptance so the resume re-arms each
+row EXACTLY ONCE; a broker refusal keeps the marker for the next tick, and while paused the
+tick hands nothing to the broker.
 """
 from __future__ import annotations
 
@@ -328,3 +345,283 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
     }
     logger.info("pending reconciler: %s", result)
     return result
+
+
+# ── the stale-run closer (wave v15 / E3 item 3-01, B5) ───────────────────────────────────────
+
+#: How long a `running` agent run may stay open before this sweep treats it as abandoned.
+#: 24x the shipped CLI cap (`settings.claude_timeout_seconds` = 300 s): a run still open an
+#: order of magnitude past its own timeout cannot be a healthy run.  A module constant, not a
+#: settings key — `app/config.py` carries the frozen build keys and is not this lane's file.
+AGENT_RUN_STALE_AFTER_SECONDS = 2 * 60 * 60
+#: The named reason code every closed run carries (on `agent_runs.raw_log`) and the sweep's feed action.
+STALE_RUN_REASON_CODE = "E_RUN_STALE"
+STALE_RUNS_CLOSED_ACTION = "stale_agent_runs_closed"
+#: How many recovered ids the sweep's SUMMARY line names (detail always carries every id).
+_STALE_RUN_IDS_IN_SUMMARY = 20
+
+
+@app.task(name="celery_app.tasks.maintenance.close_stale_agent_runs")
+def close_stale_agent_runs() -> dict[str, Any]:
+    """Every 5 min — close `agent_runs` rows stuck `running` past the staleness bound (B5)."""
+    return run_async(_close_stale_runs_in_session())
+
+
+async def _close_stale_runs_in_session() -> dict[str, Any]:
+    """Close every `running` run whose `started_at` cannot be a live run anymore.
+
+    The close routes through `task_service.finish_agent_run` — the ledger's one closer — with
+    status `cancelled` (the `ck_agent_runs_status` vocabulary's terminal-abandoned state; the
+    run neither completed nor produced a failure an agent authored) and the named reason on
+    `raw_log`.  `duration_secs` stays NULL: the run never reported one and the sweep does not
+    invent it (the reason string carries the measured AGE, which is a different fact).
+    `cost_usd` is untouched: an unmeasured cost stays NULL (A-T17) and a measured one keeps
+    counting against the day cap exactly as recorded.
+
+    A `running` row with NO `started_at` is closed too, with the missing timestamp NAMED: it
+    can never become measurable later, and an immortal `running` row is the defect itself.
+    Ordered by id, one batched activity row per sweep, and idempotent by construction — a
+    closed row is no longer `running`, so the next tick scans past it.
+    """
+    from sqlalchemy import or_, select
+
+    from app.core.database import get_session_factory
+    from app.models.task import AgentRun
+    from app.services.activity_service import log_activities
+    from app.services.task_service import finish_agent_run
+
+    session_factory = get_session_factory()
+    cutoff = now_utc() - timedelta(seconds=AGENT_RUN_STALE_AFTER_SECONDS)
+
+    closed: list[int] = []
+    undated: list[int] = []
+    scanned = 0
+    async with session_factory() as db:
+        bound = as_bound_instant(cutoff, db)
+        rows = (
+            await db.execute(
+                select(AgentRun.id, AgentRun.started_at)
+                .where(
+                    AgentRun.status == "running",
+                    or_(AgentRun.started_at.is_(None), AgentRun.started_at < bound),
+                )
+                .order_by(AgentRun.id)
+            )
+        ).all()
+        scanned = len(rows)
+        for raw_id, started_at in rows:
+            run_id = int(raw_id)
+            if started_at is None:
+                reason = (
+                    f"{STALE_RUN_REASON_CODE}: run was still 'running' with no `started_at` "
+                    "recorded — its age can never be measured; closed by close_stale_agent_runs; "
+                    "duration unknown"
+                )
+                undated.append(run_id)
+            else:
+                opened = started_at if started_at.tzinfo is not None else started_at.replace(tzinfo=UTC)
+                age_seconds = int((now_utc() - opened).total_seconds())
+                reason = (
+                    f"{STALE_RUN_REASON_CODE}: still 'running' after {age_seconds} s "
+                    f"(bound {AGENT_RUN_STALE_AFTER_SECONDS} s; started_at {opened.isoformat()}) "
+                    "— the worker died mid-run; closed by close_stale_agent_runs "
+                    "(duration/cost left exactly as recorded)"
+                )
+            run_row = await finish_agent_run(db, run_id, "cancelled", error_message=reason)
+            if run_row is not None:
+                closed.append(run_id)
+
+        if closed:
+            shown = closed[:_STALE_RUN_IDS_IN_SUMMARY]
+            listed = ", ".join(f"#{run_id}" for run_id in shown)
+            if len(closed) > _STALE_RUN_IDS_IN_SUMMARY:
+                listed += f", … (+{len(closed) - _STALE_RUN_IDS_IN_SUMMARY} more)"
+            parts = [f"{len(closed)} stale agent run(s) closed"]
+            if undated:
+                parts.append(f"{len(undated)} had no started_at recorded")
+            await log_activities(
+                db,
+                [
+                    {
+                        "agent_type": "orchestrator",
+                        "action": STALE_RUNS_CLOSED_ACTION,
+                        "summary": f"{'; '.join(parts)}: {listed}",
+                        "level": "warning",
+                        "detail": {
+                            "closed_ids": closed,
+                            "undated_ids": undated,
+                            "bound_seconds": AGENT_RUN_STALE_AFTER_SECONDS,
+                        },
+                    }
+                ],
+            )
+        await db.commit()
+
+    result = {
+        "status": "completed",
+        "scanned": scanned,
+        "closed": closed,
+        "closed_count": len(closed),
+        "undated": undated,
+        "bound_seconds": AGENT_RUN_STALE_AFTER_SECONDS,
+    }
+    logger.info("stale-run sweep: %s", result)
+    return result
+
+
+# ── the pause resume re-arm (wave v15 / E3 item 3-03, B7 + decision #2) ──────────────────────
+
+#: One tick's work bound (larger than any healthy pause release; the next tick continues).
+REARM_BATCH = 200
+
+
+@app.task(name="celery_app.tasks.maintenance.rearm_paused_released_tasks")
+def rearm_paused_released_tasks() -> dict[str, Any]:
+    """Every 5 min — hand pause-released `pending` rows back to the broker (the resume nudge)."""
+    return run_async(_rearm_paused_released_tasks())
+
+
+async def _rearm_paused_released_tasks() -> dict[str, Any]:
+    """The resume half of the paused-dispatch contract (3-03): re-arm EXACTLY ONCE.
+
+    The pause gate (`agent_tasks._execute_agent_task`) releases a refused row back to
+    `pending` and stamps `tasks.metadata["paused_release"]` — the marker that says "this queued
+    work lost its message to a pause".  While the company is still paused, this tick hands
+    NOTHING to the broker (re-feeding a paused row would only churn claim/release); once the
+    owner resumes, every marked row is re-dispatched through the SAME `run_agent_task.delay`
+    hand-off the workers use, and the marker is cleared on ACCEPTANCE — so a second tick
+    re-arms nothing, and the row runs exactly once (the claim stays atomic).
+
+    A broker refusal keeps the marker and records the id in `failed`, so the next tick
+    retries — nothing is silently dropped.  The scan is prefiltered in SQL (the JSON column
+    rendered as text, LIKE on the marker key) and re-checked exactly in Python.
+    """
+    from sqlalchemy import String, cast, select
+
+    from app.agents.crew_factory import resolve_dispatch_paused
+    from app.core.database import get_session_factory
+    from app.models.task import Task
+    from app.services.activity_service import log_activity
+    from celery_app.tasks.agent_tasks import PAUSED_RELEASE_KEY
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        paused = await resolve_dispatch_paused(db)
+        raw_rows = (
+            await db.execute(
+                select(Task.id, Task.metadata_json)
+                .where(
+                    Task.status == "pending",
+                    Task.claimed_by.is_(None),
+                    cast(Task.metadata_json, String).like(f"%{PAUSED_RELEASE_KEY}%"),
+                )
+                .order_by(Task.id)
+                .limit(REARM_BATCH)
+            )
+        ).all()
+
+    marked: list[int] = [
+        int(task_id)
+        for task_id, metadata in raw_rows
+        if isinstance(metadata, dict) and PAUSED_RELEASE_KEY in metadata
+    ]
+    if not marked:
+        return {
+            "status": "completed",
+            "paused": paused,
+            "scanned": len(raw_rows),
+            "rearmed": [],
+            "failed": [],
+            "skipped_paused": [],
+        }
+    if paused:
+        logger.info("pause re-arm: %s row(s) wait for resume", len(marked))
+        return {
+            "status": "completed",
+            "paused": True,
+            "scanned": len(raw_rows),
+            "rearmed": [],
+            "failed": [],
+            "skipped_paused": marked,
+        }
+
+    from celery_app.tasks.agent_tasks import run_agent_task  # lazy: the broker edge
+
+    rearmed: list[int] = []
+    failed: list[int] = []
+    for task_id in marked:
+        try:
+            run_agent_task.delay(task_id)
+        except Exception as exc:  # noqa: BLE001 — broker refusal is NAMED; the marker stays
+            logger.warning("pause re-arm: task %s hand-off refused: %s", task_id, exc)
+            failed.append(task_id)
+            continue
+        rearmed.append(task_id)
+
+    if rearmed:
+        await _clear_paused_markers(rearmed)
+
+    if rearmed or failed:
+        async with session_factory() as db:
+            if rearmed:
+                await log_activity(
+                    db,
+                    "system",
+                    "paused_tasks_rearmed",
+                    summary=(
+                        f"re-armed {len(rearmed)} task(s) released while the company was paused "
+                        "(resume)"
+                    ),
+                    detail={"task_ids": rearmed},
+                )
+            if failed:
+                await log_activity(
+                    db,
+                    "system",
+                    "paused_tasks_rearm_failed",
+                    summary=(
+                        f"could not re-arm {len(failed)} pause-released task(s); they stay "
+                        "pending for the next sweep"
+                    ),
+                    level="warning",
+                    detail={"task_ids": failed},
+                )
+            await db.commit()
+
+    result = {
+        "status": "completed",
+        "paused": False,
+        "scanned": len(raw_rows),
+        "rearmed": rearmed,
+        "failed": failed,
+        "skipped_paused": [],
+    }
+    logger.info("pause re-arm: %s", result)
+    return result
+
+
+async def _clear_paused_markers(task_ids: list[int]) -> None:
+    """Clear `metadata.paused_release` on rows the broker just ACCEPTED (the exactly-once edge).
+
+    Re-assigns a NEW dict per row (the JSON column tracks attribute assignment, not in-place
+    mutation — the `_common.create_task_deduped` metadata rule), keeping every other key and
+    stamping `rearmed_at` so the resume is auditable from the row itself.
+    """
+    if not task_ids:
+        return
+    from sqlalchemy import select
+
+    from app.core.database import get_session_factory
+    from app.models.task import Task
+    from celery_app.tasks.agent_tasks import PAUSED_RELEASE_KEY
+
+    stamp = now_utc().isoformat()
+    ids = [int(item) for item in task_ids]
+    async with get_session_factory()() as db:
+        rows = (await db.execute(select(Task).where(Task.id.in_(ids)))).scalars().all()
+        for row in rows:
+            existing = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+            merged = {**existing, "rearmed_at": stamp}
+            merged.pop(PAUSED_RELEASE_KEY, None)
+            row.metadata_json = merged
+        await db.commit()

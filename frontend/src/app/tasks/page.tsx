@@ -9,7 +9,7 @@ import { NewTaskDialog } from "@/components/tasks/NewTaskDialog";
 import { errorText } from "@/components/tasks/status";
 import type { TaskRow } from "@/components/tasks/types";
 import { Button } from "@/components/ui";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 /**
  * Client component on purpose — kept from the page this replaces, because the lesson stands:
@@ -31,8 +31,11 @@ import { api } from "@/lib/api";
  *
  * Wave U4: the page consumes the bell's `?task=N` deep link it has always been pointed at. The
  * param names a task id; once the rows arrive, that task's detail sheet opens — the same sheet
- * the board's own cards open. An id outside the loaded set (or a junk param) is an honest
- * no-op: nothing opens, nothing is claimed, no fake error. A `consumed` ref marks the exact
+ * the board's own cards open. Wave V15 (S2-F4) makes it work BEYOND the loaded window: an id
+ * outside the newest `TASKS_BOARD_LIMIT` rows is read by id (`GET /tasks/{id}` — the route the
+ * backend has always served) and opens from that answer with a labelled context note; a 404 or
+ * any failed read renders a NAMED miss — never a silent nothing. A junk param is still the
+ * documented no-op: nothing is requested, nothing is claimed. A `consumed` ref marks the exact
  * param value once it has been acted on, so an unrelated refresh never re-opens a sheet the
  * user closed, while a NEW param value (a bell click landing on this route) opens the newly
  * requested task. The default export is a thin `Suspense` boundary: Next 14 requires one above
@@ -52,6 +55,13 @@ function parseTaskParam(raw: string | null): number | null {
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
+
+/** The deep link's OFF-BOARD state: the requested id is being read by id, its fetched row, or
+ *  the named miss. `null` = the loaded rows carried (or last carried) the request. */
+type OffBoardOpen =
+  | { kind: "fetching"; id: number }
+  | { kind: "found"; row: TaskRow }
+  | { kind: "miss"; id: number; notFound: boolean; message: string };
 
 export default function TasksPage() {
   return (
@@ -81,6 +91,7 @@ function TasksPageContent() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
+  const [offBoard, setOffBoard] = useState<OffBoardOpen | null>(null);
 
   // `useSearchParams` answers null where no provider is mounted (the hook's own source says so;
   // several suites render this page unmocked) — that is "no param in the URL", never a crash.
@@ -107,7 +118,10 @@ function TasksPageContent() {
     };
   }, [reloadSeq]);
 
-  // The deep link, consumed once per distinct param VALUE, decided by the loaded set.
+  // The deep link, consumed once per distinct param VALUE. An id the loaded board window carries
+  // opens straight from the rows; an id OUTSIDE it gets the real by-id read (`GET /tasks/{id}`,
+  // tasks.py:113-114) — never the silent nothing this used to be (S2-F4). A junk param stays the
+  // documented no-op: nothing is requested and nothing is claimed.
   useEffect(() => {
     if (rawTaskParam === null) {
       // No request in the URL: re-arm, so a later arrival of the same value counts as new.
@@ -117,11 +131,69 @@ function TasksPageContent() {
     if (rows === null || consumedParam.current === rawTaskParam) return;
     consumedParam.current = rawTaskParam; // acted on (or honestly un-openable) — never again
     if (requestedTaskId === null) return; // junk param: no-op
-    if (!rows.some((row) => row.id === requestedTaskId)) return; // outside the loaded set: no-op
-    setOpenId(requestedTaskId);
+    if (rows.some((row) => row.id === requestedTaskId)) {
+      setOffBoard(null);
+      setOpenId(requestedTaskId);
+      return;
+    }
+    // Outside the loaded set: the by-id read is the only honest answer. Any previously open
+    // sheet closes first — the URL's new request supersedes it.
+    setOpenId(null);
+    setOffBoard({ kind: "fetching", id: requestedTaskId });
   }, [rawTaskParam, requestedTaskId, rows]);
 
-  const openTask = rows?.find((row) => row.id === openId) ?? null;
+  // The by-id read itself, keyed to the FETCHING id alone (not to `rows`): a later board
+  // refresh must not cancel an in-flight read.
+  const fetchingId = offBoard?.kind === "fetching" ? offBoard.id : null;
+  useEffect(() => {
+    if (fetchingId === null) return;
+    let cancelled = false;
+    api
+      .get<TaskRow>(`/tasks/${fetchingId}`)
+      .then((row) => {
+        if (cancelled) return;
+        // The network boundary is typed, not trusted: a body that is not a task row is a named
+        // miss, never a detail sheet rendering `undefined`.
+        if (!row || typeof row.id !== "number") {
+          setOffBoard({
+            kind: "miss",
+            id: fetchingId,
+            notFound: false,
+            message: "the API answered no task row for this id",
+          });
+          return;
+        }
+        setOffBoard({ kind: "found", row });
+        setOpenId(row.id);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        // The typeof guard mirrors WebsiteCard's: suites that factory-mock @/lib/api leave
+        // ApiError undefined, and instanceof against undefined throws.
+        const notFound =
+          typeof ApiError !== "undefined" && e instanceof ApiError && e.status === 404;
+        setOffBoard({ kind: "miss", id: fetchingId, notFound, message: errorText(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchingId]);
+
+  // The open task: from the loaded rows when the board carries it, else the by-id fetch's row —
+  // never a fabricated stand-in for either.
+  const openTask =
+    openId === null
+      ? null
+      : (rows?.find((row) => row.id === openId) ??
+        (offBoard?.kind === "found" && offBoard.row.id === openId ? offBoard.row : null));
+
+  // The one-row context note for a sheet whose row came from the by-id read: it disappears the
+  // moment a refresh puts the row in the board — the note states where the row came from NOW.
+  const openedById =
+    openTask !== null &&
+    offBoard?.kind === "found" &&
+    offBoard.row.id === openTask.id &&
+    !(rows ?? []).some((row) => row.id === openTask.id);
 
   return (
     <>
@@ -144,6 +216,29 @@ function TasksPageContent() {
           <div role="alert" className="border border-alert bg-surface p-3">
             <p className="ui-label text-alert">Could not load tasks</p>
             <p className="mt-1 text-sm text-ink">{error}</p>
+          </div>
+        ) : null}
+
+        {/* The deep link's off-board leg: a named progress line while the by-id read is in
+            flight, and a named miss — never a silent nothing — when it comes back empty. */}
+        {offBoard?.kind === "fetching" ? (
+          <p role="status" data-testid="tasks-deeplink-loading" className="ui-label text-ink-muted">
+            Opening task #{offBoard.id} — outside the loaded board window, reading it by id…
+          </p>
+        ) : null}
+
+        {offBoard?.kind === "miss" ? (
+          <div
+            role="alert"
+            data-testid="tasks-deeplink-miss"
+            className="border border-alert bg-surface p-3"
+          >
+            <p className="ui-label text-alert">
+              {offBoard.notFound
+                ? `Task #${offBoard.id} not found`
+                : `Could not open task #${offBoard.id}`}
+            </p>
+            <p className="mt-1 text-sm text-ink">{offBoard.message}</p>
           </div>
         ) : null}
 
@@ -172,6 +267,11 @@ function TasksPageContent() {
       {openTask ? (
         <TaskDetailSheet
           task={openTask}
+          contextNote={
+            openedById
+              ? `Task #${openTask.id} was read by id — it is outside the loaded board window (the newest ${TASKS_BOARD_LIMIT} tasks).`
+              : null
+          }
           onClose={() => setOpenId(null)}
           onTaskQueued={() => setReloadSeq((n) => n + 1)}
         />

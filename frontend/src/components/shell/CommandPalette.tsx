@@ -13,7 +13,8 @@ import { api } from "@/lib/api";
 
 /**
  * The Ctrl+K command palette (ui-gap §11) — one overlay that searches and navigates the SHIPPED
- * product: the ten routes, tasks, runs and reports, all through deep links that already exist.
+ * product: the fourteen routes (`components/layout/nav-items.ts` — the shared table is the
+ * count), tasks, runs and reports, all through deep links that already exist.
  *
  * Purely client-side: no new endpoint, no new backend call shape. Three lazy READS (the same
  * list endpoints the pages themselves consume) run on the FIRST open and are reused for the
@@ -272,9 +273,11 @@ export function CommandPalette() {
   }, [trimmedQuery, tasksRead, runsRead, reportsRead]);
 
   /** Apply the per-section cap and build the FLATTENED visible list the arrows move over.
-   *  The ROUTES table is the fixed ten-item IA and is exempt: the brief's own acceptance
-   *  ("lists all ten route labels") wins over a cap that would hide two navigable pages behind
-   *  an "…and 2 more" line. The cap is for the read sections, whose length is unbounded. */
+   *  The ROUTES table is the fixed fourteen-route IA (`components/layout/nav-items.ts` — the
+   *  table itself is the count; this comment drifted at "ten" between V11's three route
+   *  additions and the V15/W2 P2-02 correction) and is exempt: the acceptance ("lists all route
+   *  labels") wins over a cap that would hide two navigable pages behind an "…and 2 more" line.
+   *  The cap is for the read sections, whose length is unbounded. */
   const model = useMemo(() => {
     const flat: Array<PaletteItem & { flatIndex: number }> = [];
     const rendered = sections.map((section) => {

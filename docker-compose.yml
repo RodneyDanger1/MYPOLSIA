@@ -189,6 +189,55 @@ services:
         max-file: "3"
     restart: unless-stopped
 
+  # ── 5-04 (#8 LOCKED): the SCHEDULED daily backup (compose-sidecar route, parent decision) ────
+  # `make backup` stays the on-demand path and is UNTOUCHED; this service is the scheduler it
+  # never had.  It runs scripts/backup.sh (mounted read-only) in a postgres:16-alpine container —
+  # pg_dump's major version must match the server it dumps, and this stack's server IS
+  # postgres:16.  No docker socket and no docker CLI inside the container: the database is read
+  # over the compose network (PGHOST=postgres) and each DATA volume is mounted READ-ONLY (a
+  # volume mount is a directory, so plain `tar` is the whole story — and a backup process must
+  # never be able to write to what it is archiving).  Artifacts land in ./backups — the same
+  # gitignored directory `make backup` writes.  Cadence/retention are the env knobs below;
+  # README.md ("Volumes & Backup") documents both plus the restore drill.
+  backup:
+    image: postgres:16-alpine
+    # docker-entrypoint.sh would try to INITIALIZE A DATABASE here — this container is a timer,
+    # not a server, so the script is the whole entrypoint.
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    env_file: .env
+    environment:
+      PGHOST: postgres
+      # pg_dump's password; matches the postgres service's own default above
+      PGPASSWORD: ${POSTGRES_PASSWORD:-polsia_password}
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SECONDS: "86400"
+      BACKUP_RETENTION_DAYS: "14"
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      # One READ-ONLY mount per DATA volume (the same four `make backup` snapshots).
+      - backend_data:/volumes/backend_data:ro
+      - chroma_data:/volumes/chroma_data:ro
+      - redis_data:/volumes/redis_data:ro
+      - celery_beat_data:/volumes/celery_beat_data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # F1: same as celery_worker/beat — this container serves no HTTP; the image's inherited
+    # HEALTHCHECK must not flag it permanently unhealthy.
+    healthcheck:
+      disable: true
+    # A cycle can be mid-pg_dump/tar when the stack stops.  30s beats the 10s default, and the
+    # .part naming means even a SIGKILLed cycle leaves a recognizable partial, never a fake
+    # artifact (a real .sql/.tgz only ever appears via rename-after-success).
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

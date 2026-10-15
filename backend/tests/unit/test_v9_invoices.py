@@ -360,7 +360,11 @@ async def test_send_marks_sent_only_on_a_real_delivery_and_carries_the_footer(
         issue_date=ISSUE,
         bill_to={"name": "ACME", "email": "billing@acme.example"},
         payment_link="https://buy.stripe.com/test_b4send",
-        total=Decimal("120.00"),
+        # DELIBERATE RE-PIN (wave V15, E1 / 5-01, decision #3): a >= $25 ask is now gated
+        # (E_POLICY_DENIED without an approval channel — `test_v15_e1_invoice_amount_gate.py`
+        # pins that leg).  This test's subject is the footer + flip-to-sent cross-seat
+        # integration, so it rides at a sub-threshold amount.
+        total=Decimal("12.00"),
     )
     sent = await invoice_service.send_invoice(
         async_db_session, invoice.id, cover_note="Here is your November invoice."

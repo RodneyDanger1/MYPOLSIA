@@ -12,6 +12,8 @@ What the upload did and what this file does instead (all measured, lane 03/04/06
 | `agent_runs` duration only, tokens/cost/session never written | duration, tokens, cost, CLI session persisted |
 | a run's side effects never reached the tables (`social_posts`, `email_logs`, `revenue_snapshots` stayed empty) | `_persist_run_artifacts` writes what a completed run really performed, on the run's own transaction |
 | every per-channel cap read `context["channel_sends"]`, which had no producer anywhere | `_with_channel_sends` injects the channel snapshot for this agent's own channels (absent-and-recorded if the producer cannot answer) |
+| stored memories reached no run (the read seam had no producer; `remember_run` had no caller) | `_with_run_memories` resolves `context["memories"]` per dispatch; `_persist_run_artifacts` folds a `remember_run` memory report in (V15/E2-H4) |
+| the 6-hourly ads/stripe dispatch carried no provider input (metrics/revenue existed only if the model invented them) | H2/H3 attaches on the created tasks: `metadata.ad_metrics` (both-platform, the configured one) + `metadata.revenue_facts` (V15/E2-H2/H3) |
 
 The claim API (`claim_task`, `heartbeat_task`, `release_task_claim`) is requested from the
 services owner in the lane receipt (`## REQUESTS`) — it is imported inside the coroutine so
@@ -38,6 +40,7 @@ from app.core.errors import (
     E_REDIS,
     E_TASK_CLAIMED,
     E_TASK_NOT_RUNNABLE,
+    E_VALIDATION,
     PolsiaError,
 )
 from app.models.task import TaskStatus
@@ -82,6 +85,13 @@ RETRYABLE_CODES = frozenset(
 # A run whose outcome must never be written back to the task row: the row belongs to
 # somebody else now.
 _SKIP_CLAIM_CODES = (E_TASK_CLAIMED, E_TASK_NOT_RUNNABLE)
+
+#: The `tasks.metadata` key the pause gate stamps on a row it RELEASED (wave v15/3-03, decision
+#: #2 + BUG-DIGEST §B7).  Producer here; the consumer is the `rearm_paused_released_tasks`
+#: maintenance tick (`celery_app.tasks.maintenance`), which re-dispatches marked `pending` rows
+#: exactly once after resume — the producer/consumer split `metadata.inbox_item` and
+#: `metadata.approval_token` already use.
+PAUSED_RELEASE_KEY = "paused_release"
 
 
 def worker_id() -> str:
@@ -232,14 +242,17 @@ async def _with_channel_sends(db: Any, agent_type: str, context: dict[str, Any])
 async def _with_compliance_preflight(
     db: Any, agent_type: str, context: dict[str, Any]
 ) -> dict[str, Any]:
-    """`context` plus the resolved compliance preflight an `email_outreach` run must carry
-    (V12/W-C; W1 OPEN(a)).  The `channel_sends` pattern: the worker owns the DB and hands the
-    agent what the guarded sender needs under `compliance_send.PREFLIGHT_KEY`, so the per-send
-    loop-local engine in `compliance_send` (mode 2) leaves the hot path.  Nothing is invented:
-    a producer that cannot answer leaves the key ABSENT and records why — the agent then falls
-    back to mode 2, which resolves the same facts on its own session (fail closed).
+    """`context` plus the resolved compliance preflight a guarded-sender run must carry.
+
+    (V12/W-C W1 OPEN(a) for `email_outreach`; wave v15 / E3 item 4-01 adds `customer_support`
+    per E2's FROZEN H1 interface — `customer_support/send_bridge.PREFLIGHT_KEY` re-exports the
+    outreach key, so ONE producer serves both.)  The `channel_sends` pattern: the worker owns
+    the DB and hands the agent what the guarded sender needs under `compliance_send.PREFLIGHT_KEY`,
+    so the per-send loop-local engine in `compliance_send` (mode 2) leaves the hot path.  Nothing
+    is invented: a producer that cannot answer leaves the key ABSENT and records why — the agent
+    then falls back to mode 2, which resolves the same facts on its own session (fail closed).
     """
-    if agent_type != "email_outreach":
+    if agent_type not in ("email_outreach", "customer_support"):
         return context
     from app.agents.email_outreach.compliance_send import PREFLIGHT_KEY
     from app.services.outreach_service import compliance_preflight
@@ -339,7 +352,42 @@ async def _log_quality_drop(db: Any, agent_type: str, drop: Any) -> bool:
     return True
 
 
-async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any]) -> dict[str, Any]:
+def _run_memory_query(task_dict: dict[str, Any]) -> str:
+    """The task's OWN terms for the memory search (H4: relevance runs on the caller's query)."""
+    parts = (task_dict.get("title"), task_dict.get("description"))
+    return " ".join(str(part).strip() for part in parts if part).strip()
+
+
+async def _with_run_memories(
+    db: Any, agent_type: str, context: dict[str, Any], *, query: str
+) -> dict[str, Any]:
+    """`context` plus the stored memories relevant to this run's task (V15/4-05a, E2-H4).
+
+    The `_with_*` pattern (the worker owns the DB, the agents do not): the resolver queries the
+    SHIPPED search machinery with the task's own terms, and `base_agent.context_memories`
+    renders the list into every agent's prompt (one seam, no per-agent edits).  A store that
+    cannot answer leaves the key ABSENT and records why — "unmeasured" must stay distinguishable
+    from "no relevant memories" (the resolver raises the named `E_DB` on a store failure with no
+    fallback match; an injected `[]` would silently claim the latter).
+    """
+    try:
+        from app.services.memory_service import resolve_agent_memories
+
+        memories = await resolve_agent_memories(db, agent_type=agent_type, query=query)
+    except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated list
+        logger.warning(
+            "code=agent_memories_unavailable: %s runs without stored memories (%s)",
+            agent_type,
+            exc,
+            exc_info=True,
+        )
+        return context
+    return {**context, "memories": memories}
+
+
+async def _persist_run_artifacts(
+    db: Any, agent_type: str, result: dict[str, Any], *, task: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Persist what a finished run ACTUALLY performed, and report what happened.
 
     Why here and not in the agents: agents hold no DB session (that is why the run's side effects —
@@ -354,18 +402,21 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
     run itself succeeded; only the persistence leg did not.
     """
     try:
+        from app.services.memory_service import remember_run
+
+        report: dict[str, Any] = {}
         if agent_type == "finance":
             from app.services.finance_service import persist_finance_run
 
-            return await persist_finance_run(db, result)
+            report = await persist_finance_run(db, result)
         if agent_type == "social_media":
             from app.services.social_service import record_published_posts
 
-            return await record_published_posts(db, result)
+            report = await record_published_posts(db, result)
         if agent_type == "email_outreach":
             from app.services.outreach_service import record_sent_emails
 
-            return await record_sent_emails(db, result)
+            report = await record_sent_emails(db, result)
         if agent_type == "customer_support":
             # RD14 follow-up (its receipt §7 REQUESTS 1): CS replies send through the same
             # SendGrid path as email_outreach, but nothing persisted them — the email channel's
@@ -374,7 +425,7 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
             # downgrade adds no row), deduped by sendgrid_id.
             from app.services.outreach_service import record_sent_emails
 
-            return await record_sent_emails(db, {"emails": [
+            report = await record_sent_emails(db, {"emails": [
                 {
                     "prospect_email": str(r.get("from_address") or r.get("from") or "").strip(),
                     "subject": f"Re: {r.get('subject') or 'your message'}",
@@ -398,11 +449,32 @@ async def _persist_run_artifacts(db: Any, agent_type: str, result: dict[str, Any
             # artifacts: the service flushes, this caller commits — like every branch here).
             from app.services.ads_service import record_ads_run
 
-            return await record_ads_run(db, result)
+            report = await record_ads_run(db, result)
         if agent_type == "competitor_research":
             # V8/C5 (code-gap #11 tier (a), S): the post-hoc research-budget check — record-only.
-            return await _research_budget_check(db, result)
-        return {}
+            report = await _research_budget_check(db, result)
+        # V15/4-05b (E3/H4 frozen): the memory write leg — the worker owns the session and
+        # `remember_run` FLUSHES only (this transaction commits at the caller).  It records ONE
+        # honest, run-derived memory — the run's OWN summary (`task` names the title it is
+        # stored under); a run without one is SKIPPED BY NAME (`E_VALIDATION` — a memory is
+        # never invented).  The memory report rides the same shape as the artifact branches,
+        # so the caller's fold-in reads it unchanged.
+        memory = await remember_run(db, agent_type=agent_type, task=task, result=result)
+        if memory.get("ok"):
+            # A stored memory IS a written artifact: it makes the report (and for an agent with
+            # no artifact branch it is the whole report — `ok` included).
+            report["memory"] = memory
+            report.setdefault("ok", True)
+        elif report:
+            # Other artifacts were written; the memory leg's non-ok outcome (the named skip OR
+            # a recorded failure) rides beside them without re-labelling the artifact report.
+            report["memory"] = memory
+        elif memory.get("error", {}).get("code") != E_VALIDATION:
+            # No artifacts and the memory leg really FAILED (not the no-summary skip): the
+            # failure NAMES this report — folded into the run output and the caller's warning
+            # activity row — instead of vanishing.
+            report = {"ok": False, "memory": memory, "error": memory.get("error") or {}}
+        return report
     except PolsiaError as exc:
         logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
         return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
@@ -557,7 +629,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         claim_task,
         create_agent_run,
         finish_agent_run,
+        get_task,
         heartbeat_task,
+        release_claim,
         update_task_status,
     )
 
@@ -610,46 +684,69 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             return {"status": "skipped", "task_id": task_id, "reason": exc.code}
         raise
 
-    # ── 1a2. company pause gate (V8/C5, V8-D6) ───────────────────────────────
+    # ── 1a2. company pause gate (V8/C5, V8-D6; reworked wave v15/3-03, decision #2) ──────
     # `company_config.dispatch_paused` is the owner's STOP (Settings' Pause/Resume Switch).
     # It is read HERE — the one place both the scheduler fan-outs and the API "Run Now" funnel
     # into — because `dispatch_preflight` is sync with no session (V8-D6); the resolved flag is
     # also handed to that sync seam below so a direct caller cannot bypass the decision.  A
-    # refusal happens BEFORE anything ran (no provider call, no ledger row): the row lands
-    # `rejected` (the live product's Rejected state), exactly like the budget gate below.  A
-    # config read failure resolves to NOT paused (see `resolve_dispatch_paused`'s docstring).
+    # refusal happens BEFORE anything ran (no provider call, no ledger row).
+    #
+    # 3-03 (decision #2 LOCKED, §B7): the refusal must NOT destroy queued work.  The row is
+    # RELEASED cleanly — back to its queue-eligible `pending` state, every lease field cleared —
+    # and the named paused reason is stamped on `metadata.paused_release` (the marker the
+    # `rearm_paused_released_tasks` maintenance tick re-dispatches EXACTLY ONCE after resume)
+    # plus an activity row.  The previous `rejected` write was the measured defect: the work was
+    # written off and nothing re-armed it on resume.
     from app.agents.crew_factory import resolve_dispatch_paused
 
     async with session_factory() as db:
         paused = await resolve_dispatch_paused(db)
     if paused:
+        from app.core.timeutil import now_utc
+
         paused_reason = (
             "E_POLICY_DENIED: company paused by owner (company_config.dispatch_paused=true; "
             "resume in Settings to allow dispatch)"
         )
-        logger.warning("run_agent_task(%s): %s", task_id, paused_reason)
+        logger.warning("run_agent_task(%s): %s — claim released, work stays queued", task_id, paused_reason)
         async with session_factory() as db:
-            task_row = await update_task_status(
-                db, task_id, "rejected", error_message=paused_reason
-            )
+            # ONE statement: status back to `pending`, claimed_by/claimed_at/heartbeat_at
+            # cleared (the service's graceful release verb, not a hand-rolled UPDATE).
+            await release_claim(db, task_id, me)
+            task_row = await get_task(db, task_id)
             if task_row is not None:
-                task_row.claimed_by = None
-                task_row.claimed_at = None
-                task_row.heartbeat_at = None
+                # Merge — never replace — the marker into the per-task payload channel; a
+                # re-assigned dict, because the JSON column tracks attribute assignment.
+                merged = dict(task_row.metadata_json or {})
+                merged[PAUSED_RELEASE_KEY] = {
+                    "released_at": now_utc().isoformat(),
+                    "reason": paused_reason,
+                    "worker": me,
+                }
+                task_row.metadata_json = merged
             await log_activity(
                 db,
                 agent_type=agent_type,
                 action="dispatch_refused_paused",
-                summary=f"task {task_id}: dispatch refused — company paused by owner",
+                summary=(
+                    f"task {task_id}: dispatch refused — company paused by owner; claim "
+                    "released, the work stays queued for resume"
+                ),
                 level="warning",
-                detail={"task_id": task_id, "reason": paused_reason},
+                detail={
+                    "task_id": task_id,
+                    "reason": paused_reason,
+                    "requeued": True,
+                    "marker": PAUSED_RELEASE_KEY,
+                },
             )
             await db.commit()
         return {
             "status": "skipped",
             "task_id": task_id,
             "agent_type": agent_type,
-            "task_status": "rejected",
+            "task_status": "pending",
+            "requeued": True,
             "reason": paused_reason,
         }
 
@@ -741,6 +838,12 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         # weekly line reads — same "the worker owns the DB, the agent does not" reasoning as
         # the channel counts above.
         context = await _with_agent_quality(db, agent_type, context)
+        # V15/4-05a worker hook (E2-H4 frozen): the stored memories relevant to this run's task
+        # — same "the worker owns the DB, the agent does not" reasoning as the hooks above; the
+        # base agent's `context_memories` seam renders them into every agent's prompt.
+        context = await _with_run_memories(
+            db, agent_type, context, query=_run_memory_query(task_dict)
+        )
         # L2-03 seam: `tasks.attempts` — incremented by the claim — is the execution number this
         # run is; it lands on `agent_runs.attempt` so a retried run is distinguishable from its
         # predecessors (migration 0002's `ux_agent_runs_task_attempt` is only live once this is
@@ -853,7 +956,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         # so `agent_runs.output` carries the report of what was really persisted. A failure is
         # folded into the output + an activity row, never into the run's status: the run succeeded.
         if run_status == "completed" and isinstance(result, dict):
-            report = await _persist_run_artifacts(db, agent_type, result)
+            report = await _persist_run_artifacts(db, agent_type, result, task=task_dict)
             if report:
                 result["persistence"] = report
                 if agent_type == "finance" and report.get("ok"):
@@ -1128,6 +1231,50 @@ async def _email_inbox_sweep() -> dict[str, Any]:
     return result
 
 
+async def _attached_ad_metrics(days: int = 7) -> dict[str, Any]:
+    """The `ad_metrics` envelope the 6-hourly ads dispatch attaches (V15/4-02, E2-H2 frozen).
+
+    PARENT DECISION (repair unit): both-platform capable — Google Ads and Meta are both
+    supported and the CONFIGURED platform's read is attached (google_ads first — the reader's
+    own default — then meta_ads).  The readers refuse BY NAME for an unconfigured platform
+    BEFORE any provider call, so when NEITHER is configured the two named refusals are combined
+    into ONE envelope naming both halves and zero provider calls were made.  The reads run off
+    the loop (`asyncio.to_thread`) — provider IO must not stall the loop the heartbeat and other
+    dispatches share.  Both configured: google_ads wins, deterministically — its envelope
+    carries `platform` inside `result`, so the run sees exactly what was read.
+    """
+    from app.agents.integrations import read_ad_metrics
+
+    google = await asyncio.to_thread(read_ad_metrics, platform="google_ads", days=days)
+    if google.get("ok"):
+        return google
+    meta = await asyncio.to_thread(read_ad_metrics, platform="meta_ads", days=days)
+    if meta.get("ok"):
+        return meta
+    # Read each key ONCE into a local (this file's rule): `.get()` twice defeats narrowing.
+    raw_google_error = google.get("error")
+    raw_meta_error = meta.get("error")
+    google_error: dict[str, Any] = raw_google_error if isinstance(raw_google_error, dict) else {}
+    meta_error: dict[str, Any] = raw_meta_error if isinstance(raw_meta_error, dict) else {}
+    return {
+        "ok": False,
+        "error": {
+            "code": google_error.get("code") or meta_error.get("code") or E_INTEGRATION,
+            "message": (
+                "the ads dispatch could not read ad metrics from either platform: "
+                f"google_ads — {google_error.get('message') or 'unknown refusal'}; "
+                f"meta_ads — {meta_error.get('message') or 'unknown refusal'}"
+            ),
+            "how_to_fix": (
+                "configure ONE ad platform's credentials: GOOGLE_ADS_* (developer token, "
+                "client id/secret, refresh token, customer id) or META_ADS_ACCESS_TOKEN + "
+                "META_ADS_ACCOUNT_ID"
+            ),
+            "context": {"platforms": {"google_ads": google_error, "meta_ads": meta_error}},
+        },
+    }
+
+
 @app.task(name="celery_app.tasks.agent_tasks.run_ads_stripe_sync")
 def run_ads_stripe_sync() -> dict[str, Any]:
     """Every 6h — ad metrics sync and the Stripe failed-payment check (independent)."""
@@ -1166,10 +1313,22 @@ async def _ads_stripe_sync() -> dict[str, Any]:
             # empty read creates the row this site always created (metadata untouched, and the
             # agent's consumer degrades to no extra context — never an empty attachment).
             metadata: dict[str, Any] | None = None
+            if agent_type == "ads_management":
+                # V15/4-02 attach (E2-H2; parent decision: both-platform capable): the
+                # configured platform's reader envelope, VERBATIM; none configured -> a named
+                # refusal envelope naming both (see `_attached_ad_metrics`).
+                metadata = {"ad_metrics": await _attached_ad_metrics()}
             if agent_type == "finance":
+                from app.agents.integrations import read_revenue_facts
+
                 failed_payments = await recent_failed_payments(db)
+                metadata = {}
                 if failed_payments:
-                    metadata = {"failed_payments": failed_payments}
+                    metadata["failed_payments"] = failed_payments
+                # V15/4-03 attach (E2-H3): merge — never replace — the Stripe revenue-facts
+                # envelope (integer cents) beside `failed_payments`; provider IO, off the loop
+                # like the ads attach.
+                metadata["revenue_facts"] = await asyncio.to_thread(read_revenue_facts, days=30)
             task = await create_task_deduped(
                 db,
                 title=title,

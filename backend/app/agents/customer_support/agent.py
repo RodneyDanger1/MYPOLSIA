@@ -30,8 +30,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
+from app.agents.customer_support.send_bridge import send_cs_reply
 from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import (
     capped_item_refusal,
@@ -295,11 +295,37 @@ class CustomerSupportAgent(BasePolsiaAgent):
                 continue
             receipt = side_effect_receipt(outcome, action=proposed, ref=ref)
             if outcome.allowed:                                   # only outside sandbox
-                result = integrations.send_email(
-                    to=str(reply.get("from_address") or reply.get("from") or ""),
-                    subject=f"Re: {reply.get('subject') or 'your message'}",
-                    body=str(reply.get("reply_body") or ""),
-                )
+                try:
+                    # A1/V15 (4-01, #1 LOCKED): the ONE send path. `send_compliant_email`
+                    # composes the footer (CAN-SPAM floor + AI disclosure) with THIS recipient's
+                    # opt-out link and refuses an unconfigured sender identity / an opted-out
+                    # address BEFORE the provider is reachable. Mode 1 (worker-resolved
+                    # preflight) arrives under the SAME `compliance` key outreach uses once
+                    # E3's enlistment flip lands; without it the bridge resolves the same facts
+                    # on its own loop-local session (fail closed).
+                    result = send_cs_reply(
+                        to=str(reply.get("from_address") or reply.get("from") or ""),
+                        subject=f"Re: {reply.get('subject') or 'your message'}",
+                        body=str(reply.get("reply_body") or ""),
+                        context=context,
+                    )
+                except PolsiaError as exc:
+                    # A refusal is never silent: nothing was sent, and the reason (E_CONFIG
+                    # naming the missing identity fields, E_POLICY_DENIED for an opt-out,
+                    # E_DB for an unreadable database) is NAMED on the run output in the same
+                    # shape the provider refusals below use.
+                    reply["status"] = "failed"
+                    payload.setdefault("refusals", []).append({
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            "how_to_fix": exc.how_to_fix,
+                            "context": exc.context,
+                        },
+                    })
+                    receipts.append(receipt)
+                    continue
                 receipt["integration"] = result
                 if result.get("ok"):
                     reply["status"] = "sent"

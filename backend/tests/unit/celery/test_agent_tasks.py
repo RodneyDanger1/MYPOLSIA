@@ -180,11 +180,18 @@ def test_worker_persists_finance_artifacts_and_folds_back_snapshot_written(
     assert calls[0][0] is not None                        # a real session, on the run's transaction
     assert calls[0][1]["summary"] == "finance ran"        # the run's own result was handed over
     output = _latest_run_output(queue_db)
-    assert output["persistence"] == {
+    # V15/4-05b re-pin (r-repair unit): the memory write leg rides the SAME report — a
+    # completed run with a summary stores its own memory (`report["memory"]`) beside the
+    # artifact legs; the original assertion is preserved by popping that key first.
+    persistence = output["persistence"]
+    memory = persistence.pop("memory")
+    assert persistence == {
         "ok": True,
         "snapshot_written": False,
         "expenses_written": 0,
     }
+    assert memory["ok"] is True, memory
+    assert isinstance(memory["memory_id"], int)
     # The agent's intent (`snapshot_written: True`) is replaced by the persisted fact (False).
     assert output["snapshot_written"] is False
 
@@ -226,13 +233,18 @@ def test_worker_records_no_persistence_report_for_an_agent_without_one(
     `tests/unit/test_r33_ads_persist_e2e.py`), so it can no longer stand in for "an agent
     without one".  The intent — and every assertion — is unchanged.
     """
-    _install_agent_spy(monkeypatch, {"summary": "planned the day"})
+    # V15 re-pin (r-repair unit, 4-05b): the memory write leg made a summary-bearing run ALWAYS
+    # produce a report (`memory` is a written artifact), so the "nothing to write" vehicle is
+    # now a run with NEITHER an artifact branch NOR a summary — for it, `persistence` must
+    # still be absent (not `{}`), and the named no-summary skip writes nothing at all.
+    _install_agent_spy(monkeypatch, {})
 
     outcome = execute_body(queue_db.create_task(agent_type="orchestrator"))
 
     assert outcome["status"] == "completed"
     output = _latest_run_output(queue_db)
     assert "persistence" not in output
+    assert queue_db.count("memory_entries") == 0
     assert queue_db.count("activity_log", "action = ?", ("run_artifacts_not_persisted",)) == 0
 
 

@@ -33,11 +33,12 @@ from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import (
     assert_not_reporting_real_side_effect,
     capped_item_refusal,
+    named_refusal,
     request_side_effect,
     side_effect_receipt,
 )
 from app.config import settings
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, E_VALIDATION, PolsiaError
 from app.schemas.agent_outputs import SocialMediaOutput
 
 ROLE = """You are the Social Media agent of an autonomous company: you run the company's public
@@ -58,6 +59,10 @@ Voice and content rules:
 
 Replies: answer the mention in the mention's own register. If a mention is hostile, be factual and
 short; if it is a real complaint, do not argue publicly — say in `summary` that support should own it.
+A reply needs a REAL provider `mention_id` on the reply item (the platform's own id for the post
+you are answering). No mentions source is wired yet: if you were not handed verified mention ids,
+return `action="draft"` or `action="noop"` — a reply without a real mention id is refused by the
+runtime and never sent, and a fabricated reference is never used.
 
 Set `action` to what this run is for: "draft" (write posts, publish nothing yet), "post" (publish),
 "reply" (answer mentions) or "noop". You may return up to 3 posts. Every externally visible action
@@ -97,6 +102,7 @@ class SocialMediaAgent(BasePolsiaAgent):
         context: dict[str, Any],
         performed: int = 0,
         image_url: str = "",
+        reply_to: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Attempt one external action through the firewall.
 
@@ -144,6 +150,11 @@ class SocialMediaAgent(BasePolsiaAgent):
             # `post_tweet(content, platform=...)` call shape every caller and test double mirrors;
             # instagram requires the field and its adapter refuses by name without it.
             media = {"image_url": image_url} if image_url else {}
+            if reply_to:
+                # V15/4-04: a reply threads on the provider's OWN mention id (twitter's
+                # `in_reply_to_tweet_id`); the kwarg rides only for real replies, so text posts
+                # keep their unchanged call shape.
+                media["reply_to"] = reply_to
             result = integrations.post_tweet(content, platform=platform, **media)
             receipt["integration"] = result
             if result.get("ok"):
@@ -208,11 +219,26 @@ class SocialMediaAgent(BasePolsiaAgent):
                 # the model's invented string; the schema comment promises None while unwritten).
                 reply["reply_id"] = None
                 continue
-            mention_id = str(reply.get("mention_id") or f"mention:{index}")
+            mention_id = str(reply.get("mention_id") or "").strip()
+            if not mention_id:
+                # T7-class (V15/4-04, §C10): a reply ref must BE a provider id. The old code
+                # built a `mention:<n>` placeholder — the firewall fingerprint and (outside
+                # sandbox) the provider call carried a mention no platform ever issued, while
+                # no mentions source is wired to supply real ones. Refuse BY NAME; the reply
+                # never reaches the firewall/provider and its `reply_id` stays None.
+                reply["reply_id"] = None
+                payload.setdefault("refusals", []).append(named_refusal(
+                    E_VALIDATION,
+                    f"reply #{index} has no provider mention_id; cannot act on it "
+                    "(no mentions source is configured, and a fabricated ref is never used)",
+                    index=index,
+                ))
+                continue
             receipt, published_item = self._publish(
                 payload, action="reply", ref=mention_id, platform="twitter",
                 content=str(reply.get("reply") or ""), context=context,
                 performed=performed_by_channel.get("twitter", 0),
+                reply_to=mention_id,
             )
             receipts.append(receipt)
             if published_item is not None:

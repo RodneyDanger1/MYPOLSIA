@@ -46,9 +46,15 @@ Agent supervision tiers — auto / review / approve / human-only — each mapped
 
 ## Prerequisites
 
-- Docker + Docker Compose
-- A DeepSeek API key (entered in the app after first start — the default runtime), or the [Claude Code CLI](https://docs.anthropic.com/claude-code) installed and authenticated (`claude login`) for the fallback runtime
-- (Optional for real operations) Stripe, Twitter/X, SendGrid, Google Ads, Meta Ads accounts
+**Full link-by-link setup guide — WSL2, Docker Desktop, GNU Make, Python, Node, Git, Stripe CLI, with install + verify commands and a troubleshooting table: [DEPENDENCIES.md](DEPENDENCIES.md).**
+
+Quick summary:
+
+- **Windows 10/11 + WSL2** (virtualization enabled) → **Docker Desktop** (WSL2 backend) — the stack runs via Docker Compose
+- **GNU Make** (for `make init-db` / `make test` / …) — [ezwinports make via WinGet](https://sourceforge.net/projects/ezwinports/)
+- A [DeepSeek API key](https://platform.deepseek.com) (default runtime, set in-app after first start) or the [Claude Code CLI](https://docs.anthropic.com/claude-code) installed and authenticated (`claude login`) for the fallback runtime
+- Dev-only: **Python 3.12** (tests without Docker), **Node.js ≥20** (≥22/24 for Playwright E2E)
+- Optional for real operations: [Stripe CLI](https://docs.stripe.com/stripe-cli) + Stripe, Twitter/X, SendGrid, Google Ads, Meta Ads accounts
 
 ## Quick Start
 
@@ -87,6 +93,15 @@ The stack is up when `http://localhost/api/v1/health` returns `{"status": "ok"}`
 | `CLAUDE_CLI_PATH` | Path to the `claude` binary. The setting's default is `claude` (found on `PATH`); the container image's ENV sets `/usr/local/bin/claude` (`backend/Dockerfile:25`) |
 
 The fallback Claude CLI authenticates via the `~/.claude` directory on your host, which is mounted read-only into the containers (run `claude login` on your host once if you use it); the default DeepSeek runtime needs only its API key, entered in the app.
+
+Secrets on disk: `.env` carries the deployment credentials, and the backend stores the DeepSeek key at
+`backend/data/deepseek_api_key.json` (the `backend_data` compose volume). The backend tightens the key
+store after every write — `chmod 600` on POSIX, `icacls <file> /inheritance:r /grant:r "<user>:(R,W)"`
+on Windows — and logs a warning naming the file when neither mechanism can be applied. `.env` itself is
+yours to tighten, once:
+
+- POSIX: `chmod 600 .env`
+- Windows: `icacls .env /inheritance:r /grant:r "%USERNAME%:(R,W)"`
 
 ### Integrations
 
@@ -322,6 +337,28 @@ make restore SRC=backups        # prints the drill steps; verifies the dump exis
 volume is missing — `docker run -v` would otherwise CREATE a missing volume and tar it empty, i.e.
 a green-looking, worthless backup. Verify what landed: the `.sql` should be non-trivial in size,
 and `tar tzf backups/backend_data.tgz` should list files.
+
+### Scheduled daily backups (compose sidecar, #8)
+
+The `backup` compose service runs `scripts/backup.sh` in a `postgres:16-alpine` container on a
+24-hour loop (`BACKUP_INTERVAL_SECONDS`, default `86400`): one cycle immediately at startup, then
+one per interval. A cycle writes the same artifacts `make backup` does into the same gitignored
+`backups/` directory — `polsia-<UTC timestamp>.sql` via `pg_dump` over the compose network, plus
+one `<volume>.tgz` per data volume. Each data volume is mounted **read-only** straight into the
+container, so no docker socket and no docker CLI are needed there. The database dump is written to
+a `.part` file and only renamed once `pg_dump` exits 0; a missing or **empty** volume mount is
+refused by name (the same guard `make backup` applies — an empty tar is a green-looking, worthless
+backup). SIGTERM ends the loop cleanly; the next start runs a fresh cycle immediately.
+
+- Cadence: `BACKUP_INTERVAL_SECONDS` (default `86400` = daily) — set in `docker-compose.yml`.
+- Retention: `BACKUP_RETENTION_DAYS` (default `14`) — older `polsia-*.sql` / `*.tgz` files are
+  pruned at the end of every cycle, and every prune is logged.
+- Inspect: `docker compose logs backup` (each cycle logs what it wrote, and every refusal by
+  name) and `ls -la backups/` (the `.sql` should be non-trivial in size;
+  `tar tzf backups/backend_data.tgz` should list files).
+- Stop/start: `docker compose stop backup` / `docker compose up -d backup`.
+- `make backup` is unchanged and still works for on-demand snapshots; `make restore SRC=backups`
+  consumes either tool's output (identical artifact names).
 
 ### Restore drill (scratch compose project — never the live stack)
 

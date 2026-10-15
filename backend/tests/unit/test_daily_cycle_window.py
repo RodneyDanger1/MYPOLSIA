@@ -281,14 +281,24 @@ def test_an_absent_stored_value_falls_back_to_the_settings_hour(cycle_db, monkey
     assert result["status"] == "completed"
     assert result["window"] == expected_window
 
-    # case 2 — a row that stores NULL
+    # case 2 — a row that stores NULL.
+    # DELIBERATE RE-PIN (wave v15 / E3 item 3-02): the morning cycle now holds a DURABLE
+    # once-per-(cycle, company-local day) claim (`cycle_claimed` activity row, committed
+    # before any spend), so a SECOND call for the same local day is a NAMED skip by design.
+    # This test pins the fallback PRECEDENCE, not the claim — pinning the clock to the NEXT
+    # day keeps its intent while respecting once-per-day.  The claim's own pins live in
+    # tests/unit/celery/test_v15_e3_cycle_claim.py.
+    _pin_clock(monkeypatch, datetime(2026, 10, 13, 7, 30, tzinfo=UTC))
     cycle_db.seed_company(hour=6, tz="UTC")
     cycle_db.execute("UPDATE company_config SET daily_cycle_hour = NULL WHERE id = 1")
     assert cycle_db.stored_hour() is None, "the NULL must really be on the file"
 
     result_null = daily_cycle.run_morning_cycle()
     assert result_null["status"] == "completed"
-    assert result_null["window"] == expected_window
+    assert result_null["window"] == expected_window | {
+        "start": datetime(2026, 10, 13, 7, tzinfo=UTC).isoformat(),
+        "end": datetime(2026, 10, 13, 8, tzinfo=UTC).isoformat(),
+    }
 
 
 def test_an_invalid_stored_hour_is_a_named_refusal_and_produces_no_window(cycle_db, monkeypatch):

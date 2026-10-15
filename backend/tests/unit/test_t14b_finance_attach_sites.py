@@ -146,10 +146,19 @@ def test_the_ads_stripe_sync_attaches_the_failed_payments_to_the_finance_task(qu
     assert attached, "the finance task must carry the records its refund path needs"
     assert attached[0]["payment_intent_id"] == PI_FROM_CHARGE
     assert attached[0]["event_id"] == "evt_t14b_sync"
-    assert _parsed(by_agent["ads_management"]) == {}, "only the finance run consumes them"
+    # V15 re-pin (r-repair unit, 4-03): the finance task ALSO carries the Stripe revenue-facts
+    # attach (H3) merged into the SAME metadata dict — `failed_payments` is never replaced.
+    assert "revenue_facts" in _parsed(by_agent["finance"])
+    # V15 re-pin (r-repair unit, 4-02): the ads task carries its ad-metrics attach (H2) — the
+    # configured platform's envelope or its named refusal, never nothing.
+    assert "ad_metrics" in _parsed(by_agent["ads_management"])
 
 
 def test_the_ads_stripe_sync_leaves_metadata_untouched_when_no_records_exist(queue_db, monkeypatch):
+    """V15 re-pin (r-repair unit): an empty `failed_payments` read still attaches NOTHING for
+    that key — but this site now always attaches the two H2/H3 producer envelopes (`ad_metrics`
+    on the ads task; `revenue_facts` on finance), so the old "all metadata NULL" assertion
+    narrowed to exactly that empty-read contract for `failed_payments`."""
     from celery_app.tasks.agent_tasks import _ads_stripe_sync
 
     monkeypatch.setattr("celery.group", _Group())
@@ -159,9 +168,12 @@ def test_the_ads_stripe_sync_leaves_metadata_untouched_when_no_records_exist(que
     assert result["status"] == "queued", result
     by_agent = _metadata_by_agent(queue_db)
     assert set(by_agent) == {"ads_management", "finance"}
-    assert all(raw in (None, "null") for raw in by_agent.values()), (
-        "an empty read attaches NOTHING — the rows are exactly what this site always wrote"
+    assert "failed_payments" not in _parsed(by_agent["finance"]), (
+        "an empty read attaches NOTHING — `failed_payments` stays exactly what this site "
+        "always wrote for it"
     )
+    assert set(_parsed(by_agent["finance"])) == {"revenue_facts"}
+    assert "ad_metrics" in _parsed(by_agent["ads_management"])
 
 
 # ── 2. site two: the manual "Run Now" trigger ─────────────────────────────────────────────────

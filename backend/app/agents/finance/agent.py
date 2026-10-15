@@ -22,6 +22,7 @@ approval-gated when it is not (`refunds_performed` stays 0 unless a token was ve
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.agents import integrations
@@ -117,6 +118,73 @@ def failed_payments_extra_context(task: dict[str, Any]) -> str | None:
     text = "FAILED STRIPE PAYMENTS (persisted by the webhook; refunds need the pi_… id):\n" + "\n".join(lines)
     return wrap_untrusted(source="stripe", content_id=f"failed_payments:{len(lines)}", text=text)
 
+
+#: The task-metadata key carrying the Stripe revenue-facts read this run may measure from (see
+#: `revenue_facts_extra_context`).  Producer = the worker's dispatch attach (E3/H3):
+#: `integrations.read_revenue_facts`'s envelope VERBATIM — the `failed_payments` pattern.
+REVENUE_FACTS_KEY = "revenue_facts"
+
+
+def revenue_facts_extra_context(task: dict[str, Any]) -> str | None:
+    """The Stripe revenue read attached to this task, quarantined for the prompt — V15/4-03.
+
+    WHY (V15/4-03 / S5-05): the finance agent's documented job is a MEASURED revenue snapshot,
+    but no measurement path existed — no Stripe read, no attach, nothing in the context carried
+    a charge or a balance, so every revenue field the model filled was invented (or honestly
+    left unmeasured).  The producer is the worker's dispatch attach, which stores the reader's
+    envelope VERBATIM:
+
+        metadata = {"revenue_facts": {"ok": True, "result": {charges_by_currency,
+                                                             balance_available, window, ...}}}
+        metadata = {"revenue_facts": {"ok": False, "error": {code, message, ...}}}
+
+    The facts are quarantined with the REAL `wrap_untrusted(source="stripe", ...)`, so they ride
+    the VOLATILE `extra_context` layer as DATA.  A refusal is NAMED into the prompt — the run
+    measured nothing and must say so (an unmeasured field stays omitted, never estimated).
+    Absent material: `None` (behaviour unchanged); a PRESENT-but-unusable attachment is a NAMED
+    `E_VALIDATION` refusal raised BEFORE any model call.
+    """
+    metadata = task.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    envelope = metadata.get(REVENUE_FACTS_KEY)
+    if envelope is None:
+        return None
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("ok"), bool):
+        raise PolsiaError(
+            E_VALIDATION,
+            "task metadata.revenue_facts is not the revenue-reader envelope; the finance agent "
+            "cannot read a malformed attachment (it has no Stripe access to re-fetch it)",
+            how_to_fix=(
+                "attach the shape integrations.read_revenue_facts returns verbatim: "
+                '{"ok": true, "result": {...}} or {"ok": false, "error": {...}}'
+            ),
+            context={"revenue_facts_type": type(envelope).__name__},
+        )
+    if not envelope["ok"]:
+        error = envelope.get("error")
+        error = error if isinstance(error, dict) else {}
+        text = (
+            "STRIPE REVENUE READ REFUSED "
+            f"({error.get('code') or 'E_INTEGRATION'}): {error.get('message') or 'unknown'} — "
+            "no revenue facts were measured this run; omit every unmeasured snapshot field, "
+            "add an alert naming this refusal, and never estimate around it."
+        )
+        return wrap_untrusted(source="stripe", content_id="revenue_facts:refused", text=text)
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            "task metadata.revenue_facts carries ok=true but no result object",
+            how_to_fix="attach the envelope verbatim from integrations.read_revenue_facts",
+            context={"result_type": type(result).__name__},
+        )
+    text = (
+        f"STRIPE REVENUE FACTS (measured; days={result.get('days')}, "
+        f"fetched_at={result.get('fetched_at')}):\n"
+        + json.dumps(result, sort_keys=True, indent=2, default=str)
+    )
+    return wrap_untrusted(source="stripe", content_id="revenue_facts", text=text)
+
 ROLE = """You are the Finance agent of an autonomous company. You own the numbers: revenue, spend
 and the alerts a founder must see.
 
@@ -129,6 +197,10 @@ Rules:
 - Report ONLY numbers that appear in the context you were given or that you read from the provider
   through a tool. There is no "roughly": an unmeasured number is omitted, and its name is listed in
   `alerts` so someone measures it.
+- When the context carries a "STRIPE REVENUE FACTS" block (measured by the runtime from Stripe),
+  those are real provider numbers: use them for the snapshot fields they cover. When it names a
+  READ REFUSAL instead, you measured NOTHING this run — omit the fields, add an alert naming the
+  refusal, and never estimate around it.
 - `snapshot` mirrors the `revenue_snapshots` row for today (snapshot_date = YYYY-MM-DD, UTC) and
   carries ONLY the fields you actually measured: omit the rest, because an omitted field means
   "not measured" while a 0 is a measurement. Leave `snapshot_written` alone — the runtime
@@ -164,8 +236,17 @@ class FinanceAgent(BasePolsiaAgent):
         # `extra_context` layer (quarantined as DATA), which is what lets the model emit a REAL
         # `pi_…` id below instead of an invented one.  No attachment -> None -> behaviour
         # unchanged.
+        # V15/4-03: the MEASUREMENT path rides the same layer — the worker-attached Stripe read
+        # (metadata.revenue_facts) is what lets the snapshot fields come from measured facts
+        # instead of invention (a refusal is named into the prompt; nothing is estimated).
+        extra_blocks = [
+            block for block in (
+                failed_payments_extra_context(task or {}),
+                revenue_facts_extra_context(task or {}),
+            ) if block
+        ]
         payload, assembled = self.collect_structured(
-            task, context, extra_context=failed_payments_extra_context(task or {})
+            task, context, extra_context="\n\n".join(extra_blocks) if extra_blocks else None
         )
         payload["agent_type"] = self.agent_type
         receipts: list[dict[str, Any]] = []
@@ -289,4 +370,11 @@ class FinanceAgent(BasePolsiaAgent):
         return self.attach_run_meta(payload, assembled=assembled)
 
 
-__all__ = ["FAILED_PAYMENTS_KEY", "ROLE", "FinanceAgent", "failed_payments_extra_context"]
+__all__ = [
+    "FAILED_PAYMENTS_KEY",
+    "REVENUE_FACTS_KEY",
+    "ROLE",
+    "FinanceAgent",
+    "failed_payments_extra_context",
+    "revenue_facts_extra_context",
+]

@@ -224,8 +224,10 @@ def test_skipped_entries_are_written_through_one_log_activities_batch(queue_db, 
 
     # …and the cycle's OWN announcement is still exactly ONE publish (the headline row).  The
     # V8/C5 cycle-report email leg adds its own single, named row on top (a `log_activity`, so it
-    # publishes too): two publishes total for this run.
-    assert quiet_redis.publish.await_count == 2
+    # publishes too), and since wave v15/3-02 the tick's `cycle_claimed` row (the once-per-
+    # (cycle, local-day) claim, committed before any spend) publishes first: three publishes
+    # total for this run.
+    assert quiet_redis.publish.await_count == 3
     headline = [row for row in rows if row["action"] == "morning_plan_complete"]
     assert len(headline) == 1
 
@@ -238,11 +240,15 @@ def test_a_clean_plan_writes_no_batch_and_still_announces_once(queue_db, monkeyp
     # V8/C5: the cycle-report email leg records its UNCONFIGURED state as its own named row —
     # deliberately not silent (a scheduled report that never arrives must be explainable).  The
     # cycle's own announcement is still exactly one row, and there is still no batch call.
+    # DELIBERATE RE-PIN (wave v15 / E3 item 3-02): the tick's once-per-(cycle, local-day)
+    # `cycle_claimed` row is written first — before any spend; it is the double-spend guard the
+    # claim pins in tests/unit/celery/test_v15_e3_cycle_claim.py exercise.
     assert [row["action"] for row in rows] == [
+        "cycle_claimed",
         "morning_plan_complete",
         "cycle_report_email_skipped",
     ]
-    assert quiet_redis.publish.await_count == 2
+    assert quiet_redis.publish.await_count == 3
 
 
 def test_the_evening_cycle_keeps_its_single_announcement(queue_db, monkeypatch, quiet_redis):
@@ -264,9 +270,12 @@ def test_the_evening_cycle_keeps_its_single_announcement(queue_db, monkeypatch, 
     assert result["status"] == "completed", result
     assert calls == []
     # V8/C5: same cycle-report email leg as the morning path (its own named skip row on top of
-    # the cycle's single announcement); still no batch call.
+    # the cycle's single announcement); still no batch call.  DELIBERATE RE-PIN (wave v15 /
+    # E3 item 3-02): the evening tick's own `cycle_claimed` row is written first (its claim is
+    # its own — the morning's never blocks it).
     assert [row["action"] for row in queue_db.query("SELECT action FROM activity_log")] == [
+        "cycle_claimed",
         "evening_summary_complete",
         "cycle_report_email_skipped",
     ]
-    assert quiet_redis.publish.await_count == 2
+    assert quiet_redis.publish.await_count == 3

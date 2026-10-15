@@ -168,14 +168,31 @@ describe("Tasks page — ?task=N deep link", () => {
     expect(screen.queryByText(/Could not load tasks/)).toBeNull();
   });
 
-  it("an id outside the loaded set is an honest no-op — no sheet, no alert, board stays healthy", async () => {
+  // DELIBERATE V15/5-02 UPDATE: this pin used to assert the silent no-op (S2-F4's defect —
+  // a deep link into an id older than the 500-row board opened NOTHING). The page now reads the
+  // id (`GET /tasks/{id}`) and opens the fetched row with its labelled context note.
+  it("an id outside the loaded set is read by id — the detail opens from the fetch (V15/5-02)", async () => {
     mockSearch.task = "999";
-    mockApiGet.mockResolvedValue([taskRow({ id: 7, title: "fixture: other task" })]);
+    mockApiGet.mockImplementation((path: string) => {
+      if (path === "/tasks?limit=500") {
+        return Promise.resolve([taskRow({ id: 7, title: "fixture: other task" })]);
+      }
+      if (path === "/tasks/999") {
+        return Promise.resolve(
+          taskRow({ id: 999, title: "fixture: fetched by id", status: "completed" }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected read: ${path}`));
+    });
 
     render(<TasksPage />);
 
-    await screen.findByRole("button", { name: "Open task: fixture: other task" });
-    expect(screen.queryByRole("dialog")).toBeNull();
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "fixture: fetched by id" })).toBeInTheDocument();
+    expect(within(dialog).getByTestId("task-context-note")).toHaveTextContent(
+      /outside the loaded board window/,
+    );
+    // no error surface rode along with the deep link
     expect(screen.queryByRole("alert")).toBeNull();
   });
 

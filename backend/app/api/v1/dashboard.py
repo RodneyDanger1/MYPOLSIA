@@ -17,14 +17,14 @@ shifting the window (receipt: `## UNVERIFIED` #3 and REQUESTS #5).
 from __future__ import annotations
 
 import logging
-from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.params import StrictDate
 from app.config import settings
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.company import CompanyConfig
@@ -131,7 +131,7 @@ async def dashboard_activity(
 
 @router.get("/reports/daily", response_model=DailyReportResponse | None)
 async def dashboard_daily_report(
-    report_date: date | None = Query(default=None),
+    report_date: Annotated[StrictDate, Query()] = None,
     db: AsyncSession = Depends(get_db),
 ) -> DailyReportResponse | None:
     """200 with `null` when no report exists for the day (NOT 404).

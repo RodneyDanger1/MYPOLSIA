@@ -4,6 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { Button, DataTable, SectionHeader } from "@/components/ui";
+// V15/W1 (2R-09): the EXISTING exported render guard from the planner card — import-only, that file
+// is not edited. An anchor is built only from a value `safeHref` proved http(s); every other
+// scheme (javascript:, data:, relative, malformed) renders as inert TEXT.
+import { safeHref } from "@/components/planner/CandidateCard";
 
 /**
  * Settings → Pricing (V11/W4) — a READ-ONLY view of the dated pricing-catalog snapshot
@@ -15,7 +19,9 @@ import { Button, DataTable, SectionHeader } from "@/components/ui";
  * COMPUTED per call. Every nullable value is rendered as the em dash, never fabricated:
  *   - a row's `hours` is `{low, high} | null`; a price is a number or absent;
  *   - `catalog_as_of`/`staleness_days`/`stale` may each be null ("age unknown") — null staleness
- *     is NOT a freshness claim, and `stale: true` renders an explicit re-verify alarm.
+ *     is NOT a freshness claim, and `stale: true` renders an explicit re-verify alarm;
+ *   - a `source_url` is linked ONLY when the shared `safeHref()` guard (planner/CandidateCard,
+ *     import-only) proves it http(s) — every other scheme renders as plain text (2R-09).
  *
  * The read fires on the load button, never on mount: this page's shipped tests pin that opening
  * Settings starts no request beyond the config form and the DeepSeek section.
@@ -179,19 +185,25 @@ export function PricingSection() {
               {
                 key: "source",
                 header: "Source",
-                render: (row: PricingRow) =>
-                  row.source_url ? (
-                    <a
-                      className="underline underline-offset-2"
-                      href={row.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {row.source_label ?? row.source_url}
-                    </a>
-                  ) : (
-                    (row.source_label ?? "—")
-                  ),
+                render: (row: PricingRow) => {
+                  // 2R-09: the same discipline as `planner/CandidateCard.tsx` — an anchor ONLY for
+                  // a value `safeHref` proved http(s); anything else is shown as plain text (never
+                  // silently dropped, never made clickable).
+                  const href = safeHref(row.source_url);
+                  if (href !== null) {
+                    return (
+                      <a
+                        className="underline underline-offset-2"
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {row.source_label ?? href}
+                      </a>
+                    );
+                  }
+                  return row.source_label ?? row.source_url ?? "—";
+                },
               },
             ]}
             rows={items}

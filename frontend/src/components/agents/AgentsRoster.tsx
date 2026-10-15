@@ -17,7 +17,7 @@ export const AGENT_DESCRIPTIONS: Record<string, string> = {
   orchestrator: "Generates daily task plans and evening summaries",
   business_planning: "Analyzes strategy, updates KPIs, identifies opportunities",
   competitor_research: "Researches competitors and market positioning",
-  social_media: "Drafts and posts tweets, monitors engagement",
+  social_media: "Drafts and posts updates across platforms",
   ads_management: "Manages Google and Meta ad campaigns",
   email_outreach: "Finds prospects and sends personalized cold emails",
   code_generation: "Writes code, commits to GitHub, deploys",

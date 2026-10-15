@@ -46,7 +46,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.policy_firewall import ActionClass
+from app.agents.policy_firewall import APPROVAL_THRESHOLDS, ActionClass
 from app.core.errors import (
     E_CONFIG,
     E_DB,
@@ -389,6 +389,46 @@ def _recipient(invoice: Invoice) -> str:
     return email.strip()
 
 
+def _amount_asked(invoice: Invoice) -> float:
+    """The value the firewall consult carries for a SEND: the amount this email ASKS FOR.
+
+    `total` when recorded; S1-04 kept `total` honestly nullable, so the documented fallback is
+    the invoice's own `subtotal`.  When BOTH are null the asked amount is UNKNOWN and cannot be
+    proven below the $25 approval threshold — the consult then carries the threshold value
+    ITSELF: an unknown ask is gated exactly like an at-threshold ask (fail-closed), never the
+    pre-fix silent `0.0` that let any invoice sail past the gate.  A recorded 0 is a real
+    measurement and passes through as 0.0.
+    """
+    amount = invoice.total if invoice.total is not None else invoice.subtotal
+    if amount is None:
+        return float(APPROVAL_THRESHOLDS["value_usd"])
+    return float(amount)
+
+
+def _firewall_value(invoice: Invoice) -> float:
+    """The S1-05 consult value for THIS delivery, by the invoice's own lifecycle context.
+
+    Two contexts, and the invoice's status IS the context (`send_invoice` refuses anything but
+    a draft; the dunning ladder only ever delivers on `sent`/`overdue` rows):
+
+    * **SEND** (`draft`): the ask is being made — the gate keys on the amount asked
+      (`_amount_asked`: total, else subtotal, else the threshold for an unknown ask, 0.0 for a
+      measured zero).  This is decision #3 / S1-05's deliverable.
+    * **REMINDER** (`sent`/`overdue` — the dunning ladder in `celery_app/tasks/dunning.py`
+      delivers through THIS same egress): the ask was already gated at SEND time — under the
+      send rule above only a sub-threshold ask, an owner-token-approved one, or a pre-S1-05
+      legacy send ever reaches `sent`, and the ladder contains nothing else.  A beat tick runs
+      WITHOUT an approval channel (`RUN_APPROVAL` is published by the `agent_tasks` worker for
+      runs, not by beat tasks), so keying a reminder at the amount would make every >= $25
+      reminder permanently unapprovable — silently killing the shipped ladder — rather than
+      "engaging the approval flow".  Reminders therefore consult at 0.0, exactly as they did
+      before S1-05; this rationale replaces the old "moves no money" comment.
+    """
+    if _coerce_status(invoice.status) is InvoiceStatus.DRAFT:
+        return _amount_asked(invoice)
+    return 0.0
+
+
 async def deliver_invoice_email(
     db: AsyncSession, invoice: Invoice, *, subject: str, body: str
 ) -> dict[str, Any]:
@@ -426,9 +466,12 @@ async def deliver_invoice_email(
         ActionClass.EXTERNAL_REVERSIBLE,
         "email",
         action="send_invoice",
-        # An invoice EMAIL moves no money (the payment link does); the firewall's value
-        # thresholds gate spend/refund actions, so they are not the measure here.
-        value_usd=0.0,
+        # S1-05 / decision #3, context-aware (`_firewall_value`): a DRAFT send keys on the
+        # amount this email ASKS FOR (total, else the documented subtotal fallback, else the
+        # gate value itself for an unknown ask).  A REMINDER (sent/overdue — the dunning
+        # ladder's delivery) consults at 0.0: its ask was already gated at send time and beat
+        # ticks have no approval channel (see `_firewall_value`'s docstring for the evidence).
+        value_usd=_firewall_value(invoice),
         payload=payload,
         sends_today=await channel_service.channel_sends_today(db, "email"),
         sends_this_hour=await channel_service.channel_sends_this_hour(db, "email"),

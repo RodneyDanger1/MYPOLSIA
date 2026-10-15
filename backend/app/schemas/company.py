@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import ORMModel
 
@@ -82,7 +82,15 @@ class CompanyConfigUpdate(BaseModel):
     successfully", and then killed every dispatch / the morning cycle (L1-01).  FastAPI now answers
     **422 naming the field**, before the row is touched; the runtime `E_CONFIG` refusals stay as the
     belt for values that reached the row by other means (env, raw SQL, pre-fix writes).
+
+    `extra="forbid"` (S4-F4 / decision #9, wave V15): pydantic's default IGNORED an unknown key,
+    so `{"namee": "x"}` answered 200 "saved" while changing nothing — the caller believed the
+    company was renamed.  Strict now: the 422 names the offending key (`extra_forbidden` on its
+    `loc`), and the whole PUT is all-or-nothing.  Every real writer sends only known keys (the
+    settings page PUTs a subset of THIS model's fields), so the flip refuses typos, not clients.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
     mission: str | None = None

@@ -65,6 +65,7 @@ from app.core.errors import (
 )
 from app.models.company import CompanyConfig
 from app.models.report import ActivityLog
+from app.schemas.planner import is_http_url
 from app.services.activity_service import log_activity
 from app.services.company_service import get_company, invalidate_company_context
 from app.services.query_helpers import fetch_scalar
@@ -274,7 +275,12 @@ def verify_claims(
             dropped += 1
             continue
         url = str(raw.get("source_url") or "").strip()
-        if not url or url not in fetched:
+        # 2R-07: the sanitize leg. A non-http(s) citation (javascript:/data:/vbscript:, empty,
+        # relative) is dropped + counted exactly like an uncited claim — even when the same
+        # hostile string sits in `fetched_urls` (a sloppy or injected research output must not
+        # launder a `verified: True` claim out of it). The count is the recording: it ships as
+        # `claims_unverified`.
+        if not url or not is_http_url(url) or url not in fetched:
             dropped += 1
             continue
         kept.append(
@@ -299,7 +305,13 @@ def _fetched_urls(research: Any) -> set[str]:
         for key in ("source_urls", "sources"):
             values = competitor.get(key)
             if isinstance(values, list):
-                urls.update(str(value).strip() for value in values if isinstance(value, str) and value.strip())
+                # 2R-07: only absolute http(s) URLs are recordable provenance — a `javascript:`
+                # string in the research output can never become a URL a claim verifies against.
+                urls.update(
+                    str(value).strip()
+                    for value in values
+                    if isinstance(value, str) and value.strip() and is_http_url(value)
+                )
     return urls
 
 

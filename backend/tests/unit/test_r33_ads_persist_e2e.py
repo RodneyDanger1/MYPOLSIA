@@ -225,17 +225,23 @@ def test_malformed_entries_are_skipped_by_name_and_the_rest_is_persisted(
 # ── 4. the empty payload is the honest zero, not an error ─────────────────────────────────────
 
 
-def test_an_empty_payload_reports_measured_zeros_not_an_error(monkeypatch, queue_db, execute_body):
+def test_an_empty_payload_reports_measured_zeros_not_an_error(monkeypatch, queue_db, execute_body, mock_chroma):
     _arm_mock_cli(monkeypatch, {"summary": "nothing to sync this cycle", "campaigns": [], "metrics": []})
 
     outcome = execute_body(_ads_run(queue_db, "empty"))
     assert outcome["status"] == "completed"
 
     persistence = _latest_run_output(queue_db)["persistence"]
+    # V15/4-05b re-pin (r-repair unit): the memory write leg rides the same report.  The vector
+    # store is armed (mock_chroma) so the run's memory stores DETERMINISTICALLY; the original
+    # zero-report assertion is preserved by popping that key first.
+    memory = persistence.pop("memory")
     assert persistence == {
         "ok": True, "campaigns_written": 0, "metrics_written": 0, "duplicates_skipped": 0,
         "error": None,
     }
+    assert memory["ok"] is True, memory
+    assert queue_db.count("memory_entries") == 1
     assert queue_db.count("ad_campaigns") == 0 and queue_db.count("ad_metrics") == 0
     assert queue_db.count("activity_log", "action = ?", ("run_artifacts_not_persisted",)) == 0
 

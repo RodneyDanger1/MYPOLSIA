@@ -30,10 +30,15 @@ export const SCRIM = "rgba(0, 0, 0, 0.55)";
  */
 export function TaskDetailSheet({
   task,
+  contextNote,
   onClose,
   onTaskQueued,
 }: {
   task: TaskRow;
+  /** A labelled one-row context note (v15/W2 5-02: "read by id, outside the loaded board
+   *  window"). Rendered under the header when set; callers that pass nothing render exactly the
+   *  sheet they always did. */
+  contextNote?: string | null;
   onClose: () => void;
   /** Called after a write that changes the board (a queued run / a minted approval / a set status). */
   onTaskQueued?: () => void;
@@ -83,6 +88,16 @@ export function TaskDetailSheet({
             ✕
           </Button>
         </header>
+
+        {contextNote ? (
+          <p
+            role="note"
+            data-testid="task-context-note"
+            className="ui-label border-b border-line bg-surface-sunk px-4 py-1.5 text-ink-muted"
+          >
+            {contextNote}
+          </p>
+        ) : null}
 
         <div className="max-h-[70vh] overflow-y-auto px-4 py-3">
           <TaskDetailContent task={task} onTaskQueued={onTaskQueued} titleId={titleId} />

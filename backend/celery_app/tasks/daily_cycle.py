@@ -54,6 +54,16 @@ through `_run_recorded_cycle_agent`: the D3 gate first, then a `run_type="cycle"
 before the model call and closed afterwards (with its accounting columns), closed `failed` when the
 run raises.  A day whose budget is full refuses the tick with a named skip + one activity row —
 nothing is charged and no row is written.
+
+Claim (wave v15 / E3 item 3-02, B6).  Each hourly tick now takes a DURABLE once-per-(cycle,
+company-local day) claim (`_claim_cycle_tick` — a committed `cycle_claimed` activity row, written
+after the window self-gate and BEFORE any spend) and a tick that finds the day claimed exits as a
+named skip (`cycle_tick_skipped`, `reason="already_claimed"`) with zero provider calls.  This is
+what makes a broker redelivery of a pre-ack-killed tick harmless: the first tick's claim is already
+committed, so the replay skips instead of re-running the orchestrator (the §B6 double spend).  The
+beat entries' `expires` were shortened below the hour (3600 -> 1800) as the second layer; the claim
+is the primary guard.  The claim is per cycle AND per local day: the evening cycle's claim is its
+own, and the next day's window claims anew.
 """
 from __future__ import annotations
 
@@ -95,6 +105,130 @@ _FIXED_MORNING_WORK: tuple[tuple[str, str, str, int], ...] = (
     ("customer_support", "Morning customer support sweep", "morning-sweep", 2),
     ("social_media", "Morning social media check", "morning-check", 2),
 )
+
+
+# ── the once-per-(cycle, company-local-day) claim (wave v15 / E3 item 3-02) ──────────────────
+# BUG-DIGEST MAJOR §B6: the hourly entries fire with `expires: 3600` — the exact width of the
+# local-hour self-gate — so a pre-ack kill redelivers INSIDE the same window and the whole
+# cycle re-runs: a second orchestrator model call (double spend).  The per-day task dedupe keys
+# never covered the model call itself.
+#
+# Claim store — decided with evidence (lane receipt §3-02): `activity_log`, the table this same
+# item designates for the named-skip record.  No existing table carries a DB-enforced uniqueness
+# key for (cycle, company-local day) that is not a fabricated task row (`tasks.dedupe_key` is
+# the only free-form unique index — a claim row there would be a fake task on the board — and
+# `daily_reports.report_date` is ONE row per day shared by both cycles); a new claim table would
+# serialize this lane on another seat's migration, so the claim rides the honest existing store.
+# Atomicity: the check+insert is one transaction under a company-row lock on PostgreSQL (SQLite
+# serializes writers behind its single-writer lock), and the claim COMMITS before any spend — so
+# the concurrency that matters (a redelivery after the first delivery's process died) always
+# finds the committed claim and exits as a named skip.
+CYCLE_CLAIM_ACTION = "cycle_claimed"
+CYCLE_SKIP_ACTION = "cycle_tick_skipped"
+
+
+async def _claim_cycle_tick(
+    *, cycle: str, day: date, window: dict[str, Any]
+) -> tuple[bool, int | None]:
+    """Insert the once-per-(cycle, company-local day) claim; report who holds it.
+
+    Returns `(True, new_claim_id)` when THIS tick won the claim (the row is committed before
+    the caller can spend anything) and `(False, holder_claim_id)` when the day is already
+    claimed — the caller then records the named skip and returns without a provider call.
+
+    The claim is an `activity_log` row (`action='cycle_claimed'`, `detail={cycle, day, window}`)
+    — the same ledger the skip record uses, so `GET /activity` tells the whole once-per-day
+    story.  The scan is bounded to the claimed day (minus an hour of slack) so the JSON-path
+    filter never walks the whole retention window.
+    """
+    from sqlalchemy import select
+
+    from app.core.database import get_session_factory
+    from app.core.timeutil import as_bound_instant, day_bounds, dialect_name
+    from app.models.company import CompanyConfig
+    from app.models.report import ActivityLog
+    from app.services.activity_service import log_activity
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        if dialect_name(db) == "postgresql":
+            # Serialize concurrent claimers on the single company row (the claim's critical
+            # section).  SQLite needs no equivalent: its single-writer lock serializes the
+            # claim transaction itself.
+            await db.execute(
+                select(CompanyConfig.id).order_by(CompanyConfig.id).limit(1).with_for_update()
+            )
+        local_day_start, _local_day_end = day_bounds(day)
+        claim_floor = as_bound_instant(local_day_start - timedelta(hours=1), db)
+        existing = (
+            await db.execute(
+                select(ActivityLog.id)
+                .where(
+                    ActivityLog.action == CYCLE_CLAIM_ACTION,
+                    ActivityLog.created_at >= claim_floor,
+                    ActivityLog.detail["cycle"].as_string() == cycle,
+                    ActivityLog.detail["day"].as_string() == day.isoformat(),
+                )
+                .order_by(ActivityLog.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            await db.rollback()
+            return False, int(existing)
+
+        claim = await log_activity(
+            db,
+            agent_type="orchestrator",
+            action=CYCLE_CLAIM_ACTION,
+            summary=(
+                f"{cycle} cycle claimed for the company-local day {day.isoformat()} — committed "
+                "before any spend; a redelivered tick of this window skips here"
+            ),
+            detail={"cycle": cycle, "day": day.isoformat(), "window": window},
+        )
+        claim_id = int(claim.id)
+        # Durable NOW: the claim is its own committed transaction, written before the caller
+        # can reach the budget gate, the run ledger or the model call.
+        await db.commit()
+        return True, claim_id
+
+
+async def _skip_claimed_cycle(
+    *, cycle: str, day: date, window: dict[str, Any], claim_id: int | None
+) -> dict[str, Any]:
+    """Record the NAMED skip a redelivered tick exits with — one activity row, ZERO spend."""
+    from app.core.database import get_session_factory
+    from app.services.activity_service import log_activity
+
+    async with get_session_factory()() as db:
+        await log_activity(
+            db,
+            agent_type="orchestrator",
+            action=CYCLE_SKIP_ACTION,
+            summary=(
+                f"{cycle} cycle tick skipped — {day.isoformat()} is already claimed "
+                f"(claim #{claim_id}); no provider call"
+            ),
+            level="warning",
+            detail={
+                "cycle": cycle,
+                "day": day.isoformat(),
+                "reason": "already_claimed",
+                "claim_id": claim_id,
+                "window": window,
+            },
+        )
+        await db.commit()
+    logger.info("%s cycle tick skipped (already_claimed) day=%s claim=%s", cycle, day, claim_id)
+    return {
+        "status": "skipped",
+        "reason": "already_claimed",
+        "cycle": cycle,
+        "day": day.isoformat(),
+        "claim_id": claim_id,
+        "window": window,
+    }
 
 
 async def _notify_cycle_report(*, kind: str, report_date: date, summary: str) -> None:
@@ -337,6 +471,15 @@ async def _morning_cycle() -> dict[str, Any]:
             tz.key,
         )
         return {"status": "skipped", "reason": "outside_morning_window", "window": window}
+
+    # 3-02 (B6): the once-per-(cycle, local-day) claim — BEFORE any spend.  A redelivered tick
+    # of the same window finds the committed claim and exits as a named skip with ZERO provider
+    # calls (the double-spend probe this item ships).
+    claimed, claim_id = await _claim_cycle_tick(cycle="morning", day=day, window=window)
+    if not claimed:
+        return await _skip_claimed_cycle(
+            cycle="morning", day=day, window=window, claim_id=claim_id
+        )
 
     async with session_factory() as db:
         context = await get_full_context(db)
@@ -608,6 +751,14 @@ async def _evening_cycle() -> dict[str, Any]:
             tz.key,
         )
         return {"status": "skipped", "reason": "outside_evening_window", "window": window}
+
+    # 3-02 (B6): the evening cycle owns its OWN (cycle, local-day) claim — morning's claim
+    # never blocks it; a redelivered evening tick skips here, before any spend.
+    claimed, claim_id = await _claim_cycle_tick(cycle="evening", day=day, window=window)
+    if not claimed:
+        return await _skip_claimed_cycle(
+            cycle="evening", day=day, window=window, claim_id=claim_id
+        )
 
     async with session_factory() as db:
         context = await get_full_context(db)

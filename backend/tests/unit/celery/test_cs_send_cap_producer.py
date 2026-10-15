@@ -11,6 +11,14 @@ persisted them — the email channel counter undercounted every reply (RD14 rece
 RED leg (observed): the CS branch in `_persist_run_artifacts` removed (or the agent's
 `reply["sendgrid_id"]` capture dropped) -> leg 1's email_logs count stays 0 and the cap leg's
 second run is never refused; restore sha256-verified -> green.
+
+V15/4-01 PIN MOVE (old -> new, deliberate): pre-V15 these legs needed NO sender identity, because
+the CS agent called `integrations.send_email` directly (audit A1 — the compliance bypass).  Post
+4-01 every CS reply runs the compliance floor, which refuses an unconfigured sender BY CONTRACT
+(E_CONFIG "sender identity not configured") — so the harness now seeds the 0008 sender identity
+(`_seed_sender_identity`).  The original contract is unchanged and now measures MORE: a real CS
+send is counted, the cap refuses the next one before any provider call, and the send really
+traverses the guarded path.
 """
 from __future__ import annotations
 
@@ -111,12 +119,42 @@ def _cs_task(queue_db) -> int:
     )
 
 
+def _seed_sender_identity(queue_db) -> None:
+    """V15/4-01 pin move: arm the 0008 sender identity the compliance floor requires.
+
+    The queue-DB worker run reaches the CS bridge in mode 2 (no worker-resolved preflight until
+    E3's enlistment flip lands), which opens its own session on `settings.database_url` — the
+    very file this harness points at, so the seeded row is what `send_compliant_email` reads.
+    """
+    from app.models.company import CompanyConfig
+    from app.services.company_service import get_company
+
+    async def _seed() -> None:
+        async with queue_db.factory() as db:
+            company = await get_company(db)
+            if company is None:
+                db.add(CompanyConfig(
+                    name="Acme Robotics",
+                    sender_legal_name="Acme Robotics LLC",
+                    sender_postal_address="123 Main St, Minneapolis, MN 55401, USA",
+                    website_url="https://acme.example",
+                ))
+            else:
+                company.sender_legal_name = "Acme Robotics LLC"
+                company.sender_postal_address = "123 Main St, Minneapolis, MN 55401, USA"
+                company.website_url = "https://acme.example"
+            await db.commit()
+
+    queue_db.run(_seed())
+
+
 def test_a_real_cs_send_is_counted_then_the_next_one_refuses_at_the_cap(
     monkeypatch, queue_db, execute_body
 ):
     """49 seeded + run 1 counted (50) -> run 2 refused by the EXISTING caps, no provider call."""
     holder = {"now": TWO_HOURS_AGO}
     calls = _arm_cs(monkeypatch, holder)
+    _seed_sender_identity(queue_db)              # V15/4-01: the compliance floor needs identity
 
     assert _seed_email_logs(queue_db, EMAIL_DAY_CAP - 1)["emails_written"] == EMAIL_DAY_CAP - 1
     assert queue_db.count("email_logs") == EMAIL_DAY_CAP - 1
@@ -143,6 +181,7 @@ def test_a_failed_cs_send_adds_no_row(monkeypatch, queue_db, execute_body):
     """The producer's honest gate: a failed send is marked failed and writes nothing."""
     holder = {"now": NOW}
     _arm_cs(monkeypatch, holder)
+    _seed_sender_identity(queue_db)              # V15/4-01: reach the provider leg, not E_CONFIG
 
     def failing_send_email(*, to: str, subject: str, body: str) -> dict[str, Any]:
         return {"ok": False, "error": {"code": "E_INTEGRATION", "message": "provider down"}}

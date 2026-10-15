@@ -1,4 +1,4 @@
-"""Beat schedule — the 13 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 15 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -11,12 +11,15 @@ hours-old ticks.  A sweep delivered after its own period is not the sweep that w
 scheduled — the dedupe key would not even recognise it, because the bucket has moved on.
 Rule used here:
 
-* the morning cycle: **hourly, expires 1 h** — since T2 it fires every hour and self-gates inside
-  the task on the company-local hour (`company_config.daily_cycle_hour`, `settings.morning_cycle_hour`
-  as the fallback); a tick older than its own hour is superseded by the next check;
-* the evening cycle: **hourly, expires 1 h** — since L4-11 it fires every hour and self-gates on
-  the company-local hour (`settings.evening_cycle_hour`); a tick older than its own hour is
-  superseded by the next check;
+* the morning cycle: **hourly, expires 30 min (below the local-hour gate width)** — since T2 it fires
+  every hour and self-gates inside the task on the company-local hour (`company_config.daily_cycle_hour`,
+  `settings.morning_cycle_hour` as the fallback).  Since wave v15/3-02 the task also holds a DURABLE
+  once-per-(cycle, local-day) claim committed before any spend, so a redelivery — or a pre-ack kill's
+  replay — exits as a named skip with zero provider calls; the shortened `expires` (was 3600 == the
+  window width) bounds any broker-level replay to the first half of the window;
+* the evening cycle: **hourly, expires 30 min (below the local-hour gate width)** — since L4-11 it fires
+  every hour and self-gates on the company-local hour (`settings.evening_cycle_hour`), with the same
+  durable per-(cycle, local-day) claim as the morning entry (wave v15/3-02);
 * periodic sweeps: **one full period** (2 h / 3 h / 6 h) — a tick never survives into the
   next tick of the same job, so a backlog collapses instead of replaying;
 * the 03:00 retention cleanup: **3 h** — a pure cleanup may run late, but it must not
@@ -25,6 +28,11 @@ Rule used here:
   is set against the 900 s claim lease rather than the wall clock (a dead worker's claim
   must not stay unreachable for a whole cycle), so a tick older than its own slot
   collapses into the next one;
+* the stale-agent-run closer (wave v15/3-01): **every 5 min, expires 4 min (below the interval)** —
+  a maintenance sweep like the lease sweep; a missed tick is superseded by the next one;
+* the paused-release re-arm (wave v15/3-03): **every 5 min, expires 4 min (below the interval)** —
+  the resume nudge for rows the pause gate released; while paused it hands nothing to the broker,
+  and on resume the exactly-once marker clear makes a late or repeated tick harmless;
 * the publish-health tick: **every 15 min, expires 15 min** — a health snapshot delivered
   after its own slot describes a moment that has passed; the next tick re-takes it;
 * the V8 task cadence: **every 15 min, expires 15 min** — a cadence tick delivered after its own
@@ -52,7 +60,11 @@ beat_schedule = {
     "morning-cycle": {
         "task": "celery_app.tasks.daily_cycle.run_morning_cycle",
         "schedule": crontab(minute=0),
-        "options": {"queue": "scheduler", "expires": 3600},
+        # wave v15/3-02: expires 1800 (< the 3600 local-hour gate width).  The once-per-
+        # (cycle, local-day) claim is the PRIMARY double-spend guard (committed before any
+        # spend); the shortened expires bounds broker-level replay to the first half of the
+        # window, so a stale tick can never ride the whole hour.
+        "options": {"queue": "scheduler", "expires": 1800},
     },
     # Evening reporting cycle — hourly since L4-11: the task self-gates on the COMPANY-LOCAL
     # hour (settings.evening_cycle_hour), so the entry no longer pins a UTC crontab hour while
@@ -61,7 +73,9 @@ beat_schedule = {
     "evening-cycle": {
         "task": "celery_app.tasks.daily_cycle.run_evening_cycle",
         "schedule": crontab(minute=0),
-        "options": {"queue": "scheduler", "expires": 3600},
+        # wave v15/3-02: expires 1800 (< the 3600 local-hour gate width) — the same claim +
+        # shortened-expires pair as the morning entry above.
+        "options": {"queue": "scheduler", "expires": 1800},
     },
     # Night task (U5/P3): hourly, expires 1 h — the SAME self-gate pattern as the cycles.  The
     # task reads `company_config.night_task_hour` (company-local; NULL -> the documented 23:00
@@ -135,6 +149,24 @@ beat_schedule = {
     # `options` mirrored from the lease sweep above (`expires` is required by the parity pin).
     "reconcile-stranded-pending": {
         "task": "celery_app.tasks.maintenance.reconcile_stranded_pending_tasks",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "maintenance", "expires": 240},
+    },
+    # Every 5 min (wave v15/3-01): close `agent_runs` rows stuck `running` past the staleness
+    # bound (BUG-DIGEST MAJOR §B5 — the ledger's only closer is `finish_agent_run`, which a
+    # dead worker never reaches).  Mirrors the lease sweep's shape: `expires` (4 min) below
+    # the 5-minute interval so a backlog collapses into the next tick.
+    "stale-agent-runs-sweep": {
+        "task": "celery_app.tasks.maintenance.close_stale_agent_runs",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "maintenance", "expires": 240},
+    },
+    # Every 5 min (wave v15/3-03, B7 + decision #2): the resume half of the paused-dispatch
+    # contract — re-dispatch `pending` rows the pause gate released (marker
+    # `tasks.metadata.paused_release`), exactly once (the marker clears on acceptance), and
+    # only while the company is NOT paused.  Same 5-minute maintenance cadence + 4 min expires.
+    "paused-release-rearm": {
+        "task": "celery_app.tasks.maintenance.rearm_paused_released_tasks",
         "schedule": crontab(minute="*/5"),
         "options": {"queue": "maintenance", "expires": 240},
     },

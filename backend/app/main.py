@@ -227,6 +227,21 @@ async def lifespan(application: FastAPI):
         logger.warning(
             "API_KEY is the default/blank value — set API_KEY in .env before exposing this service"
         )
+    if settings.api_key and not settings.api_key.isascii():
+        # 2R-06 (V2 handoff, defence in depth): U2-01 made the compare BYTE-wise
+        # (`core/security._matches` -> `secrets.compare_digest` on utf-8), which refuses a
+        # non-ASCII configured key CLEANLY — every request an E_AUTH 401, none a 500.  That is
+        # still a TOTAL outage: HTTP clients transmit header values as bytes, so no client can
+        # ever put this key on the wire; nobody can authenticate until the key is replaced.
+        # Name it at boot instead of leaving an operator to infer it from a wall of 401s.
+        # Codepoints only — the key itself is never logged (same rule as mask_deepseek_key).
+        codepoints = sorted({f"U+{ord(char):04X}" for char in settings.api_key if not char.isascii()})
+        logger.warning(
+            "API_KEY contains non-ASCII characters (%s) — HTTP header values cannot carry them, "
+            "so NO client can authenticate (every protected route will answer 401 E_AUTH); "
+            "set an ASCII-only API_KEY in .env",
+            ", ".join(codepoints),
+        )
     if settings.sandbox_mode and not settings.claude_cli_mock:
         logger.info("sandbox mode is ON: real posts/emails/ads/payments are refused, drafts are recorded")
     try:
@@ -243,10 +258,17 @@ async def lifespan(application: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # 2R-02 / U2-07 + decision #8 (LOCKED): the interactive docs are part of the attack surface
+    # when sandbox is OFF — hide them there.  `sandbox_mode=True` (the local drill default) keeps
+    # FastAPI's own "/docs", "/redoc", "/openapi.json" values byte-for-byte.  Read at construction:
+    # the app object is the seam, exactly as `debug` below is.
     application = FastAPI(
         title="Polsia API",
         description="Autonomous multi-agent AI business platform",
         version="1.0.0",
+        docs_url="/docs" if settings.sandbox_mode else None,
+        redoc_url="/redoc" if settings.sandbox_mode else None,
+        openapi_url="/openapi.json" if settings.sandbox_mode else None,
         lifespan=lifespan,
         debug=settings.debug,  # R22: the setting was declared and dead; default False = unchanged
     )
@@ -451,8 +473,15 @@ def create_app() -> FastAPI:
     application.include_router(ws.router)
 
     @application.get("/", include_in_schema=False)
-    async def root() -> dict[str, str]:
-        return {"name": settings.app_name, "status": "ok", "health": "/api/v1/health", "docs": "/docs"}
+    async def root() -> dict[str, str | None]:
+        return {
+            "name": settings.app_name,
+            "status": "ok",
+            "health": "/api/v1/health",
+            # 2R-02: the docs routes only exist while sandbox is ON (`create_app` registers them
+            # conditionally) — advertising "/docs" with sandbox OFF pointed callers at a 404.
+            "docs": "/docs" if settings.sandbox_mode else None,
+        }
 
     return application
 

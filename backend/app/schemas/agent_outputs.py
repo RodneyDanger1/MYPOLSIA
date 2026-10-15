@@ -22,6 +22,7 @@ one import gives a caller the schemas *and* the vocabulary for why an output was
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -33,6 +34,11 @@ from app.agents.structured_output import (  # noqa: F401
     FailureCode,
     e_code_for,
 )
+
+# 2R-07 (V2 handoff): the ONE http(s)-scheme predicate every inferred URL field validates with.
+from app.schemas.planner import is_http_url
+
+logger = logging.getLogger(__name__)
 
 AGENT_TYPES = ("orchestrator", "business_planning", "competitor_research", "social_media",
                "email_outreach", "customer_support", "ads_management", "code_generation",
@@ -143,6 +149,25 @@ class Competitor(BaseModel):
 
     @model_validator(mode="after")
     def _mirror_provenance(self) -> Competitor:
+        if not self.source_urls and self.sources:
+            self.source_urls = list(self.sources)
+        if not self.sources and self.source_urls:
+            self.sources = list(self.source_urls)
+        # 2R-07: the INGEST side of U2-04's render guard. Only absolute http(s) URLs are a usable
+        # provenance link; `javascript:`/`data:`/`vbscript:` (or an empty/relative value) is
+        # dropped from BOTH lists — never a fabricated link, and never a silent pass-through
+        # into `planner_service._fetched_urls` where it could verify a claim. The drop is
+        # RECORDED by name in the log (this model has no count field on the wire contract).
+        for field_name in ("source_urls", "sources"):
+            kept = [url for url in getattr(self, field_name) if is_http_url(url)]
+            removed = [url for url in getattr(self, field_name) if not is_http_url(url)]
+            if removed:
+                logger.warning(
+                    "code=non_http_source_url_dropped: competitor %r: %d provenance URL(s) "
+                    "dropped from %s (non-http(s)); first=%r",
+                    self.name, len(removed), field_name, removed[0],
+                )
+            setattr(self, field_name, kept)
         if not self.source_urls and self.sources:
             self.source_urls = list(self.sources)
         if not self.sources and self.source_urls:

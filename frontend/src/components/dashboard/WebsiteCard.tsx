@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { Button, Card } from "@/components/ui";
+import { safeHref } from "@/components/planner/CandidateCard";
 import { ApiError, api } from "@/lib/api";
 
 import { PanelError, PanelSkeleton } from "./states";
@@ -125,9 +126,14 @@ export function WebsiteCard() {
 
   const rawUrl = config?.website_url ?? null;
   // "Non-empty string" means one with content — a whitespace-only value reads as not configured
-  // (the settings form stores a cleared box as "no value"); the raw value, never a trimmed
-  // rewrite, is what renders as the link.
+  // (the settings form stores a cleared box as "no value"). Wave V15/W2 (P2-01, U2-04 class):
+  // this value is free-form config, so it may become a rendered `href` ONLY as an absolute
+  // http(s) URL — `safeHref` is the repo's one guard for that (imported from CandidateCard,
+  // where U2-04 landed it). React 18 does not block `javascript:` URLs, and this app origin
+  // holds the owner's API key, so every other value (javascript:, data:, file:, relative,
+  // malformed) renders as plain text below. The raw value, never a trimmed rewrite, renders.
   const siteUrl = rawUrl !== null && rawUrl.trim() !== "" ? rawUrl : null;
+  const safeSiteUrl = safeHref(siteUrl);
   const configLoading = config === null && configError === null;
 
   return (
@@ -142,15 +148,28 @@ export function WebsiteCard() {
             ) : null}
             {!configLoading && !configError ? (
               siteUrl !== null ? (
-                <a
-                  href={siteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={siteUrl}
-                  className="link block truncate font-mono text-xs"
-                >
-                  {siteUrl}
-                </a>
+                safeSiteUrl !== null ? (
+                  <a
+                    href={safeSiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={siteUrl}
+                    className="link block truncate font-mono text-xs"
+                  >
+                    {siteUrl}
+                  </a>
+                ) : (
+                  // A configured value that is not an absolute http(s) URL: shown verbatim as
+                  // PLAIN TEXT — reporting the stored value is honest; making it clickable is
+                  // the sink. `safeHref` above is the only gate.
+                  <p
+                    data-testid="website-url-text"
+                    title={siteUrl}
+                    className="block truncate font-mono text-xs text-ink"
+                  >
+                    {siteUrl}
+                  </p>
+                )
               ) : (
                 <p className="text-sm text-ink-muted">No website configured — set one in Settings.</p>
               )

@@ -44,6 +44,14 @@ IMPORTED = {
     "heartbeat_task",
     "update_task_status",
     "_as_column_decimal",
+    # wave v15 / E3 item 3-03 (decision #2 LOCKED, BUG-DIGEST §B7): the pause gate RELEASES the
+    # claim instead of destroying the queued work — `release_claim` (the service's graceful
+    # release verb: back to `pending`, lease fields cleared) plus `get_task` (merge — never
+    # replace — the `metadata.paused_release` marker the resume re-arm tick consumes).
+    # Re-pinned DELIBERATELY with the change (the pin's own contract: a caller-import change
+    # moves this set on purpose or not at all).
+    "get_task",
+    "release_claim",
 }
 
 CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type"]

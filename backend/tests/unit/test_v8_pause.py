@@ -68,6 +68,15 @@ def test_run_agent_for_task_refuses_with_e_policy_denied_when_paused(monkeypatch
 def test_a_paused_company_refuses_the_run_before_anything_executes(
     queue_db, install_run_spy, mock_redis
 ):
+    """RE-PINNED DELIBERATELY (wave v15 / E3 item 3-03, decision #2 LOCKED, BUG-DIGEST §B7).
+
+    The old contract wrote the paused row terminal `rejected` and cleared its claim — the queued
+    work was DESTROYED and nothing re-armed it on resume.  The locked contract: the claim is
+    RELEASED cleanly (row back to queue-eligible `pending`, lease fields cleared), the named
+    paused reason is durable on `metadata.paused_release` (the marker the resume re-arm tick
+    re-dispatches exactly once) + an activity row, and no provider call ever happens.  The
+    resume half is pinned in tests/unit/celery/test_v15_e3_pause_rearm.py.
+    """
     from celery_app.tasks.agent_tasks import run_agent_task
 
     _seed_company(queue_db, dispatch_paused=True)
@@ -77,16 +86,21 @@ def test_a_paused_company_refuses_the_run_before_anything_executes(
     outcome = run_agent_task(task_id)
 
     assert outcome["status"] == "skipped"
-    assert outcome["task_status"] == "rejected"
+    assert outcome["task_status"] == "pending", (
+        "a paused dispatch releases the claim back to `pending` — the work survives"
+    )
+    assert outcome.get("requeued") is True
     assert PAUSED_LINE in outcome["reason"], "the refusal names the pause"
     assert E_POLICY_DENIED in outcome["reason"], "the refusal carries the policy code"
 
     row = queue_db.row(task_id)
-    assert row["status"] == "rejected", (
-        "refused before anything ran: the live product's Rejected state, not `failed`"
+    assert row["status"] == "pending", (
+        "refused before anything ran, but NOT destroyed: the row stays re-dispatchable"
     )
     assert row["claimed_by"] is None and row["claimed_at"] is None and row["heartbeat_at"] is None
-    assert E_POLICY_DENIED in (row["error_message"] or "")
+    assert "paused_release" in (row["metadata"] or ""), (
+        "the named paused reason is durable on the row (the resume re-arm marker)"
+    )
     assert spy.calls == [], "the agent must never be dispatched while the company is paused"
     assert queue_db.count("agent_runs") == 0, "no run ledger row for a refused dispatch"
 

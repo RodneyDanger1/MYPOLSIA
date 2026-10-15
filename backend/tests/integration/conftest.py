@@ -36,9 +36,17 @@ def redis_url():
         pytest.skip("testcontainers not installed")
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def integration_db(postgres_url):
-    """Create all tables and return async session factory."""
+    """Create all tables and return async session factory.
+
+    loop_scope="session": the engine's asyncpg pool binds to ONE event loop; running this
+    session-scoped fixture on the default per-test loop raised
+    `RuntimeError: ... attached to a different loop` (surfacing as asyncpg's
+    "cannot perform operation: another operation is in progress") the moment a second test
+    touched the pool.  Integration tests carry the matching `asyncio(loop_scope="session")`
+    mark so tests + fixtures share the loop.
+    """
     import app.models  # noqa — ensure all models registered
     from app.core.database import Base
 
@@ -54,14 +62,14 @@ async def integration_db(postgres_url):
     await engine.dispose()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def db(integration_db):
     async with integration_db() as session:
         yield session
         await session.rollback()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def int_client(db, redis_url, monkeypatch):
     """FastAPI client connected to real Postgres + Redis."""
     from app.config import settings

@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -46,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chroma_client import get_collection  # noqa: F401  (re-exported for patching)
 from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.timeutil import now_utc
 from app.models.memory import MemoryEntry
 from app.services.query_helpers import fetch_scalar, fetch_scalars
 
@@ -343,4 +345,159 @@ async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
     return entry
 
 
-__all__ = ["delete_memory", "get_memory", "list_memories", "search_memory", "store_memory"]
+# ---------------------------------------------------------------------------
+# AGENT MEMORY LEGS (V15/4-05, S5-02 a+b) — the read resolver + the write helper.
+#
+# The worker owns the DB (agents never hold a session), so both legs live HERE and are called
+# from the worker: `resolve_agent_memories` feeds `context["memories"]` (the base agent's
+# `context_memories` layer input), and `remember_run` persists one honest, run-derived entry
+# after a completed run.  Both reuse the shipped machinery (`search_memory`, `store_memory`)
+# instead of growing a second memory path.
+# ---------------------------------------------------------------------------
+
+
+def _age_days(created_at: datetime | None) -> float:
+    """How old a memory row is, in days — 0.0 when the row carries no measurable clock."""
+    if created_at is None:
+        return 0.0
+    created = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+    return max(0.0, round((now_utc() - created).total_seconds() / 86400.0, 3))
+
+
+async def resolve_agent_memories(
+    db: AsyncSession,
+    *,
+    agent_type: str,
+    query: str = "",
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """The run's agent-relevant memories, in the exact shape the prompt layer ranks (S5-02a).
+
+    H4-frozen interface (V15/4-05a): the WORKER calls this and hands the result to the agent
+    under `context["memories"]`; `base_agent.context_memories` picks it up and `layers_for`
+    renders the volatile `memories` layer through `rank_memories`.  Relevance comes from the
+    SHIPPED search machinery (`search_memory` — vector search with the SQL keyword fallback),
+    queried with the caller's task terms; every hit is enriched with its row's `tags` and
+    `age_days` so the ranker's inputs are real rather than defaults.
+
+    A vector-store failure with no fallback match raises the named `E_DB` (see `search_memory`)
+    — the worker's hook catches that and leaves the context key ABSENT; an empty list must
+    never stand in for "could not read" (the same rule every `_with_*` worker hook follows).
+    """
+    text = (query or "").strip() or f"{agent_type} agent run"
+    hits = await search_memory(db, text, n_results=max(1, min(int(limit or 8), 20)))
+    ids = [hit.get("memory_id") for hit in hits if isinstance(hit.get("memory_id"), int)]
+    rows: dict[int, MemoryEntry] = {}
+    if ids:
+        entries = await fetch_scalars(
+            db, select(MemoryEntry).where(MemoryEntry.id.in_(ids)),
+            what="memory prompt rows",
+        )
+        rows = {int(entry.id): entry for entry in entries}
+    views: list[dict[str, Any]] = []
+    for hit in hits:
+        memory_id = hit.get("memory_id")
+        row = rows.get(memory_id) if isinstance(memory_id, int) else None
+        distance = hit.get("distance")
+        similarity = (
+            max(0.0, round(1.0 - float(distance), 4))
+            if isinstance(distance, (int, float))
+            else 0.0
+        )
+        views.append({
+            "memory_id": memory_id if memory_id is not None else hit.get("id"),
+            "title": str(hit.get("title") or (row.title if row is not None else "")),
+            "content": str(hit.get("content") or ""),
+            "category": hit.get("category") or (row.category if row is not None else None),
+            "source": hit.get("source") or (row.source if row is not None else None),
+            "similarity": similarity,
+            "age_days": _age_days(row.created_at) if row is not None else 0.0,
+            "tags": [str(tag) for tag in (row.tags or [])] if row is not None else [],
+            "pinned": False,
+        })
+    return views
+
+
+def _memory_skip(code: str, message: str, **context: Any) -> dict[str, Any]:
+    """The `_persist_run_artifacts` report shape for a skip/failure — RECORDED, never raised."""
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "how_to_fix": ERROR_HINTS.get(code, ""),
+            "context": context,
+        },
+    }
+
+
+async def remember_run(
+    db: AsyncSession,
+    *,
+    agent_type: str,
+    task: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist ONE honest, run-derived memory for a completed run (S5-02b write leg).
+
+    H4-frozen interface (V15/4-05b): the WORKER calls this from the run-artifact step (it owns
+    the session and it commits — this function FLUSHES only).  The report follows the
+    `_persist_run_artifacts` convention: `{"ok": True, "memory_id": ..., "chroma_id": ...}` or a
+    RECORDED `{"ok": False, "error": {...}}` — never a raised exception (a memory-leg failure
+    must not kill a run that really completed).
+
+    What is remembered is the run's OWN summary (the one field every agent contract requires and
+    the runner really produced): "honest, run-derived" means exactly that text — nothing is
+    paraphrased upward, extrapolated or invented, and a run without a summary is SKIPPED BY NAME
+    (`E_VALIDATION`) rather than given a fabricated one.  `store_memory`'s dual write persists
+    both halves (row + vector document) under `category="agent_run"`, `source=agent_type`.
+    """
+    if not isinstance(result, dict):
+        return _memory_skip(
+            E_VALIDATION, f"{agent_type}: run result is not an object; nothing to remember"
+        )
+    summary = str(result.get("summary") or "").strip()
+    if not summary:
+        return _memory_skip(
+            E_VALIDATION,
+            f"{agent_type}: the run carries no summary; nothing honest to remember (a memory "
+            "is never invented)",
+        )
+    task_title = str((task or {}).get("title") or "").strip()
+    title = f"{agent_type}: {task_title}" if task_title else f"{agent_type} run"
+    try:
+        entry = await store_memory(
+            db,
+            category="agent_run",
+            title=title[:512],
+            content=summary[:4000],
+            source=agent_type,
+            tags=[agent_type],
+        )
+    except PolsiaError as exc:
+        return {
+            "ok": False,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "how_to_fix": exc.how_to_fix,
+                "context": exc.context,
+            },
+        }
+    return {
+        "ok": True,
+        "memory_id": entry.id,
+        "chroma_id": entry.chroma_id,
+        "title": entry.title,
+    }
+
+
+__all__ = [
+    "delete_memory",
+    "get_memory",
+    "list_memories",
+    "remember_run",
+    "resolve_agent_memories",
+    "search_memory",
+    "store_memory",
+]

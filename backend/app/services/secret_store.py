@@ -22,10 +22,13 @@ before; only the UNCONFIGURED default never depends on the process cwd (L1-07: a
 another cwd used to write the owner's key to a path no `.gitignore` rule covers, and the
 compose volume keyed on `backend/data` silently stopped being the store — the same hazard D7
 already anchored `chroma_client._fallback_persist_dir` for).  The file is JSON, written
-temp-file-then-`os.replace` (`O_CREAT|O_TRUNC`, mode 0600), and `chmod 0600` is
-applied best-effort — on Windows `os.chmod` only toggles the read-only bit and the
-file inherits the ACL of the user directory it lives under; that is stated, not
-papered over.  A corrupt or unreadable file raises `E_STORAGE`, never a silent
+temp-file-then-`os.replace` (`O_CREAT|O_TRUNC`, mode 0600), then hardened best-effort:
+`chmod 0600` on POSIX; on Windows — where `os.chmod` only toggles the read-only bit and
+the file inherits the ACL of the user directory it lives under — the real tightening is
+`icacls <file> /inheritance:r /grant:r <user>:(R,W)` (2R-05/U2-11), run after every write.
+Every failing mechanism logs a warning NAMING the file (the miss is never silent); the
+`.env` beside it is the operator's to tighten, and README ("Essential settings") carries
+that step.  A corrupt or unreadable file raises `E_STORAGE`, never a silent
 fall-back to the environment (silently reporting "env" for a stored-but-broken key
 would blame the wrong credential).
 
@@ -75,9 +78,11 @@ returns, and the routes never echo the request body.
 from __future__ import annotations
 
 import contextlib
+import getpass
 import json
 import logging
 import os
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -320,13 +325,90 @@ def _stored_key(path: Path) -> str | None:
         return value
 
 
-def _best_effort_chmod(path: Path) -> None:
-    """Ask for 0600, honestly. On Windows this only clears the read-only bit; the file
-    still inherits the (user-scoped) ACL of the directory it lives in."""
+#: True on Windows.  A module constant (not an inline `os.name` read) so both permission
+#: branches are deterministically exercisable in tests on either host (2R-05).
+_WINDOWS = os.name == "nt"
+
+#: Bound on the icacls call.  A hung tightening must never wedge the write path — best-effort
+#: by design, and the value is already persisted durably when this runs.
+_ICACLS_TIMEOUT_SECONDS = 15
+
+
+def _current_username() -> str:
+    """The name icacls will grant: USERNAME/USER from the environment, else the platform lookup.
+
+    Never raises — an anonymous host is a refusal (no grant to name), not a crash.
+    """
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if user:
+        return user
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 — env-less hosts (empty USER/USERNAME/LOGNAME) raise here
+        return ""
+
+
+def _tighten_windows_acl(path: Path) -> bool:
+    """Strip inherited ACEs and grant ONLY the current user R,W via `icacls`; True on success.
+
+    2R-05 / U2-11: on Windows `os.chmod` only toggles the read-only bit — the file keeps the ACL
+    it inherits from its directory, which is how `deepseek_api_key.json` was observed 0644.
+    `/inheritance:r` removes the inherited ACEs, `/grant:r "<user>:(R,W)"` leaves exactly one
+    grant: this user, read+write.  Never raises: a missing/hung/denied icacls is a False and the
+    caller logs the warning that names the file.
+    """
+    user = _current_username()
+    if not user:
+        return False
+    try:
+        result = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(R,W)"],
+            capture_output=True,
+            text=True,
+            timeout=_ICACLS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _best_effort_chmod(path: Path) -> bool:
+    """Ask for owner-only access and REPORT whether the platform-strong mechanism won.
+
+    POSIX: `os.chmod(path, 0o600)` IS the tightening.  Windows: the chmod call is kept (it still
+    toggles the read-only bit, byte-identical to this module's previous behaviour) but the real
+    tightening is `_tighten_windows_acl` (2R-05).  Each failing mechanism logs a warning NAMING
+    the file — tightening stays best-effort (the key is already persisted durably when this runs;
+    refusing the save over an ACL would lose the credential it protects), but the miss is never
+    silent, so nobody believes the file is owner-only when it is not.
+
+    Returns True when the platform-strong mechanism demonstrably succeeded; callers may ignore the
+    value (none need to act on a False today) — the tests pin it.
+    """
+    chmod_ok = True
     try:
         os.chmod(path, 0o600)
     except OSError as exc:  # noqa: BLE001 -- permission tightening is best-effort
-        logger.warning("could not tighten permissions on %s: %s", path, type(exc).__name__)
+        chmod_ok = False
+        logger.warning(
+            "could not tighten permissions on %s: %s — the file may be readable by other users",
+            path,
+            type(exc).__name__,
+        )
+    if not _WINDOWS:
+        return chmod_ok
+    acl_ok = _tighten_windows_acl(path)
+    if not acl_ok:
+        logger.warning(
+            "could not tighten the Windows ACL on %s: icacls /inheritance:r /grant:r did not "
+            "succeed — the file keeps its inherited directory ACL and may be readable by other "
+            'local users; tighten it by hand: icacls "%s" /inheritance:r /grant:r '
+            '"%%USERNAME%%:(R,W)"',
+            path,
+            path,
+        )
+    return acl_ok
 
 
 def get_deepseek_api_key() -> str | None:

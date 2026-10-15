@@ -104,14 +104,18 @@ export function DocumentsOverlay({ open, onClose }: { open: boolean; onClose: ()
   if (!open) return null;
 
   const items = list?.items ?? [];
-  const total = list?.total ?? 0;
+  // The server's `total` renders ONLY when the server actually sent the number (P2-03): the
+  // route's contract (`backend/app/api/v1/dashboard.py:153`) is `{items, total}` with total =
+  // the reports TABLE's count, but a `total`-less body must print NO counter — `list?.total ?? 0`
+  // here used to fabricate a "N OF 0" claim, the one thing this project forbids.
+  const total = typeof list?.total === "number" ? list.total : null;
   const showsRows = tab !== "documents";
   // N = the report rows the active tab is showing; TOTAL = the server's total field. Both render
   // only once the read has answered: "not read yet" and "failed" have no real numbers to state.
   const shown = showsRows ? items.length : 0;
-  const capped = showsRows && total > REPORTS_READ_LIMIT;
+  const capped = showsRows && total !== null && total > REPORTS_READ_LIMIT;
   const counter =
-    list !== null
+    list !== null && total !== null
       ? `${shown} OF ${total}${capped ? ` — showing the newest ${items.length}` : ""}`
       : null;
 

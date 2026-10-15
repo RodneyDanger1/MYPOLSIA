@@ -19,6 +19,12 @@ What this file pins (findings lane-3 + research-C, phase-3 fixer-3):
 * L3-07 — the reply's `reply_id` is the PROVIDER's id (or None), never the model's string, and
   the sandbox guard covers replies too.
 
+V15 re-pin (r-repair unit, 4-04 threading): E2's real threading adds `reply_to=` through
+`integrations.post_tweet(**media)` for REAL replies only; the provider fake below mirrors the
+shipped signature verbatim (`reply_to: str = ""` — text posts keep the unchanged call shape, so
+nothing special-cases `None`), and the reply legs now also assert that the mention's provider id
+really reached the provider call.
+
 No sockets, no servers: adapters are replaced in memory, the firewall runs for real.
 """
 from __future__ import annotations
@@ -53,9 +59,21 @@ def _stub_collection(agent: Any, payload: dict[str, Any]) -> Any:
     return agent
 
 
-def _fake_post_tweet(calls: list[str]) -> Any:
-    def _post(text: str, *, platform: str = "twitter") -> dict[str, Any]:
+def _fake_post_tweet(calls: list[str], seen: list[dict[str, Any]] | None = None) -> Any:
+    """Mirror the real `integrations.post_tweet` signature — V15/4-04 threading included.
+
+    E2's reply threading adds `reply_to=` through `post_tweet(**media)` for REAL replies only,
+    so `_post` accepts the shipped contract verbatim (`reply_to: str = ""`; a text post keeps
+    the unchanged call shape — nothing here special-cases `None`).  `seen` (optional) records
+    every provider call's full kwargs so a test can assert what the provider actually received.
+    """
+
+    def _post(text: str, *, platform: str = "twitter", image_url: str = "",
+              reply_to: str = "") -> dict[str, Any]:
         calls.append(text)
+        if seen is not None:
+            seen.append({"text": text, "platform": platform, "image_url": image_url,
+                         "reply_to": reply_to})
         return {"ok": True, "result": {"id": f"provider-{len(calls)}"}}
 
     return _post
@@ -91,7 +109,8 @@ def test_social_post_action_publishes_through_the_firewall_and_reports_provider_
     """The claimed action still performs: firewall -> provider -> provider ids in the payload."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     calls: list[str] = []
-    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls, seen))
     agent = _stub_collection(SocialMediaAgent(), {
         "action": "post",
         "posts": [{"platform": "twitter", "content": "real post"}],
@@ -101,6 +120,10 @@ def test_social_post_action_publishes_through_the_firewall_and_reports_provider_
     out = agent.run({"title": "post"}, {"channel_sends": {"twitter": {"today": 0, "hour": 0}}})
 
     assert calls == ["real post", "real reply"]
+    assert [s["reply_to"] for s in seen] == ["", "m1"], (
+        "V15/4-04: only the reply threads (on the provider's OWN mention id); the text post "
+        "keeps the unchanged call shape"
+    )
     assert [p["tweet_id"] for p in out["posted"]] == ["provider-1"]
     assert [r["performed"] for r in out["side_effects"]] == [True, True]
 
@@ -350,7 +373,8 @@ def test_performed_sends_shift_the_counts_the_firewall_sees(monkeypatch):
 def test_reply_id_carries_the_providers_id_not_the_models(monkeypatch):
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     calls: list[str] = []
-    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls, seen))
     agent = _stub_collection(SocialMediaAgent(), {
         "action": "reply",
         "replies": [{"mention_id": "m1", "reply": "thanks!", "reply_id": "model-invented-999"}],
@@ -359,6 +383,10 @@ def test_reply_id_carries_the_providers_id_not_the_models(monkeypatch):
     out = agent.run({"title": "reply"}, {"channel_sends": {"twitter": {"today": 0, "hour": 0}}})
 
     assert calls == ["thanks!"]
+    assert seen == [{"text": "thanks!", "platform": "twitter", "image_url": "",
+                     "reply_to": "m1"}], (
+        "V15/4-04: the reply must reach the provider threaded on the mention's provider id"
+    )
     assert out["replies"][0]["reply_id"] == "provider-1", "the provider issued this id"
 
 
@@ -378,7 +406,8 @@ def test_the_sandbox_guard_covers_every_published_item_including_replies(monkeyp
     """L3-07: the guard used to inspect `posts[0]` only; replies were structurally invisible."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     calls: list[str] = []
-    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(integrations, "post_tweet", _fake_post_tweet(calls, seen))
     from app.agents.social_media import agent as social_agent
 
     guarded: list[dict[str, Any]] = []
@@ -397,3 +426,6 @@ def test_the_sandbox_guard_covers_every_published_item_including_replies(monkeyp
 
     assert len(guarded) == 2, "post AND reply are guarded"
     assert {item.get("tweet_id") for item in guarded} == {"provider-1", "provider-2"}
+    assert [s["reply_to"] for s in seen] == ["", "m1"], (
+        "the guarded reply is the threaded one — the guard inspects what really published"
+    )

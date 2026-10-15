@@ -183,6 +183,12 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
     # V11/W2 (parent settle): the stranded-pending reconciler (every 5 min; README row added at the
     # same settle — the crash-between-commit-and-dispatch orphan class, audit F1).
     "reconcile-stranded-pending",
+    # wave v15 / E3 (3-01): the stale-agent-run closer (every 5 min; §B5 — `agent_runs` rows
+    # stuck `running` forever had no closer reachable by a dead worker).
+    "stale-agent-runs-sweep",
+    # wave v15 / E3 (3-03): the paused-release re-arm (every 5 min; §B7 + decision #2 — the
+    # resume half of the paused-dispatch contract; marker `tasks.metadata.paused_release`).
+    "paused-release-rearm",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -205,6 +211,10 @@ REQUIRED_SCHEDULED_TASKS = {
     # V11/W2 (parent settle): the stranded-pending reconciler — the same "declared but never
     # scheduled" defect class it exists to close; pinned by task path like its lease-sweep sibling.
     "celery_app.tasks.maintenance.reconcile_stranded_pending_tasks",
+    # wave v15 / E3 (3-01 + 3-03): the stale-run closer and the paused-release re-arm — the same
+    # "declared but never scheduled" defect class; pinned by task path like their siblings.
+    "celery_app.tasks.maintenance.close_stale_agent_runs",
+    "celery_app.tasks.maintenance.rearm_paused_released_tasks",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus

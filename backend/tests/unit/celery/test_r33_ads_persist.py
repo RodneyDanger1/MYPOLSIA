@@ -374,14 +374,22 @@ def test_an_unexpected_failure_is_reported_never_raised(queue_db):
 
 def test_the_dispatcher_returns_the_honest_zero_for_an_empty_payload(queue_db):
     """No db is even touched: an empty payload IS the schema's own shape, and it is a measured
-    zero — a report, not an absence, and not an error."""
+    zero — a report, not an absence, and not an error.
+
+    V15 re-pin (r-repair unit, 4-05b): the memory write leg rides the SAME report — an empty
+    payload carries no summary, so the leg SKIPS BY NAME (`E_VALIDATION`, a memory is never
+    invented) beside the zero; the original assertion is preserved by popping that key first.
+    """
     from celery_app.tasks.agent_tasks import _persist_run_artifacts
 
     report = queue_db.run(_persist_run_artifacts(None, "ads_management", {}))
+    memory = report.pop("memory")
     assert report == {
         "ok": True, "campaigns_written": 0, "metrics_written": 0, "duplicates_skipped": 0,
         "error": None,
     }
+    assert memory["ok"] is False
+    assert memory["error"]["code"] == "E_VALIDATION"
 
 
 def test_record_ads_run_stays_outside_the_pinned_public_surface():

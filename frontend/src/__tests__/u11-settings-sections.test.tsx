@@ -15,8 +15,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
  *    {action_fingerprint} (data.py:416, approvals.py:103) — single-use, refusals by name;
  *  - GET /pricing -> {query,count,items,catalog_as_of,staleness_days,stale} (pricing.py:25) with
  *    nullable rows; `stale: null` is "age unknown", never "fresh";
- *  - POST /site/package -> {package_dir, files, slug} (site.py:20) — server-side PATHS only,
- *    no archive and no GET route (so no fake download, no fake progress).
+ *  - POST /site/package -> {package_dir, files, slug} (site.py:20) — server-side PATHS (no fake
+ *    progress). V15/W2 (4-07, deliberate update): the GET download route ships too
+ *    (site.py:29-45, `Content-Disposition: attachment; filename="site-<slug>.zip"`) and the
+ *    section now wires the REAL blob download — the old "no HTTP download" copy was false.
  *
  * Shipped pins this file must respect: u3-settings-memory / u7-settings pin the tab list (exactly
  * four tabs) and "no control besides the config save and the DeepSeek section fires a request";
@@ -521,8 +523,17 @@ describe("u11 settings — site package", () => {
     expect(result).toHaveTextContent("polsia");
     expect(result).toHaveTextContent("index.html");
     expect(result).toHaveTextContent("HOSTING-README.md");
-    expect(result).toHaveTextContent(/no HTTP download/);
-    expect(result).toHaveTextContent(/nothing is published/);
+    // V15/W2 (4-07) DELIBERATE UPDATE: the old copy claimed "no HTTP download" — false since the
+    // GET route ships. The truth is asserted instead: the ZIP download control exists, its route
+    // is named, and nothing is published by building or downloading.
+    expect(result).not.toHaveTextContent(/no HTTP download/);
+    expect(screen.getByTestId("settings-site-download")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Download it as a ZIP \(GET \/api\/v1\/site\/package\/download\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/nothing is published by\s+building or downloading it/),
+    ).toBeInTheDocument();
     // No fake progress affordance anywhere on this page.
     expect(screen.queryByRole("progressbar")).toBeNull();
   });

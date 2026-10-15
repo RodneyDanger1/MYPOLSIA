@@ -16,8 +16,12 @@ THE EXPORT (V10-D2)
     store or `.env` contents — the store is a FILE outside every member table, and
     `tests/unit/api/test_v10_data_export.py` asserts a seeded key sentinel appears in NO member
     (the brief's absolute rule).  Reads run inside `refusal_guard()`; the ZIP is fully built and
-    counted BEFORE the response object exists, then streamed in bounded chunks (the `runs.py`
-    streaming doctrine: an honest count cannot be declared before the first byte otherwise).
+    counted BEFORE the response object exists (the `runs.py` streaming doctrine: an honest count
+    cannot be declared before the first byte otherwise) — but the archive itself is written to a
+    TEMP FILE in the system scratch dir (`mkstemp`, U2-10), never materialized as one in-memory
+    `bytes` payload, and served by `FileResponse`, which streams it from disk in its own bounded
+    chunks.  The temp file is removed by a background task once the response has been sent (and
+    on any build failure), so the endpoint cannot leak scratch files.
 
 THE WIPE (V10-D3)
     `DELETE /api/v1/data` deletes the member tables' rows in ONE transaction and KEEPS
@@ -73,22 +77,24 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
+import tempfile
 import time
 import zipfile
-from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.agents.policy_firewall import configured_approval_secret, verify_approval
 from app.api.deps import get_db, refusal_guard, verify_api_key
@@ -159,8 +165,12 @@ _CONSUMED_TOKENS_PATH: Path = (
 #: How many consumed records are kept (bounded growth; the file is audit, not a log sink).
 _CONSUMED_KEEP = 50
 
-#: ZIP payload chunks are sliced at this many bytes (bounded buffering, `runs.py` doctrine).
-ZIP_CHUNK_BYTES = 64 * 1024
+logger = logging.getLogger(__name__)
+
+#: The export archive is a temp file in the system scratch dir (U2-10): named so an operator can
+#: see whose file it is, `.zip` so tooling knows the format, removed after the response is sent.
+EXPORT_TEMP_PREFIX = "polsia-data-export-"
+EXPORT_TEMP_SUFFIX = ".zip"
 
 
 class DataWipeResponse(BaseModel):
@@ -218,8 +228,15 @@ def _member_attrs(model: type[Any]) -> list[Any]:
 # ── the export ───────────────────────────────────────────────────────────────────────────────
 
 
-async def _build_export(db: AsyncSession) -> tuple[bytes, int]:
-    """Read every member, build MANIFEST.json + the members, return (zip bytes, total rows)."""
+async def _build_export(db: AsyncSession) -> tuple[Path, int]:
+    """Read every member, write MANIFEST.json + the members to a TEMP-FILE zip.
+
+    Returns `(temp file path, total rows)`.  The rows are read ONCE and the manifest is built
+    from those same rows (the declared-count rule above); the U2-10 change is only WHERE the
+    archive is assembled: via `tempfile.mkstemp` in the system scratch dir instead of one
+    in-memory `BytesIO` whose `getvalue()` doubled the payload.  A failure while writing removes
+    the temp file before it propagates — this endpoint never leaks a scratch file.
+    """
     manifest_members: list[dict[str, Any]] = []
     member_files: list[tuple[str, str]] = []  # (archive name, text payload)
 
@@ -269,33 +286,89 @@ async def _build_export(db: AsyncSession) -> tuple[bytes, int]:
         ],
     }
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
-        for archive_name, member_text in member_files:
-            archive.writestr(archive_name, member_text)
-    return zip_buffer.getvalue(), total_rows
+    try:
+        fd, raw_path = tempfile.mkstemp(prefix=EXPORT_TEMP_PREFIX, suffix=EXPORT_TEMP_SUFFIX)
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"the export ZIP temp file could not be created in the system scratch dir "
+            f"({type(exc).__name__}: {exc})",
+            how_to_fix=f"check that {tempfile.gettempdir()} exists and is writable, and that "
+                       "the disk has room, then retry the export",
+            context={"scratch_dir": tempfile.gettempdir()},
+        ) from exc
+    path = Path(raw_path)
+    os.close(fd)  # Windows: release the mkstemp handle so ZipFile can reopen the path
+    try:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
+            for archive_name, member_text in member_files:
+                archive.writestr(archive_name, member_text)
+    except OSError as exc:
+        _remove_export_tempfile(path)
+        raise PolsiaError(
+            E_STORAGE,
+            f"the export ZIP could not be written to {path} ({type(exc).__name__}: {exc})",
+            how_to_fix=f"check that {path.parent} is writable and the disk has room, then "
+                       "retry the export",
+            context={"path": str(path)},
+        ) from exc
+    except BaseException:
+        # Anything else (cancellation, a serialization failure): the temp file still goes away.
+        _remove_export_tempfile(path)
+        raise
+    return path, total_rows
 
 
-async def _zip_chunks(payload: bytes) -> AsyncIterator[bytes]:
-    """The already-built ZIP, emitted in bounded byte chunks."""
-    for start in range(0, len(payload), ZIP_CHUNK_BYTES):
-        yield payload[start : start + ZIP_CHUNK_BYTES]
+def _remove_export_tempfile(path: Path) -> None:
+    """Best-effort removal of the export temp archive (never raises: a cleanup failure must not
+    turn an already-served export into an error inside the response or the background task)."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:  # pragma: no cover - unlink on the scratch dir is the only caller
+        logger.warning("could not remove the export temp file %s (%s)", path, exc)
+
+
+class ExportFileResponse(FileResponse):
+    """`FileResponse` whose cleanup background runs even when the send raises.
+
+    WHY the subclass: starlette 0.41.3 runs `await self.background()` only on the NORMAL
+    completion path of `FileResponse.__call__` (measured in the installed source) — a client
+    disconnect mid-body propagates the exception and SKIPS the background task, which would
+    leak one temp archive per aborted download.  This subclass takes ownership of the
+    background callable (`self.background` is nulled before delegating) and runs it in a
+    `finally`, exactly once, on every exit — success, refusal, or disconnect.  The cleanup
+    callable itself is `_remove_export_tempfile` (idempotent, never raises).
+    """
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        cleanup = self.background
+        self.background = None  # we run it ourselves, exactly once
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if cleanup is not None:
+                await cleanup()
 
 
 @router.get("/export")
-async def export_data_route(db: AsyncSession = Depends(get_db)) -> StreamingResponse:
-    """The full-data ZIP (manifest + 8 members) — built and counted before the first byte."""
+async def export_data_route(db: AsyncSession = Depends(get_db)) -> ExportFileResponse:
+    """The full-data ZIP (manifest + 8 members) — a temp file built and counted before the
+
+    first byte, streamed from disk by `FileResponse`, removed by the background task once the
+    response has been sent (U2-10) — including when the send itself fails (subclass above).
+    """
     with refusal_guard():
-        payload, total_rows = await _build_export(db)
+        path, total_rows = await _build_export(db)
     filename = f"polsia-data-export-{date.today().isoformat()}.zip"
-    return StreamingResponse(
-        _zip_chunks(payload),
+    return ExportFileResponse(
+        path,
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Polsia-Row-Count": str(total_rows),
         },
+        background=BackgroundTask(_remove_export_tempfile, path),
     )
 
 

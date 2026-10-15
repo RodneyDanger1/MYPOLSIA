@@ -58,7 +58,7 @@ jobs:
         run: cp .env.example .env
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Start the stack
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build
       - name: Wait for the API to answer

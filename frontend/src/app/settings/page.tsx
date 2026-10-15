@@ -5,6 +5,12 @@ import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
 import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
+import {
+  OWNER_FIELD_KEYS,
+  OWNER_NUMERIC_KEYS,
+  OwnerProfileSection,
+  type OwnerFieldKey,
+} from "@/components/settings/OwnerProfileSection";
 import { PricingSection } from "@/components/settings/PricingSection";
 import { SitePackageSection } from "@/components/settings/SitePackageSection";
 import { TabStrip, type TabDef } from "@/components/settings/TabStrip";
@@ -30,9 +36,10 @@ import { Button, Switch, cn } from "@/components/ui";
  *
  * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
  * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
- * fourteen text fields below plus the six booleans and two night-task numbers — and `PUT /config`
- * copies only the provided keys onto the row (`update_config` → `model_dump(exclude_unset=True)`),
- * so unrendered fields keep their stored value.
+ * `FIELD_KEYS` drafts (the original fourteen fields plus the seven V15/W1 owner-profile drafts),
+ * the six booleans and the two night-task numbers — and `PUT /config` copies only the provided
+ * keys onto the row (`update_config` → `model_dump(exclude_unset=True)`), so unrendered fields
+ * keep their stored value.
  */
 export type SettingsConfig = {
   name: string;
@@ -67,11 +74,27 @@ export type SettingsConfig = {
    *  reads as the server's own '' like the booleans above (pre-W4 fixtures keep compiling). */
   sender_legal_name?: string | null;
   sender_postal_address?: string | null;
+  /** V15/W1 (4-06, #5 LOCKED): the owner-profile columns — `CompanyConfigResponse`/
+   *  `CompanyConfigUpdate` in `backend/app/schemas/company.py:61-67,128-134`. The five text
+   *  fields (`owner_skills`, `owner_goal`, `risk_tolerance`, `market_locale` + the
+   *  comma-edited `channels_ready` list) are NOT NULL at rest with ''/[] canonical — optional
+   *  and nullable here so pre-V15 fixtures keep compiling and an absent key reads the server's
+   *  own "not set" (the sender-identity rule above). The two numerics are honestly nullable:
+   *  `null` means "no value" and renders as an EMPTY box — the page never fabricates a 0. */
+  owner_skills?: string | null;
+  owner_hours_per_week?: number | null;
+  owner_budget_usd?: number | null;
+  owner_goal?: string | null;
+  risk_tolerance?: string | null;
+  channels_ready?: string[] | null;
+  market_locale?: string | null;
 };
 
 /** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
- *  address and the two V11/W4 sender-identity fields (booleans ride `Switch`, the night
- *  hour/limit ride `RadioList` — not text drafts). */
+ *  address, the two V11/W4 sender-identity fields, and (V15/W1, 4-06) the seven owner-profile
+ *  drafts: five free-text fields, the two numerics (text boxes with numeric validation, like the
+ *  morning hour) and the comma-separated `channels_ready` list. Booleans ride `Switch`, the
+ *  night hour/limit ride `RadioList` — not drafts. */
 export type SettingsFieldKey =
   | "name"
   | "mission"
@@ -86,7 +109,14 @@ export type SettingsFieldKey =
   | "daily_cycle_hour"
   | "notification_email"
   | "sender_legal_name"
-  | "sender_postal_address";
+  | "sender_postal_address"
+  | "owner_skills"
+  | "owner_hours_per_week"
+  | "owner_budget_usd"
+  | "owner_goal"
+  | "risk_tolerance"
+  | "channels_ready"
+  | "market_locale";
 
 /** One rendered field: the wire key, the uppercase-voice label, and optional helper copy in the
  *  live modal's convention (DOSSIER §2.2/§2.3: small uppercase copy directly under its field). */
@@ -111,7 +141,9 @@ function errorText(e: unknown): string {
 
 /** The twelve text fields this form owns (render order is per panel: COMPANY/SCHEDULER/EMAIL
  *  field lists below; this master list drives drafts + the changed-field computation). V11/W4
- *  added the two sender-identity fields (B13) — they ride the identical only-changed-keys PUT. */
+ *  added the two sender-identity fields (B13) — they ride the identical only-changed-keys PUT.
+ *  V15/W1 (4-06) appends the seven owner-profile drafts (`OWNER_FIELD_KEYS`, rendered by
+ *  `OwnerProfileSection` inside the COMPANY panel) — same drafts machinery, same PUT. */
 const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "name",
   "industry",
@@ -127,6 +159,7 @@ const FIELD_KEYS: readonly SettingsFieldKey[] = [
   "timezone",
   "daily_cycle_hour",
   "notification_email",
+  ...OWNER_FIELD_KEYS,
 ];
 
 /** The six booleans this form sends (Switch-controlled; never stringified on the wire).
@@ -217,6 +250,15 @@ function draftsFrom(config: SettingsConfig): Drafts {
     // A wire payload can carry an ABSENT key (the type says null, the runtime decides): absent and
     // null both render as an empty box — never the literal string "undefined" or "null".
     const value = config[key] as unknown;
+    if (key === "channels_ready") {
+      // V15/W1 (4-06): the wire shape is a real list; the box edits it comma-separated. A
+      // non-list (absent, null, a hostile payload) reads as "nothing marked ready" — never
+      // `String([...])` noise and never a crash.
+      drafts[key] = Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string").join(", ")
+        : "";
+      continue;
+    }
     drafts[key] = value === null || value === undefined ? "" : String(value);
   }
   return drafts;
@@ -261,10 +303,46 @@ function hourIssue(draft: string): string | null {
   return null;
 }
 
+/** V15/W1 (4-06): the owner numerics ride text drafts like the hour box. `null` = saveable; a
+ *  cleared box is "no value" (JSON null), and NON-NUMERIC text is refused by name BEFORE the PUT —
+ *  `Number("twelve")` is NaN, which `JSON.stringify` would silently turn into null, and an honest
+ *  edit must never become a silent clear. Range stays server-enforced (no invented bounds). The
+ *  `OWNER_NUMERIC_KEYS` list itself lives in `components/settings/OwnerProfileSection.tsx` — a
+ *  page module may not carry value exports (Next page-export validator). */
+function ownerIssue(key: SettingsFieldKey, draft: string): string | null {
+  const raw = draft.trim();
+  if (raw === "") return null; // cleared box = "not set" (server stores NULL / ''), never 0
+  if (key === "owner_hours_per_week") {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+      return "Enter a whole number of hours (for example 20), or clear the box for no value.";
+    }
+  }
+  if (key === "owner_budget_usd") {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      return "Enter a number for the budget (digits and an optional decimal point — no thousands separator), or clear the box for no value.";
+    }
+  }
+  return null;
+}
+
+/** The owner-field issue map the section renders — computed from the SAME drafts the save guard
+ *  reads, so the message on screen and the disabled Save button can never disagree. */
+function ownerIssuesFrom(drafts: Drafts): Record<OwnerFieldKey, string | null> {
+  const issues = {} as Record<OwnerFieldKey, string | null>;
+  for (const key of OWNER_FIELD_KEYS) issues[key] = ownerIssue(key, drafts[key]);
+  return issues;
+}
+
 /** Exactly the fields the operator CHANGED. Untouched fields are not sent, so a stored NULL is never
  *  rewritten as ""; the morning hour is transmitted as a number, or as JSON null when the box was
  *  cleared. Booleans leave as JSON booleans and the night-task numbers as JSON numbers — the server
- *  validates every one of them (422 naming the field) and `exclude_unset` means only these keys land. */
+ *  validates every one of them (422 naming the field) and `exclude_unset` means only these keys land.
+ *
+ *  V15/W1 (4-06): the owner numerics follow the hour rule (cleared → JSON null; NEVER 0), the owner
+ *  free-text fields leave as strings with '' as the canonical "not set", and `channels_ready` is
+ *  parsed from the comma-separated draft into a REAL JSON list (blank → []). */
 function changedFields(
   drafts: Drafts,
   baseline: Drafts,
@@ -272,13 +350,18 @@ function changedFields(
   baseBools: Bools,
   night: NightDraft,
   baseNight: NightDraft,
-): Record<string, string | number | boolean | null> {
-  const body: Record<string, string | number | boolean | null> = {};
+): Record<string, string | number | boolean | null | string[]> {
+  const body: Record<string, string | number | boolean | null | string[]> = {};
   for (const key of FIELD_KEYS) {
     if (drafts[key] === baseline[key]) continue;
-    if (key === "daily_cycle_hour") {
+    if (key === "daily_cycle_hour" || OWNER_NUMERIC_KEYS.includes(key as OwnerFieldKey)) {
       const raw = drafts[key].trim();
       body[key] = raw === "" ? null : Number(raw);
+    } else if (key === "channels_ready") {
+      body[key] = drafts[key]
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item !== "");
     } else {
       body[key] = drafts[key];
     }
@@ -351,6 +434,11 @@ export default function SettingsPage() {
   }, []);
 
   const hourInvalid = drafts ? hourIssue(drafts.daily_cycle_hour) : null;
+  // V15/W1 (4-06): the owner-field issues — computed from the same drafts the save reads; any
+  // non-null issue disables Save so a NaN can never reach the PUT as a silent clear.
+  const ownerIssues = drafts ? ownerIssuesFrom(drafts) : null;
+  const ownerInvalid =
+    ownerIssues !== null && Object.values(ownerIssues).some((issue) => issue !== null);
   const dirty =
     drafts !== null &&
     baseline !== null &&
@@ -363,7 +451,13 @@ export default function SettingsPage() {
       night.hour !== baseNight.hour ||
       night.limit !== baseNight.limit);
   const canSave =
-    config !== null && drafts !== null && baseline !== null && dirty && !saving && !hourInvalid;
+    config !== null &&
+    drafts !== null &&
+    baseline !== null &&
+    dirty &&
+    !saving &&
+    !hourInvalid &&
+    !ownerInvalid;
 
   const save = async () => {
     if (
@@ -375,7 +469,8 @@ export default function SettingsPage() {
       !night ||
       !baseNight ||
       saving ||
-      hourInvalid
+      hourInvalid ||
+      ownerInvalid
     )
       return;
     const body = changedFields(drafts, baseline, bools, baseBools, night, baseNight);
@@ -541,6 +636,17 @@ export default function SettingsPage() {
               className="space-y-4"
             >
               {COMPANY_FIELDS.map((field) => fieldRow(field))}
+              {/* V15/W1 (4-06, #5): the owner-profile intake — page-owned drafts, riding the same
+                  one-PUT save; fires no request of its own. */}
+              <OwnerProfileSection
+                drafts={drafts}
+                issues={ownerIssues ?? {}}
+                onChange={(key, value) =>
+                  setDrafts((current) =>
+                    current === null ? current : { ...current, [key]: value },
+                  )
+                }
+              />
               {/* V8b/L3: the Pause/Resume Switch — the real dispatch gate (V8/C5). `checked` is
                   `dispatch_paused === true`; the save rides the same one-PUT boolean idiom as the
                   notify toggles above (only a CHANGED key leaves the form). */}

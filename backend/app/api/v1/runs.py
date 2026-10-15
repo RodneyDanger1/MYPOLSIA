@@ -80,6 +80,7 @@ import io
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -87,6 +88,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.params import StrictInstant
 from app.core.errors import E_VALIDATION, PolsiaError
 from app.services.run_service import RunFilters, RunRowData, export_runs, list_runs
 
@@ -242,8 +244,8 @@ async def list_runs_route(
     task_id: int | None = Query(None),
     agent_type: str | None = Query(None),
     status: str | None = Query(None),
-    from_instant: datetime | None = Query(None, alias="from"),
-    to_instant: datetime | None = Query(None, alias="to"),
+    from_instant: Annotated[StrictInstant, Query(alias="from")] = None,
+    to_instant: Annotated[StrictInstant, Query(alias="to")] = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -264,8 +266,8 @@ async def export_runs_route(
     task_id: int | None = Query(None),
     agent_type: str | None = Query(None),
     status: str | None = Query(None),
-    from_instant: datetime | None = Query(None, alias="from"),
-    to_instant: datetime | None = Query(None, alias="to"),
+    from_instant: Annotated[StrictInstant, Query(alias="from")] = None,
+    to_instant: Annotated[StrictInstant, Query(alias="to")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """CSV/JSON export of the FULL filtered row set (B8: row count == the same filter's total)."""

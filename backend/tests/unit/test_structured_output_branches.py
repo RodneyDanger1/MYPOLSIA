@@ -245,10 +245,27 @@ def test_envelope_needing_the_comma_repair_is_parsed_by_the_last_resort():
     assert extract_envelope('{"type":"result","subtype":"success",}')["type"] == "result"
 
 
+def _over_limit_nesting():
+    """A nested input that provably exceeds THIS platform's json nesting limit.
+
+    Windows' smaller C stack trips far earlier than Linux's 8MB one, so a fixed depth is
+    platform-tuned (CI failed where the local box passed); escalate until the platform's own
+    mechanism raises RecursionError.
+    """
+    depth = sys.getrecursionlimit() * 5
+    while depth <= 20_000_000:
+        deep = "[" * depth + "1" + "]" * depth
+        try:
+            json.loads(deep)
+        except RecursionError:
+            return deep
+        depth *= 2
+    raise AssertionError("this platform's json parser never raises RecursionError — adjust _over_limit_nesting")
+
+
 def test_deeply_nested_stdout_is_a_named_value_error_not_a_RecursionError():
     """RED (fix 6): json's decoder raises RecursionError (not JSONDecodeError) past the limit."""
-    depth = sys.getrecursionlimit() * 5
-    deep = "[" * depth + "1" + "]" * depth
+    deep = _over_limit_nesting()
     with pytest.raises(RecursionError):  # control: the input really is over the limit
         json.loads(deep)
     with pytest.raises(ValueError, match="no JSON object found"):
@@ -339,8 +356,7 @@ def test_text_extraction_of_a_bare_deep_enough_structure_still_works():
 
 def test_deeply_nested_result_text_is_a_named_failure_not_a_crash():
     """RED (fix 6): this raised RecursionError out of the extraction and out of resolve_output."""
-    depth = sys.getrecursionlimit() * 5
-    deep = "[" * depth + "1" + "]" * depth
+    deep = _over_limit_nesting()
     assert extract_json_from_text(deep) is None
     resolution = resolve_output(stdout=_env(result=deep), exit_code=0)
     assert resolution.ok is False
@@ -349,8 +365,7 @@ def test_deeply_nested_result_text_is_a_named_failure_not_a_crash():
 
 
 def test_deeply_nested_structured_output_payload_is_refused_by_name():
-    depth = sys.getrecursionlimit() * 5
-    deep_text = "[" * depth + "1" + "]" * depth
+    deep_text = _over_limit_nesting()
     resolution = resolve_output(stdout=_env(result=deep_text, structured_output=None), exit_code=0)
     assert resolution.code is FailureCode.STRUCTURED_OUTPUT_MISSING
 

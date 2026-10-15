@@ -322,7 +322,15 @@ class BasePolsiaAgent(ABC):
         memories: list[dict[str, Any]] | None = None,
         extra_context: str | None = None,
     ) -> AssembledContext:
-        """Assemble the prompt with budgets derived from `settings.planner_context_token_budget`."""
+        """Assemble the prompt with budgets derived from `settings.planner_context_token_budget`.
+
+        V15/4-05a (read leg): when the caller passes no `memories`, the worker-resolved list
+        under `context["memories"]` is used — the ONE seam every agent (and every
+        `collect_structured` call) picks the memories layer up through; an explicit argument
+        still WINS (it is an override, not a merge).
+        """
+        if memories is None:
+            memories = context_memories(context)
         layers = self.layers_for(task, context, memories=memories, extra_context=extra_context)
         budgets = budgets_for_total(settings.planner_context_token_budget)
         return assemble(layers, budgets=budgets, label=self.agent_type)
@@ -737,6 +745,23 @@ def task_title_terms(task: dict[str, Any]) -> list[str]:
     return [t for t in text.replace("/", " ").split() if len(t) > 3][:20]
 
 
+def context_memories(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The worker-resolved memories off `context["memories"]` (V15/4-05a read leg).
+
+    The worker owns the DB, so it resolves the agent-relevant memories
+    (`memory_service.resolve_agent_memories`) and hands them over under this ONE context key;
+    `assemble_prompt` reads them here, so every agent gets the volatile `memories` layer (with
+    `rank_memories` applied in `layers_for`) without each call site re-implementing the read.
+    A missing, non-list or junk-laden value degrades to `[]`/the dict entries only — "not
+    resolved" must never crash a run, and an empty list must never be confused with a failed
+    read (producers leave the key ABSENT on failure; see the worker's `_with_*` hooks).
+    """
+    raw = (context or {}).get("memories")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
 def _top_level_coercions(model: type[BaseModel]) -> dict[str, type]:
     """Which top-level scalars the deterministic repair may coerce ('42' -> 42).
 
@@ -772,6 +797,7 @@ __all__ = [
     "RUN_META_KEYS",
     "BasePolsiaAgent",
     "business_state_lines",
+    "context_memories",
     "is_mock_mode",
     "parse_json_object",
     "truthy",

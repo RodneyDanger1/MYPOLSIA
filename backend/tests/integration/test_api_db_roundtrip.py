@@ -1,10 +1,9 @@
 """Integration: full API request → real Postgres round-trip."""
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.mark.asyncio
 async def test_create_and_retrieve_task(int_client):
     auth = {"X-API-Key": "int-test-key"}
 
@@ -23,7 +22,6 @@ async def test_create_and_retrieve_task(int_client):
     assert resp2.json()["title"] == "Integration test task"
 
 
-@pytest.mark.asyncio
 async def test_config_round_trip(int_client):
 
     # Seed company

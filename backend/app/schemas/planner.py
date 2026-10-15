@@ -29,8 +29,27 @@ route's named 422 `E_VALIDATION` refusal, not a 502 schema-ladder failure.
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+
+
+def is_http_url(value: object) -> bool:
+    """2R-07 (V2 handoff): the ONE http(s)-scheme predicate for every ingested URL field.
+
+    The render guards shipped first (`safeHref`, the site-package `_website_line`); this is the
+    INGEST boundary: a `javascript:` / `data:` / `vbscript:` citation — and empty, relative or
+    non-http(s) schemes generally — is never a usable source. Used by `PlannerClaim`'s refusing
+    validator, `planner_service`'s claim-sanitize + fetched-URL legs, and
+    `agent_outputs.Competitor`'s provenance filter, so all three read the SAME rule.
+    """
+    if not isinstance(value, str):
+        return False
+    parts = urlsplit(value.strip())
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
 
 # ---------------------------------------------------------------------------
 # model-facing (the LLM's output, validated by the repair ladder)
@@ -103,6 +122,26 @@ class PlannerClaim(BaseModel):
     quote: str
     verified: bool
 
+    @field_validator("source_url")
+    @classmethod
+    def _source_url_must_be_http(cls, value: str) -> str:
+        """2R-07: refuse a non-http(s) citation BY NAME at the wire boundary (E_VALIDATION).
+
+        `verify_claims` already dropped anything that is not an absolute http(s) URL (it can
+        never be "fetched"), so a claim reaching this model carries a real citation or it does
+        not reach the response at all — this validator is the last, loudest layer: a fabricated
+        or hostile scheme must never ship inside a `verified: True` claim.
+        """
+        if not is_http_url(value):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"planner claim source_url must be an absolute http(s) URL (got {value!r}): "
+                "a non-http(s) citation can never be a verified source",
+                how_to_fix=ERROR_HINTS[E_VALIDATION],
+                context={"source_url": value},
+            )
+        return value
+
 
 class PlannerCandidate(BaseModel):
     """One proposed candidate in the frozen contract's exact field set (+ claims_unverified)."""
@@ -157,4 +196,5 @@ __all__ = [
     "ProposeResponse",
     "RubricScores",
     "StatusResponse",
+    "is_http_url",
 ]
