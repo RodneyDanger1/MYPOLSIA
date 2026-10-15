@@ -2,7 +2,9 @@
 
 Frozen semantics, each pinned by a test:
 
-  * POSIX hosts: any path passes through untouched, nothing logged;
+  * POSIX hosts: paths pass through untouched, nothing logged — EXCEPT the `/app` container
+    default when `/app` is absent (one WARNING, repo-anchored fallback; the CI unit-run class,
+    observed 2026-10-15 as PermissionError '/app' in GitHub backend-unit);
   * Windows + relative path: passes through untouched, nothing logged;
   * Windows + POSIX-absolute + `CHROMA_PERSIST_DIR` set in the process env: honored verbatim with
     one INFO — the explicit operator choice, and the exact contract `e2e/_sweep-fixtures.py`
@@ -78,14 +80,51 @@ def test_relative_path_passes_through_on_both_platforms(monkeypatch, caplog, nam
     assert not caplog.records, "a relative path is already unambiguous — nothing to log"
 
 
-def test_posix_host_posix_absolute_passes_through(monkeypatch, caplog):
+def test_posix_host_container_default_inside_container_passes_through(monkeypatch, caplog):
     _force(monkeypatch, name="posix", path="/app/data/chroma")
+    monkeypatch.setattr(chroma_client.os.path, "isdir", lambda p: True)  # /app present = the container
 
     with caplog.at_level(logging.INFO, logger="app.core.chroma_client"):
         resolved = chroma_client.resolve_persist_dir()
 
     assert resolved == "/app/data/chroma", "inside the container the POSIX path IS correct"
     assert not caplog.records, "no warning where there is no hazard"
+
+
+def test_posix_host_container_default_without_app_falls_back_and_warns(monkeypatch, tmp_path, caplog):
+    """CI class: `/app` absent outside the container -> repo-anchored dir, one WARNING.
+
+    Red leg: remove the isdir guard -> chroma's makedirs dies with PermissionError '/app'
+    (GitHub backend-unit, memory fold-back pin) -> this test fails -> restore -> green.
+    """
+    fallback = tmp_path / "backend" / "data" / "chroma"
+    monkeypatch.setattr(chroma_client, "_fallback_persist_dir", lambda: fallback)
+    _force(monkeypatch, name="posix", path="/app/data/chroma")
+    monkeypatch.setattr(chroma_client.os.path, "isdir", lambda p: False)  # /app absent
+
+    with caplog.at_level(logging.INFO, logger="app.core.chroma_client"):
+        resolved = chroma_client.resolve_persist_dir()
+
+    assert resolved == str(fallback), "outside the container the /app default must not survive"
+    assert fallback.is_dir(), "the resolved store is created on demand, as chroma would"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(warnings) == 1 and not infos, "exactly one WARNING, no INFO, on the hazard path"
+    text = warnings[0].getMessage()
+    assert "/app/data/chroma" in text and "CHROMA_PERSIST_DIR" in text, (
+        "the warning must name the configured path AND the override variable"
+    )
+
+
+def test_posix_host_explicit_env_beats_the_host_check(monkeypatch, caplog):
+    _force(monkeypatch, name="posix", path="/app/data/chroma", env_value="/app/data/chroma")
+    monkeypatch.setattr(chroma_client.os.path, "isdir", lambda p: False)
+
+    with caplog.at_level(logging.INFO, logger="app.core.chroma_client"):
+        resolved = chroma_client.resolve_persist_dir()
+
+    assert resolved == "/app/data/chroma", "an explicit operator choice is honored verbatim"
+    assert not caplog.records, "the INFO branch is Windows-only; POSIX needs no commentary"
 
 
 def test_posix_host_with_explicit_env_still_passes_through(monkeypatch, caplog):

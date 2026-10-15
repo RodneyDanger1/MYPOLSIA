@@ -35,11 +35,19 @@ def resolve_persist_dir(configured: str | None = None) -> str:
     `configured` defaults to `settings.chroma_persist_dir` (the consumer path; tests pass it
     directly).  Frozen semantics (registry D7):
 
-      * POSIX hosts, and relative paths on any host: unchanged, no log;
+      * POSIX hosts, relative paths on any host, and POSIX-absolute paths that are NOT the
+        container default: unchanged, no log;
+      * POSIX host + `/app`-prefixed default + `/app` ABSENT + `CHROMA_PERSIST_DIR` unset: the
+        container default cannot resolve outside the container — one WARNING, then resolve to
+        `<backend>/data/chroma` (the CI unit-run class; first observed as
+        `PermissionError: [Errno 13] '/app'` in GitHub backend-unit);
+      * POSIX host + `/app`-prefixed default + `/app` PRESENT (inside the container): verbatim,
+        no log;
       * Windows + POSIX-absolute + `CHROMA_PERSIST_DIR` present in the process environment: the
         operator's explicit choice — honored verbatim, one INFO.  docker-compose injects env_file
         into the container env (the image keeps `/app/data/chroma`), and e2e/_sweep-fixtures.py
         reads the same variable directly — this branch keeps that explicit-env contract intact;
+        (an explicit env ALSO wins over the POSIX host check above, on every platform);
       * Windows + POSIX-absolute + env unset: one WARNING naming the drive-relative hazard, then
         resolve to `<backend>/data/chroma` (created on demand, as chroma would create its store).
 
@@ -48,6 +56,27 @@ def resolve_persist_dir(configured: str | None = None) -> str:
     and a store written under a different cwd is invisible to the next run.
     """
     path = settings.chroma_persist_dir if configured is None else configured
+    # POSIX hosts: the `/app` default only resolves INSIDE the container, where /app exists.
+    # Outside it (CI unit runs, non-Docker dev) /app is absent — and / (or /app) is not writable,
+    # so chroma's makedirs died with PermissionError: [Errno 13] '/app' (first observed: GitHub
+    # backend-unit; the memory write leg then degraded to ok:false and the finance fold-back pin
+    # failed). Fall back to the repo-anchored dir unless the operator set CHROMA_PERSIST_DIR.
+    if (
+        os.name != "nt"
+        and str(path).startswith("/app")
+        and "CHROMA_PERSIST_DIR" not in os.environ
+        and not os.path.isdir("/app")
+    ):
+        fallback = _fallback_persist_dir()
+        logger.warning(
+            "chroma_persist_dir %r is the container default and /app does not exist on this "
+            "host — resolving to %r instead; set CHROMA_PERSIST_DIR explicitly to keep a "
+            "specific path.",
+            path,
+            str(fallback),
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        return str(fallback)
     if os.name != "nt" or not str(path).startswith("/"):
         return str(path)
     if "CHROMA_PERSIST_DIR" in os.environ:

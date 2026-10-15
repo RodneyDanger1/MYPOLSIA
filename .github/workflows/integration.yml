@@ -83,6 +83,15 @@ jobs:
           echo "api never became healthy" >&2
           ${COMPOSE} logs --tail=200
           exit 1
+      - name: Initialize the database (migrate + seed — same as make init-db)
+        # The stack boots with an EMPTY database.  Without this step every API route answers
+        # E_DB (relation does not exist) and all 20 e2e specs fail on empty reads — first real
+        # CI run, 2026-10-15.  Mirrors README quick-start step 3 / Makefile's migrate+seed.
+        env:
+          COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
+        run: |
+          ${COMPOSE} exec -T backend alembic upgrade head
+          ${COMPOSE} exec -T backend python scripts/seed_company.py
       - name: Playwright
         # FIXED (RD16 bug-sweep follow-up): the ci override no longer excludes nginx, so the
         # runner-side BASE_URL=http://localhost reaches the stack through the :80 mux (nginx ->
