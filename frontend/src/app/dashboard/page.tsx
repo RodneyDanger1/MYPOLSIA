@@ -12,6 +12,7 @@ import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
 import { WebsiteCard } from "@/components/dashboard/WebsiteCard";
+import { WidgetSlot, WidgetStack } from "@/components/dashboard/WidgetSlots";
 
 /**
  * The dashboard, rebuilt as the live product's region composition (agent1 dossier §1.3–1.8):
@@ -25,6 +26,13 @@ import { WebsiteCard } from "@/components/dashboard/WebsiteCard";
  *                   feed column at 2xl, the position the measured live anatomy puts the
  *                   composer under the feed rail (ui-gap §1.8); full-width at lg. No existing
  *                   region's content or order was touched.
+ *
+ * V12-G1 (the Edit Dashboard closer): the regions mount through `WidgetStack` /
+ * `WidgetSlot` (`components/dashboard/WidgetSlots.tsx`), which read the owner's
+ * layout from the browser-local store (`dashboardLayout.ts`). Show/hide and
+ * reorder happen in that store; a hidden widget is unmounted (it makes no
+ * request and cannot show a stale value). Defaults = this exact composition, so
+ * nothing moves until the owner edits it.
  *
  * The shell (`src/app/layout.tsx`: canvas, max width, page padding, topbar) is another lane's
  * file; this page only composes the regions inside it.
@@ -49,43 +57,54 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 2xl:grid-cols-[280px_minmax(0,1fr)_320px_340px]">
         <aside aria-label="Workspace status" className="space-y-6">
-          <PolsiaStatusCard />
-          {/* V7-T14: the Auto Mode controls sit directly under the status card — the real state
-              lives in GET/POST/DELETE /api/v1/auto-mode (the card above deliberately does not
-              duplicate it; see its comment). */}
-          <AutoModePanel />
-          <BusinessPanel />
-          {/* V8b-D2 (parent mount): the Website card — configured URL + measured health line. */}
-          <WebsiteCard />
+          <WidgetStack
+            area="left"
+            widgets={{
+              status: <PolsiaStatusCard />,
+              auto_mode: <AutoModePanel />,
+              business: <BusinessPanel />,
+              website: <WebsiteCard />,
+            }}
+          />
         </aside>
 
         <section aria-label="Tasks and reports" className="space-y-6">
-          <TasksPreview />
-          <DailyReportPanel />
-          {/* V8b/L3: the Media slot (live: middle column bottom) — the honest empty-state card, no dead IMAGE/VIDEO buttons. */}
-          <MediaCard />
+          <WidgetStack
+            area="middle"
+            widgets={{
+              tasks: <TasksPreview />,
+              documents: <DailyReportPanel />,
+              media: <MediaCard />,
+            }}
+          />
         </section>
 
         <section aria-label="Workspace widgets" className="space-y-6">
-          <SocialWidget />
-          <OutreachWidget />
-          <AdsWidget />
-          <CapsPanel />
+          <WidgetStack
+            area="right"
+            widgets={{
+              social: <SocialWidget />,
+              outreach: <OutreachWidget />,
+              ads: <AdsWidget />,
+              caps: <CapsPanel />,
+            }}
+          />
         </section>
 
-        <aside aria-label="Activity feed" className="h-[640px]">
+        <WidgetSlot id="activity" label="Activity feed" className="h-[640px]">
           <ActivityFeed />
-        </aside>
+        </WidgetSlot>
 
         {/* V8/C3: the chat rail is its own region (client component, mounted the way
             ActivityFeed is). At 2xl it takes the feed column's next row — the live anatomy
             puts the chat under the feed rail; at lg it runs full-width under the grid. */}
-        <aside
-          aria-label="Chat rail"
+        <WidgetSlot
+          id="chat"
+          label="Chat rail"
           className="h-[640px] lg:col-span-2 2xl:col-span-1 2xl:col-start-4"
         >
           <ChatRail />
-        </aside>
+        </WidgetSlot>
       </div>
     </div>
   );

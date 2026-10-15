@@ -643,7 +643,7 @@ describe("Bell — localStorage last-seen drives the NEW marker (activity-feed p
 });
 
 describe("Bell — placement in the topbar", () => {
-  it("keeps the bell's trigger identity and leaves the EDIT control untouched", async () => {
+  it("keeps the bell's trigger identity; EDIT opens the V12-G1 sheet", async () => {
     const user = userEvent.setup();
     mockApiGet.mockResolvedValue({ items: [], count: 0 });
 
@@ -658,7 +658,11 @@ describe("Bell — placement in the topbar", () => {
     expect(bell).toHaveAttribute("aria-expanded", "false");
     expect(bell).toHaveFocus();
 
+    // V12-G1: EDIT no longer refuses by name — it opens the real sheet, and
+    // Escape closes it without disturbing the bell that regained focus above.
     await user.click(screen.getByTestId("topbar-edit"));
-    expect(screen.getByText(/no API stores a dashboard layout/i)).toBeInTheDocument();
+    expect(screen.getByTestId("dashboard-editor")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("dashboard-editor")).toBeNull();
   });
 });

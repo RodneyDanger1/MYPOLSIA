@@ -1,11 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { Pencil } from "lucide-react";
 
+import { DashboardEditorSheet } from "@/components/dashboard/DashboardEditorSheet";
 import { MenuNav } from "@/components/layout/MenuNav";
 import { NotificationsBell } from "@/components/layout/NotificationsPanel";
-import { TopbarPopover } from "@/components/layout/TopbarPopover";
 
 /**
  * The app shell's control cluster.
@@ -22,10 +23,15 @@ import { TopbarPopover } from "@/components/layout/TopbarPopover";
  * failed / answered) in `NotificationsPanel.tsx`. Before that endpoint existed this
  * control refused with a named idle state; it no longer has anything to refuse.
  *
- * EDIT still refuses by name: the live `EDIT` opens the Edit Dashboard sheet, which
- * is not built yet, and no API stores a dashboard layout (`backend/app/schemas/
- * company.py` carries company fields only) — so it explains that rather than
- * opening a dead sheet.
+ * EDIT is real as of wave V12-G1: it opens the Edit Dashboard sheet
+ * (`components/dashboard/DashboardEditorSheet.tsx`) — per-widget show/hide,
+ * within-column reorder, and Restore default layout, the controls the live
+ * editor documents (help.polsia.com/add-dashboard-capabilities, fetched
+ * 2026-10-15). The layout persists browser-local (`dashboardLayout.ts`); no
+ * server API stores a dashboard layout yet, the sheet states that in its own
+ * copy, and server persistence is HANDOFF H1 of
+ * wave-v12/g1-product/GAP-LEDGER.md §6. Before this wave the button refused by
+ * name; it no longer has anything to refuse.
  */
 export function Topbar() {
   return (
@@ -42,23 +48,35 @@ export function Topbar() {
 
         <NotificationsBell />
 
-        <TopbarPopover
-          label="Edit dashboard"
-          testId="topbar-edit"
-          icon={<Pencil size={13} />}
-          text="Edit"
-          panelTitle="Edit Dashboard"
-          panelClassName="w-80"
-        >
-          <p>
-            The Edit Dashboard sheet does not exist yet, and no API stores a dashboard layout:
-            GET/PUT /api/v1/config carries company fields only. There is nothing to toggle here
-            yet.
-          </p>
-        </TopbarPopover>
+        <EditDashboardButton />
 
         <MenuNav />
       </div>
     </header>
+  );
+}
+
+/** EDIT — opens the real Edit Dashboard sheet (V12-G1). */
+function EditDashboardButton() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-bevel"
+        aria-label="Edit dashboard"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+        data-testid="topbar-edit"
+      >
+        <span aria-hidden="true" className="flex items-center">
+          <Pencil size={13} />
+        </span>
+        Edit
+      </button>
+      <DashboardEditorSheet open={open} onClose={() => setOpen(false)} />
+    </>
   );
 }

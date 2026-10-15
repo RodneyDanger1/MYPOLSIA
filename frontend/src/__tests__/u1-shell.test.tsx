@@ -106,11 +106,14 @@ describe("topbar control cluster", () => {
     );
   });
 
-  it("EDIT explains why the Edit Dashboard sheet cannot open yet", async () => {
+  it("EDIT opens the real Edit Dashboard sheet (V12-G1)", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
     await user.click(screen.getByTestId("topbar-edit"));
-    expect(screen.getByText(/no API stores a dashboard layout/i)).toBeInTheDocument();
+    const sheet = screen.getByTestId("dashboard-editor");
+    expect(sheet).toBeInTheDocument();
+    // The sheet states its persistence truth in its own copy (browser-local).
+    expect(screen.getByText(/saved in this browser only/i)).toBeInTheDocument();
   });
 
   it("keeps the app title in the shell", () => {
