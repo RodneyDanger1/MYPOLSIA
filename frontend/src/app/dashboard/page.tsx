@@ -8,6 +8,7 @@ import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
 import { MediaCard } from "@/components/dashboard/MediaCard";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
+import { PhoneCard } from "@/components/dashboard/PhoneCard";
 import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
@@ -64,6 +65,9 @@ export default function DashboardPage() {
               auto_mode: <AutoModePanel />,
               business: <BusinessPanel />,
               website: <WebsiteCard />,
+              // V16/W3: the phone-link card (H-P1 consumer) — mounted through the same layout
+              // store as every other left-rail widget (hide/reorder included).
+              phone: <PhoneCard />,
             }}
           />
         </aside>

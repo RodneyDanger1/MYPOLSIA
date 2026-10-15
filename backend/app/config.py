@@ -197,6 +197,14 @@ class Settings(BaseSettings):
     deepseek_reasoning_effort: str = "none"
     deepseek_timeout_seconds: int = 300
 
+    # --- phone link (wave V16, E5: the owner's phone, read-only) ---
+    # The Phone Link store directory (phone.db/calling.db/contacts.db — the Windows Phone Link
+    # app's database).  docker-compose bind-mounts it READ-ONLY at `/phone-link` and sets this to
+    # that path; empty means "resolve the measured Windows install path" (the GUID directory
+    # changes per install, so the default is a glob — `services/phone_link_service`).
+    # Reads only: nothing in this repository ever writes to the store.
+    phone_link_db_dir: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

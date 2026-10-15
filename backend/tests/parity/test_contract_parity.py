@@ -46,6 +46,14 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # app.routes as [GET] on this path (checked 2026-10-14). OLD surface had no caps route;
     # NEW pin added deliberately with the route.
     ("GET", "/api/v1/channels/caps"),
+    # wave V16 (E5/P-02, frozen H-P1): the owner's phone read surface.  Documented by
+    # app/api/v1/phone.py; routes verified live in app.routes as [GET] on these paths.  OLD
+    # surface had no phone routes; NEW pins added deliberately WITH the routes.
+    ("GET", "/api/v1/phone/summary"),
+    ("GET", "/api/v1/phone/messages"),
+    ("GET", "/api/v1/phone/calls"),
+    ("GET", "/api/v1/phone/codes"),
+    ("GET", "/api/v1/phone/export"),
     # wave V8 (C1): the owner <-> Polsia chat — documented by app/api/v1/chat.py and
     # app/schemas/chat.py; routes verified live in app.routes as [POST]/[POST]/[GET] (checked
     # 2026-10-14). OLD surface had no chat routes; NEW pins added deliberately.
@@ -124,6 +132,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # (documented by app/api/v1/support.py and tests/unit/api/test_support_inbox.py).
     ("POST", "/api/v1/support/inbox"),
     ("GET", "/api/v1/support/inbox"),
+    # wave V16 (E6/H-C1): the capability map — one derivation read live from AGENT_CAPABILITIES +
+    # tool_registry (documented by app/api/v1/ops.py and tests/unit/api/test_v16_ops_capabilities.py;
+    # verified live in app.routes as [GET]).  Count 65 -> 66 on /api/v1.
+    ("GET", "/api/v1/ops/capabilities"),
     # R22: the activity publish breaker's operator surface — read the counters, reset after an
     # incident (documented by app/api/v1/ops.py and tests/unit/api/test_r22_ops_events.py).
     ("GET", "/api/v1/ops/events/stats"),

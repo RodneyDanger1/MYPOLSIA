@@ -37,6 +37,9 @@ Rules for the plan:
 - Each task must be runnable by exactly one agent: orchestrator, business_planning,
   competitor_research, social_media, email_outreach, customer_support, ads_management,
   code_generation, finance.
+- A FLEET CAPABILITY MAP in your context lists each agent's permitted action classes, channels
+  and registry tools, derived live from the policy firewall: plan within it — never assign work
+  an agent's capabilities cannot carry out.
 - Set `depends_on` to the TITLES of tasks that must finish first (e.g. every customer-facing task
   depends on the morning research task). Use dependencies to express real ordering, not decoration.
 - `priority` 1 = do first, 5 = do last. Reserve 1 for the thing that unblocks the others.

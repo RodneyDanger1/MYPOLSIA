@@ -101,6 +101,12 @@ const RESPONSES: Record<string, unknown> = {
   "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
   "/config": { website_url: null },
   "/health": { status: "ok" },
+  // V16/W3: the Phone card (left rail) reads the H-P1 summary — envelope `{ok, data}` in the
+  // frozen shape; an unserved path would fail LOUDLY like any other.
+  "/phone/summary": {
+    ok: true,
+    data: { store_status: "ok", unread_total: 0, threads: [], missed_calls_today: [] },
+  },
 };
 
 beforeEach(() => {
@@ -143,7 +149,7 @@ describe("the dashboard at defaults", () => {
   it("mounts every widget in the shipped order and reads real backend paths", async () => {
     await renderApp();
 
-    expect(slotIds("Workspace status")).toEqual(["status", "auto_mode", "business", "website"]);
+    expect(slotIds("Workspace status")).toEqual(["status", "auto_mode", "business", "website", "phone"]);
     expect(slotIds("Tasks and reports")).toEqual(["tasks", "documents", "media"]);
     expect(slotIds("Workspace widgets")).toEqual(["social", "outreach", "ads", "caps"]);
     expect(screen.getByLabelText("Activity feed").getAttribute("data-widget-id")).toBe("activity");
@@ -161,8 +167,8 @@ describe("edit dashboard sheet", () => {
     await renderApp();
     const editor = openEditor();
 
-    expect(within(editor).getAllByRole("switch")).toHaveLength(13);
-    for (const label of ["Polsia status", "Auto Mode", "Business", "Website", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Activity feed", "Chat rail"]) {
+    expect(within(editor).getAllByRole("switch")).toHaveLength(14);
+    for (const label of ["Polsia status", "Auto Mode", "Business", "Website", "Phone", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Activity feed", "Chat rail"]) {
       expect(within(editor).getByText(label)).toBeInTheDocument();
     }
     // Just opened: nothing was hidden, the first item cannot move up.

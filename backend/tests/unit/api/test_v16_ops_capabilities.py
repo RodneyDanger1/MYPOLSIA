@@ -1,0 +1,87 @@
+"""V16/E6 — GET /api/v1/ops/capabilities (frozen interface H-C1).
+
+The endpoint is the READ-ONLY operator/frontend surface of the capability-visibility family:
+every agent's REAL tools (name + the registry's own description), action classes and channels,
+plus the registry tool catalog — DERIVED at request time from `policy_firewall.AGENT_CAPABILITIES`
+and `tool_registry` (never hand-copied; `app/services/capability_manifest.py`).  This file pins
+the wire contract byte-for-byte against an INDEPENDENT reconstruction from the two sources, so
+the endpoint cannot silently diverge from the registry the agents actually execute against.
+"""
+from __future__ import annotations
+
+import pytest
+
+from app.agents import policy_firewall as pf
+from app.agents import tool_registry
+
+
+def _spec_description(name: str) -> str:
+    return next(
+        spec["function"]["description"]
+        for spec in tool_registry.TOOL_SPECS
+        if spec["function"]["name"] == name
+    )
+
+
+def _expected_payload() -> dict:
+    """H-C1 rebuilt from the two sources HERE — not by calling the service under test."""
+    agents = []
+    for agent_type in sorted(pf.AGENT_CAPABILITIES):
+        cap = pf.AGENT_CAPABILITIES[agent_type]
+        agents.append(
+            {
+                "agent_type": agent_type,
+                "tools": [
+                    {"name": name, "description": _spec_description(name)}
+                    for name in cap.agent_tools
+                ],
+                "action_classes": sorted(str(c) for c in cap.action_classes),
+                "channels": list(cap.channels),
+            }
+        )
+    registry_tools = [
+        {"name": spec["function"]["name"], "description": spec["function"]["description"]}
+        for spec in sorted(tool_registry.TOOL_SPECS, key=lambda s: s["function"]["name"])
+    ]
+    return {"agents": agents, "registry_tools": registry_tools}
+
+
+@pytest.mark.asyncio
+async def test_requires_the_owner_key(api_client):
+    resp = await api_client.get("/api/v1/ops/capabilities")
+    assert resp.status_code == 401
+    body = resp.json()
+    assert body["ok"] is False and body["error"]["code"] == "E_AUTH"
+
+
+@pytest.mark.asyncio
+async def test_payload_is_derived_from_the_two_registries(api_client, auth_headers):
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == _expected_payload()
+
+
+@pytest.mark.asyncio
+async def test_payload_shape_is_exactly_the_frozen_one(api_client, auth_headers):
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    data = resp.json()
+    assert set(data) == {"agents", "registry_tools"}
+    for row in data["agents"]:
+        assert set(row) == {"agent_type", "tools", "action_classes", "channels"}, row
+        for tool in row["tools"]:
+            assert set(tool) == {"name", "description"}
+    for tool in data["registry_tools"]:
+        assert set(tool) == {"name", "description"}
+    assert {"orchestrator", "company_planner", "finance",
+            "competitor_research"} <= {row["agent_type"] for row in data["agents"]}
+
+
+@pytest.mark.asyncio
+async def test_finance_tools_carry_the_registry_descriptions(api_client, auth_headers):
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    finance = next(r for r in resp.json()["agents"] if r["agent_type"] == "finance")
+    assert finance["tools"] == [
+        {"name": "macro_snapshot", "description": _spec_description("macro_snapshot")},
+        {"name": "pricing_catalog", "description": _spec_description("pricing_catalog")},
+    ]
+    assert finance["channels"] == ["stripe"]

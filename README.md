@@ -2,6 +2,55 @@
 
 An autonomous multi-agent system that runs your business on autopilot. Nine specialized AI agents handle social media, competitor research, email outreach, ads management, customer support, code generation, business planning, finance, and orchestration — on a DeepSeek-first runtime (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored server-side) with the Claude Code CLI as a fallback.
 
+**Start here:** [USAGE.md](USAGE.md) — the operator's guide: what MYPOLSIA is, the first-run
+checklist, and how to work each feature day-to-day. [DEPENDENCIES.md](DEPENDENCIES.md) — install.
+Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NEXTSTEPS.md](NEXTSTEPS.md).
+
+## What this is, in one screen
+
+- **The fleet** — an orchestrator (tool-less planner: your morning plan + evening summary) plus eight
+  specialist agents, all on a **DeepSeek-first runtime** (key entered in the app, stored
+  server-side) with the Claude Code CLI as fallback. Every external action passes a policy
+  firewall: sandbox labeling, per-channel send caps, cost budgets, an approval flow, and a
+  kill switch.
+- **The day** — the morning cycle (your company-local hour) has the orchestrator write the plan,
+  materialises the tasks it returns, and files it in the dashboard's Daily Report; the evening
+  cycle files the day's summary. Tasks, approvals, runs and phone events stream into the live
+  Activity feed; the chat rail talks to the orchestrator.
+- **The rule** — nothing fakes anything: a sandboxed action is a labelled draft, an unmeasured
+  value is `null` (not 0), and a missing credential is a refusal **by name** with the fix in it.
+
+## Feature tour
+
+| Surface | Route | What you do there |
+|---|---|---|
+| **Dashboard** | `/dashboard` | Morning plan + Daily Report, live Activity feed, chat rail, Auto Mode, send-caps counter; widgets show/hide/reorder |
+| **Agents** | `/agents` | Fleet status; run a single agent on demand |
+| **Tasks** | `/tasks` | The work queue — filter, open a task (deep-links `/tasks/{id}`), run or approve parked rows |
+| **Planner** | `/planner` | Propose/confirm the business plan (sourced claims verified) |
+| **Schedules** | `/schedules` | Recurring task prompts (15-minute cadence, company-local, DST-safe) |
+| **Social** | `/social` | Post drafting/publishing + mention replies (really threaded) |
+| **Outreach** | `/outreach` | Prospects + compliance-gated cold email with follow-up sweep |
+| **Support** | `/support` | The inbox mirror; draft/send replies through the one compliance bridge |
+| **Ads** | `/ads` | Campaigns + metrics (ads↔Stripe sync every 6 h) |
+| **Finance** | `/finance` | Revenue/expenses/invoices KPIs (`null` when never measured) |
+| **Invoices** | `/invoices` | Create → send → void, with the dunning ladder and amount-gated emails |
+| **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
+| **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
+| **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
+| **Phone** | `/phone` | *Shipping in this wave (V16)* — read-only texts/calls/codes + archive download; see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Capabilities** | `/capabilities` | *Shipping in this wave (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
+
+## How to use it
+
+1. **Install** — Windows + WSL2 + Docker Desktop + Make, then clone: [DEPENDENCIES.md](DEPENDENCIES.md).
+2. **Boot** — `cp .env.example .env` (set `API_KEY`, keep `SANDBOX_MODE=true`), `docker compose up -d`,
+   `make init-db`, open `http://localhost`. Details: [Quick Start](#quick-start) below.
+3. **First-run checklist** — env → stack → health → Settings (company profile, sender identity,
+   owner profile, DeepSeek key): [USAGE.md §3](USAGE.md).
+4. **Work it** — morning plan → approvals → activity feed → the surfaces above, feature by
+   feature: [USAGE.md §4](USAGE.md).
+
 ## Architecture
 
 ```
@@ -81,6 +130,9 @@ open http://localhost
 ```
 
 The stack is up when `http://localhost/api/v1/health` returns `{"status": "ok"}`.
+
+Then walk the first-run checklist — company profile, sender identity, owner profile, DeepSeek key:
+[USAGE.md §3](USAGE.md).
 
 ## Configuration
 
@@ -303,16 +355,21 @@ polsia/
 │       └── integration/     # Testcontainers (real Postgres + Redis)
 ├── frontend/
 │   └── src/
-│       ├── app/             # Next.js 14 pages (FOURTEEN routes)
+│       ├── app/             # Next.js 14 pages (15 nav routes incl. /phone; the /capabilities
+│       │                    # page ships with wave V16, linked from Settings)
 │       ├── components/      # ActivityFeed, MetricsCard, AgentStatusGrid, Sidebar
 │       ├── hooks/           # useActivityFeed (WebSocket), useAgentStatus (polling)
 │       └── lib/             # Typed API client
 ├── e2e/                     # Playwright end-to-end tests
 ├── nginx/                   # Reverse proxy config
-├── scripts/                 # init_db.sh, seed_company.py
+├── scripts/                 # init_db.sh, seed_company.py, backup.sh
 ├── docker-compose.yml
 ├── docker-compose.ci.yml    # CI override (CLAUDE_CLI_MOCK=true, no nginx)
-└── Makefile
+├── Makefile
+├── USAGE.md                 # operator's guide (what it is / first run / day-to-day)
+├── DEPENDENCIES.md          # install guide (WSL2 → Docker → Make)
+├── RELEASE-CHECKLIST.md     # the "is it ready" pass
+└── NEXTSTEPS.md             # living done/next map (PHONELINK-MCP-TEST.md: phone status)
 ```
 
 ## Volumes & Backup (five volumes, one command)

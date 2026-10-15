@@ -57,6 +57,10 @@ TASK_MODULES = (
     "celery_app.tasks.followups",
     # V9/B4 (parent settle): the invoice dunning ladder — same registry requirement.
     "celery_app.tasks.dunning",
+    # V16/E5 (P-03): the phone activity tick — same registry requirement (without this line the
+    # beat tick arrives at a worker process as an unregistered task and the phone is invisible to
+    # the orchestrator, which is the whole point of the item).
+    "celery_app.tasks.phone_activity",
 )
 imports = TASK_MODULES
 include = TASK_MODULES

@@ -8,6 +8,13 @@ null-honest.
 `SANDBOX_MODE` flag. The shipped default is sandboxed and until this route nothing outside the
 process could say so — the UI showed an apparently-broken product with no explanation.
 
+...plus GET /api/v1/ops/capabilities (V16/E6, frozen interface H-C1): every agent's REAL
+capability surface — registry tools (name + the registry's own description), permitted action
+classes and external channels — DERIVED at request time from `policy_firewall.AGENT_CAPABILITIES`
++ `tool_registry` through `app.services.capability_manifest` (never hand-copied). The same
+derivation renders the agents' own context blocks and the orchestrator's fleet map, so this
+surface cannot disagree with what the runtime enforces or with what agents are told.
+
 WHY this file exists: `events.publish_stats()` and `reset_publish_breaker()` shipped with the
 activity circuit breaker (the "a skip is never silent" contract, `app/core/events.py:44-61`) and
 had ZERO production callers — the counters and the recovery lever were reachable only from tests.
@@ -37,6 +44,7 @@ from app.config import settings
 from app.core import events
 from app.core.timeutil import day_window, today_in
 from app.models.task import AgentRun
+from app.services import capability_manifest
 from app.services.query_helpers import fetch_rows
 
 router = APIRouter(prefix="/ops", tags=["ops"], dependencies=[Depends(verify_api_key)])
@@ -154,3 +162,20 @@ async def agent_quality(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     with refusal_guard():
         rows = await _agent_quality_rows(db)
     return {"agents": rows}
+
+
+# ── GET /ops/capabilities (V16/E6, frozen interface H-C1) ─────────────────────────────────────
+
+
+@router.get("/capabilities")
+async def read_capabilities() -> dict[str, Any]:
+    """Every agent's REAL capabilities + the registry tool catalog, derived at request time.
+
+    H-C1 (V16): `{agents: [{agent_type, tools: [{name, description}], action_classes, channels}],
+    registry_tools: [{name, description}]}` — derived from `policy_firewall.AGENT_CAPABILITIES`
+    and `tool_registry` through `app.services.capability_manifest` (never hand-copied). A registry
+    inconsistency (an allowlist naming a tool no spec ships) raises the service's named `E_CONFIG`
+    refusal through `refusal_guard` instead of fabricating a capability.
+    """
+    with refusal_guard():
+        return capability_manifest.capability_manifest()

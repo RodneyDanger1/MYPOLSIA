@@ -29,6 +29,7 @@ export type WidgetId =
   | "auto_mode"
   | "business"
   | "website"
+  | "phone"
   | "tasks"
   | "documents"
   | "media"
@@ -53,6 +54,11 @@ export const WIDGETS: readonly WidgetMeta[] = [
   { id: "auto_mode", area: "left", label: "Auto Mode" },
   { id: "business", area: "left", label: "Business" },
   { id: "website", area: "left", label: "Website" },
+  // V16/W3: the Phone card (the dashboard's H-P1 consumer — unread / newest threads / missed
+  // calls today, or the honest unavailable state). Appended after Website so the default reading
+  // order only grows; a saved arrangement from before this build keeps its order and gains the
+  // card at its default position (`areaOrder`).
+  { id: "phone", area: "left", label: "Phone" },
   { id: "tasks", area: "middle", label: "Tasks" },
   { id: "documents", area: "middle", label: "Documents" },
   { id: "media", area: "middle", label: "Media" },

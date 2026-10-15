@@ -46,12 +46,31 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # wave V16 (E5/P-01 wiring FIX, found in the live drill with the real store): the HOST path
+      # in .env drives the bind-mount SOURCE; inside the container the store is ALWAYS at the mount
+      # target /phone-link.  env_file injects PHONE_LINK_DB_DIR as the host path, so this line must
+      # override it — without the override the service looked for 'C:/Users/...' inside the Linux
+      # container and every phone route refused E_PHONE_UNAVAILABLE ("contacts.db is missing")
+      # despite a healthy mount.  (On beat this var is inert; set for env consistency.)
+      PHONE_LINK_DB_DIR: /phone-link
     volumes:
       # /app/data carries runtime state incl. the DeepSeek key store (DEEPSEEK_KEY_FILE default
       # data/deepseek_api_key.json); the chroma store nests under it (deepest path mounts last).
       - backend_data:/app/data
       - chroma_data:/app/data/chroma
       - ~/.claude:/root/.claude:ro
+      # wave V16 (E5/P-01): the Phone Link store — READ-ONLY (`read_only: true`; the service also
+      # opens every database with SQLite's `mode=ro`, so a write is refused by the store, not by
+      # discipline).  `PHONE_LINK_DB_DIR` is the HOST path to the Phone Link app's database
+      # directory (see .env.example; per-machine, hence env-driven); the container path is FIXED
+      # at /phone-link.  The default `/dev/null` is deliberate: a machine without Phone Link still
+      # brings the stack up unchanged, and the phone surface then refuses BY NAME
+      # (`E_PHONE_UNAVAILABLE`) instead of serving an empty inbox.  Long form on purpose — a
+      # Windows `C:\...` source contains a colon and the short `src:dst:ro` syntax mis-parses it.
+      - type: bind
+        source: ${PHONE_LINK_DB_DIR:-/dev/null}
+        target: /phone-link
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,12 +108,31 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # wave V16 (E5/P-01 wiring FIX, found in the live drill with the real store): the HOST path
+      # in .env drives the bind-mount SOURCE; inside the container the store is ALWAYS at the mount
+      # target /phone-link.  env_file injects PHONE_LINK_DB_DIR as the host path, so this line must
+      # override it — without the override the service looked for 'C:/Users/...' inside the Linux
+      # container and every phone route refused E_PHONE_UNAVAILABLE ("contacts.db is missing")
+      # despite a healthy mount.  (On beat this var is inert; set for env consistency.)
+      PHONE_LINK_DB_DIR: /phone-link
     volumes:
       # /app/data carries runtime state incl. the DeepSeek key store (DEEPSEEK_KEY_FILE default
       # data/deepseek_api_key.json); the chroma store nests under it (deepest path mounts last).
       - backend_data:/app/data
       - chroma_data:/app/data/chroma
       - ~/.claude:/root/.claude:ro
+      # wave V16 (E5/P-01): the Phone Link store — READ-ONLY (`read_only: true`; the service also
+      # opens every database with SQLite's `mode=ro`, so a write is refused by the store, not by
+      # discipline).  `PHONE_LINK_DB_DIR` is the HOST path to the Phone Link app's database
+      # directory (see .env.example; per-machine, hence env-driven); the container path is FIXED
+      # at /phone-link.  The default `/dev/null` is deliberate: a machine without Phone Link still
+      # brings the stack up unchanged, and the phone surface then refuses BY NAME
+      # (`E_PHONE_UNAVAILABLE`) instead of serving an empty inbox.  Long form on purpose — a
+      # Windows `C:\...` source contains a colon and the short `src:dst:ro` syntax mis-parses it.
+      - type: bind
+        source: ${PHONE_LINK_DB_DIR:-/dev/null}
+        target: /phone-link
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,6 +161,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # wave V16 (E5/P-01 wiring FIX, found in the live drill with the real store): the HOST path
+      # in .env drives the bind-mount SOURCE; inside the container the store is ALWAYS at the mount
+      # target /phone-link.  env_file injects PHONE_LINK_DB_DIR as the host path, so this line must
+      # override it — without the override the service looked for 'C:/Users/...' inside the Linux
+      # container and every phone route refused E_PHONE_UNAVAILABLE ("contacts.db is missing")
+      # despite a healthy mount.  (On beat this var is inert; set for env consistency.)
+      PHONE_LINK_DB_DIR: /phone-link
     volumes:
       - celery_beat_data:/app/celerybeat
       - ~/.claude:/root/.claude:ro

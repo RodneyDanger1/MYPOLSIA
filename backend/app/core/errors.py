@@ -52,6 +52,14 @@ E_TASK_CLAIMED = "E_TASK_CLAIMED"         # another worker holds a live claim
 E_TASK_NOT_RUNNABLE = "E_TASK_NOT_RUNNABLE"  # task is not in a runnable state
 E_INTEGRATION = "E_INTEGRATION"           # third-party integration failure
 
+# integrations / local stores (wave V16, E5)
+#: The Phone Link store (phone.db/calling.db/contacts.db) is not mounted, not readable, or no
+#: longer carries a column this build reads.  Raised by `services.phone_link_service` — the ONE
+#: code every phone route and the activity tick refuse with, so a consumer can branch on absence
+#: without parsing prose.  There is no degraded/empty mode: a phone surface with no store is a
+#: named refusal, never a fabricated empty inbox.
+E_PHONE_UNAVAILABLE = "E_PHONE_UNAVAILABLE"
+
 
 class PolsiaError(Exception):
     """A failure that names itself and says how to fix it.
@@ -116,6 +124,7 @@ ERROR_HINTS: dict[str, str] = {
     E_TASK_CLAIMED: "another worker owns it; wait for the lease to expire",
     E_TASK_NOT_RUNNABLE: "check tasks.status — only pending/queued rows can be claimed",
     E_INTEGRATION: "check the provider's credentials, quota and status page",
+    E_PHONE_UNAVAILABLE: "mount the Phone Link store read-only (PHONE_LINK_DB_DIR; compose binds it to /phone-link:ro) and start the Phone Link app so it keeps syncing",
 }
 
 # Which HTTP status a code means when it reaches the API boundary. Anything unlisted is a 500:
@@ -158,6 +167,10 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_AGENT_BAD_OUTPUT: 502,  # agent output failed schema validation — upstream fault
     E_INTEGRATION: 502,       # third-party integration failure — upstream fault
     E_PROMPT_TOO_LARGE: 413,  # the caller's prompt exceeds the argv limit — caller input
+    # wave V16 (E5): the Phone Link store is a LOCAL dependency this service reads.  Absent /
+    # half-mounted / schema-drifted, the API cannot answer — 503, the same class as E_REDIS and
+    # E_STORAGE ("this service cannot take the work right now"), never a 4xx that blames the caller.
+    E_PHONE_UNAVAILABLE: 503,
 }
 
 

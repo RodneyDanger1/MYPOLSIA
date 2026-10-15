@@ -38,6 +38,7 @@ from app.api.v1 import (
     notifications,
     ops,
     outreach,
+    phone,  # wave V16 (E5/P-02, frozen H-P1): the owner's phone — read-only /phone/* surface
     planner,
     pricing,
     schedules,
@@ -454,6 +455,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(ads.router)
     api_v1.include_router(support.router)   # R17: the customer-support inbox ingest (owner's API)
     api_v1.include_router(ops.router)       # R22: activity publish breaker stats + reset (owner)
+    api_v1.include_router(phone.router)     # wave V16 (E5/P-02): the owner's phone, read-only (frozen H-P1)
     api_v1.include_router(approvals.router)  # T02/D1: the approval-token mint (owner)
     api_v1.include_router(channels.router)   # wave U3 (H-01): per-channel send counters + caps (owner read)
     api_v1.include_router(auto_mode.router)  # wave U5 (P2/B22): the bounded Auto Mode window (start/status/stop, owner)

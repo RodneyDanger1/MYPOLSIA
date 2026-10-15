@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
+import { CapabilitiesSection } from "@/components/capabilities/CapabilitiesSection";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
@@ -744,6 +745,12 @@ export default function SettingsPage() {
       <DataSection />
       <PricingSection />
       <SitePackageSection />
+      {/* V16/W4 — the capabilities entry point (H-C1). A plain below-card link section, NOT a tab
+          and NOT a nav item this wave: the tab list is pinned at four by the u3/u7/u11 suites, and
+          the nav table belongs to another seat (the full minimal-noise decision is recorded in
+          `components/capabilities/CapabilitiesSection.tsx`). Fires NOTHING on mount — the pinned
+          "sections below the form card fire no request on mount" law. */}
+      <CapabilitiesSection />
     </div>
   );
 }

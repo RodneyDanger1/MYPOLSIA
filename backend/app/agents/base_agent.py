@@ -39,7 +39,13 @@ from typing import Any, get_args, get_origin
 from pydantic import BaseModel
 
 from app.agents import accounting, claude_cli, deepseek_runtime, structured_output
-from app.agents.context_assembler import AssembledContext, Layer, assemble, budgets_for_total
+from app.agents.context_assembler import (
+    DEFAULT_BUDGETS,
+    AssembledContext,
+    Layer,
+    assemble,
+    budgets_for_total,
+)
 from app.agents.policy_firewall import AGENT_CAPABILITIES, AgentCapability
 from app.config import settings
 from app.core.errors import E_AGENT_BAD_OUTPUT, ERROR_HINTS, PolsiaError
@@ -48,6 +54,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MOCK_RESPONSE = '{"result": "Mock Claude response for testing"}'
 TRUTHY = {"1", "true", "yes", "on", "t", "y"}
+
+#: V16/E6 — the per-layer weights `assemble_prompt` scales `settings.planner_context_token_budget`
+#: by. The capability manifest joined the `tool_doctrine` layer (it is derived RUNTIME TRUTH about
+#: what the agent can do — exactly the text that must never be the part of the prefix something
+#: cheaper pushed out), so tool_doctrine's share is raised 1200 -> 2000. The room comes from
+#: `memories`, a soft ranked layer whose overflow drops tail entries WITH a warning — the one
+#: degradation path the capability block must never take (a silently truncated capability map is
+#: the false-visibility class this wave exists to kill). The sum stays 25,800, so every other
+#: layer's ratio to the configured budget is unchanged.
+CONTEXT_LAYER_WEIGHTS: dict[str, int] = {**DEFAULT_BUDGETS, "tool_doctrine": 2000, "memories": 7200}
 
 #: The documented keys a finished run carries so the queue can write `agent_runs` columns.
 #: `agent_runs` (app/models/task.py:AgentRun) has exactly these accounting columns:
@@ -232,6 +248,25 @@ class BasePolsiaAgent(ABC):
             tools = ", ".join(self.capability.allowed_tools) or "none"
             tool_lines = [f"- Tools available to you: {tools}."]
             facts_line = "- Use tools for facts; never guess a metric you could have read."
+        # V16/E6 — the capability block: what THIS agent can really do (action classes, channels,
+        # and the registry tools with the registry's OWN descriptions), derived live from
+        # policy_firewall.AGENT_CAPABILITIES + tool_registry by app.services.capability_manifest.
+        # Imported inside the function for the same lazy-import discipline the registry import
+        # above follows. `tool_less` is exactly the "the registry tool loop is live" fact the
+        # block needs: under the CLI runtime it says the loop is absent instead of naming tools
+        # the run cannot call — the same honesty rule the tool_lines above already follow.
+        from app.services.capability_manifest import (
+            render_agent_capability_block,
+            render_fleet_capability_map,
+        )
+
+        capability_lines = [
+            render_agent_capability_block(self.agent_type, tools_callable=tool_less)
+        ]
+        if self.agent_type == "orchestrator":
+            # The planner routes work by what an agent can really do, so IT — and only it —
+            # additionally carries the full cross-agent map.
+            capability_lines.append(render_fleet_capability_map(tools_callable=tool_less))
         outcome_contract = self._outcome_contract()
 
         identity = "\n".join(filter(None, [
@@ -250,6 +285,7 @@ class BasePolsiaAgent(ABC):
             facts_line,
             "- Every externally visible action (post, email, ad change, payment, PR) is routed "
             "through the policy firewall; a refusal is final for this cycle.",
+            *capability_lines,
         ])
         company_text = "\n".join(filter(None, [
             f"NAME: {company.get('name') or 'Unknown'}",
@@ -332,7 +368,9 @@ class BasePolsiaAgent(ABC):
         if memories is None:
             memories = context_memories(context)
         layers = self.layers_for(task, context, memories=memories, extra_context=extra_context)
-        budgets = budgets_for_total(settings.planner_context_token_budget)
+        budgets = budgets_for_total(
+            settings.planner_context_token_budget, weights=CONTEXT_LAYER_WEIGHTS
+        )
         return assemble(layers, budgets=budgets, label=self.agent_type)
 
     def build_prompt(self, task: dict[str, Any], context: dict[str, Any]) -> str:

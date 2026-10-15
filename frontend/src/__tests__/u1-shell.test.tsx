@@ -61,6 +61,10 @@ const MENU_ROUTES = [
   "/social",
   "/outreach",
   "/support",
+  // V16/W3 moved this pin 14 -> 15 in the SAME commit that added the Phone route (the owner's
+  // phone-link surface sits with the comms cluster). The dropdown is generated from NAV_ITEMS,
+  // so the count here is a claim about the real table.
+  "/phone",
   "/ads",
   "/finance",
   "/invoices",
@@ -123,7 +127,7 @@ describe("topbar control cluster", () => {
 });
 
 describe("MENU nav dropdown", () => {
-  it("is collapsed until pressed, then carries all fourteen routes", async () => {
+  it("is collapsed until pressed, then carries all fifteen routes", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
 
@@ -136,7 +140,7 @@ describe("MENU nav dropdown", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const nav = screen.getByRole("navigation", { name: "Main" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(14);
+    expect(links).toHaveLength(15);
     expect(links.map((link) => link.getAttribute("href"))).toEqual([...MENU_ROUTES]);
     for (const item of NAV_ITEMS) {
       expect(within(nav).getByRole("link", { name: new RegExp(item.label, "i") })).toBeInTheDocument();
@@ -202,8 +206,8 @@ describe("MENU nav dropdown", () => {
     expect(nav).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: /dashboard/i })).toHaveFocus();
 
-    // Fourteen items, so fourteen tabs leave the panel (the pin moved with the nav table).
-    for (let i = 0; i < 14; i += 1) {
+    // Fifteen items, so fifteen tabs leave the panel (the pin moved with the nav table).
+    for (let i = 0; i < 15; i += 1) {
       await user.tab();
     }
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
@@ -428,7 +432,7 @@ describe("design tokens", () => {
 });
 
 describe("MenuNav standalone", () => {
-  it("renders the same fourteen routes as the shared nav table", async () => {
+  it("renders the same fifteen routes as the shared nav table", async () => {
     const user = userEvent.setup();
     render(<MenuNav />);
     await user.click(screen.getByTestId("nav-menu-trigger"));

@@ -18,7 +18,7 @@ code (`E_DEEPSEEK_KEY`):
     timing measurement), identical envelope — and the status equals the documented canonical value,
     so a move back to the old 500 fails by name;
   * the tables are ONE OBJECT (`deps.STATUS_BY_CODE is errors.HTTP_STATUS_BY_CODE`), so a future
-    code cannot be added to one side only; the exact 21-row census is pinned as a literal, so
+    code cannot be added to one side only; the exact 22-row census is pinned as a literal, so
     changing it is a deliberate act that updates the pin;
   * two REAL shipped pairs beyond the synthetic matrix: `E_DB` on `/api/v1/social/posts` (a broken
     read inside the route vs a `get_db` that refuses before it) and `E_AUTH` from both real raise
@@ -59,6 +59,7 @@ from app.core.errors import (
     E_DEEPSEEK_KEY,
     E_INTEGRATION,
     E_NOT_FOUND,
+    E_PHONE_UNAVAILABLE,
     E_POLICY_DENIED,
     E_PROMPT_TOO_LARGE,
     E_RATE_LIMITED,
@@ -122,6 +123,9 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     E_REDIS: 503,
     E_DB: 503,
     E_STORAGE: 503,
+    # wave V16 (E5/P-01): the Phone Link store absent/unmounted — the read surface refuses by
+    # name (503 + X-Polsia-Error-Code) instead of rendering an empty card.
+    E_PHONE_UNAVAILABLE: 503,
     E_CLI_MISSING: 503,
     E_CLI_TIMEOUT: 504,
     E_CLI_EXIT: 502,
@@ -220,7 +224,7 @@ def test_the_status_tables_are_one_object_not_two():
 
 
 def test_the_status_tables_agree_exactly_and_match_the_census():
-    """Equality both ways + the exact 21-row census: a code added to one side only fails here."""
+    """Equality both ways + the exact 22-row census: a code added to one side only fails here."""
     assert deps.STATUS_BY_CODE == errors.HTTP_STATUS_BY_CODE
     assert set(deps.STATUS_BY_CODE) == set(errors.HTTP_STATUS_BY_CODE)
     assert dict(errors.HTTP_STATUS_BY_CODE) == EXPECTED_STATUS_BY_CODE, (

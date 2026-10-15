@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-backend migrate seed test lint dev-backend dev-frontend dev-e2e backup restore
+.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore
 
 up:
 	docker-compose up -d

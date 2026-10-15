@@ -10,6 +10,7 @@ import {
   LifeBuoy,
   Mail,
   Megaphone,
+  Phone,
   Settings,
   Target,
   Twitter,
@@ -23,7 +24,7 @@ import type { LucideIcon } from "lucide-react";
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
  * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
  * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
- * count claim moves with the table (eleven -> fourteen), labels stay as short as the live
+ * count claim moves with the table (eleven -> fifteen), labels stay as short as the live
  * menu items.
  */
 export type NavItem = {
@@ -48,6 +49,9 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // V11 unit 2: the support inbox mirror (wiring audit F4) — the customer_support channel had no
   // in-app view until this wave.
   { href: "/support", label: "Support", icon: LifeBuoy },
+  // V16/W3: the owner's phone-link surface (the H-P1 read family: threads, messages, calls and
+  // the real export download) — sits with the comms cluster, after the support inbox.
+  { href: "/phone", label: "Phone", icon: Phone },
   { href: "/ads", label: "Ads", icon: Megaphone },
   { href: "/finance", label: "Finance", icon: DollarSign },
   // V11 unit 2: invoices + dunning are visible billing surfaces (wiring audit F2) — they shipped

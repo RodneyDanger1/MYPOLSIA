@@ -3,7 +3,8 @@
 This file is the complete, link-by-link setup guide. The short version: **MYPOLSIA runs as a Docker
 Compose stack** (backend + frontend + Postgres + Redis + workers + nginx), so on Windows the chain is
 **WSL2 → Docker Desktop → (GNU) Make → the stack**. Python/Node are only needed for running tests or
-developing outside Docker.
+developing outside Docker. Once it boots, the operator's guide is [USAGE.md](USAGE.md) and the
+readiness pass is [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md).
 
 ## 1) Required — core runtime
 
@@ -12,11 +13,11 @@ developing outside Docker.
 | 1 | **Windows 10/11 (x64)** with **virtualization enabled in BIOS** | host OS | — | `systeminfo` shows Hyper-V requirements met |
 | 2 | **WSL2** | Docker Desktop's backend on Windows | In an **admin** PowerShell: `wsl --install` then reboot ([guide](https://learn.microsoft.com/windows/wsl/install)) | `wsl --status` |
 | 3 | **Docker Desktop** (WSL2 backend) | runs the entire stack (`docker compose up`) | `winget install -e --id Docker.DockerDesktop` ([download](https://www.docker.com/products/docker-desktop/), [WSL2 backend docs](https://docs.docker.com/desktop/windows/wsl/)); after install: Settings → Resources → enable WSL integration | `docker --version` and `docker compose version` |
-| 4 | **GNU Make for Windows** | `make init-db`, `make test`, `make backup`, … | `winget install -e --id ezwinports.make` ([ezwinports](https://sourceforge.net/projects/ezwinports/)) — if `make` isn't on PATH, use its full path or run the underlying commands directly (see README §Make commands) | `make --version` (expect GNU Make 4.x) |
+| 4 | **GNU Make for Windows** | `make init-db`, `make test`, `make backup`, … | `winget install -e --id ezwinports.make` ([ezwinports](https://sourceforge.net/projects/ezwinports/)) — if `make` isn't on PATH, use its full path or run the underlying commands directly (see README §Make commands) | `make --version` (expect GNU Make 4.x); `make -n init-db` dry-runs a target without executing it |
 | 5 | **Git** | clone the repo | `winget install -e --id Git.Git` ([git-scm.com](https://git-scm.com/download/win)) | `git --version` |
 
 **Hardware minimums:** 8 GB RAM (16 GB comfortable), ~10 GB free disk for images + Postgres data,
-TCP port **80** free on localhost (nginx publishes it).
+TCP port **80** free on localhost — nginx publishes `127.0.0.1:80` (loopback only, never the LAN).
 
 ## 2) Required — to actually use the agents
 
@@ -32,6 +33,7 @@ TCP port **80** free on localhost (nginx publishes it).
 | **Python 3.12** | backend tests/dev without Docker | `winget install -e --id Python.Python.3.12` ([python.org](https://www.python.org/downloads/)) | `python --version` |
 | **Node.js ≥20** (≥22 recommended; **24 for CI parity**) | frontend dev; the Playwright E2E suite uses `node:sqlite` (Node ≥22) | `winget install -e --id OpenJS.NodeJS.LTS` ([nodejs.org](https://nodejs.org)) | `node --version` |
 | Docker running (from §1) | integration tests spin real Postgres/Redis via **testcontainers**; E2E starts the stack | — | `docker info` |
+| `check_deps.py` (repo root — no install) | audits what the build needs vs what your venv can import (stdlib import check) | — | run it with the repo venv: `.venv\Scripts\python.exe check_deps.py` → per-module OK/MISSING |
 
 ## 4) Optional — real integrations (all start in sandbox/test mode)
 
@@ -43,7 +45,7 @@ TCP port **80** free on localhost (nginx publishes it).
 | SendGrid | outreach email sending | [sendgrid.com](https://sendgrid.com) |
 | Google Ads API | ads management agent | [developers.google.com/google-ads](https://developers.google.com/google-ads/api/docs/get-started/introduction) |
 | Meta Marketing API | ads management agent | [developers.facebook.com/docs/marketing-apis](https://developers.facebook.com/docs/marketing-apis) |
-| **Windows Phone Link** | future "phone" features (Hermes-side bridge today — see `PHONELINK-MCP-TEST.md`) | built into Windows 10/11 |
+| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) **ships in wave V16** — see `PHONELINK-MCP-TEST.md` | built into Windows 10/11 |
 
 ## 5) First run (after §1–§2)
 
@@ -57,6 +59,9 @@ docker compose up -d
 make init-db
 # Open http://localhost  ·  health: http://localhost/api/v1/health → {"status":"ok"}
 ```
+
+First configuration (company profile, sender identity, owner profile, DeepSeek key) is the checklist
+in [USAGE.md](USAGE.md) §3; the day-to-day guide is §4 of the same file.
 
 ## 6) Verify the whole chain in 30 seconds
 
@@ -78,10 +83,15 @@ curl http://localhost/api/v1/health
 | integration tests skipped | testcontainers missing / Docker down | `uv pip install "testcontainers[postgres,redis]"`, start Docker |
 | Playwright `No such built-in module: node:sqlite` | Node < 22 | install Node ≥22 (`winget install -e --id OpenJS.NodeJS`) |
 | `npm ci` fails on a stale lockfile | lockfile drift | `npm install` (same fallback the CI uses) |
+| `/api/v1/phone/*` answers 503 `E_PHONE_UNAVAILABLE` | Phone Link store not mounted / empty (the V16 phone feature) | set `PHONE_LINK_DB_DIR` to the store root and `docker compose up -d`; keep the Phone Link app running for fresh sync (`PHONELINK-MCP-TEST.md`) |
 
 ## 8) CI parity (what GitHub Actions installs)
 
 `.github/workflows/` (ci.yml, integration.yml, docker-build.yml) install exactly the pinned versions in
-`backend/requirements-dev.txt` (pytest 9.1.1 · pytest-asyncio · ruff · mypy) on Python 3.12 + Node 24,
+`backend/requirements-dev.txt` (pytest 9.1.1 · pytest-asyncio 1.4.0 · ruff **0.17.0** · mypy 1.13.0 —
+the exact pins CI installs) on Python 3.12 + Node 24,
 and run: ruff+mypy, unit tests, testcontainers integration, Playwright E2E, and a full image build +
 health-checked stack boot. Local tools matching those pins = local results predict CI results.
+Local gates: `ruff check app/ celery_app/ tests/` is the **hard** lint gate (CI fails on it);
+`mypy app/` is the project's clean bar (CI keeps mypy advisory with `|| true` while the
+reconstruction settles).

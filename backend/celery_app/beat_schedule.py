@@ -191,4 +191,16 @@ beat_schedule = {
         "schedule": crontab(minute=0),
         "options": {"queue": "agents", "expires": 3600},
     },
+    # Every 5 min (wave V16 / E5, amendment P-03): the phone activity tick — "SMS received: <who>"
+    # and "Missed call: <who>" from the read-only Phone Link store into the SAME activity pub/sub
+    # the orchestrator and the dashboard feed read.  It is a MAINTENANCE poller, not agent work:
+    # `expires` (4 min) sits below the interval so a backlog collapses into the next tick (the T1
+    # sweep shape), the ≤5-minute cadence is the amendment's requirement, and the durable (kind,id)
+    # ledger makes a re-delivered tick a no-op.  An absent store is a NAMED no-op in the result
+    # (`E_PHONE_UNAVAILABLE`), never a crash-loop and never a fabricated event.
+    "phone-activity-tick": {
+        "task": "celery_app.tasks.phone_activity.publish_phone_activity",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "maintenance", "expires": 240},
+    },
 }

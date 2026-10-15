@@ -90,6 +90,18 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ops/agent-quality", ("GET",)),
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
+    # wave V16 (E6/H-C1): the capability map — ONE derivation read live from AGENT_CAPABILITIES +
+    # tool_registry (documented by app/api/v1/ops.py and tests/unit/api/test_v16_ops_capabilities.py).
+    # Documented /api/v1 count 65 -> 66; EXPECTED_ROUTES total 67 -> 68.
+    ("/api/v1/ops/capabilities", ("GET",)),
+    # wave V16 (E5/P-02, frozen H-P1): the owner's phone, read-only. OLD surface had no phone
+    # routes; NEW pins added deliberately WITH the routes. Every one is key-auth with the coded
+    # refusal `E_PHONE_UNAVAILABLE` (503) when the Phone Link store is not mounted.
+    ("/api/v1/phone/calls", ("GET",)),
+    ("/api/v1/phone/codes", ("GET",)),                            # key-only + activity_log audit row per call
+    ("/api/v1/phone/export", ("GET",)),                           # application/zip: messages.json + calls.csv + contacts.json
+    ("/api/v1/phone/messages", ("GET",)),
+    ("/api/v1/phone/summary", ("GET",)),
     ("/api/v1/ops/sandbox", ("GET",)),                           # V11 unit 2: read-only SANDBOX_MODE flag behind the UI banner; OLD surface had no sandbox route — NEW pin added deliberately with the route (parent-surgical)
     ("/api/v1/outreach/prospects", ("GET",)),
     # wave V11 (W1, audit B9/B10): the PUBLIC one-click opt-out a compliant footer links to —

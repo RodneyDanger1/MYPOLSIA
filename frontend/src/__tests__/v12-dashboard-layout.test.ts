@@ -32,7 +32,9 @@ describe("defaults", () => {
   it("starts fully visible in the shipped reading order", () => {
     const layout = getLayoutSnapshot();
     expect(layout.hidden).toEqual([]);
-    expect(areaOrder(layout, "left")).toEqual(["status", "auto_mode", "business", "website"]);
+    // V16/W3 moved this pin with the table: the Phone card (H-P1 consumer) appended to the left
+    // rail — the shipped order only grows.
+    expect(areaOrder(layout, "left")).toEqual(["status", "auto_mode", "business", "website", "phone"]);
     expect(areaOrder(layout, "middle")).toEqual(["tasks", "documents", "media"]);
     expect(areaOrder(layout, "right")).toEqual(["social", "outreach", "ads", "caps"]);
     expect(areaOrder(layout, "regions")).toEqual(["activity", "chat"]);
@@ -64,22 +66,27 @@ describe("moveWidget", () => {
   it("swaps within its own area only", () => {
     moveWidget("tasks", 1);
     expect(areaOrder(getLayoutSnapshot(), "middle")).toEqual(["documents", "tasks", "media"]);
+    // The left rail's shipped order (V16/W3: phone appended) is untouched by a middle-column move.
     expect(areaOrder(getLayoutSnapshot(), "left")).toEqual([
       "status",
       "auto_mode",
       "business",
       "website",
+      "phone",
     ]);
   });
 
   it("is a no-op at the bounds", () => {
     moveWidget("status", -1);
-    moveWidget("website", 1);
+    moveWidget("phone", 1);
+    // V16/W3: the bottom-bound probe moved website -> phone with the table — the LAST left-rail
+    // item is the one that cannot move down; website now has a neighbour below it.
     expect(areaOrder(getLayoutSnapshot(), "left")).toEqual([
       "status",
       "auto_mode",
       "business",
       "website",
+      "phone",
     ]);
   });
 });

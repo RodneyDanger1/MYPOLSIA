@@ -163,6 +163,12 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     // startsWith scan keeps resolving the deeper key first.
     "/config": { website_url: null },
     "/health": { status: "ok" },
+    // V16/W3: the Phone card (left rail) reads the H-P1 summary — envelope `{ok, data}`; an
+    // unserved path fails LOUDLY. Empty store = three measured zeros/empties, no alert.
+    "/phone/summary": {
+      ok: true,
+      data: { store_status: "ok", unread_total: 0, threads: [], missed_calls_today: [] },
+    },
     ...overrides,
   };
   mockGet.mockImplementation((path: string) => {
