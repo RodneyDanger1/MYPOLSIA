@@ -68,8 +68,13 @@ def test_the_eight_dead_functions_are_removed_everywhere():
 
 def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     assert set(social_service.__all__) == {"get_post", "list_posts", "record_published_posts"}
+    # V11/W1 (audit B9/B10): the compliance wiring added two REAL members to this surface —
+    # `compliance_preflight` (the worker-resolved preflight builder) and `unsubscribe_prospect`
+    # (the opt-out producer behind the public route). NEW pins added deliberately with them;
+    # nothing was removed.
     assert set(outreach_service.__all__) == {
-        "create_prospect", "list_prospects", "record_sent_emails"
+        "compliance_preflight", "create_prospect", "list_prospects", "record_sent_emails",
+        "unsubscribe_prospect"
     }
     # T02b (wave-W5) DELIBERATELY extended `task_service.__all__` with the approval-token
     # delivery pair — `attach_approval_token` (the re-queue write the mint route calls) and its

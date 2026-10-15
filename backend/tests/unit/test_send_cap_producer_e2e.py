@@ -40,9 +40,19 @@ from app.models.social import SocialPost
 from app.services import outreach_service, social_service
 from app.services.channel_service import channel_sends_snapshot
 
+#: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
+#: same `channel_sends` pattern (the worker owns the DB, the agent does not). A send without it
+#: (and with no database for the guarded sender to read) is REFUSED BY NAME, so every leg that
+#: expects a real provider send states the sender identity here. No assertion changed.
+_COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
+                          "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
+                          "website_url": "https://acme.example"},
+               "suppressed": []}
+
 # A fixed mid-day anchor, like test_channel_sends: the company-local day and the trailing hour are
 # both deterministic, and producer writes are pinned to it via the patched `utcnow`.
-NOW = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 12
+, 12, 0, 0, tzinfo=UTC)
 TWO_HOURS_AGO = NOW - timedelta(hours=2)     # inside the day window, outside the hour window
 
 
@@ -201,7 +211,7 @@ async def test_email_cap_fires_when_every_real_send_carries_the_providers_own_id
         snapshot = await channel_sends_snapshot(db, ["email"], now=NOW)
         assert snapshot["email"]["hour"] == i                 # the count climbs, send by send
         agent = _stub_collection(EmailOutreachAgent(), _email_payload(i))
-        out = agent.run({"title": "send"}, {"channel_sends": snapshot})
+        out = agent.run({"title": "send"}, {"channel_sends": snapshot, "compliance": _COMPLIANCE})
         email = out["emails"][0]
         assert email["status"] == "sent"
         assert email["sendgrid_id"] == fake.sent_message_ids[-1]   # the provider's OWN unique id
@@ -236,7 +246,7 @@ async def test_a_failed_send_adds_no_counted_row(async_db_session, monkeypatch):
     db = async_db_session
 
     agent = _stub_collection(EmailOutreachAgent(), _email_payload(0))
-    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}})
+    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}, "compliance": _COMPLIANCE})
     assert out["emails"][0]["status"] == "failed"
     assert [r["error"]["code"] for r in out["refusals"]] == ["E_INTEGRATION"]
 

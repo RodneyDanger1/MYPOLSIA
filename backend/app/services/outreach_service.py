@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -277,8 +277,82 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
     return report
 
 
+async def compliance_preflight(db: AsyncSession) -> dict[str, Any]:
+    """The compliance preflight an `email_outreach` run must carry (V11/W1 — the `channel_sends` shape).
+
+    WHY here: the agent holds no DB session, so the sender identity (the 0008 trio) and the
+    suppression state can only be resolved by the layer that owns the session.  The worker calls
+    this and puts the result on the run context under `compliance_send.PREFLIGHT_KEY`; the agent
+    then sends in the session-free mode of `send_compliant_email`.
+
+    Contains no secret: the identity trio is public mail metadata, and the suppression list is a set
+    of addresses the company must NOT mail.  `footer_for_company` runs first so the E_CONFIG refusal
+    (naming the missing fields) fires HERE, on the worker's session, with its own how_to_fix —
+    before any email is composed.
+    """
+    from app.services.company_service import get_company
+    from app.services.email_compliance import footer_for_company
+
+    company = await get_company(db)
+    footer_for_company(company)          # the identity gate, by name (E_CONFIG + missing fields)
+    suppressed = await fetch_scalars(
+        db,
+        select(Prospect.email).where(func.lower(Prospect.status) == "unsubscribed"),
+        what="suppressed prospect addresses",
+    )
+    return {
+        "company": {
+            "sender_legal_name": str(getattr(company, "sender_legal_name", "") or ""),
+            "sender_postal_address": str(getattr(company, "sender_postal_address", "") or ""),
+            "website_url": str(getattr(company, "website_url", "") or ""),
+        },
+        "suppressed": sorted({str(address).strip().lower() for address in suppressed if address}),
+    }
+
+
+async def unsubscribe_prospect(db: AsyncSession, address: str) -> dict[str, Any]:
+    """Record an opt-out: `prospects.status = "unsubscribed"`, durably (V11/W1 — audit B10).
+
+    The ONE producer of the state `email_compliance.send_compliant_email` refuses to send to.  It
+    works for an address whose row does not exist yet — `record_sent_emails` creates prospects as a
+    side effect of sends, so an opt-out can arrive while a send is still in flight — and refuses for
+    an address that cannot be one at all (E_VALIDATION, never a silent no-op).  `flush` only: the
+    caller commits, like every other writer in this module.
+    """
+    normalized = (address or "").strip()
+    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cannot record an opt-out for {address!r}: it is not a usable address",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"address": address},
+        )
+    prospect = await fetch_scalar(
+        db,
+        select(Prospect).where(func.lower(Prospect.email) == normalized.lower()),
+        what=f"prospect {normalized!r}",
+    )
+    created = prospect is None
+    was = None if prospect is None else prospect.status
+    if prospect is None:
+        prospect = Prospect(email=normalized, status="unsubscribed", source="unsubscribe-link")
+        db.add(prospect)
+    else:
+        prospect.status = "unsubscribed"
+    await db.flush()
+    return {
+        "address": prospect.email,
+        "status": "unsubscribed",
+        "created": created,
+        "was": was,
+        "already": was == "unsubscribed",
+    }
+
+
 __all__ = [
+    "compliance_preflight",
     "create_prospect",
     "list_prospects",
     "record_sent_emails",
+    "unsubscribe_prospect",
 ]

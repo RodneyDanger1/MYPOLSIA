@@ -8,10 +8,20 @@ Output (lane 05 `EmailOutreachOutput` + lane 03's `follow_ups_scheduled`): `{sum
 prospects[], emails[], follow_ups_scheduled}` — plus V9/B3's `follow_ups[]` (`FollowUpDraft`:
 prospect_email, step, due_in_days, angle), the chain the every-3h sweep fires.
 
+V11/W1 (audit B9): the send path IS the compliance path.  `run()` no longer calls
+`integrations.send_email`; a real send goes through
+`app.agents.email_outreach.compliance_send.send_outreach_email` ->
+`email_compliance.send_compliant_email`, which appends the footer (sender identity, postal
+address, this recipient's one-click opt-out link, the AI-assistance disclosure) and refuses —
+by name, before the provider is reached — an unconfigured sender identity (E_CONFIG naming the
+missing fields) or an opted-out address (E_POLICY_DENIED).  A compliance refusal lands on the
+run output as `status="failed"` plus a named `refusals[]` entry: never a silent drop.
+
 Sandbox semantics: while `SANDBOX_MODE=true` every send is REFUSED (`E_SANDBOX_BLOCKED`) and each
 email is recorded with `status="draft"` and `sendgrid_id=null` plus the `sandbox`/`drafted_not_sent`
 markers; the same is true for the un-subscribe-safe follow-up scheduling. Only an operator with
-`SANDBOX_MODE=false` reaches `integrations.send_email`, which either sends or refuses by name.
+`SANDBOX_MODE=false` reaches the guarded sender (`send_compliant_email`), which either sends
+a compliant message or refuses by name.
 
 Run-action semantics (L3-02): only `action="send"` attempts a send; `"find"` (prospects only),
 `"draft"` (emails written, nothing sent) and `"noop"` runs record every email as a labelled draft
@@ -23,8 +33,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agents import integrations
 from app.agents.base_agent import BasePolsiaAgent
+from app.agents.email_outreach.compliance_send import send_outreach_email
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import capped_item_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
@@ -48,8 +58,11 @@ Rules for emails (at most 10, one per prospect):
   your thoughts"). No "I hope this finds you well".
 - `subject`: 60 characters or fewer, lowercase, no emoji, no fake "Re:" — it must be true.
 - No false urgency, no invented results, no claims about the prospect you cannot see in the
-  context. Compliance matters: the legal footer is added for you when the mail really goes out,
-  and if the context shows no unsubscribe path, note it and do not send.
+  context. Compliance is enforced by the send path, not by you: every mail that really goes out
+  gets the legal footer — sender identity, postal address, a one-click unsubscribe link and an
+  AI-assistance disclosure — and a send is REFUSED by name when the sender identity is
+  unconfigured or the address has opted out. Never write a footer and never invent an
+  unsubscribe link; state in the body only what the context supports.
 - `sequence_step` is 1 for a first touch. Say in `follow_ups_scheduled` how many follow-ups this
   batch implies (0 when none).
 
@@ -134,9 +147,33 @@ class EmailOutreachAgent(BasePolsiaAgent):
                 continue
             receipt = side_effect_receipt(outcome, action=action, ref=to)
             if outcome.allowed:                                  # only outside sandbox
-                result = integrations.send_email(
-                    to=to, subject=str(email.get("subject") or ""), body=str(email.get("body") or "")
-                )
+                try:
+                    # V11/W1 (audit B9): the ONE send path. `send_compliant_email` composes the
+                    # footer with THIS recipient's opt-out link and refuses an unconfigured sender
+                    # identity / an opted-out address BEFORE the provider is reachable.
+                    result = send_outreach_email(
+                        to=to,
+                        subject=str(email.get("subject") or ""),
+                        body=str(email.get("body") or ""),
+                        context=context,
+                    )
+                except PolsiaError as exc:
+                    # A refusal is never silent: nothing was sent, and the reason (E_CONFIG naming
+                    # the missing identity fields, E_POLICY_DENIED for an opt-out, E_DB for an
+                    # unreadable database) is NAMED on the run output in the same shape the
+                    # provider refusals below use.
+                    email["status"] = "failed"
+                    payload.setdefault("refusals", []).append({
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            "how_to_fix": exc.how_to_fix,
+                            "context": exc.context,
+                        },
+                    })
+                    receipts.append(receipt)
+                    continue
                 receipt["integration"] = result
                 if result.get("ok"):
                     email["status"] = "sent"

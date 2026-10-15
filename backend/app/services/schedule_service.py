@@ -57,6 +57,11 @@ WEEKDAY_MIN, WEEKDAY_MAX = 0, 6
 _WEEKDAYS = frozenset({0, 1, 2, 3, 4})
 #: The fields a caller may change through `update_schedule` (the PATCH surface, frozen).
 UPDATABLE_FIELDS = frozenset({"name", "prompt", "cadence", "hour", "weekday", "enabled"})
+#: F4 (V11/W2): the SEMANTICS fields — a change touching one of these recomputes `next_run_at`.
+#: `name`/`prompt` are metadata: editing them leaves the pending instant EXACTLY as it was,
+#: including a consumed `once` row's None (the old `or next_run_at is None` clause re-armed
+#: spent one-shots on any edit, contradicting this module's own docstring).
+_SCHEDULE_SEMANTICS_FIELDS = frozenset({"cadence", "hour", "weekday", "enabled"})
 
 
 class ClaimedSchedule(NamedTuple):
@@ -253,7 +258,8 @@ async def update_schedule(
 
     The pause rule: disabling clears `next_run_at`; enabling recomputes it from the wall clock;
     changing cadence/hour/weekday on an enabled row recomputes it too (a name- or prompt-only edit
-    leaves the pending instant alone).  An unknown key is refused `E_VALIDATION` before the row is
+    leaves the pending instant alone — INCLUDING a consumed `once` row's None: only a semantics
+    field re-arms).  An unknown key is refused `E_VALIDATION` before the row is
     read; `weekday: null` clears the column (only legal for the cadences that do not use it).
     """
     unknown = set(changes) - UPDATABLE_FIELDS
@@ -275,7 +281,10 @@ async def update_schedule(
     for field, value in changes.items():
         setattr(row, field, value)
     if row.enabled:
-        if set(changes) & {"cadence", "hour", "weekday", "enabled"} or row.next_run_at is None:
+        # F4 (V11/W2): only a SEMANTICS change re-arms.  The removed `or row.next_run_at is None`
+        # fallback re-armed a consumed `once` schedule (tick-cleared None) on ANY edit, so a
+        # prompt tweak silently fired the one-shot again.
+        if set(changes) & _SCHEDULE_SEMANTICS_FIELDS:
             row.next_run_at = compute_next_run(
                 row.cadence, row.hour, row.weekday, now=now or now_utc(), tz=company_tz()
             )

@@ -35,6 +35,15 @@ from app.agents.side_effects import SideEffectOutcome
 from app.agents.social_media.agent import SocialMediaAgent
 from app.core.errors import E_POLICY_DENIED, E_RATE_LIMITED, PolsiaError
 
+#: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
+#: same `channel_sends` pattern (the worker owns the DB, the agent does not). A send without it
+#: (and with no database for the guarded sender to read) is REFUSED BY NAME, so every leg that
+#: expects a real provider send states the sender identity here. No assertion changed.
+_COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
+                          "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
+                          "website_url": "https://acme.example"},
+               "suppressed": []}
+
 # --------------------------------------------------------------------------- helpers
 
 
@@ -112,6 +121,7 @@ def test_social_noop_run_performs_no_external_action(monkeypatch):
 
 
 def test_email_find_run_sends_nothing(monkeypatch):
+
     """`action="find"` is prospects-only: the email is a labelled draft, SendGrid never called."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     sent: list[dict[str, Any]] = []
@@ -153,7 +163,9 @@ def test_email_send_action_still_sends(monkeypatch):
         "emails": [{"prospect_email": "ceo@example.com", "subject": "hi", "body": "b"}],
     })
 
-    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}})
+    out = agent.run({"title": "send"},
+                    {"channel_sends": {"email": {"today": 0, "hour": 0}},
+                     "compliance": _COMPLIANCE})
 
     assert sent == [{"to": "ceo@example.com"}]
     assert out["emails"][0]["status"] == "sent"

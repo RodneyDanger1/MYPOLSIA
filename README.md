@@ -37,6 +37,7 @@ An autonomous multi-agent system that runs your business on autopilot. Nine spec
 | **Code Generation** | Ship features, open PRs | On demand |
 | **Finance** | Stripe revenue sync, spend tracking | Every 6h |
 | **Maintenance** | Task-lease sweep — requeues tasks whose worker died mid-run | Every 5 min |
+| **Maintenance** | Stranded-pending reconciler — re-dispatches scheduler rows orphaned by a crash between commit and broker hand-off | Every 5 min |
 | **Maintenance** | Activity retention — deletes `activity_log` rows older than `activity_retention_days` (default 90) | Daily at 03:00 UTC |
 
 Each agent runs on the provider-selectable runtime: DeepSeek-first (V4.1 Flash via the OpenAI-compatible API — enter the key in Settings or the dashboard banner; it is stored at `backend/data/deepseek_api_key.json`, masked, and changeable) with the Claude Code CLI (`claude -p "..." --output-format json`) as the fallback, which needs no API key — it authenticates via OAuth stored at `~/.claude`.
@@ -95,8 +96,9 @@ Fill in the relevant sections of `.env` to activate each integration:
 - **SendGrid** — Send cold emails and support replies (wired); the support inbox is filled via the
   owner-authenticated `POST /api/v1/support/inbox` — there is no mail-poll (IMAP) setting
 - **Web search for competitor research** — no web-search key exists (the advertised-but-dead
-  settings were removed, D14): the agent reaches the web through the CLI's own WebSearch/WebFetch
-  tools
+  settings were removed, D14): under the CLI runtime the agent reaches the web through the CLI's
+  own WebSearch/WebFetch tools; the DeepSeek-first runtime cannot call tools yet (tool-calling
+  is deferred), so competitor research under it works from the prompt's context only
 - **Google Ads / Meta Ads** — Campaign management (advertised, not implemented:
   `GOOGLE_ADS_CLIENT_SECRET` is not read by any code path; the other Google Ads settings are)
 - **Stripe** — Revenue and expense tracking (`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`; there

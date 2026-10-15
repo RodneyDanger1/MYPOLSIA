@@ -37,6 +37,7 @@ from app.core.timeutil import day_window, today_in
 from app.models.company import CompanyConfig
 from app.models.report import DailyReport
 from app.models.task import Task
+from app.services import economics_service
 from app.services.query_helpers import fetch_rows, fetch_scalar
 
 NO_CONTEXT = "No company context available."
@@ -223,6 +224,10 @@ async def get_full_context(
         # confirmed yet; the key is ALWAYS present so planner-gated consumers (the morning
         # plan's "tie every task to a milestone in idea_brief" rule) read one stable shape.
         "idea_brief": company.confirmed_idea,
+        # V11/W2: the sourced macro snapshot (World Bank / FRED / frankfurter, cache-only via
+        # `economics_service`) — explicit ok/partial/unavailable with per-section reasons;
+        # never fabricated values.
+        "macro": economics_service.macro_snapshot(),
         "as_of": today_in(tz).isoformat(),
     }
 

@@ -91,6 +91,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
     ("/api/v1/outreach/prospects", ("GET",)),
+    # wave V11 (W1, audit B9/B10): the PUBLIC one-click opt-out a compliant footer links to —
+    # unauthenticated BY DESIGN (a recipient has no owner key), which is why the outreach router's
+    # auth moved to per-route (the finance/webhook precedent). NEW pin added with the route.
+    ("/api/v1/outreach/unsubscribe", ("GET",)),
     # wave V9 (B2, V9-D3): the DATED pricing-catalog snapshot read (provenance on the payload).
     # OLD surface had no pricing route — NEW pin added deliberately with the route. Owner-key.
     ("/api/v1/pricing", ("GET",)),

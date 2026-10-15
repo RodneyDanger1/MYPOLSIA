@@ -287,15 +287,51 @@ async def get_context() -> dict[str, Any]:
     return context
 
 
+#: The reason a snapshot cell carries when no FRESH payload exists in this process.
+SNAPSHOT_UNAVAILABLE_REASON = (
+    "no fresh macro snapshot in this process; GET /api/v1/economics refreshes the free-data sources"
+)
+
+
+def macro_snapshot() -> dict[str, Any]:
+    """The CURRENT cached macro snapshot for agent-context injection (V11/W2) — or an explicit
+    unavailable/degraded answer, never a fabricated value.
+
+    Cache-only by construction: `company_service.get_full_context` is a hot path and must not
+    pay network I/O (or hold a request open on a degraded source).  The payloads here are the
+    EXACT cached results of the free-data fetches (World Bank / FRED / frankfurter), each
+    stamped with its own `fetched_at` provenance; an EXPIRED payload reads as unavailable —
+    the same TTL rule as serving, so staleness is never silently presented as freshness.
+    """
+    snapshot: dict[str, Any] = {"status": "unavailable", "as_of": None}
+    present = 0
+    as_of: str | None = None
+    for name in _SECTION_FETCHERS:
+        payload = _cached_payload(name)
+        snapshot[name] = payload
+        snapshot[f"{name}_reason"] = None if payload is not None else SNAPSHOT_UNAVAILABLE_REASON
+        if payload is not None:
+            present += 1
+            stamp = payload.get("fetched_at")
+            if isinstance(stamp, str) and (as_of is None or stamp > as_of):
+                as_of = stamp
+    total = len(_SECTION_FETCHERS)
+    snapshot["status"] = "ok" if present == total else ("partial" if present else "unavailable")
+    snapshot["as_of"] = as_of
+    return snapshot
+
+
 __all__ = [
     "CACHE_TTL_SECONDS",
     "FRANKFURTER_LATEST_URL",
     "FRED_CPI_CSV_URL",
     "FX_CURRENCIES",
+    "SNAPSHOT_UNAVAILABLE_REASON",
     "SOURCE_TIMEOUT_SECONDS",
     "WORLD_BANK_INFLATION_URL",
     "MalformedSourcePayload",
     "SourceFetchError",
     "get_context",
+    "macro_snapshot",
     "now_utc",
 ]

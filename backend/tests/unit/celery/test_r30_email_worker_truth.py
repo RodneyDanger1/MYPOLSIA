@@ -78,6 +78,16 @@ class _FakeSendGrid:
         return fake
 
 
+#: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
+#: same `channel_sends` pattern (the worker owns the DB, the agent does not). The worker leg
+#: hands it through the context the run assembles, so the sends below are compliant like every
+#: other real send. No assertion changed.
+_COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
+                          "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
+                          "website_url": "https://acme.example"},
+               "suppressed": []}
+
+
 def _arm_email(monkeypatch, payload: dict[str, Any], *, send_ids: bool) -> _FakeSendGrid:
     """Real send path for the worker leg: no sandbox, configured provider, pinned clock."""
     monkeypatch.setattr(app_config.settings, "company_timezone", "UTC")
@@ -85,6 +95,18 @@ def _arm_email(monkeypatch, payload: dict[str, Any], *, send_ids: bool) -> _Fake
     monkeypatch.setattr(app_config.settings, "sendgrid_api_key", "SG.test-key")
     monkeypatch.setattr(app_config.settings, "sendgrid_from_email", "ops@example.com")
     monkeypatch.setattr("app.services.channel_service.now_utc", lambda: NOW)
+    # V11/W1: the compliance preflight rides the context the run assembles — exactly where the
+    # worker hook adds it next to `_with_channel_sends`. The real builder is still used.
+    from app.services.company_service import get_full_context as _real_full_context  # noqa: E501
+
+    async def _with_compliance(*args, **kwargs):
+        assembled = await _real_full_context(*args, **kwargs)
+        assembled["compliance"] = _COMPLIANCE
+        return assembled
+
+    # the worker resolves it at CALL time (`from app.services.company_service import
+    # get_full_context` inside `_execute_agent_task`), so this is the name to patch.
+    monkeypatch.setattr("app.services.company_service.get_full_context", _with_compliance)
     monkeypatch.setattr("app.services.outreach_service.utcnow", lambda: NOW)
     monkeypatch.setattr(
         EmailOutreachAgent,

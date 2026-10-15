@@ -38,7 +38,17 @@ from app.models.outreach import EmailLog, Prospect
 from app.services import outreach_service
 from app.services.channel_service import channel_sends_snapshot
 
+#: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
+#: same `channel_sends` pattern (the worker owns the DB, the agent does not). A send without it
+#: (and with no database for the guarded sender to read) is REFUSED BY NAME, so every leg that
+#: expects a real provider send states the sender identity here. No assertion changed.
+_COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
+                          "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
+                          "website_url": "https://acme.example"},
+               "suppressed": []}
+
 NOW = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -160,7 +170,7 @@ async def test_m3_two_sends_without_a_provider_id_are_zero_rows_and_both_gaps_na
     db = async_db_session
 
     agent = _stub_collection(EmailOutreachAgent(), _two_email_payload())
-    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}})
+    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}, "compliance": _COMPLIANCE})
 
     assert len(fake.sent_message_ids) == 2                        # two real provider sends happened
     assert [e["status"] for e in out["emails"]] == ["sent", "sent"]
@@ -186,7 +196,7 @@ async def test_m3_two_sends_with_real_distinct_ids_are_two_rows(async_db_session
     db = async_db_session
 
     agent = _stub_collection(EmailOutreachAgent(), _two_email_payload())
-    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}})
+    out = agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0, "hour": 0}}, "compliance": _COMPLIANCE})
 
     assert [e["sendgrid_id"] for e in out["emails"]] == fake.sent_message_ids == [
         "sg-msg-1", "sg-msg-2"]
@@ -288,7 +298,7 @@ async def test_producer_parity_email_outreach_and_customer_support_agree(
     """
     _arm(monkeypatch)
     db = async_db_session
-    caps = {"channel_sends": {"email": {"today": 0, "hour": 0}}}
+    caps = {"channel_sends": {"email": {"today": 0, "hour": 0}}, "compliance": _COMPLIANCE}
 
     # (a) both providers return a real per-message id
     fake = _FakeSendGrid(send_ids=True).install(monkeypatch)

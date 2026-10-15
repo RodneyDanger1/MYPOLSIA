@@ -82,6 +82,12 @@ async def _run_due_schedules() -> dict[str, Any]:
     # failed rows, never as a fake queue.
     if created_ids:
         await enqueue_created(created_ids, label="task cadence")
+        # F1 (V11/W2): stamp the `dispatched_at` marker the moment the broker ACCEPTED the
+        # rows — the stranded-pending reconciler (`maintenance`) uses it to tell "never handed
+        # off" (crash between commit and enqueue) from "handed off, then lost".
+        from celery_app.tasks.maintenance import mark_tasks_dispatched
+
+        await mark_tasks_dispatched(created_ids)
 
     result: dict[str, Any] = {
         "status": "completed" if claims else "no_due",

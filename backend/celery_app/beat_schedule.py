@@ -129,6 +129,15 @@ beat_schedule = {
         "schedule": 300.0,
         "options": {"queue": "maintenance", "expires": 240},
     },
+    # Every 5 min: re-dispatch stranded `pending` scheduler rows — a crash between a scheduler's
+    # commit and its broker hand-off otherwise orphans the row forever (V11/W2, audit F1). PARENT
+    # settle: appended per the stanza in `celery_app.tasks.maintenance`'s module docstring, with
+    # `options` mirrored from the lease sweep above (`expires` is required by the parity pin).
+    "reconcile-stranded-pending": {
+        "task": "celery_app.tasks.maintenance.reconcile_stranded_pending_tasks",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "maintenance", "expires": 240},
+    },
     # Every 15 min: is the activity publish breaker clean?  NEW entry — R22.  It exists because
     # `events.publish_stats()` had zero production readers: a Redis outage that silently skipped
     # activity publishes was counted but never SHOWN anywhere.  The tick writes the full stats

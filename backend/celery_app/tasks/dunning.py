@@ -13,11 +13,16 @@ EACH STEP AT MOST ONCE, **enforced column-free** — the plan's own ruling (froz
     "use activity rows as the ledger: send each step at most once by checking the
      activity/email_logs for that invoice+step — honest and column-free"
 
-So the ledger is activity rows with action `invoice_dunning`, keyed by
-`(detail.invoice_id, detail.step)`.  A step enters the ledger ONLY after a CONFIRMED provider
-delivery (the same "real send or named refusal" rule the send path keeps): a refused send
-consumes nothing and is retried on the next tick — the refusal is reported BY NAME in the tick
-result AND recorded as an `invoice_dunning_refused` activity row (never silent).
+The ledger is activity rows keyed by `(detail.invoice_id, detail.step)`.  F5 (V11/W2) made the
+consumption DURABLE across the send itself: the tick **CLAIMS before it SENDS** — it writes and
+COMMITS an `invoice_dunning_claim` row (state `pending`) first, so a crash between a confirmed
+delivery and the ledger write can never re-send a step (the claim blocks it; at-most-once is
+the chosen side of the trade — a lost reminder beats a duplicate ask).  After the delivery the
+claim is finalized (`state: sent` + message_id) and the delivered `invoice_dunning` row is
+written; a send REFUSED BY NAME releases the claim (`state: refused`) — a refusal consumes
+nothing and the step fires on a later tick (the V9 refusal contract, unchanged).  Claims still
+`pending` at a tick's start are NAMED in its result (`unfinalized_claims`) — a crash window is
+visible, never silent.
 
 Catch-up: a tick fires **the LATEST owed-and-unsent step, at most one per invoice** — no
 cascade of stale reminders.  Steps the tick supersedes that way are NAMED in the fired row's
@@ -53,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 #: The ledger action — one row per REALLY SENT step (the once-per-step enforcement).
 DUNNING_ACTION = "invoice_dunning"
+#: F5 (V11/W2): the pre-send CLAIM row — written and COMMITTED before the provider call, so
+#: the crash window between send and ledger can never re-send a step.  `state` in its detail
+#: moves pending -> sent (finalized) or pending -> refused (released).
+CLAIM_ACTION = "invoice_dunning_claim"
+CLAIM_STATE_PENDING = "pending"
+CLAIM_STATE_SENT = "sent"
+CLAIM_STATE_REFUSED = "refused"
 #: The named-refusal record (warning level) — never silent about a refused tick.
 DUNNING_REFUSAL_ACTION = "invoice_dunning_refused"
 #: The offset (days past due) at which a still-`sent` invoice is factually overdue.
@@ -120,7 +132,12 @@ def compose_dunning_email(invoice: Invoice, step: DunningStep) -> tuple[str, str
 
 
 async def _sent_steps(db) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession, kept local
-    """The column-free ledger: `{invoice_id: {step keys}}` from the `invoice_dunning` rows."""
+    """The column-free ledger: `{invoice_id: {step keys}}` the tick treats as CONSUMED.
+
+    Consumed = a delivered `invoice_dunning` row (the V9 ledger), OR a claim row (F5/V11)
+    whose state is anything but `refused` — a pending claim is exactly the crash-window row
+    that must keep the step from re-sending.
+    """
     rows = await fetch_scalars(
         db,
         select(ActivityLog)
@@ -135,7 +152,31 @@ async def _sent_steps(db) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession
         step = detail.get("step")
         if isinstance(invoice_id, int) and isinstance(step, str):
             ledger.setdefault(invoice_id, set()).add(step)
+    for invoice_id, by_step in (await _claim_rows(db)).items():
+        for step, row in by_step.items():
+            detail = row.detail if isinstance(row.detail, dict) else {}
+            if detail.get("state") != CLAIM_STATE_REFUSED:
+                ledger.setdefault(invoice_id, set()).add(step)
     return ledger
+
+
+async def _claim_rows(db) -> dict[int, dict[str, ActivityLog]]:  # noqa: ANN001 - AsyncSession
+    """`{invoice_id: {step: claim row}}` from the `invoice_dunning_claim` rows (latest wins)."""
+    rows = await fetch_scalars(
+        db,
+        select(ActivityLog)
+        .where(ActivityLog.action == CLAIM_ACTION)
+        .order_by(ActivityLog.id),
+        what="dunning claims",
+    )
+    claims: dict[int, dict[str, ActivityLog]] = {}
+    for row in rows:
+        detail = row.detail if isinstance(row.detail, dict) else {}
+        invoice_id = detail.get("invoice_id")
+        step = detail.get("step")
+        if isinstance(invoice_id, int) and isinstance(step, str):
+            claims.setdefault(invoice_id, {})[step] = row
+    return claims
 
 
 @app.task(name="celery_app.tasks.dunning.run_dunning_ladder")
@@ -174,10 +215,40 @@ async def _dun_one(
             return
         step = pending[-1]  # the LATEST owed step: one email per invoice per tick, no cascade
         superseded = [earlier.key for earlier in pending[:-1]]
+        # F5 (V11/W2) — CLAIM BEFORE SEND.  The claim row is committed BEFORE the provider can
+        # be reached: from this instant the step counts as consumed (`_sent_steps` reads it), so
+        # a crash between a confirmed delivery and the ledger write can never re-send it.  The
+        # claim is released again if — and only if — the send is refused BY NAME below.
+        claim = await log_activity(
+            db,
+            "finance",
+            CLAIM_ACTION,
+            summary=(
+                f"Dunning {step.key} for invoice {invoice.number} claimed for dispatch "
+                f"(at most once from this instant)"
+            ),
+            detail={
+                "invoice_id": invoice_id,
+                "number": invoice.number,
+                "step": step.key,
+                "state": CLAIM_STATE_PENDING,
+                "superseded": superseded,
+                "claim_of": DUNNING_ACTION,
+            },
+        )
+        await db.commit()  # the claim must be DURABLE before the send (F5's whole point)
         try:
             subject, body = compose_dunning_email(invoice, step)
             result = await deliver_invoice_email(db, invoice, subject=subject, body=body)
         except PolsiaError as exc:
+            # Release the claim: a refusal consumes nothing (the V9 rule), so the step stays
+            # owed and fires on a later tick once the refusal's cause is gone.
+            claim.detail = {
+                **(claim.detail if isinstance(claim.detail, dict) else {}),
+                "state": CLAIM_STATE_REFUSED,
+                "code": exc.code,
+                "message": exc.message,
+            }
             refused.append(
                 {
                     "invoice_id": invoice_id,
@@ -204,7 +275,7 @@ async def _dun_one(
                     "message": exc.message,
                 },
             )
-            await db.commit()  # the refusal record is durable; nothing was sent or consumed
+            await db.commit()  # the refusal record + the released claim are durable
             return
         flipped_to: str | None = None
         if step.offset_days >= PAST_DUE_FLIP_AT_DAYS and invoice.status is InvoiceStatus.SENT:
@@ -212,6 +283,14 @@ async def _dun_one(
             flipped_to = InvoiceStatus.OVERDUE.value
         provider_result = result.get("result")
         message_id = str(provider_result.get("message_id") or "") if isinstance(provider_result, dict) else ""
+        # Finalize the claim (state -> sent) …
+        claim.detail = {
+            **(claim.detail if isinstance(claim.detail, dict) else {}),
+            "state": CLAIM_STATE_SENT,
+            "message_id": message_id or None,
+            "status_flipped_to": flipped_to,
+        }
+        # … and write the delivered-ledger row byte-compatibly with the V9 pins.
         await log_activity(
             db,
             "finance",
@@ -262,6 +341,20 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
             .order_by(Invoice.id),
             what="open invoices",
         )
+        # F5 (V11/W2): claims still `pending` at this tick's start are the signature of a crash
+        # window (or a live concurrent tick — the residual V9 records).  They CONSUME their step;
+        # naming them here keeps the window visible instead of silently eating a reminder.
+        unfinalized = [
+            {
+                "invoice_id": invoice_id,
+                "number": (row.detail or {}).get("number"),
+                "step": step,
+                "row_id": int(row.id),
+            }
+            for invoice_id, by_step in (await _claim_rows(db)).items()
+            for step, row in by_step.items()
+            if isinstance(row.detail, dict) and row.detail.get("state") == CLAIM_STATE_PENDING
+        ]
     for invoice_id in open_ids:
         await _dun_one(
             session_factory, int(invoice_id), today, sent=sent, refused=refused
@@ -272,6 +365,7 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
         "date": today.isoformat(),
         "sent": sent,
         "refused": refused,
+        "unfinalized_claims": unfinalized,
         "steps": [step.key for step in DUNNING_STEPS],
     }
     logger.info("dunning ladder: %s", result)

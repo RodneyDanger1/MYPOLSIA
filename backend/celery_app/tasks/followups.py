@@ -136,6 +136,11 @@ async def _run_follow_up_sweep() -> dict[str, Any]:
     # the rows failed inside `enqueue_created` and re-raises — never a fake queue.
     if created_ids:
         await enqueue_created(created_ids, label="outreach follow-ups")
+        # F1 (V11/W2): stamp the `dispatched_at` marker on broker acceptance — the
+        # stranded-pending reconciler (`maintenance`) reads it (see cadence.py, same rule).
+        from celery_app.tasks.maintenance import mark_tasks_dispatched
+
+        await mark_tasks_dispatched(created_ids)
 
     result: dict[str, Any] = {
         "status": "completed" if due_count else "no_due",

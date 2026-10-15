@@ -44,9 +44,19 @@ from app.models.social import SocialPost
 from app.services import outreach_service, social_service
 from app.services.channel_service import channel_sends_snapshot
 
+#: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
+#: same `channel_sends` pattern (the worker owns the DB, the agent does not). A send without it
+#: (and with no database for the guarded sender to read) is REFUSED BY NAME, so every leg that
+#: expects a real provider send states the sender identity here. No assertion changed.
+_COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
+                          "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
+                          "website_url": "https://acme.example"},
+               "suppressed": []}
+
 # A fixed mid-day anchor, exactly the pattern test_channel_sends/test_send_cap_producer_e2e use:
 # the company-local day and the trailing hour are deterministic and producer writes are pinned to it.
-NOW = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 12
+, 12, 0, 0, tzinfo=UTC)
 TWO_HOURS_AGO = NOW - timedelta(hours=2)      # inside the day window, outside the hour window
 
 
@@ -684,7 +694,7 @@ async def test_email_rows_written_by_the_producer_drive_the_day_cap_to_refusal(
     # (b) the 50th send is a REAL agent send (fake SDK), then the worker's producer records it
     monkeypatch.setattr(outreach_service, "utcnow", lambda: NOW)
     agent = _stub_collection(EmailOutreachAgent(), _email_payload(99))
-    out = agent.run({"title": "send"}, {"channel_sends": seeded})
+    out = agent.run({"title": "send"}, {"channel_sends": seeded, "compliance": _COMPLIANCE})
     assert out["emails"][0]["status"] == "sent"
     assert out["emails"][0]["sendgrid_id"] == fake.sent_message_ids[-1]
     assert (await outreach_service.record_sent_emails(db, out))["emails_written"] == 1
@@ -726,7 +736,7 @@ async def test_no_provider_id_sends_are_never_folded_onto_a_fake_key(async_db_se
     for i in range(2):
         agent = _stub_collection(EmailOutreachAgent(), _email_payload(i))
         sends.append(agent.run({"title": "send"}, {"channel_sends": {"email": {"today": 0,
-                                                                               "hour": 0}}}))
+                                                                               "hour": 0}}, "compliance": _COMPLIANCE}))
 
     assert len(fake.sent_message_ids) == 2                       # two real provider sends happened
     assert [s["emails"][0]["sendgrid_id"] for s in sends] == ["", ""]     # WAS ["202", "202"]

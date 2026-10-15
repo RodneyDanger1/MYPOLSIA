@@ -95,6 +95,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/site/package"),
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
+    # wave V11 (W1): the public one-click opt-out route — unauthenticated by design, because the
+    # link in a compliant footer must work for a recipient with no owner key. NEW pin with the route.
+    ("GET", "/api/v1/outreach/unsubscribe"),
     ("GET", "/api/v1/ads/campaigns"),
     # wave U5 (P4/B8): the usage-ledger read + export — documented by app/api/v1/runs.py and
     # tests/unit/test_u5_runs.py, routes verified live in app.routes as [GET] on these paths.
@@ -170,6 +173,9 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
     "email-followups",
     # V9/B4 (parent settle): the invoice dunning ladder (daily; once-per-step activity ledger).
     "invoice-dunning",
+    # V11/W2 (parent settle): the stranded-pending reconciler (every 5 min; README row added at the
+    # same settle — the crash-between-commit-and-dispatch orphan class, audit F1).
+    "reconcile-stranded-pending",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -189,6 +195,9 @@ REQUIRED_SCHEDULED_TASKS = {
     # scheduled — the same defect class.
     "celery_app.tasks.followups.run_follow_up_sweep",
     "celery_app.tasks.dunning.run_dunning_ladder",
+    # V11/W2 (parent settle): the stranded-pending reconciler — the same "declared but never
+    # scheduled" defect class it exists to close; pinned by task path like its lease-sweep sibling.
+    "celery_app.tasks.maintenance.reconcile_stranded_pending_tasks",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus

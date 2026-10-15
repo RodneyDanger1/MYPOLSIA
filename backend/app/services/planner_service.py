@@ -55,7 +55,14 @@ from app.agents.competitor_research.agent import (
     research_budget_violation,
 )
 from app.core.database import utcnow
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import (
+    E_CLI_TIMEOUT,
+    E_NOT_FOUND,
+    E_TASK_CLAIMED,
+    E_VALIDATION,
+    ERROR_HINTS,
+    PolsiaError,
+)
 from app.models.company import CompanyConfig
 from app.models.report import ActivityLog
 from app.services.activity_service import log_activity
@@ -73,6 +80,19 @@ BUDGET_EXCEEDED_ACTION = "research_budget_exceeded"
 #: The contract's candidate bounds (plan: "candidates 3-5").
 MIN_CANDIDATES = 3
 MAX_CANDIDATES = 5
+
+#: F3 (V11/W2): the bounded step timeout — a model/fetch step that overruns refuses by name
+#: instead of holding the request (and the process's model budget) open indefinitely.  The
+#: RESPONSE is bounded here; the worker thread unwinds when the runtime's own timeout fires.
+PLANNER_STEP_TIMEOUT_SECONDS = 300.0
+#: The research step's agent_type (the budget gate's per-agent window, same name the worker uses).
+PLANNER_RESEARCH_AGENT_TYPE = "competitor_research"
+#: In-flight dedupe (F3): ONE proposal at a time per process — a second concurrent run would
+#: double the model spend for a duplicate answer.  (Single-worker API process: an asyncio lock
+#: IS the process-wide guard; multi-replica deployments would need a shared marker — recorded,
+#: not hidden.)
+_PROPOSE_IN_FLIGHT = False
+_PROPOSE_LOCK = asyncio.Lock()
 
 _DEMAND_SCORES: dict[str, int] = {"proven": 5, "likely": 4, "plausible": 2, "untested": 0}
 _COMPETITION_SCORES: dict[str, int] = {"none": 5, "low": 4, "medium": 3, "high": 1, "saturated": 0}
@@ -350,6 +370,63 @@ def _proposal_sync(profile: dict[str, Any], research: dict[str, Any]) -> dict[st
     return agent.timed_run(task, {"company": profile, "research": research})
 
 
+# ── F3 (V11/W2): the money gate, the bounded step, the in-flight dedupe ─────────────────────
+
+async def _gate_planner_budget(db: AsyncSession, agent_type: str, *, step: str) -> None:
+    """The day-cap gate in front of a planner agent step — the worker choke point's policy.
+
+    Read through the CALLER's session (`day_spend_by_agent(db)`): the check sees the same
+    company-local day and the same committed spend the request already has in view.  A
+    `BudgetStop` (`E_BUDGET_EXCEEDED`, or `E_POLICY_DENIED` for the kill switch) is re-raised
+    as the named refusal WITH its how_to_fix — and nothing has run when it raises.
+    """
+    from app.agents.accounting import BudgetStop, authorize, budget_policy_from_settings
+    from app.agents.policy_firewall import kill_grade_from_env
+
+    # Lazy import, app-side precedent `support_inbox_service`: the shared spend reader lives
+    # with the worker machinery; everything else here is dependency-light.
+    from celery_app.tasks._common import day_spend_by_agent
+
+    policy = budget_policy_from_settings(kill_switch=kill_grade_from_env() == "freeze")
+    total, per_agent = await day_spend_by_agent(db)
+    try:
+        authorize(
+            policy,
+            agent_type=agent_type,
+            est_cost_usd=policy.per_run_cap_usd,
+            day_spent_usd=total,
+            agent_spent_usd=per_agent.get(agent_type, 0.0),
+        )
+    except BudgetStop as exc:
+        raise PolsiaError(
+            exc.code,
+            f"planner {step} refused before dispatch: {exc.message}",
+            how_to_fix=ERROR_HINTS.get(exc.code, ""),
+            context={**(exc.context or {}), "step": step, "agent_type": agent_type},
+        ) from exc
+
+
+async def _run_planner_step(fn, *args: Any, step: str) -> dict[str, Any]:
+    """One agent step behind the bounded timeout (F3) — a timeout is a NAMED refusal.
+
+    The RESPONSE is bounded here; the worker thread unwinds when the runtime's own timeout
+    fires (a thread cannot be killed — recorded, not hidden).
+    """
+    try:
+        async with asyncio.timeout(PLANNER_STEP_TIMEOUT_SECONDS):
+            return await asyncio.to_thread(fn, *args)
+    except TimeoutError as exc:
+        raise PolsiaError(
+            E_CLI_TIMEOUT,
+            f"the planner {step} step exceeded the {PLANNER_STEP_TIMEOUT_SECONDS:g}s bound",
+            how_to_fix=(
+                "retry propose; if it keeps timing out, the model/fetch backend is degraded "
+                "(raise PLANNER_STEP_TIMEOUT_SECONDS only with day-cap headroom)"
+            ),
+            context={"step": step, "timeout_seconds": PLANNER_STEP_TIMEOUT_SECONDS},
+        ) from exc
+
+
 # ── assembly ─────────────────────────────────────────────────────────────────────────────────
 
 def _company_profile(company: CompanyConfig) -> dict[str, Any]:
@@ -408,7 +485,34 @@ def _assemble_candidate(
 # ── the three service entry points (behind the frozen routes) ────────────────────────────────
 
 async def propose(db: AsyncSession) -> dict[str, Any]:
-    """Fetch -> model -> pre-gate -> rubric -> ledger.  Nothing spends; nothing runs."""
+    """Fetch -> model -> pre-gate -> rubric -> ledger; budgeted, bounded, de-duplicated (F3).
+
+    Named refusals, all before (or instead of) agent work:
+    * `E_TASK_CLAIMED` — a proposal is already running in this process (in-flight dedupe:
+      a second concurrent run would double the model spend for a duplicate answer);
+    * `E_BUDGET_EXCEEDED` — the day's spend window is exhausted (the SAME policy and reader
+      the worker choke point enforces) — raised per agent type before its step;
+    * `E_CLI_TIMEOUT` — a step overran `PLANNER_STEP_TIMEOUT_SECONDS`.
+    """
+    global _PROPOSE_IN_FLIGHT
+    if _PROPOSE_LOCK.locked() or _PROPOSE_IN_FLIGHT:
+        raise PolsiaError(
+            E_TASK_CLAIMED,
+            "a planner proposal is already running; a concurrent second run would double "
+            "the model spend for a duplicate answer",
+            how_to_fix="wait for the running proposal to answer, then retry",
+        )
+    await _PROPOSE_LOCK.acquire()
+    _PROPOSE_IN_FLIGHT = True
+    try:
+        return await _propose_once(db)
+    finally:
+        _PROPOSE_IN_FLIGHT = False
+        _PROPOSE_LOCK.release()
+
+
+async def _propose_once(db: AsyncSession) -> dict[str, Any]:
+    """The body of `propose` (see its docstring for the guards) — fetch, model, rubric, ledger."""
     company = await get_company(db)
     if company is None:
         raise PolsiaError(
@@ -419,7 +523,8 @@ async def propose(db: AsyncSession) -> dict[str, Any]:
         )
     profile = _company_profile(company)
 
-    research = await asyncio.to_thread(_research_sync, profile)
+    await _gate_planner_budget(db, PLANNER_RESEARCH_AGENT_TYPE, step="research fetch")
+    research = await _run_planner_step(_research_sync, profile, step="research fetch")
     fetched_at = utcnow().isoformat()
     violation = research_budget_violation(research)
     if violation is not None:
@@ -436,7 +541,8 @@ async def propose(db: AsyncSession) -> dict[str, Any]:
         )
     fetched_urls = _fetched_urls(research)
 
-    draft = await asyncio.to_thread(_proposal_sync, profile, research)
+    await _gate_planner_budget(db, PLANNER_AGENT_TYPE, step="model proposal")
+    draft = await _run_planner_step(_proposal_sync, profile, research, step="model proposal")
     raw_ideas = draft.get("ideas") if isinstance(draft, dict) else None
     ideas = [idea for idea in (raw_ideas or []) if isinstance(idea, dict)]
     if not (MIN_CANDIDATES <= len(ideas) <= MAX_CANDIDATES):

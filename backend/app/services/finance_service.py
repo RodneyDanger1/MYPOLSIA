@@ -870,20 +870,31 @@ async def _flip_invoices_safely(
     the event row itself is already persisted, well-formed, and is returned to the caller.
     """
     try:
-        await apply_failed_payment_to_invoices(
-            db, event_id=event_id, event_type=event_type, payload=payload
-        )
+        # F2 (V11/W2) — THE SAVEPOINT.  When the swallowed failure is a flush-level DB error
+        # (constraint, serialization failure, locked database), the session is left in
+        # "pending rollback": the webhook's post-handler commit (`core/database.py:106-120`)
+        # then raised `PendingRollbackError` and the delivery 5xxed — which is exactly what
+        # triggers Stripe's retry storm.  A savepoint contains the failure: the flip's partial
+        # writes roll back, the session stays USABLE, and the delivery's own commit (the event
+        # row) still lands.  Same pattern as `_common.create_task_deduped`'s guarded flush.
+        async with db.begin_nested():
+            await apply_failed_payment_to_invoices(
+                db, event_id=event_id, event_type=event_type, payload=payload
+            )
     except Exception as exc:  # noqa: BLE001 - documented contract: never raises
         logger.exception("invoice flip for %s failed", event_id)
         try:
-            await log_activity(
-                db,
-                "finance",
-                "invoice_payment_failed_flip_error",
-                summary=f"invoice flip for {event_id} failed: {type(exc).__name__}: {exc}",
-                level="warning",
-                detail={"event_id": event_id, "error": f"{type(exc).__name__}: {exc}"},
-            )
+            # The failure record gets its OWN savepoint: a broken write here must not poison
+            # the request's session either (the worker log still carries the exception).
+            async with db.begin_nested():
+                await log_activity(
+                    db,
+                    "finance",
+                    "invoice_payment_failed_flip_error",
+                    summary=f"invoice flip for {event_id} failed: {type(exc).__name__}: {exc}",
+                    level="warning",
+                    detail={"event_id": event_id, "error": f"{type(exc).__name__}: {exc}"},
+                )
         except Exception:  # noqa: BLE001 - a broken session cannot carry the record; the log does
             logger.exception("invoice flip error row for %s could not be written", event_id)
 

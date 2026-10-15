@@ -203,6 +203,12 @@ class BasePolsiaAgent(ABC):
         # `day_spent_usd` (`or 0.0`) and that NOTHING consumed — honest spend lives in
         # `accounting.spend_summary`.
         tools = ", ".join(self.capability.allowed_tools) or "none"
+        # V11/W2 truth-fix: the tool claim must match the runtime that will RUN this agent.
+        # The DeepSeek HTTP runtime cannot CALL tools (tool-calling is deferred) — rendering
+        # "Tools available to you: WebFetch, WebSearch" for a competitor_research run under it
+        # was a capability claim the runtime cannot honor.  Under the CLI runtime the tools are
+        # real and are listed exactly as before.
+        tool_less = deepseek_runtime.available()
         outcome_contract = self._outcome_contract()
 
         identity = "\n".join(filter(None, [
@@ -217,8 +223,18 @@ class BasePolsiaAgent(ABC):
         ]))
         tool_doctrine = "\n".join([
             "TOOL DOCTRINE",
-            f"- Tools available to you: {tools}.",
-            "- Use tools for facts; never guess a metric you could have read.",
+            (
+                "- Tools available to you: none in this runtime (no tool calls — the DeepSeek "
+                "runtime serves context-only runs; work from the context below and name any "
+                "missing fact instead of guessing)."
+                if tool_less
+                else f"- Tools available to you: {tools}."
+            ),
+            (
+                "- Never guess a metric or fact the context does not carry; say it is missing."
+                if tool_less
+                else "- Use tools for facts; never guess a metric you could have read."
+            ),
             "- Every externally visible action (post, email, ad change, payment, PR) is routed "
             "through the policy firewall; a refusal is final for this cycle.",
         ])
