@@ -55,10 +55,17 @@ const item = (overrides: Partial<SupportInboxItem> = {}): SupportInboxItem => ({
 });
 
 async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
+  // S2-F1 (wave v14): the four-fields-char-by-char version of this helper cost ~1.7 s per test in
+  // isolation and crossed jest's 5 s default under the full-suite parallel run (the whole suite went
+  // red on a budget defect, not a product bug). ONE field keeps the real keystroke path exercised
+  // via userEvent; the other three are set in one shot with the same `fireEvent.change` fill the
+  // arrival-instant test below already uses — no assertion is weakened anywhere.
   await user.type(screen.getByLabelText(/Provider message id/), "pmid-9");
-  await user.type(screen.getByLabelText(/From address/), "buyer@example.com");
-  await user.type(screen.getByLabelText(/^Subject/), "Cannot log in");
-  await user.type(screen.getByLabelText(/^Body/), "Password reset does nothing.");
+  fireEvent.change(screen.getByLabelText(/From address/), { target: { value: "buyer@example.com" } });
+  fireEvent.change(screen.getByLabelText(/^Subject/), { target: { value: "Cannot log in" } });
+  fireEvent.change(screen.getByLabelText(/^Body/), {
+    target: { value: "Password reset does nothing." },
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

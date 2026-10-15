@@ -1,15 +1,16 @@
 """GET /api/v1/agents/status and POST /api/v1/agents/{agent_type}/trigger.
 
-Designed against the measured FastAPI ordering (fastapi/dependencies/utils.py
-solve_dependencies): sub-dependencies are solved BEFORE path/query/body validation.
-Therefore:
-  * a router-level auth dependency would answer 401 for an UNKNOWN agent type -- the
-    path param is never validated;
-  * this router instead validates `agent_type` as an Enum (=> 422) and checks the
-    X-API-Key header INSIDE the handler, so "unknown agent" is 422 with or without a
-    key, while "known agent without key" is still 401;
+Auth ordering (measured FastAPI behavior, fastapi/dependencies/utils.py solve_dependencies:
+dependencies are solved BEFORE path/query/body validation):
+  * BOTH routes carry the key guard as a route dependency (`Depends(verify_api_key)`), so an
+    unauthenticated caller ALWAYS gets the one named 401 E_AUTH — for a known agent name and
+    an unknown one alike. U2-05 (wave-v14): the trigger route used to check the key INSIDE
+    the handler, so an unauthenticated caller got 422 (whose body listed every valid agent
+    type) for an unknown name and 401 for a known one — a credential-free valid/invalid
+    enumeration oracle. Auth first closes it; WITH a valid key the enum still 422s an
+    unknown name by name.
   * the body model is OPTIONAL (default None) so a request with no body cannot 422
-    before the inline auth check runs.
+    before auth runs.
 
 `GET /status` is ONE statement (`task_service.get_agent_statuses`): a CTE of the
 nine agent types plus correlated subqueries, so it returns exactly nine rows on an
@@ -21,12 +22,11 @@ import asyncio
 from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_REDIS, PolsiaError
-from app.core.security import check_api_key
 from app.schemas.task import AgentStatusResponse, AgentTriggerRequest, AgentTriggerResponse
 from app.services.task_service import (
     VALID_AGENT_TYPES,
@@ -55,14 +55,13 @@ async def agent_status(db: AsyncSession = Depends(get_db)) -> list[AgentStatusRe
     "/{agent_type}/trigger",
     response_model=AgentTriggerResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(verify_api_key)],
 )
 async def trigger_agent(
     agent_type: AgentTypeEnum,
     payload: AgentTriggerRequest | None = None,
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     db: AsyncSession = Depends(get_db),
 ) -> AgentTriggerResponse:
-    await check_api_key(x_api_key)
     agent_name = agent_type.value
     title = (payload.task_title if payload else None) or f"Manual {agent_name} run"
     with refusal_guard():

@@ -14,6 +14,18 @@ import { cn } from "@/components/ui/cn";
  *
  * The trigger is a real button with `aria-expanded`/`aria-controls`; the panel
  * body is whatever honest content the caller has.
+ *
+ * WHY THIS IS HERE WITH NO CALLER (S2-F2, wave v13 sweep; labelled wave v14):
+ * DEAD SURFACE — retired shell popover. It is exported but imported by nothing:
+ * the surfaces it was built for now own their own markup — the bell
+ * (`NotificationsBell`, components/layout/NotificationsPanel.tsx:224, mounted by
+ * Topbar.tsx:49) and the topbar edit sheet (`DashboardEditorSheet`) each render
+ * their own trigger + panel. It is kept deliberately (no deletion in a bug-fix
+ * wave) so the retire-vs-rewire call is made in the open, not by attrition:
+ * see `wave-v14/v3-fe-wire/REQUESTS.md` (R-V14-1) for the decision, owner = the
+ * product owner via the wave's decision sheet. Do NOT wire a second popover
+ * implementation next to `usePopover`'s live consumers; either delete this
+ * component outright or re-point the live surfaces to it — do not do both.
  */
 export type TopbarPopoverProps = {
   /** Accessible name for the trigger (the visible content may be an icon alone). */

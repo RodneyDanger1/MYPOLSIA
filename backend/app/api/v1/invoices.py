@@ -11,18 +11,23 @@ module that owns the behaviour — the same ruling `app/api/v1/approvals.py` rec
 
 Money on the wire: floats in, converted at this boundary through the finance module's `money()`
 (`Decimal(str(x))` — the exact-decimal rule of A-T18) before the service sees them; `null` stays
-`null` (unmeasured — never coerced to 0).
+`null` (unmeasured — never coerced to 0).  NON-FINITE floats (`NaN` / `±Infinity`) are refused at
+the wire (`allow_inf_nan=False`, S4-F1 wave v14) — they used to be persisted, 500 the create
+response, and then poison every `GET /invoices` read.
 """
 from __future__ import annotations
 
+import math
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.core.errors import E_DB, PolsiaError
 from app.schemas.invoice import InvoiceResponse
 from app.services import invoice_service
 from app.services.finance_service import money
@@ -43,9 +48,12 @@ class InvoiceCreateRequest(BaseModel):
     due_date: date | None = None
     net_days: int | None = Field(default=None, ge=0, le=365)
     currency: str | None = None
-    subtotal: float | None = None
-    tax: float | None = None
-    total: float | None = None
+    # S4-F1: `allow_inf_nan=False` — pydantic accepts NaN/Infinity for `float` by default, and
+    # these three were the money fields without the finiteness belt.  A non-finite value is
+    # refused as a named validation error BEFORE the service sees it; the row is never written.
+    subtotal: float | None = Field(default=None, allow_inf_nan=False)
+    tax: float | None = Field(default=None, allow_inf_nan=False)
+    total: float | None = Field(default=None, allow_inf_nan=False)
     payment_link: str | None = None
 
 
@@ -59,6 +67,47 @@ class InvoiceVoidRequest(BaseModel):
     """`POST /invoices/{id}/void` — the optional reason recorded in the activity feed."""
 
     reason: str | None = None
+
+
+#: The money columns whose stored value must be FINITE before the row may be rendered.
+_MONEY_COLUMNS: tuple[str, ...] = ("subtotal", "tax", "total")
+
+
+def _is_finite_money(value: Any) -> bool:
+    """`None` (not measured) and finite numbers pass; NaN / ±Infinity do not."""
+    if value is None:
+        return True
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return True
+
+
+def _invoice_response(row: Any) -> InvoiceResponse:
+    """Serialize one invoice row; a row carrying NON-FINITE money is refused BY NAME (S4-F1).
+
+    A row that predates the boundary refusal (an import script, a hand-edited DB) must not
+    500 the whole collection at response render — that is exactly what
+    `json.dumps(..., allow_nan=False)` did for a stored `Decimal('Infinity')` (wave-v13/
+    s4-errors F1: one dirty row made every `GET /api/v1/invoices` an uncoded 500 forever).
+    The refusal (E_DB) names the row and the columns; the value is NOT silently turned into
+    `null` ("not measured") — a stored NaN is corruption, not an absence, and laundering it
+    would be the silent-None the error doctrine forbids.
+    """
+    bad = [name for name in _MONEY_COLUMNS if not _is_finite_money(getattr(row, name))]
+    if bad:
+        raise PolsiaError(
+            E_DB,
+            f"invoice {row.number} (id {row.id}) carries non-finite money in {', '.join(bad)}"
+            " — refusing to render it",
+            how_to_fix=(
+                "fix or delete this invoice row; non-finite money is import/corruption "
+                "damage, not a measurement"
+            ),
+            context={"invoice_id": row.id, "number": row.number, "columns": bad},
+        )
+    return InvoiceResponse.model_validate(row)
 
 
 @router.post("", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
@@ -79,7 +128,7 @@ async def create_invoice(
             total=money(request.total),
             payment_link=request.payment_link,
         )
-    return InvoiceResponse.model_validate(invoice)
+    return _invoice_response(invoice)
 
 
 @router.get("", response_model=list[InvoiceResponse])
@@ -90,19 +139,34 @@ async def list_invoices(
 ) -> list[InvoiceResponse]:
     with refusal_guard():
         rows = await invoice_service.list_invoices(db, status=status_value, limit=limit)
-    return [InvoiceResponse.model_validate(row) for row in rows]
+    return [_invoice_response(row) for row in rows]
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
-async def get_invoice(invoice_id: int, db: AsyncSession = Depends(get_db)) -> InvoiceResponse:
+async def get_invoice(
+    # S4-F3: explicit upper bound — an int past int64 reached the SQLite driver and 500'd
+    # (`OverflowError: Python int too large to convert to SQLite INTEGER`); the wire now
+    # names the field instead.  Everything <= int64 keeps its old path (404 for unknown ids).
+    invoice_id: int = Path(le=2**63 - 1),
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceResponse:
+    """Read one invoice by id — API-completeness read at this HEAD.
+
+    INTENDED STATUS (tracker S3-04, wave v13 wiring sweep; annotated wave v14): the product's
+    invoice surface (`frontend/src/app/invoices/page.tsx`) fetches the LIST (`GET /invoices?…`) and
+    acts on the rows that list already returned — no in-product control issues this single-item
+    read; the only consumer is `e2e/invoices.spec.ts`. It is the honest completeness route (and the
+    exact row a future detail sheet would fetch), so it stays. The next sweep should not re-report
+    the missing UI caller as a defect without naming that decision.
+    """
     with refusal_guard():
         invoice = await invoice_service.get_invoice(db, invoice_id)
-    return InvoiceResponse.model_validate(invoice)
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/send", response_model=InvoiceResponse)
 async def send_invoice(
-    invoice_id: int,
+    invoice_id: int = Path(le=2**63 - 1),  # S4-F3: same int64 bound as the read above
     request: InvoiceSendRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceResponse:
@@ -116,12 +180,12 @@ async def send_invoice(
         invoice = await invoice_service.send_invoice(
             db, invoice_id, cover_note=request.cover_note if request else None
         )
-    return InvoiceResponse.model_validate(invoice)
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
 async def void_invoice(
-    invoice_id: int,
+    invoice_id: int = Path(le=2**63 - 1),  # S4-F3: same int64 bound as the read above
     request: InvoiceVoidRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceResponse:
@@ -129,4 +193,4 @@ async def void_invoice(
         invoice = await invoice_service.void_invoice(
             db, invoice_id, reason=request.reason if request else None
         )
-    return InvoiceResponse.model_validate(invoice)
+    return _invoice_response(invoice)

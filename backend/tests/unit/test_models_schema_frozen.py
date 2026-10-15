@@ -108,10 +108,12 @@ named `ck_invoices_status` CHECK over draft|sent|paid|void|overdue, `line_items`
 `market_locale`), `owner_hours_per_week` INTEGER NULL, `owner_budget_usd` NUMERIC(10, 2) NULL,
 `channels_ready` JSON NOT NULL server default '[]', `confirmed_idea` JSON NULL, `checklist_state`
 JSON NOT NULL server default '{}', `dispatch_paused` BOOLEAN false (C5's pause feature).  No index
-set moved (none of the three tables carries one).  Old canonical sha256
+set moved (none of the three tables carries one).  Canonical sha256 chain (each value measured by
+this file's own `test_create_all_ddl_sha256_is_frozen`):
 `26cd6897a5d77abf5d90cc03c764fa0ea4201f899d56e495ce2dbb2986a14e58` ->
-`002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e` (measured by this file's own
-`test_create_all_ddl_sha256_is_frozen`).
+`002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e` ->
+`f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106` (S1-04, wave v14: the
+fabricated `invoices.tax` default 0 — python AND server — removed; see migration 0009).
 """
 from __future__ import annotations
 
@@ -130,7 +132,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e"
+DDL_SHA256 = "f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -364,7 +366,9 @@ FROZEN_COLUMNS = {
         ('net_days', 'INTEGER', False, '30', '30', '', False),
         ('currency', 'TEXT', False, "'USD'", 'USD', '', False),
         ('subtotal', 'NUMERIC(12, 2)', True, '', '', '', False),
-        ('tax', 'NUMERIC(12, 2)', True, '0', '0', '', False),
+        # S1-04 (wave v14): NO default of any kind — the fabricated `0` (python default +
+        # server default) is gone; an unmeasured tax stays NULL like subtotal/total.
+        ('tax', 'NUMERIC(12, 2)', True, '', '', '', False),
         ('total', 'NUMERIC(12, 2)', True, '', '', '', False),
         ('status', 'VARCHAR(50)', False, '', '', '', False),
         ('payment_link', 'TEXT', True, '', '', '', False),

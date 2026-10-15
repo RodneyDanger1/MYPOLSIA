@@ -17,6 +17,15 @@ import type { Schedule, ScheduleCadence, ScheduleCreate, ScheduleUpdate } from "
  *                            `enabled` defaults FALSE (a schedule is created paused unless on).
  *   PATCH  /schedules/{id}   ScheduleUpdate — only the PROVIDED keys are applied
  *                            (`exclude_unset`), so the edit form sends exactly what changed.
+ *
+ * The Hour box is the one value JSON could launder (S2-F3, wave v14): a blank box used to ship
+ * `Number.NaN`, which `JSON.stringify` serializes as `null`, and an out-of-range hour in the edit
+ * form was silently DROPPED from the PATCH (with no other change, the form even closed as "nothing
+ * changed"). Both forms now refuse LOCALLY, in the same words, before anything is sent — a refusal
+ * the operator can read, instead of a value quietly rewritten. The refusal is stated text, not a
+ * second `role="alert"` region: this page owns exactly one live alert (`schedules-action-error`).
+ * An in-range hour still rides the body and the server stays the last word (its named refusal is
+ * rendered by the page); only the value that can never be expressed on the wire is stopped here.
  */
 
 /** The frozen cadence value set, in the schema's definition order. */
@@ -41,6 +50,10 @@ export const WEEKDAY_NAMES = [
 export function isCadence(value: string): value is ScheduleCadence {
   return value === "once" || value === "daily" || value === "weekdays" || value === "weekly";
 }
+
+/** The one stated local refusal both forms use for a bad Hour box (S2-F3) — same words, same
+ *  meaning: the value is outside what the wire can carry (a whole number 0-23, company-local). */
+const HOUR_REFUSAL = "Hour must be a whole number 0-23 (company-local)";
 
 export type ScheduleDraft = {
   name: string;
@@ -153,13 +166,26 @@ export function ScheduleCreateForm({
     weekday: "0",
   });
   const [enabled, setEnabled] = useState(false);
+  const [hourRefusal, setHourRefusal] = useState<string | null>(null);
 
   useEffect(() => {
-    if (lastCreatedId !== null) setDraft((current) => ({ ...current, name: "", prompt: "" }));
+    if (lastCreatedId !== null) {
+      setDraft((current) => ({ ...current, name: "", prompt: "" }));
+      setHourRefusal(null);
+    }
   }, [lastCreatedId]);
 
   function submit() {
-    const parsedHour = draft.hour.trim() === "" ? Number.NaN : Number(draft.hour);
+    const trimmedHour = draft.hour.trim();
+    const parsedHour = trimmedHour === "" ? Number.NaN : Number(trimmedHour);
+    if (Number.isNaN(parsedHour)) {
+      // A blank (or unreadable) box is NOT a value: state it and send nothing. NOTE the deliberate
+      // asymmetry with an out-of-range NUMBER (e.g. 25): that one is expressible, it rides the body,
+      // and the server's named refusal comes back and is rendered by the page.
+      setHourRefusal(HOUR_REFUSAL);
+      return;
+    }
+    setHourRefusal(null);
     const body: ScheduleCreate = {
       name: draft.name.trim(),
       prompt: draft.prompt.trim(),
@@ -182,7 +208,10 @@ export function ScheduleCreateForm({
         <ScheduleFields
           idPrefix="schedule-create"
           draft={draft}
-          onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+          onChange={(patch) => {
+            setHourRefusal(null);
+            setDraft((current) => ({ ...current, ...patch }));
+          }}
         />
         <div className="mt-3 flex items-center gap-3">
           <Switch checked={enabled} onChange={setEnabled} label="Create enabled" />
@@ -196,6 +225,11 @@ export function ScheduleCreateForm({
             {busy ? "Creating…" : "Create schedule"}
           </Button>
         </div>
+        {hourRefusal !== null ? (
+          <p className="mt-2 text-sm text-alert" data-testid="schedule-create-refusal">
+            {hourRefusal} — nothing was sent.
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -221,18 +255,24 @@ export function ScheduleEditForm({
     weekday: row.weekday === null ? "0" : String(row.weekday),
   }));
 
+  const [hourRefusal, setHourRefusal] = useState<string | null>(null);
+
   function save() {
     const changes: ScheduleUpdate = {};
     if (draft.name !== row.name) changes.name = draft.name;
     if (draft.prompt !== row.prompt) changes.prompt = draft.prompt;
     if (draft.cadence !== row.cadence) changes.cadence = draft.cadence;
-    const parsedHour = draft.hour.trim() === "" ? Number.NaN : Number(draft.hour);
-    if (
-      Number.isInteger(parsedHour) &&
-      parsedHour >= 0 &&
-      parsedHour <= 23 &&
-      parsedHour !== row.hour
-    ) {
+
+    const trimmedHour = draft.hour.trim();
+    const parsedHour = trimmedHour === "" ? Number.NaN : Number(trimmedHour);
+    if (draft.hour !== String(row.hour)) {
+      // The operator touched the Hour box: if its content cannot be a wire hour (blank, 9.5, 25…),
+      // refuse it BY NAME here. The old shape dropped it from the PATCH silently — and with no
+      // other change closed the form as "nothing changed", a claim that was simply false (S2-F3).
+      if (!Number.isInteger(parsedHour) || parsedHour < 0 || parsedHour > 23) {
+        setHourRefusal(HOUR_REFUSAL);
+        return;
+      }
       changes.hour = parsedHour;
     }
     if (draft.cadence === "weekly") {
@@ -244,6 +284,7 @@ export function ScheduleEditForm({
       onCancel();
       return;
     }
+    setHourRefusal(null);
     onSave(changes);
   }
 
@@ -255,7 +296,10 @@ export function ScheduleEditForm({
       <ScheduleFields
         idPrefix={`schedule-edit-${row.id}`}
         draft={draft}
-        onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+        onChange={(patch) => {
+          setHourRefusal(null);
+          setDraft((current) => ({ ...current, ...patch }));
+        }}
       />
       <div className="mt-3 flex gap-2">
         <Button size="sm" onClick={save} disabled={busy}>
@@ -265,6 +309,11 @@ export function ScheduleEditForm({
           Cancel
         </Button>
       </div>
+      {hourRefusal !== null ? (
+        <p className="mt-2 text-sm text-alert" data-testid={`schedule-edit-refusal-${row.id}`}>
+          {hourRefusal} — nothing was saved.
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -20,8 +20,10 @@ action first and the agent records a labelled draft instead.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.agents.side_effects import integration_call, named_refusal
+from app.agents.tool_registry import egress_policy_refusal
 from app.config import settings
 from app.core.errors import E_INTEGRATION, E_VALIDATION
 
@@ -61,6 +63,10 @@ _LINKEDIN_API_VERSION = "202401"
 _GRAPH_BASE = "https://graph.facebook.com/v21.0"
 _TIKTOK_POST_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 _YOUTUBE_VIDEOS_INSERT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+
+#: Hard cap on the media bytes the YouTube adapter will download+upload (streamed; abort past
+#: it). U2-03 (wave-v14): pre-fix `httpx.get` materialised an attacker-sized response in memory.
+YOUTUBE_MEDIA_MAX_BYTES = 100 * 1024 * 1024
 
 
 def _missing_config(*pairs: tuple[str, str]) -> list[str]:
@@ -365,6 +371,25 @@ def _tiktok_publish_video(text: str, image_url: str) -> Any:  # pragma: no cover
     return {"id": publish_id}
 
 
+def _media_url_refusal(url: str) -> dict | None:
+    """Scheme check + the shared egress floor for the YouTube media download (U2-03, wave-v14).
+
+    `image_url` is the agent's post payload (LLM output) and this adapter is the worker's one
+    other arbitrary-URL fetch besides `web_fetch` — pre-fix there was NO validation at all and
+    the whole response was materialised in memory (FINDINGS U2-03). Same floor as web_fetch,
+    one shared definition. Returns the NAMED refusal, or None when the fetch may proceed.
+    """
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return named_refusal(
+            E_VALIDATION,
+            f"youtube: image_url must be an absolute http(s) URL (got {url!r})",
+            how_to_fix=("set image_url on the post item to a PUBLIC https URL of the video "
+                        "file to upload"),
+            platform="youtube", image_url=url)
+    return egress_policy_refusal(url, agent_type="social_media", tool="youtube media fetch")
+
+
 def _post_youtube(text: str, *, image_url: str = "") -> dict:
     """Upload one video to YouTube through the Data API's `videos.insert`.
 
@@ -391,6 +416,9 @@ def _post_youtube(text: str, *, image_url: str = "") -> dict:
             E_INTEGRATION, f"YouTube credentials missing: {', '.join(missing)}",
             how_to_fix=_YOUTUBE_HINT, missing=missing,
         )
+    media_denial = _media_url_refusal(media_url)
+    if media_denial is not None:
+        return media_denial
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
         call=_youtube_insert_video, text=text, image_url=media_url,
@@ -404,16 +432,37 @@ def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover
     import httpx
 
     # The media must travel as BYTES: fetch the caller's public URL, then upload it as the
-    # multipart body's media part (Google's documented upload shape). `privacyStatus: "public"`
-    # is the product intent (mirrors LinkedIn's visibility PUBLIC); YouTube itself restricts
-    # uploads from unverified API projects to private viewing until the project passes its audit.
-    media = httpx.get(image_url, timeout=60.0)
-    if media.status_code != 200:
-        raise RuntimeError(
-            f"YouTube media fetch returned {media.status_code}: {media.text[:300]}"
-        )
+    # multipart body's media part (Google's documented upload shape). The download is STREAMED
+    # under a byte cap and NEVER follows redirects (U2-03, wave-v14): pre-fix `httpx.get`
+    # auto-followed a 302 anywhere and materialised an attacker-sized response in memory — the
+    # same SSRF class `web_fetch` now closes (the URL floor itself is enforced by the caller,
+    # `_post_youtube`, before this adapter is ever invoked). `privacyStatus: "public"` is the
+    # product intent (mirrors LinkedIn's visibility PUBLIC); YouTube itself restricts uploads
+    # from unverified API projects to private viewing until the project passes its audit.
+    cap = int(YOUTUBE_MEDIA_MAX_BYTES)
+    chunks: list[bytes] = []
+    bytes_read = 0
+    with httpx.stream("GET", image_url, timeout=60.0, follow_redirects=False) as media:
+        if media.status_code in (301, 302, 303, 307, 308):
+            raise RuntimeError(
+                f"YouTube media fetch: {image_url} answered a redirect (HTTP "
+                f"{media.status_code}); redirects are not followed — pass the direct file URL"
+            )
+        if media.status_code != 200:
+            raise RuntimeError(
+                f"YouTube media fetch returned {media.status_code}: {media.read()[:300]!r}"
+            )
+        media_type = _response_header(media, "content-type") or "application/octet-stream"
+        for chunk in media.iter_bytes():
+            bytes_read += len(chunk)
+            if bytes_read > cap:
+                raise RuntimeError(
+                    f"YouTube media exceeds the {cap}-byte cap (YOUTUBE_MEDIA_MAX_BYTES); the "
+                    "download was stopped before the upload body was built — publish a smaller "
+                    "file or raise the cap"
+                )
+            chunks.append(chunk)
     boundary = f"polsia-{uuid.uuid4().hex}"
-    media_type = _response_header(media, "content-type") or "application/octet-stream"
     metadata = json.dumps({
         "snippet": {"title": text[:100], "description": text[:5000]},   # YouTube's own limits
         "status": {"privacyStatus": "public"},
@@ -421,7 +470,7 @@ def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover
     body = (
         f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
         f"--{boundary}\r\nContent-Type: {media_type}\r\n\r\n"
-    ).encode() + media.content + f"\r\n--{boundary}--".encode()
+    ).encode() + b"".join(chunks) + f"\r\n--{boundary}--".encode()
     response = httpx.post(
         _YOUTUBE_VIDEOS_INSERT_URL,
         params={"uploadType": "multipart", "part": "snippet,status"},

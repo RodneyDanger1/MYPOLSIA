@@ -9,9 +9,12 @@ import type { InvoiceCreate } from "@/lib/api";
  * The create form of the /invoices page — `POST /invoices` (`backend/app/api/v1/invoices.py` :64).
  *
  * The body it builds is exactly the `InvoiceCreateRequest` wire shape (:33-49): a field the
- * operator left empty is OMITTED (absent stays absent — the service stores what it was given and
+ * operator left EMPTY is OMITTED (absent stays absent — the service stores what it was given and
  * never fabricates a 0 from a blank input), and `bill_to` rides only when a name or email was
- * typed. `number`, `status` and the derived `due_date` are the SERVER's to assign; the form never
+ * typed. A non-blank `net_days` ALWAYS rides the body (S2-F3, wave v14): the request model's own
+ * `ge=0, le=365` refusal is the honest answer for an out-of-range value — the form must not drop
+ * the operator's stated terms and let the service substitute its default under a success notice.
+ * `number`, `status` and the derived `due_date` are the SERVER's to assign; the form never
  * invents them.
  */
 export function InvoiceCreateForm({
@@ -63,7 +66,11 @@ export function InvoiceCreateForm({
     if (Object.keys(billTo).length > 0) body.bill_to = billTo;
 
     const net = money(netDays);
-    if (net !== undefined && Number.isInteger(net) && net >= 0 && net <= 365) body.net_days = net;
+    // Non-blank net days ALWAYS ride the body (S2-F3, wave v14): an out-of-range value is refused
+    // BY NAME by the request model (`InvoiceCreateRequest.net_days`, `ge=0, le=365`, →
+    // E_VALIDATION) and that refusal is rendered above — it is never silently dropped so the
+    // service can apply its own default.
+    if (net !== undefined) body.net_days = net;
 
     const subtotalValue = money(subtotal);
     if (subtotalValue !== undefined) body.subtotal = subtotalValue;

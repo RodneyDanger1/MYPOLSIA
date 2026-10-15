@@ -73,6 +73,15 @@ def live_server():
         server.server_close()
 
 
+@pytest.fixture(autouse=True)
+def _stub_the_egress_floor(monkeypatch):
+    """These tests pin the FETCH MACHINERY (caps, timeout, HTML→text, redirect-following) over a
+    real loopback socket; the U2-02 egress floor (wave-v14) refuses loopback BY DESIGN, so it is
+    stubbed here ONLY. The floor itself is pinned end-to-end — named refusal + zero bytes crossed
+    — against a real loopback server in tests/unit/test_v14_sec.py."""
+    monkeypatch.setattr(tool_registry, "egress_policy_refusal", lambda url, **kwargs: None)
+
+
 def _payload(text: str) -> dict:
     return json.loads(text)
 

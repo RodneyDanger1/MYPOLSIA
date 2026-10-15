@@ -19,12 +19,12 @@ function readErrorText(e: unknown): string {
 }
 
 /** The planning view's margin template, as `GET /finance/planning` serves it (plan §9 B2). Typed
- *  for the two fields this panel reads; every input is `number | null` (unmeasured = null + the
- *  reason the endpoint names, never 0). */
+ *  for the fields this panel reads; every input is `number | null` (unmeasured = null + the reason
+ *  the endpoint names, never 0). The cause lives in the payload's `reasons` map keyed 1:1 to the
+ *  field (v14 S3-05 — the same contract the Finance page's Planning panel reads). */
 type PlanningView = {
   margin_template?: { margin?: number | null } | null;
-  margin_reason?: string | null;
-  reason?: string | null;
+  reasons?: Record<string, string> | null;
 };
 
 /** A margin reading as a percentage. B2's contract does not pin the unit, so the reading is
@@ -81,9 +81,18 @@ export function BusinessPanel() {
       .then((view) => {
         if (cancelled) return;
         const raw = view?.margin_template?.margin;
+        // The cause is read from the payload's `reasons` map, keyed to the field it explains
+        // (v14 S3-05): the margin key is the specific one, the price key the next-most-specific.
+        const rawReasons = view?.reasons;
+        const reasons: Record<string, string> =
+          rawReasons !== null && typeof rawReasons === "object" && !Array.isArray(rawReasons)
+            ? rawReasons
+            : {};
+        const named =
+          reasons["margin_template.margin"] ?? reasons["margin_template.price"] ?? null;
         setMargin({
           value: typeof raw === "number" && Number.isFinite(raw) ? raw : null,
-          reason: view?.margin_reason ?? view?.reason ?? null,
+          reason: typeof named === "string" && named.trim() !== "" ? named : null,
           error: null,
         });
       })

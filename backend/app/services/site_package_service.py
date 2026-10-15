@@ -18,6 +18,7 @@ import re
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,8 +114,22 @@ def _contact(company: CompanyConfig) -> str:
     lines.append(f"<p>{_esc(address)}</p>" if address else _CONTACT_ADDRESS_PLACEHOLDER)
     website = str(company.website_url or "").strip()
     if website:
-        lines.append(f'<p>Web: <a href="{_esc(website)}">{_esc(website)}</a></p>')
+        lines.append(_website_line(website))
     return "\n".join(lines)
+
+
+def _website_line(website: str) -> str:
+    """The website as a LINK only when its scheme is http(s); anything else stays plain text.
+
+    `_esc` escapes HTML metacharacters but not URL SCHEMES — a `javascript:`/`data:` value
+    rendered into `href` would be click-to-run code in the published artifact (U2-09,
+    wave-v14: probe2_out.json rendered `<a href="javascript:alert(5)">`). The configured
+    value is never silently dropped: a non-http(s) URL renders escaped, without a link.
+    """
+    scheme = urlsplit(website).scheme.lower()
+    if scheme in ("http", "https"):
+        return f'<p>Web: <a href="{_esc(website)}">{_esc(website)}</a></p>'
+    return f"<p>Web: {_esc(website)} (shown as text — not an http(s) URL)</p>"
 
 
 def render_site_package(company: CompanyConfig) -> dict[str, str]:

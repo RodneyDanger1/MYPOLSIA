@@ -75,10 +75,27 @@ beforeEach(() => {
 function answerWith(overrides: Record<string, unknown> = {}) {
   const paths: Record<string, unknown> = {
     "/planner/status": { confirmed: null, last_proposed_at: null },
+    // The REAL route shape (wave v14 S3-05): the three segments are ALWAYS objects on the wire
+    // (nulls inside when unmeasured) and every unmeasured input carries its cause in `reasons`,
+    // keyed 1:1 to the field — the field-level contract the Planning panel renders.
     "/finance/planning": {
       burn_line_items: [],
-      capacity: null,
-      margin_template: null,
+      capacity: {
+        hours_per_client_lo: null,
+        hours_per_client_hi: null,
+        max_clients: null,
+        mrr_at_capacity: null,
+        break_even_clients: null,
+        hours_per_client_source: null,
+      },
+      margin_template: {
+        price: null,
+        ai_cost: null,
+        human_hours: null,
+        human_rate: null,
+        margin: null,
+      },
+      reasons: {},
       pricing_guardrails: [],
     },
     // The finance page's own reads. The Planning panel is mounted by the PAGE (it is not a
@@ -445,10 +462,43 @@ describe("FirstDollarChecklist (plan §9 B5 + v1.1 renewal clocks)", () => {
 // C — the finance Planning panel
 // ---------------------------------------------------------------------------------------------
 
+/** The REAL route shape of GET /finance/planning (`build_planning_view`, wave v14 S3-05): the three
+ *  segments are ALWAYS objects on the wire (nulls inside when unmeasured) and every unmeasured input
+ *  carries its cause in the `reasons` map, keyed 1:1 to the field it explains. A fixture built
+ *  through this helper cannot drift from the route's shape the way the old hand-built one did. */
+function planningBody(over: Record<string, unknown> = {}) {
+  return {
+    burn_line_items: [],
+    capacity: {
+      hours_per_client_lo: null,
+      hours_per_client_hi: null,
+      max_clients: null,
+      mrr_at_capacity: null,
+      break_even_clients: null,
+      hours_per_client_source: null,
+    },
+    margin_template: {
+      price: null,
+      ai_cost: null,
+      human_hours: null,
+      human_rate: null,
+      margin: null,
+    },
+    reasons: {},
+    pricing_guardrails: [],
+    sales_tax_note: "Sales tax is collected where economic nexus applies.",
+    tax_disclaimer: "Not tax advice — verify with MN Revenue.",
+    catalog_as_of: "2026-10-14",
+    staleness_days: 1,
+    stale: false,
+    ...over,
+  };
+}
+
 describe("FinancePage — the Planning panel (GET /finance/planning)", () => {
   it("renders burn line items, capacity and the margin template", async () => {
     answerWith({
-      "/finance/planning": {
+      "/finance/planning": planningBody({
         burn_line_items: [
           { label: "Backend host", monthly_usd: 12, source: "config:host_plan" },
           { label: "Model tokens", monthly_usd: 30, source: "runs ledger, 30 days" },
@@ -459,6 +509,7 @@ describe("FinancePage — the Planning panel (GET /finance/planning)", () => {
           max_clients: 12,
           mrr_at_capacity: 3600,
           break_even_clients: 2,
+          hours_per_client_source: "SEO — small business",
         },
         margin_template: {
           price: 500,
@@ -467,8 +518,7 @@ describe("FinancePage — the Planning panel (GET /finance/planning)", () => {
           human_rate: 40,
           margin: 0.38,
         },
-        pricing_guardrails: [],
-      },
+      }),
     });
 
     render(<FinancePage />);
@@ -479,45 +529,89 @@ describe("FinancePage — the Planning panel (GET /finance/planning)", () => {
     expect(within(panel).getByTestId("planning-capacity")).toHaveTextContent("12");
     expect(within(panel).getByTestId("planning-margin")).toHaveTextContent("$500.00");
     expect(within(panel).getByTestId("planning-margin")).toHaveTextContent("38.0%");
+    // A measured input carries no reason — the panel prints only what the payload records.
+    expect(within(panel).queryAllByTestId("planning-reason")).toHaveLength(0);
   });
 
-  it("renders an unmeasured input as the em dash PLUS the reason — never as $0.00", async () => {
+  it("renders every unmeasured input as the em dash PLUS its cause from the payload's `reasons` map — never as $0.00 (S3-05)", async () => {
     answerWith({
-      "/finance/planning": {
+      "/finance/planning": planningBody({
         burn_line_items: [
           { label: "Model tokens", monthly_usd: null, source: null, reason: "no runs recorded yet" },
         ],
-        capacity: null,
-        capacity_reason: "owner hours per week is not configured",
-        margin_template: null,
-        margin_reason: "no price or cost inputs are configured yet",
-        pricing_guardrails: [],
-      },
+        reasons: {
+          "burn_line_items": "no expense records for 2026-10 — monthly burn is unmeasured",
+          "capacity.hours_per_client_lo":
+            "no catalog row matches the confirmed idea, so hours per client are unmeasured",
+          "capacity.hours_per_client_hi":
+            "no catalog row matches the confirmed idea, so hours per client are unmeasured",
+          "capacity.max_clients": "owner_hours_per_week is not set in the company profile",
+          "margin_template.price":
+            "no confirmed idea with a numeric price band is configured (run the planner and confirm a candidate)",
+          "margin_template.ai_cost": "no AI cost measured in the last 30 days (no runs reported a cost)",
+          "margin_template.human_hours":
+            "no catalog row matches the confirmed idea, so hours per client are unmeasured",
+          "margin_template.human_rate":
+            "no human hourly rate is configured anywhere (the owner profile carries hours, not a rate)",
+          "margin_template.margin":
+            "needs a measured price, ai_cost, human_hours and human_rate — see the fields above",
+        },
+      }),
     });
 
     render(<FinancePage />);
 
     const panel = await screen.findByTestId("finance-planning");
     expect(within(panel).getAllByText("—").length).toBeGreaterThan(0);
+    // The null burn row's own cause …
     expect(within(panel).getByText(/no runs recorded yet/)).toBeInTheDocument();
-    const capacity = within(panel).getByTestId("planning-capacity-unmeasured");
-    expect(capacity).toHaveTextContent("owner hours per week is not configured");
-    const margin = within(panel).getByTestId("planning-margin-unmeasured");
-    expect(margin).toHaveTextContent("no price or cost inputs are configured yet");
+    // … and each capacity/margin reading's cause, printed next to the reading it explains.
+    const capacity = within(panel).getByTestId("planning-capacity");
+    expect(capacity).toHaveTextContent("owner_hours_per_week is not set in the company profile");
+    expect(capacity).toHaveTextContent("no catalog row matches the confirmed idea");
+    const margin = within(panel).getByTestId("planning-margin");
+    expect(margin).toHaveTextContent("no human hourly rate is configured anywhere");
+    expect(margin).toHaveTextContent("no confirmed idea with a numeric price band");
     expect(within(panel).queryByText("$0.00")).toBeNull();
+  });
+
+  it("a segment answered as null says 'not measured' with the payload's reason — never a hardcoded cause", async () => {
+    answerWith({
+      "/finance/planning": planningBody({
+        capacity: null,
+        margin_template: null,
+        burn_line_items: [],
+        reasons: {
+          "burn_line_items": "no expense records for 2026-10 — monthly burn is unmeasured",
+          "capacity.max_clients": "owner_hours_per_week is not set in the company profile",
+          "margin_template.margin":
+            "needs a measured price, ai_cost, human_hours and human_rate — see the fields above",
+        },
+      }),
+    });
+
+    render(<FinancePage />);
+
+    const panel = await screen.findByTestId("finance-planning");
+    expect(within(panel).getByTestId("planning-burn-empty")).toHaveTextContent(
+      /no expense records for 2026-10/,
+    );
+    expect(within(panel).getByTestId("planning-capacity-unmeasured")).toHaveTextContent(
+      "owner_hours_per_week is not set in the company profile",
+    );
+    expect(within(panel).getByTestId("planning-margin-unmeasured")).toHaveTextContent(
+      "needs a measured price",
+    );
   });
 
   it("renders the pricing-model guardrails when the endpoint sends them", async () => {
     answerWith({
-      "/finance/planning": {
-        burn_line_items: [],
-        capacity: null,
-        margin_template: null,
+      "/finance/planning": planningBody({
         pricing_guardrails: [
           "Hourly pricing: the model caps what one operator can earn.",
           "Rev-share: the model cannot be automated end to end.",
         ],
-      },
+      }),
     });
 
     render(<FinancePage />);
@@ -669,8 +763,15 @@ describe("BusinessPanel — GROSS MARGIN row (plan §9 v1.1)", () => {
       "/finance/planning": {
         burn_line_items: [],
         capacity: null,
-        margin_template: null,
-        margin_reason: "no price or cost inputs are configured yet",
+        margin_template: {
+          price: null,
+          ai_cost: null,
+          human_hours: null,
+          human_rate: null,
+          margin: null,
+        },
+        // The REAL route shape (v14 S3-05): the cause rides the `reasons` map, keyed to the field.
+        reasons: { "margin_template.margin": "no price or cost inputs are configured yet" },
         pricing_guardrails: [],
       },
     });

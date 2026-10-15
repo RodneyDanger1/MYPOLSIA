@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core import database
+from app.core.errors import E_AUTH
 from app.core.timeutil import day_bounds, utc_day_bounds
 from app.models.report import ActivityLog
 
@@ -210,7 +211,8 @@ async def test_engine_is_lazy_and_the_driver_is_needed_only_when_used():
 
 
 # --------------------------------------------------------------------------- #
-# 5. auth ordering: 422 for unknown agent even with NO key; 401 for known+no key
+# 5. auth ordering (U2-05, wave-v14): 401 for EVERY unauthenticated caller (no oracle);
+#    422 only once a VALID key is presented
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_trigger_ordering_without_auth(api_client, monkeypatch):
@@ -240,10 +242,15 @@ async def test_trigger_ordering_without_auth(api_client, monkeypatch):
     print("  unknown+bad-key  ->", unknown_wrong_key.status_code)
     print("  known+key(no body) ->", valid.status_code, valid.json())
 
-    assert unknown_no_key.status_code == 422
+    # U2-05: auth runs BEFORE path validation — one 401 E_AUTH for every caller without a VALID
+    # key, for a known agent name and an unknown one alike (no credential-free oracle).
+    for leg, resp in (("unknown+no-key", unknown_no_key), ("known+no-key", known_no_key),
+                      ("unknown+bad-key", unknown_wrong_key)):
+        assert resp.status_code == 401, f"{leg}: {resp.status_code} {resp.text[:200]}"
+        assert resp.json()["error"]["code"] == E_AUTH, leg
+    assert unknown_no_key.json() == known_no_key.json(), "valid-vs-invalid agent oracle is back"
+    # WITH a valid key the enum still refuses an unknown name by name (422).
     assert unknown_with_key.status_code == 422
-    assert unknown_wrong_key.status_code == 422
-    assert known_no_key.status_code == 401
     assert valid.status_code == 202
     assert valid.json()["status"] == "queued"
     assert "queued" in valid.json()["message"]

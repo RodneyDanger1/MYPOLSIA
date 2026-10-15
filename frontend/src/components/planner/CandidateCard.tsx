@@ -17,7 +17,11 @@ import type { PlannerCandidate, PlannerGates, PlannerRubric } from "@/components
  *    null says so;
  *  - print a claim without its source. Every claim row carries its own link to the fetched page and
  *    the verbatim quote; a claim the model stated without a fetch is stripped by the backend and
- *    only its COUNT arrives (`claims_unverified`), which the page states out loud.
+ *    only its COUNT arrives (`claims_unverified`), which the page states out loud;
+ *  - render a claim's `source_url` as a link ONLY when it is an absolute http(s) URL. The value is
+ *    free-form LLM/web-research output and React 18 does not block `javascript:` URLs, so a hostile
+ *    citation would execute on click in the app origin (which holds the owner's API key) — a
+ *    non-http(s) value renders as plain text instead (U2-04), never silently dropped.
  *
  * The rubric is the backend's Python-computed 0-5 × 6 axes + total 0-30 (`planner_service.py`); the
  * bars are a display of that number over its own maximum — nothing is rescaled or re-scored here.
@@ -109,6 +113,23 @@ function priceBandText(band: [number, number] | null): string {
   return `${asMoney(lo)}–${asMoney(hi)}`;
 }
 
+/**
+ * Only absolute http(s) URLs may become a rendered `href` (U2-04, wave-v14). `source_url` is
+ * free-form research output; React 18 does not block `javascript:` URLs (its sanitizeURL is a
+ * dev-only warning), so the attribute would execute on click in the app origin — which holds
+ * the owner's API key. Non-http(s) values (javascript:, data:, relative, malformed) return
+ * null and render as plain text instead.
+ */
+export function safeHref(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function CandidateCard({
   candidate,
   confirming,
@@ -140,31 +161,40 @@ export function CandidateCard({
         </p>
       ) : (
         <ul className="mt-1 space-y-2" data-testid="claims">
-          {candidate.claims.map((claim, index) => (
-            <li key={`${claim.source_url}-${index}`} className="text-sm">
-              <p className="text-ink">{claim.claim}</p>
-              {claim.quote ? <blockquote className="text-ink-muted">“{claim.quote}”</blockquote> : null}
-              <p className="mt-0.5 flex flex-wrap items-center gap-2">
-                <a
-                  href={claim.source_url}
-                  className="link text-xs"
-                  target="_blank"
-                  rel="noreferrer"
-                  title={claim.source_url}
-                >
-                  {claim.source_url}
-                </a>
-                {claim.fetched_at ? (
-                  <span className="ui-label text-ink-muted">{absoluteStamp(claim.fetched_at)}</span>
-                ) : null}
-                {claim.verified === false ? (
-                  <Chip variant="soft" className="text-amber-800">
-                    unverified
-                  </Chip>
-                ) : null}
-              </p>
-            </li>
-          ))}
+          {candidate.claims.map((claim, index) => {
+            const href = safeHref(claim.source_url);
+            return (
+              <li key={`${claim.source_url}-${index}`} className="text-sm">
+                <p className="text-ink">{claim.claim}</p>
+                {claim.quote ? <blockquote className="text-ink-muted">“{claim.quote}”</blockquote> : null}
+                <p className="mt-0.5 flex flex-wrap items-center gap-2">
+                  {href ? (
+                    <a
+                      href={href}
+                      className="link text-xs"
+                      target="_blank"
+                      rel="noreferrer"
+                      title={claim.source_url}
+                    >
+                      {claim.source_url}
+                    </a>
+                  ) : (
+                    <span className="text-xs text-ink-muted" title={claim.source_url}>
+                      {claim.source_url}
+                    </span>
+                  )}
+                  {claim.fetched_at ? (
+                    <span className="ui-label text-ink-muted">{absoluteStamp(claim.fetched_at)}</span>
+                  ) : null}
+                  {claim.verified === false ? (
+                    <Chip variant="soft" className="text-amber-800">
+                      unverified
+                    </Chip>
+                  ) : null}
+                </p>
+              </li>
+            );
+          })}
         </ul>
       )}
 

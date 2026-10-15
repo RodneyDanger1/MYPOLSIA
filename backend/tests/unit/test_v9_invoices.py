@@ -144,9 +144,14 @@ async def test_create_assigns_sequential_numbers_and_null_money(async_db_session
     assert first.json()["number"] == "INV-2026-001"
     assert second.json()["number"] == "INV-2026-002"
     assert first.json()["status"] == "draft"
-    # money is NOT fabricated: no subtotal/tax/total sent => null on the wire (never 0)
+    # money is NOT fabricated: no subtotal/tax/total sent => null on the wire (never 0).
+    # `tax` is the field this pin was MISSING (S1-04: it carried default=0 + server_default
+    # '0', so it stored a fabricated measured zero — wave-v13/s1-backend FINDINGS S1-04);
+    # the assertions below are the ones whose absence let that ship.
     assert first.json()["subtotal"] is None
+    assert first.json()["tax"] is None
     assert first.json()["total"] is None
+    assert second.json()["tax"] is None
     # net_days drives the default due date
     assert second.json()["due_date"] == (ISSUE + timedelta(days=15)).isoformat()
 

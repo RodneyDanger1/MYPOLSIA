@@ -81,11 +81,43 @@ class _FakeHTTPX:
             fake.calls.append({"method": "GET", "url": url, **kwargs})
             return _Response(200, {"content-type": "video/mp4"}, "", b"fake-video-bytes")
 
+        class _StreamResponse(_Response):
+            """The `stream()` context-manager surface (U2-03: the media download is streamed
+            under a byte cap — the adapter uses httpx.stream + iter_bytes)."""
+
+            def __enter__(self) -> _StreamResponse:
+                return self
+
+            def __exit__(self, *exc: Any) -> bool:
+                return False
+
+            def iter_bytes(self, chunk_size: int | None = None):
+                yield self.content
+
+            def read(self) -> bytes:
+                return self.content
+
+        def stream(method: str, url: str, **kwargs: Any) -> _StreamResponse:
+            response = get(url, **kwargs)               # same recording as the GET leg
+            return _StreamResponse(response.status_code, response.headers,
+                                   response.text, response.content)
+
         module = types.ModuleType("httpx")
         module.post = post                              # type: ignore[attr-defined]
         module.get = get                                # type: ignore[attr-defined]
+        module.stream = stream                          # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "httpx", module)
         return fake
+
+
+@pytest.fixture(autouse=True)
+def _stub_the_egress_floor(monkeypatch):
+    """The youtube legs post `https://cdn.example.com/...` — a fake host that cannot resolve; the
+    U2-03 egress floor (wave-v14) refuses unresolvable hosts BY NAME before the adapter fetch.
+    These drills pin the producer->cap chain with the provider fake installed, so the floor is
+    stubbed here ONLY; its own legs (loopback / metadata / redirect / byte-cap) are pinned
+    end-to-end in `tests/unit/test_v14_sec.py` against a real loopback server."""
+    monkeypatch.setattr(integrations, "egress_policy_refusal", lambda url, **kwargs: None)
 
 
 def _stub_collection(agent: Any, payload: dict[str, Any]) -> Any:

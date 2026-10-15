@@ -250,6 +250,23 @@ describe("SchedulesPage — create (POST /schedules)", () => {
     );
     expect(screen.queryByTestId("schedule-row-11")).toBeNull();
   });
+
+  it("a cleared hour box is refused LOCALLY with the stated reason — nothing is POSTed (S2-F3)", async () => {
+    answerWith({ "/schedules": { items: [], total: 0 } });
+    render(<SchedulesPage />);
+    await screen.findByTestId("schedules-empty");
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Blank hour" } });
+    fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Never sent." } });
+    fireEvent.change(screen.getByLabelText("Hour"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create schedule" }));
+
+    // The old shape shipped `hour: NaN`, which JSON.stringify serialized as `null`, so the server's
+    // uncoded 422 body explained it. A blank box is not a value: the form states the reason itself.
+    const refusal = await screen.findByTestId("schedule-create-refusal");
+    expect(refusal).toHaveTextContent("Hour must be a whole number 0-23 (company-local)");
+    expect(mockPost).not.toHaveBeenCalled();
+  });
 });
 
 describe("SchedulesPage — pause/resume (PATCH /schedules/{id})", () => {
@@ -334,6 +351,27 @@ describe("SchedulesPage — edit (PATCH with only the changed fields)", () => {
       ),
     );
     expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("an out-of-range hour is refused locally instead of being dropped from the PATCH (S2-F3)", async () => {
+    answerWith({ "/schedules": { items: [schedule()], total: 1 } });
+    render(<SchedulesPage />);
+    const row = await screen.findByTestId("schedule-row-3");
+
+    fireEvent.click(within(row).getByRole("button", { name: /^Edit$/ }));
+    const form = await screen.findByTestId("schedule-edit-3");
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Morning digest" } });
+    fireEvent.change(within(form).getByLabelText("Hour"), { target: { value: "25" } });
+
+    fireEvent.click(within(form).getByRole("button", { name: /^Save$/ }));
+
+    // The old shape quietly omitted the invalid hour from the PATCH (and, with no other change,
+    // closed the form as "nothing changed"). Now the refusal is stated and nothing is sent.
+    const refusal = await screen.findByTestId("schedule-edit-refusal-3");
+    expect(refusal).toHaveTextContent("Hour must be a whole number 0-23 (company-local)");
+    expect(mockPatch).not.toHaveBeenCalled();
+    // The other edit stays in the open form — nothing was silently dropped.
+    expect(within(form).getByLabelText("Name")).toHaveValue("Morning digest");
   });
 });
 

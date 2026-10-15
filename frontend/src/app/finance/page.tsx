@@ -76,10 +76,16 @@ const EVENT_COLUMNS: FinanceColumn<StripeEventRow>[] = [
  *
  * The endpoint answers the burn line items, the capacity reading from the owner's hours, and the
  * margin template — with anything it could not measure served as `null` PLUS the reason. This panel
- * is that contract rendered, and it never improves on it:
- *   - a null input is the em dash (the project's one "not measured" marker) and, when the payload
- *     names a reason, the reason is printed next to it;
- *   - a whole segment that came back null says "not measured" and why, instead of a grid of dashes;
+ * is that contract rendered, and it never improves on it. THE CONTRACT (aligned wave v14, S3-05 —
+ * the same words live in `backend/app/api/v1/finance.py::build_planning_view`):
+ *   - the three segments are ALWAYS objects on the wire; a field inside one is `null` when that
+ *     input was not measured, and its cause is recorded in the payload's `reasons` map, keyed 1:1
+ *     to the field: `capacity.<field>`, `margin_template.<field>`, and `burn_line_items` for the
+ *     whole month (`burn_line_items.<category>` per category);
+ *   - a null burn row carries the same string inlined as its own `reason`;
+ *   - this panel renders that cause NEXT TO the reading it explains: a null input is the em dash
+ *     (the project's one "not measured" marker) followed by the reason text, and a whole segment
+ *     that came back null says "not measured" with the payload's reason — never a hardcoded cause;
  *   - `pricing_guardrails` (R3's anti-patterns) render as flag chips WHEN PRESENT — an empty list is
  *     a real answer and simply has no warnings to show;
  *   - a body carrying none of the planning fields at all (a wrong or truncated read) is named as
@@ -121,14 +127,22 @@ type MarginTemplate = {
 
 type PlanningView = {
   burn_line_items?: BurnLineItem[] | null;
-  burn_reason?: string | null;
   capacity?: PlanningCapacity | null;
-  capacity_reason?: string | null;
   margin_template?: MarginTemplate | null;
-  margin_reason?: string | null;
+  /** The field-level reason contract (v14 S3-05): every input the endpoint could not measure
+   *  carries its cause here, keyed 1:1 to the field — `capacity.<field>`, `margin_template.<field>`,
+   *  `burn_line_items` (whole month) / `burn_line_items.<category>` (per category). The panel renders
+   *  these next to the readings they explain; a key exists only for an unmeasured field. */
+  reasons?: Record<string, string> | null;
   pricing_guardrails?: string[] | null;
-  reason?: string | null;
 };
+
+/** The cause the payload records for one field, or null when it records none (a measured field has
+ *  no reason — the map only explains nulls). Blank/unreadable entries are treated as absent. */
+function reasonFor(reasons: Record<string, string>, key: string): string | null {
+  const text = reasons[key];
+  return typeof text === "string" && text.trim() !== "" ? text : null;
+}
 
 /* -------------------------------------------------------------------------------------------
  * Market context (parent scope amendment, owner-driven): ONE compact mono line fed by
@@ -231,12 +245,26 @@ function moneyOrDash(value: number | null | undefined): string {
   return usdText(value);
 }
 
-function NumberRow({ label, value }: { label: string; value: string }) {
+function NumberRow({
+  label,
+  value,
+  reason,
+}: {
+  label: string;
+  value: string;
+  /** The payload's recorded cause for this reading, when it could not be measured. */
+  reason?: string | null;
+}) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="ui-label text-ink-muted">{label}</dt>
-      <dd>
+      <dd className="text-right">
         <Reading text={value} />
+        {reason ? (
+          <span className="ml-2 text-xs text-ink-muted" data-testid="planning-reason">
+            {reason}
+          </span>
+        ) : null}
       </dd>
     </div>
   );
@@ -252,6 +280,13 @@ function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
       view.capacity !== undefined ||
       view.margin_template !== undefined ||
       view.pricing_guardrails !== undefined);
+
+  /** The payload's reason map (v14 S3-05): the ONE place each unmeasured input's cause is read
+   *  from. Defensive normalization — a non-object answer is treated as "no reasons recorded". */
+  const reasons: Record<string, string> =
+    view !== null && view.reasons !== null && typeof view.reasons === "object" && !Array.isArray(view.reasons)
+      ? view.reasons
+      : {};
 
   return (
     <Card title="Planning" data-testid="finance-planning">
@@ -295,11 +330,15 @@ function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
             </ul>
           ) : (
             <p className="text-sm text-ink-muted" data-testid="planning-burn-empty">
-              No burn line items were measured{view.burn_reason ? ` — ${view.burn_reason}` : ""}.
+              No burn line items were measured
+              {reasonFor(reasons, "burn_line_items")
+                ? ` — ${reasonFor(reasons, "burn_line_items")}`
+                : ""}.
             </p>
           )}
 
-          {/* Capacity from the owner's available hours */}
+          {/* Capacity from the owner's available hours. Each reading that could not be measured
+              prints the cause the payload recorded for THAT field (never a hardcoded one). */}
           {view.capacity ? (
             <dl className="space-y-1" data-testid="planning-capacity">
               <NumberRow
@@ -307,24 +346,59 @@ function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
                 value={`${countText(view.capacity.hours_per_client_lo)}–${countText(
                   view.capacity.hours_per_client_hi,
                 )}`}
+                reason={
+                  reasonFor(reasons, "capacity.hours_per_client_lo") ??
+                  reasonFor(reasons, "capacity.hours_per_client_hi")
+                }
               />
-              <NumberRow label="Max clients" value={countText(view.capacity.max_clients)} />
-              <NumberRow label="MRR at capacity" value={usdText(view.capacity.mrr_at_capacity)} />
-              <NumberRow label="Break-even clients" value={countText(view.capacity.break_even_clients)} />
+              <NumberRow
+                label="Max clients"
+                value={countText(view.capacity.max_clients)}
+                reason={reasonFor(reasons, "capacity.max_clients")}
+              />
+              <NumberRow
+                label="MRR at capacity"
+                value={usdText(view.capacity.mrr_at_capacity)}
+                reason={reasonFor(reasons, "capacity.mrr_at_capacity")}
+              />
+              <NumberRow
+                label="Break-even clients"
+                value={countText(view.capacity.break_even_clients)}
+                reason={reasonFor(reasons, "capacity.break_even_clients")}
+              />
             </dl>
           ) : (
             <p className="text-sm text-ink-muted" data-testid="planning-capacity-unmeasured">
-              Capacity is not measured — {view.capacity_reason ?? "the owner's hours per week are not configured"}.
+              Capacity is not measured —{" "}
+              {reasonFor(reasons, "capacity.max_clients") ??
+                reasonFor(reasons, "capacity.hours_per_client_lo") ??
+                "the payload named no reason for this read"}.
             </p>
           )}
 
           {/* The margin template */}
           {view.margin_template ? (
             <dl className="space-y-1" data-testid="planning-margin">
-              <NumberRow label="Price" value={usdText(view.margin_template.price)} />
-              <NumberRow label="AI cost" value={usdText(view.margin_template.ai_cost)} />
-              <NumberRow label="Human hours" value={countText(view.margin_template.human_hours)} />
-              <NumberRow label="Human rate" value={usdText(view.margin_template.human_rate)} />
+              <NumberRow
+                label="Price"
+                value={usdText(view.margin_template.price)}
+                reason={reasonFor(reasons, "margin_template.price")}
+              />
+              <NumberRow
+                label="AI cost"
+                value={usdText(view.margin_template.ai_cost)}
+                reason={reasonFor(reasons, "margin_template.ai_cost")}
+              />
+              <NumberRow
+                label="Human hours"
+                value={countText(view.margin_template.human_hours)}
+                reason={reasonFor(reasons, "margin_template.human_hours")}
+              />
+              <NumberRow
+                label="Human rate"
+                value={usdText(view.margin_template.human_rate)}
+                reason={reasonFor(reasons, "margin_template.human_rate")}
+              />
               <NumberRow
                 label="Margin"
                 value={
@@ -332,11 +406,15 @@ function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
                     ? NOT_MEASURED
                     : planningPercentText(view.margin_template.margin)
                 }
+                reason={reasonFor(reasons, "margin_template.margin")}
               />
             </dl>
           ) : (
             <p className="text-sm text-ink-muted" data-testid="planning-margin-unmeasured">
-              The margin template is not measured — {view.margin_reason ?? "no price or cost inputs are configured"}.
+              The margin template is not measured —{" "}
+              {reasonFor(reasons, "margin_template.margin") ??
+                reasonFor(reasons, "margin_template.price") ??
+                "the payload named no reason for this read"}.
             </p>
           )}
 

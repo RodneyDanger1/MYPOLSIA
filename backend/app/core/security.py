@@ -20,7 +20,17 @@ def _matches(provided: str | None) -> bool:
         # error/empty states. Found by the e2e gate, which had never been run: the browser snapshot
         # read `- main: Failed to load config` while curl (no header at all) got 200.
         return not (provided or "").strip()
-    return secrets.compare_digest(provided or "", expected)
+    # U2-01 (wave-v14): compare BYTES, never `str`. `secrets.compare_digest` raises
+    # `TypeError: comparing strings with non-ASCII characters is not supported` when either
+    # `str` operand contains ANY non-ASCII char — so a header value with one byte >= 0x80
+    # (uvicorn decodes header bytes as latin-1) turned every protected route into a 500
+    # instead of the named E_AUTH, and a non-ASCII *configured* key 500'd EVERY request.
+    # On bytes compare_digest never raises; a non-ASCII value is simply a wrong key.
+    try:
+        return secrets.compare_digest(
+            (provided or "").encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeError:  # lone surrogates cannot round-trip UTF-8: not a possible key value
+        return False
 
 
 async def verify_api_key(
@@ -40,7 +50,12 @@ async def verify_api_key(
 
 
 async def check_api_key(x_api_key: str | None) -> None:
-    """Inline check used by routes that must validate the path param FIRST."""
+    """Inline check — the parity-tested twin of `verify_api_key`.
+
+    No shipped route calls it any more: U2-05 (wave-v14) moved the trigger route to a
+    router-level dependency so auth runs BEFORE path validation. It stays exported for the
+    parity suite and as the second supported form of the key check.
+    """
     if not _matches(x_api_key):
         raise PolsiaError(
             E_AUTH,

@@ -57,12 +57,25 @@ def money(value: Any) -> Decimal | None:
     `Decimal(str(x))` — not `Decimal(x)` — because the float has already lost the
     decimal value by the time it is a float (`Decimal(0.1)` is
     `0.1000000000000000055511151231257827`).
+
+    A NON-FINITE value (`NaN` / `±Infinity`, however spelled) is not a measurement and is
+    refused BY NAME (S4-F1, wave-v13/s4-errors F1): `Decimal(str(float("nan")))` is
+    `Decimal("NaN")`, which the invoice create route used to PERSIST and then 500 on at
+    response render — poisoning every later collection read.  This is the service-layer
+    belt; the wire models also reject non-finite floats (`allow_inf_nan=False`) before
+    they get here.
     """
     if value is None:
         return None
-    if isinstance(value, Decimal):
-        return value
-    return Decimal(str(value))
+    result = value if isinstance(value, Decimal) else Decimal(str(value))
+    if not result.is_finite():
+        raise PolsiaError(
+            E_VALIDATION,
+            f"money value {value!r} is not finite (NaN/Infinity are not measurements)",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"value": repr(value)},
+        )
+    return result
 
 
 #: Stripe event types whose `data.object` is a failed payment.  The finance agent's

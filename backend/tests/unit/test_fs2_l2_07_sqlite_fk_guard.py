@@ -106,10 +106,10 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
 
     con = _fk_on_connection(db_path)
     try:
-        # W1/T03+T19 -> U5 -> V8: the chain head moved 0006 -> 0007 -> 0008
-        # (`0008_chat_schedules_invoices.py`); this pin is a DELIBERATE update
-        # (old -> new: "0007" -> "0008"), the guard legs below are unchanged.
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0008"
+        # W1/T03+T19 -> U5 -> V8 -> V14: the chain head moved 0006 -> 0007 -> 0008 -> 0009
+        # (`0009_drop_invoices_tax_server_default.py`); this pin is a DELIBERATE update
+        # (old -> new: "0008" -> "0009"), the guard legs below are unchanged.
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0009"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1

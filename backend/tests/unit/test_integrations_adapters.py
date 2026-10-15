@@ -156,6 +156,10 @@ def test_post_youtube_missing_token_names_it(monkeypatch):
 
 def test_post_youtube_with_token_routes_to_the_videos_insert_adapter(monkeypatch):
     monkeypatch.setattr(app_config.settings, "youtube_access_token", "test-value")
+    # The U2-03 egress floor (wave-v14) refuses the fake, unresolvable host (`cdn.example.com`)
+    # before the adapter call this test pins; stubbed ONLY here. The floor's own legs
+    # (loopback / metadata / redirect / byte-cap) are pinned in tests/unit/test_v14_sec.py.
+    monkeypatch.setattr(integrations, "egress_policy_refusal", lambda url, **kwargs: None)
     recorder = _Recorder()
     monkeypatch.setattr(integrations, "integration_call", recorder)
     out = integrations.post_tweet("hello yt", platform="youtube",

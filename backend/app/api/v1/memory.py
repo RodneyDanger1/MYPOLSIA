@@ -41,6 +41,16 @@ async def read_memory(
 
 @router.post("", response_model=MemoryEntryResponse, status_code=status.HTTP_201_CREATED)
 async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db)) -> MemoryEntryResponse:
+    """Store one memory entry (sqlite row + ChromaDB document).
+
+    INTENDED STATUS (tracker S3-03, wave v13 wiring sweep; annotated wave v14): the route is
+    API-only at this HEAD. The Memory page (`frontend/src/app/memory/page.tsx`) reads
+    `GET /memory` and offers no add control, so the only callers are tests/e2e
+    (`tests/unit/api/test_memory.py`, `e2e/memory.spec.ts`). Whether the product gains an
+    "Add memory" control — which would also make the service's named `E_STORAGE` refusal reachable
+    from the UI — is an OPEN product decision, not an oversight to patch silently; do not delete
+    the route on the strength of its unreferenced state.
+    """
     with refusal_guard():
         entry = await store_memory(
             db,
@@ -63,6 +73,12 @@ async def remove_memory(memory_id: int, db: AsyncSession = Depends(get_db)) -> M
     handlers `_endpoint`).  The 200 body is the removed entry's representation:
     it carries the `chroma_id` that was deleted, so the caller can check the exact
     document rather than trusting an empty response.
+
+    INTENDED STATUS (tracker S3-03, wave v13 wiring sweep; annotated wave v14): API-only at this
+    HEAD — the Memory page offers no per-row "Forget" control, so the only callers are tests/e2e
+    (`tests/unit/api/test_memory_delete.py`, `e2e/memory.spec.ts`). The named `E_NOT_FOUND` refusal
+    is unreachable from the product until that control lands (or the owner decides the route stays
+    API-only). Do not read the absence of UI callers as a defect to delete.
     """
     with refusal_guard():
         entry = await delete_memory(db, memory_id)

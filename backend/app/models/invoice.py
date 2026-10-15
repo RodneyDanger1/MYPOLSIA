@@ -13,8 +13,9 @@ Column semantics:
 * `issue_date` / `due_date` are calendar dates; `net_days` the payment terms linking them (default
   30); `currency` defaults to 'USD';
 * money is `NUMERIC(12, 2)` like every money column (A-T17/T18: exact at rest) and stays NULL when
-  unmeasured — `subtotal` / `tax` / `total` are ALL nullable; `tax` defaults to 0 only as the
-  starting point of a fresh invoice line, never as a fabricated measurement;
+  unmeasured — `subtotal` / `tax` / `total` are ALL nullable and NONE carries a default: an omitted
+  `tax` stays NULL like the other two (S1-04 removed the fabricated-0 default — it stored a
+  MEASURED zero for an unmeasured tax);
 * `status` is the named value set `draft` -> `sent` -> `paid` | `void` | `overdue` (named CHECK,
   `ck_invoices_status`);
 * `payment_link`, `paid_at` and `late_fee_note` carry the collections story — all nullable.
@@ -61,7 +62,12 @@ class Invoice(Base):
         Text, nullable=False, server_default="USD", default="USD"
     )
     subtotal: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
-    tax: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), server_default="0", default=0)
+    # S1-04: NO default of any kind — neither `default=0` nor `server_default="0"`.  Either
+    # one fabricated a MEASURED zero for an unmeasured tax (the null≠0 breach the module
+    # docstring and `create_invoice`'s docstring both refuse); an explicit `Decimal("0")`
+    # from the caller is the only way a measured zero is stored.  Migration 0009 drops the
+    # server default from existing databases.
+    tax: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     total: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     status: Mapped[InvoiceStatus] = mapped_column(
         Enum(

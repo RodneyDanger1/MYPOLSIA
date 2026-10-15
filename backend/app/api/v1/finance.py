@@ -469,7 +469,20 @@ async def _burn_line_items(db: AsyncSession, reasons: dict[str, str]) -> list[di
     items: list[dict[str, Any]] = []
     for category, total_cents in rows:
         if total_cents is None:
-            reasons[f"burn_line_items.{category}"] = "expenses in this category carry no measured amount"
+            # The month DID record this category, with no measured amount: keep it VISIBLE as a null
+            # row carrying its cause instead of dropping it (v14 S3-05 — the panel renders
+            # `monthly_usd: null` as the em dash plus this `reason`; the `reasons` map keeps the
+            # per-category key as the response-level provenance of the same fact).
+            reason = "expenses in this category carry no measured amount"
+            reasons[f"burn_line_items.{category}"] = reason
+            items.append(
+                {
+                    "label": str(category or "uncategorized"),
+                    "monthly_usd": None,
+                    "source": None,
+                    "reason": reason,
+                }
+            )
             continue
         items.append(
             {
@@ -505,15 +518,31 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
     The capacity inputs (hours per client) come from the DATED catalog snapshot; the response
     therefore carries the computed `catalog_as_of` / `staleness_days` / `stale` provenance so the
     numbers can never read as live market truth (owner amendment, wave V9).
+
+    THE REASON CONTRACT (wave v14 S3-05 — ONE seam, consumed by the Finance page's Planning panel,
+    `frontend/src/app/finance/page.tsx`; do not rename a key here without the FE change):
+      - every input this view could not measure stays `null`, and its cause is recorded in the
+        `reasons` map keyed 1:1 to the field it explains: `capacity.<field>`,
+        `margin_template.<field>`, `burn_line_items` (the whole month) / `burn_line_items.<category>`
+        (one category);
+      - a burn row whose category carried no measured amount is still ANSWERED — as
+        `monthly_usd: null` with the same string inlined as the row's `reason`;
+      - a reason is written for an UNMEASURED field ONLY: the panel prints every reason it finds,
+        so a reason beside a measured value would read as a claim about a number that exists.
     """
     reasons: dict[str, str] = {}
     today = today_in()
     provenance = pricing_service.catalog_provenance(today)
     company = await get_company(db)
     burn_line_items = await _burn_line_items(db, reasons)
-    burn_total = (
-        round(sum(item["monthly_usd"] for item in burn_line_items), 2) if burn_line_items else None
-    )
+    # A null burn row is UNMEASURED (see `_burn_line_items`): summing it would fabricate a 0, so the
+    # total only ever adds rows that carry a measured amount — and with none measured it is null.
+    measured_burn = [
+        float(item["monthly_usd"])
+        for item in burn_line_items
+        if item["monthly_usd"] is not None
+    ]
+    burn_total = round(sum(measured_burn), 2) if measured_burn else None
 
     idea = (
         company.confirmed_idea
@@ -551,6 +580,9 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
         )
         reasons["capacity.hours_per_client_lo"] = reason
         reasons["capacity.hours_per_client_hi"] = reason
+        # `margin_template.human_hours` IS hours_hi: mirror the same cause under the margin key so
+        # the panel can read every null field 1:1 from this map (v14 S3-05 contract).
+        reasons["margin_template.human_hours"] = reason
 
     owner_hours = company.owner_hours_per_week if company is not None else None
     monthly_hours: float | None = None

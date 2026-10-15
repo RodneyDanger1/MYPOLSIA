@@ -82,15 +82,47 @@ class _FakeHTTPX:
                 return _Response(status, headers, text, content)
             return _Response(200, {"content-type": "video/mp4"}, "", b"fake-video-bytes")
 
+        class _StreamResponse(_Response):
+            """The `stream()` context-manager surface (U2-03: the media download is streamed
+            under a byte cap — the adapter uses httpx.stream + iter_bytes)."""
+
+            def __enter__(self) -> _StreamResponse:
+                return self
+
+            def __exit__(self, *exc: Any) -> bool:
+                return False
+
+            def iter_bytes(self, chunk_size: int | None = None):
+                yield self.content
+
+            def read(self) -> bytes:
+                return self.content
+
+        def stream(method: str, url: str, **kwargs: Any) -> _StreamResponse:
+            response = get(url, **kwargs)               # same recording + scripted get_response
+            return _StreamResponse(response.status_code, response.headers,
+                                   response.text, response.content)
+
         module = types.ModuleType("httpx")
         module.post = post                              # type: ignore[attr-defined]
         module.get = get                                # type: ignore[attr-defined]
+        module.stream = stream                          # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "httpx", module)
         return fake
 
 
 def _settings(**overrides: str) -> types.SimpleNamespace:
     return types.SimpleNamespace(**{k: v for k, v in overrides.items() if v is not None})
+
+
+@pytest.fixture(autouse=True)
+def _stub_the_egress_floor(monkeypatch):
+    """`MEDIA_URL` is a fake host (`cdn.example.com`) that cannot resolve; the U2-03 egress floor
+    (wave-v14) refuses unresolvable hosts BY NAME before the adapter fetch. This suite pins the
+    adapters' routing/refusal surfaces with the provider fake installed, so the floor is stubbed
+    here ONLY; the floor's own legs (loopback / metadata / redirect / byte-cap) are pinned
+    end-to-end in `tests/unit/test_v14_sec.py` against a real loopback server."""
+    monkeypatch.setattr(integrations, "egress_policy_refusal", lambda url, **kwargs: None)
 
 
 # ── named refusals: media shape first, then credentials ─────────────────────────────────────────

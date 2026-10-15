@@ -232,6 +232,26 @@ describe("InvoicesPage — create (POST /invoices)", () => {
     expect(error).toHaveTextContent("E_VALIDATION: net_days must be >= 0, got -5 — fix the field and retry");
     expect(screen.queryByTestId("invoice-created-note")).toBeNull();
   });
+
+  it("an out-of-range net_days rides the body — the server refuses it BY NAME, it is never silently dropped (S2-F3)", async () => {
+    answerWith({ "/invoices?limit=100": [] });
+    mockPost.mockRejectedValue(
+      new ApiError(422, "net_days must be <= 365", "E_VALIDATION", "fix the field and retry"),
+    );
+    render(<InvoicesPage />);
+    await screen.findByTestId("invoices-empty");
+
+    fireEvent.change(screen.getByLabelText("Net days"), { target: { value: "400" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create invoice" }));
+
+    // The operator's stated terms are NOT dropped from the body (the old shape omitted the key and
+    // the service applied its own default under a success notice): 400 goes to the endpoint whose
+    // constraint refuses it by name, and THAT refusal is what renders.
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/invoices", { net_days: 400 }));
+    const error = await screen.findByTestId("invoice-create-error");
+    expect(error).toHaveTextContent("E_VALIDATION: net_days must be <= 365 — fix the field and retry");
+    expect(screen.queryByTestId("invoice-created-note")).toBeNull();
+  });
 });
 
 describe("InvoicesPage — send / void (POST /invoices/{id}/send|void)", () => {

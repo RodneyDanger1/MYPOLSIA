@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import uuid
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -47,7 +52,14 @@ from app.api.v1.runs import (
 )
 from app.config import settings
 from app.core.database import dispose_engine
-from app.core.errors import E_AUTH, ERROR_HINTS, PolsiaError, http_status_for, to_http_detail
+from app.core.errors import (
+    E_AUTH,
+    E_VALIDATION,
+    ERROR_HINTS,
+    PolsiaError,
+    http_status_for,
+    to_http_detail,
+)
 from app.core.redis_client import close_redis
 
 
@@ -144,6 +156,61 @@ def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:
             "context": context if isinstance(context, dict) else {},
         },
     }
+
+
+def _sanitize_non_finite(value: Any) -> Any:
+    """Walk a JSON-ish structure replacing non-finite numbers with their repr string.
+
+    `float("nan") -> "nan"`, `float("inf") -> "inf"`, `float("-inf") -> "-inf"`,
+    `Decimal("NaN") -> "NaN"`.  Used by the validation-error responder below: pydantic ECHOES
+    the offending input inside its error objects, and a NaN echo made
+    `json.dumps(..., allow_nan=False)` (the Starlette response writer) raise INSIDE the error
+    path itself — an uncoded 500 as the answer to a 422-shaped mistake (S4-F2, wave-v13/
+    s4-errors F2).  The repr keeps the field naming and the fact that the value was
+    non-finite; it never invents a finite number.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, Decimal) and not value.is_finite():
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: _sanitize_non_finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_non_finite(item) for item in value]
+    return value
+
+
+def _contains_non_finite(value: Any) -> bool:
+    """Does this structure carry a non-finite float/Decimal anywhere?  Never raises."""
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, Decimal):
+        return not value.is_finite()
+    if isinstance(value, dict):
+        return any(_contains_non_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_non_finite(item) for item in value)
+    return False
+
+
+def _validation_error_detail(errors: Sequence[Any]) -> list[Any]:
+    """pydantic's error array, JSON-encoded, non-finite echoes sanitized.  Never raises.
+
+    For a serializable error set this is byte-identical to what FastAPI's default
+    `RequestValidationError` handler produced (`jsonable_encoder(exc.errors())`).
+    """
+    try:
+        return jsonable_encoder(_sanitize_non_finite(errors))
+    except Exception:  # noqa: BLE001 — the ERROR responder must not become the error
+        logger.exception("validation errors could not be encoded")
+        return [
+            {
+                "type": "unencodable_validation_error",
+                "loc": [],
+                "msg": "validation errors could not be encoded",
+                "input": None,
+            }
+        ]
 
 
 @asynccontextmanager
@@ -271,6 +338,84 @@ def create_app() -> FastAPI:
         headers = dict(exc.headers or {})
         headers.setdefault("X-Polsia-Error-Code", envelope["error"]["code"])
         return JSONResponse(status_code=exc.status_code, content=envelope, headers=headers)
+
+    @application.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """S4-F2: the 422 responder must never 500 on the very input it is describing.
+
+        Python's `json` accepts the non-standard `NaN`/`Infinity` tokens, so a malformed body
+        echoes a non-finite float inside pydantic's error objects — and FastAPI's default
+        responder serialized that with `allow_nan=False` and raised INSIDE the error path: the
+        caller got `500 text/plain` for a 422-shaped mistake (wave-v13/s4-errors F2;
+        probes/probe_pindowns.py §A captured the full server frame list).
+
+        Two outcomes, decided by the error SET (never by route):
+        * every echo is serializable -> FastAPI's default body, byte-for-byte
+          (`{"detail": [...]}`) — the framework-422 shape is pinned "uncoded by design"
+          (tests/unit/api/test_r26_ads_edges.py:196-204, tests/unit/test_refusal_unify.py:146-151);
+        * the set carries a non-finite number — the input class that previously CRASHED, so
+          there is no pass-through shape to preserve — the named refusal: `E_VALIDATION` +
+          `how_to_fix`, the sanitized pydantic array still under `detail` (field names kept,
+          `nan`/`inf` echoes as their repr strings), and the machine-readable code header.
+        """
+        errors = _validation_error_detail(exc.errors())
+        if not _contains_non_finite(exc.errors()):
+            return JSONResponse(status_code=422, content={"detail": errors})
+        logger.warning(
+            "non-finite values in %s %s — named E_VALIDATION 422 (the default responder "
+            "would have crashed on this input)",
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error": {
+                    "code": E_VALIDATION,
+                    "message": (
+                        "request contains non-finite numbers (NaN/Infinity) — not valid "
+                        "JSON and not a measurement"
+                    ),
+                    "how_to_fix": (
+                        "replace NaN/Infinity with finite numbers (or null for unmeasured); "
+                        "the offending fields are named in `detail`"
+                    ),
+                    "context": {"count": len(errors)},
+                },
+                "detail": errors,
+            },
+            headers={"X-Polsia-Error-Code": E_VALIDATION},
+        )
+
+    @application.exception_handler(OverflowError)
+    async def integer_overflow_handler(request: Request, exc: OverflowError) -> JSONResponse:
+        """S4-F3: an int past the storage range is CALLER input, not a server fault.
+
+        FastAPI parses `int` path/query params without an upper bound, so
+        `GET /api/v1/tasks/9223372036854775808` reached the SQLite driver, which raised
+        `OverflowError: Python int too large to convert to SQLite INTEGER` — the client got
+        an uncoded `500 text/plain` (wave-v13/s4-errors F3).  The refusal names the range and
+        travels in the standard envelope; the real exception text is kept in `context` so
+        nothing is lost.
+        """
+        logger.warning("integer overflow on %s %s: %s", request.method, request.url.path, exc)
+        err = PolsiaError(
+            E_VALIDATION,
+            f"integer value out of supported range on {request.method} {request.url.path}: {exc}",
+            how_to_fix=(
+                "use integers within signed 64-bit range (ids/offsets up to "
+                "9223372036854775807)"
+            ),
+            context={"exception": type(exc).__name__, "detail": str(exc)},
+        )
+        return JSONResponse(
+            status_code=http_status_for(err.code),
+            content=to_http_detail(err),
+            headers=_refusal_headers(err),
+        )
 
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(health.router)     # no auth
