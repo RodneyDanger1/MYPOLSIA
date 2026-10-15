@@ -140,7 +140,12 @@ case "${1:-}" in
 esac
 
 # SIGTERM (docker stop) and SIGINT end the loop cleanly instead of waiting out the sleep.
-trap 'log "received termination signal — exiting cleanly"; exit 0' INT TERM
+# The backgrounded `sleep` is killed too: without this, the loop exits but leaves an orphaned
+# `sleep` (up to BACKUP_INTERVAL_SECONDS long) holding the inherited stdout — anything reading
+# the sidecar's output (docker logs followers, a supervisor, the SIGTERM test's pipe) blocks
+# until the sleep expires.  First CI run red: communicate() got no EOF 15s after `docker stop`.
+sleeper=""
+trap 'log "received termination signal — exiting cleanly"; if [ -n "$sleeper" ]; then kill "$sleeper" 2>/dev/null || true; fi; exit 0' INT TERM
 
 log "backup sidecar: running a cycle now, then every ${BACKUP_INTERVAL_SECONDS}s (retention ${BACKUP_RETENTION_DAYS}d, dir $BACKUP_DIR)"
 while :; do
