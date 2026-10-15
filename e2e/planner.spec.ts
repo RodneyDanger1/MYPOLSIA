@@ -77,12 +77,14 @@ test.describe("Planner", () => {
     await expect(page.getByTestId("first-dollar-checklist")).toBeVisible();
     await expect(page.getByTestId("checklist-step-mn-llc-renewal")).toContainText("$0");
 
-    // The MENU carries eleven routes now (the pin this wave moved).
+    // The MENU carries every route (nav-items.ts is the source of truth; >=14 since V11 added
+    // Invoices/Schedules/Support, and each wave grows it — lower bound on purpose; the exact
+    // count pin lives in the shell jest test where nav-items.ts is importable).
     await page.keyboard.press("Escape");
     await page.getByTestId("nav-menu-trigger").click();
-    await expect(
-      page.getByRole("navigation", { name: "Main" }).getByRole("link"),
-    ).toHaveCount(11);
+    expect(
+      await page.getByRole("navigation", { name: "Main" }).getByRole("link").count(),
+    ).toBeGreaterThanOrEqual(14);
   });
 
   test("the finance Planning panel renders its own read or names the refusal (V10 lab)", async ({ page }) => {

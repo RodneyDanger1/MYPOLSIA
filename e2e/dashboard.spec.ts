@@ -25,11 +25,13 @@ test.describe("Dashboard", () => {
     await expect(rail.getByText("Last run", { exact: true })).toBeVisible();
   });
 
-  // V10/H2 re-aim: this test said "nine routes" with a count(9) assertion, but the menu's real
-  // list (nav-items.ts NAV_ITEMS) carries ELEVEN links today — Planner + Usage landed since this
-  // spec was written. Title, count and spot-checks were re-aimed to the actual list; the stale
-  // claim is quoted here so the correction is auditable.
-  test("MENU dropdown carries the eleven routes", async ({ page }) => {
+  // V10/H2 re-aim + V16 de-pin: the counts here kept going stale ("nine" -> "eleven routes"
+  // while nav-items.ts NAV_ITEMS then carried FOURTEEN links after V11 added Invoices/
+  // Schedules/Support — and each new wave (V16: Phone) moves it again).  The exact-count pin
+  // lives in the shell jest test where nav-items.ts is importable; this e2e spec asserts
+  // PRESENCE of the anchor routes + a lower bound, so it guards the real intent (a working MENU
+  // carrying every route) without re-pinning the number every wave.
+  test("MENU dropdown carries every route (>=14 — nav-items.ts is the source of truth)", async ({ page }) => {
     await page.goto("/dashboard");
     await page.getByTestId("nav-menu-trigger").click();
     const nav = page.getByRole("navigation", { name: "Main" });
@@ -38,6 +40,9 @@ test.describe("Dashboard", () => {
     await expect(nav.getByRole("link", { name: "Agents" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Planner" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Usage" })).toBeVisible();
-    await expect(nav.getByRole("link")).toHaveCount(11);
+    await expect(nav.getByRole("link", { name: "Invoices" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Schedules" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Support" })).toBeVisible();
+    expect(await nav.getByRole("link").count()).toBeGreaterThanOrEqual(14);
   });
 });
