@@ -43,6 +43,7 @@ import logging
 import math
 import time
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -174,6 +175,16 @@ def _stdlib_verify(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid Stripe signature timestamp",
         ) from exc
+    # V12/V1 RECONCILIATION (the shipped contract wins — decision + evidence in
+    # wave-v12/f2-defects/RECEIPT.md): `tolerance=0` passed to this verifier is the documented
+    # escape hatch — it SKIPS the age check.  Pinned by the shipped R28 suite
+    # (`test_stdlib_verify_tolerance_zero_disables_the_window`) and R32
+    # (`test_tolerance_boundaries_are_not_loosened`, "the accept-any fix must not have touched
+    # the escape hatch either"), and it is the installed stripe SDK's own semantics
+    # (`stripe/_webhook.py:89`: `if tolerance and timestamp < time.time() - tolerance` — a
+    # falsy tolerance performs no age check).  The F21 floor lives at the ENTRY POINTS instead
+    # (`_signature_tolerance` + `construct_stripe_event`): a CONFIGURED non-positive value can
+    # never disable the guard, while this low-level seam keeps its shipped semantics.
     if tolerance and abs(int(time.time()) - signed_at) > tolerance:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -221,6 +232,11 @@ def construct_stripe_event(
     header by accept-any (R32, see `_stdlib_verify`).
     """
     window = DEFAULT_SIGNATURE_TOLERANCE if tolerance is None else int(tolerance)
+    if window <= 0:
+        # F21 floor, kept AT THE ENTRY POINT (V12/V1 reconciliation): the caller-facing window
+        # can never be "off".  The low-level `_stdlib_verify(..., 0)` seam keeps its shipped
+        # R28/R32 escape-hatch semantics untouched (see that function).
+        window = DEFAULT_SIGNATURE_TOLERANCE
     try:
         import stripe  # type: ignore
     except ImportError:
@@ -235,7 +251,10 @@ def construct_stripe_event(
 
 
 def _signature_tolerance() -> int:
-    return int(getattr(settings, "stripe_signature_tolerance", DEFAULT_SIGNATURE_TOLERANCE))
+    """The replay-guard tolerance in seconds — a non-positive value is the DEFAULT, never
+    "off" (F21/V12-W-C: a configured 0 silently accepted any-age signatures)."""
+    value = int(getattr(settings, "stripe_signature_tolerance", DEFAULT_SIGNATURE_TOLERANCE))
+    return value if value > 0 else DEFAULT_SIGNATURE_TOLERANCE
 
 
 @router.post("/stripe/webhook", response_model=StripeWebhookResponse)
@@ -339,33 +358,44 @@ async def stripe_webhook(
 AI_SPEND_WINDOW_DAYS = 30
 
 
+def _exact(value: Any) -> Decimal:
+    """Exact decimal view of a measured number (F10/V12-W-C): via `str`, so a float input keeps
+    its shortest-repr decimal value instead of its binary noise."""
+    return Decimal(str(value))
+
+
 def margin_fraction(price: Any, ai_cost: Any, human_hours: Any, human_rate: Any) -> float | None:
     """`(price - (ai_cost + human_hours * human_rate)) / price` — null unless every input is measured.
 
     A non-positive contribution is not a margin (the offer loses money per unit), so it is refused
-    as `None` rather than reported as a negative percentage that reads like a margin.
+    as `None` rather than reported as a negative percentage that reads like a margin.  The math is
+    Decimal (F10): binary-float division drifted the last digits of the returned fraction.
     """
     if any(value is None for value in (price, ai_cost, human_hours, human_rate)):
         return None
-    price_f = float(price)
-    contribution = price_f - (float(ai_cost) + float(human_hours) * float(human_rate))
-    if price_f <= 0 or contribution <= 0:
+    price_d = _exact(price)
+    contribution = price_d - (_exact(ai_cost) + _exact(human_hours) * _exact(human_rate))
+    if price_d <= 0 or contribution <= 0:
         return None
-    return contribution / price_f
+    return float(contribution / price_d)
 
 
 def break_even_clients(
     burn_usd: Any, price: Any, ai_cost: Any, human_hours: Any, human_rate: Any
 ) -> int | None:
-    """Clients needed to cover monthly burn at the given contribution — null when unmeasurable."""
+    """Clients needed to cover monthly burn at the given contribution — null when unmeasurable.
+
+    Decimal + Decimal `ceil` (F10/V12-W-C): `math.ceil(float(burn) / float(contribution))` was
+    off by one at exact boundaries (21 / 0.7 answered 31).
+    """
     if burn_usd is None or any(
         value is None for value in (price, ai_cost, human_hours, human_rate)
     ):
         return None
-    contribution = float(price) - (float(ai_cost) + float(human_hours) * float(human_rate))
+    contribution = _exact(price) - (_exact(ai_cost) + _exact(human_hours) * _exact(human_rate))
     if contribution <= 0:
         return None
-    return math.ceil(float(burn_usd) / contribution)
+    return math.ceil(_exact(burn_usd) / contribution)
 
 
 def pricing_guardrails_for(idea: Any, pricing_model: Any) -> list[str]:

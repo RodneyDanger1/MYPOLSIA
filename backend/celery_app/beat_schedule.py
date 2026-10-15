@@ -1,4 +1,4 @@
-"""Beat schedule — the 12 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 13 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -149,12 +149,14 @@ beat_schedule = {
         "schedule": crontab(minute="*/15"),
         "options": {"queue": "maintenance", "expires": 900},
     },
-    # Daily 13:00 UTC (08:00 company-CT): the invoice dunning ladder — pre-due -3d, due day, +5,
-    # +15, +30 final. NEW entry — V9/B4 (parent settle; the ladder's once-per-step ledger makes a
-    # late or re-delivered tick harmless, and `expires` 6 h collapses deep backlogs).
+    # Hourly since V12/W-C (audit F12): the ladder SELF-GATES on the company-local hour
+    # (`dunning.DUNNING_LOCAL_HOUR`, the cycles' T2 pattern) instead of pinning 13:00 UTC — the
+    # old entry claimed "08:00 company-CT" but moved with the zone for any other COMPANY_TIMEZONE;
+    # the 23 non-matching ticks return {"status": "off"} in milliseconds. The ladder's
+    # once-per-step ledger makes a late or re-delivered tick harmless.
     "invoice-dunning": {
         "task": "celery_app.tasks.dunning.run_dunning_ladder",
-        "schedule": crontab(minute=0, hour=13),
-        "options": {"queue": "agents", "expires": 21600},
+        "schedule": crontab(minute=0),
+        "options": {"queue": "agents", "expires": 3600},
     },
 }

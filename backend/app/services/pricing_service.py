@@ -101,7 +101,28 @@ def load_catalog() -> tuple[dict[str, Any], ...]:
             how_to_fix=ERROR_HINTS[E_CONFIG],
             context={"path": str(CATALOG_PATH), "rows": len(rows)},
         )
+    bad_rows = [
+        index
+        for index, row in enumerate(rows)
+        if not isinstance(row.get("service"), str) or not str(row["service"]).strip()
+    ]
+    if bad_rows:
+        # F23 (V12/W-C): `search()`/`get()` index `row["service"]` — a row missing it raised a
+        # bare KeyError mid-request; refuse at LOAD, naming the rows, like every other
+        # malformed-catalog state.
+        raise PolsiaError(
+            E_CONFIG,
+            f"pricing catalog rows must carry a non-empty 'service' (malformed rows: {bad_rows[:5]})",
+            how_to_fix=ERROR_HINTS[E_CONFIG],
+            context={"path": str(CATALOG_PATH), "rows": bad_rows[:5]},
+        )
     return tuple(rows)
+
+
+def clear_catalog_cache() -> None:
+    """Drop the process-lifetime catalog cache (F23/V12-W-C) so ops can re-read a fixed file
+    without a restart; the next `load_catalog()` re-reads from disk and re-validates."""
+    load_catalog.cache_clear()
 
 
 def search(query: str | None, limit: int = 50) -> list[dict[str, Any]]:
@@ -140,7 +161,14 @@ def catalog_provenance(today: date | None = None) -> dict[str, Any]:
     try:
         age = (day - date.fromisoformat(as_of)).days
     except ValueError:
-        return {"catalog_as_of": None, "staleness_days": None, "stale": None}
+        # F24 (V12/W-C): the newest date IS known — it is just unparseable; reporting
+        # catalog_as_of=None erased it identically to a snapshot with NO dates at all.
+        return {
+            "catalog_as_of": as_of,
+            "staleness_days": None,
+            "stale": None,
+            "reason": f"catalog_as_of {as_of!r} is not parseable as a date",
+        }
     return {
         "catalog_as_of": as_of,
         "staleness_days": age,

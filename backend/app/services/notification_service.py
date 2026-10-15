@@ -27,7 +27,12 @@ Contract (frozen for wave U5 — `build/ui-reverse/wave-u5/WAVE-PLAN.md`):
     `cycle_report_email_skipped` row, because a scheduled report that never arrives must be
     explainable.
 
-The send rides the existing `integrations.send_email` adapter with an explicit recipient
+Both owner-mail egresses route through the SHARED side-effect gate first
+(`_firewall_clearance` -> `request_side_effect`, email channel + the REAL `channel_service`
+counts — the same gate the invoice + outreach paths run): under `SANDBOX_MODE=true` (shipped
+default) the mail is refused BY NAME (`E_SANDBOX_BLOCKED`, recorded as a labelled draft — never
+a silent skip) and the provider is never reached; with the sandbox off the send rides the
+existing `integrations.send_email` adapter with an explicit recipient
 (`app/agents/integrations.py:78`), whose refusal semantics are already honest: an
 unconfigured SendGrid returns a named `E_INTEGRATION` refusal, never a fake success.
 """
@@ -40,13 +45,67 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import PolsiaError
+from app.core.errors import ERROR_HINTS, PolsiaError
 from app.models.task import Task
 from app.services import company_service
 from app.services.activity_service import log_activity
 from app.services.query_helpers import fetch_scalar
 
 logger = logging.getLogger(__name__)
+
+#: The firewall slot owner mail is gated under (D2/V12-F2): the same email-channel capability
+#: the invoice firewalled path sends on (`invoice_service._SEND_AGENT_SLOT`).  The activity
+#: rows keep naming "orchestrator" as the real producer — the ledger-vs-slot split that path
+#: documents.
+_SEND_AGENT_SLOT = "email_outreach"
+
+
+def _draft_error(outcome: Any) -> dict[str, Any]:
+    """The named refusal for a sandboxed (or approval-required) send, carrying the house draft
+    markers (`sandbox` / `drafted_not_sent`) so a recorded failure can never read as a send."""
+    code = outcome.e_code or "E_POLICY_DENIED"
+    return {
+        "code": code,
+        "message": outcome.reason or "external action recorded as a labelled draft; nothing sent",
+        "how_to_fix": ERROR_HINTS.get(code, ""),
+        **outcome.draft_flags(),
+    }
+
+
+async def _firewall_clearance(db: AsyncSession, *, action: str, payload: dict[str, Any]) -> None:
+    """Ask the SHARED side-effect gate before any owner mail leaves this module (D2/V12-F2).
+
+    This module used to call `integrations.send_email` directly, so under `SANDBOX_MODE=true`
+    (the shipped default) a configured install put REAL mail on the wire and skipped the email
+    caps.  The gate is the same one the invoice + outreach egresses run: `request_side_effect`
+    with the email-channel capability and the REAL `channel_service` counts (the `RateCaps`
+    defaults: email 50/day, 15/h).
+
+      * sandboxed -> raise `_NotificationFailure` carrying the named refusal
+        (E_SANDBOX_BLOCKED) plus the house draft markers, so the funnel records a NAMED row —
+        a labelled draft, never a silent skip;
+      * a policy/cap denial -> `enforce` raises its own named `PolsiaError` (E_RATE_LIMITED, or
+        the cap-unknown posture) — the funnel records it by code, the provider stays untouched;
+      * allowed -> returns None; the caller may send.
+    """
+    # Lazy imports on purpose (the module rule further down): importing this module must never
+    # drag the provider libraries — or the firewall graph — into an import chain that does not
+    # send.
+    from app.agents.policy_firewall import ActionClass
+    from app.agents.side_effects import request_side_effect
+    from app.services import channel_service
+
+    outcome = request_side_effect(
+        _SEND_AGENT_SLOT,
+        ActionClass.EXTERNAL_REVERSIBLE,
+        "email",
+        action=action,
+        payload=payload,
+        sends_today=await channel_service.channel_sends_today(db, "email"),
+        sends_this_hour=await channel_service.channel_sends_this_hour(db, "email"),
+    )
+    if not outcome.allowed:
+        raise _NotificationFailure(_draft_error(outcome))
 
 #: outcome -> (matching company_config toggle column, human label). The toggle names are the
 #: FROZEN P3 column names — a typo here is a silent no-op forever, so tests pin the mapping.
@@ -111,6 +170,12 @@ async def _notify_owner(db: AsyncSession, task_id: int, outcome: str) -> None:
         return
     task = await _load_task(db, task_id)
     subject, body = _compose(task, task_id, outcome, prefix=_subject_prefix(config))
+
+    # D2/V12-F2: the shared gate FIRST — sandbox ON refuses by name (recorded as a labelled
+    # draft), a capped channel refuses by name; only an allowed outcome reaches the provider.
+    await _firewall_clearance(
+        db, action="send_owner_notification", payload={"outcome": outcome, "task_id": task_id}
+    )
 
     # Lazy import on purpose (CLAUDE.md:116): importing this module must never drag the
     # provider libraries into an import chain that does not send.
@@ -329,6 +394,14 @@ async def _notify_cycle_report(
     subject = f"[{_subject_prefix(config)}] {label} report {report_date.isoformat()}"
     body_text = str(summary or "").strip() or "(no summary recorded)"
     body = f"{label} report for {report_date.isoformat()}.\n\n{body_text}"
+
+    # D2/V12-F2: the same gate the terminal-outcome leg runs — sandbox ON refuses by name and
+    # the refusal is recorded by the funnel above; only an allowed outcome reaches the provider.
+    await _firewall_clearance(
+        db,
+        action="send_cycle_report",
+        payload={"kind": kind, "report_date": report_date.isoformat()},
+    )
 
     # Lazy import on purpose (the same rule the terminal-outcome leg follows above).
     from app.agents import integrations

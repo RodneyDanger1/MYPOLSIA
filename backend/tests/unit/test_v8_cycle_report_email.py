@@ -30,6 +30,14 @@ OWNER = "owner@example.com"
 REPORT_DATE = date(2026, 10, 14)
 
 
+# V12/F2 (D2): the cycle-report leg now routes through the shared side-effect gate; the legs
+# here pin the contract beyond it (the adapter is the monkeypatched edge), so the sandbox is
+# OFF for the file — the gate's ON-legs live in `tests/unit/test_v12_fix_notification_gate.py`.
+@pytest.fixture(autouse=True)
+def _sandbox_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "sandbox_mode", False)
+
+
 def _config(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
         "name": "Cycle Co",

@@ -346,8 +346,9 @@ and `tar tzf backups/backend_data.tgz` should list files.
   needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
-  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 62 routes (the
-  60 documented through V9 plus these two), pinned route-by-route in `backend/tests/parity/`.
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 65 routes (the
+  60 documented through V9, plus V10's data pair, V11's unsubscribe + ops-sandbox routes, and
+  V12's site-package download), pinned route-by-route in `backend/tests/parity/`.
 
 ## CI/CD
 

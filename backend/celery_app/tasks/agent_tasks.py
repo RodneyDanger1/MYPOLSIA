@@ -229,6 +229,35 @@ async def _with_channel_sends(db: Any, agent_type: str, context: dict[str, Any])
     return {**context, "channel_sends": snapshot}
 
 
+async def _with_compliance_preflight(
+    db: Any, agent_type: str, context: dict[str, Any]
+) -> dict[str, Any]:
+    """`context` plus the resolved compliance preflight an `email_outreach` run must carry
+    (V12/W-C; W1 OPEN(a)).  The `channel_sends` pattern: the worker owns the DB and hands the
+    agent what the guarded sender needs under `compliance_send.PREFLIGHT_KEY`, so the per-send
+    loop-local engine in `compliance_send` (mode 2) leaves the hot path.  Nothing is invented:
+    a producer that cannot answer leaves the key ABSENT and records why — the agent then falls
+    back to mode 2, which resolves the same facts on its own session (fail closed).
+    """
+    if agent_type != "email_outreach":
+        return context
+    from app.agents.email_outreach.compliance_send import PREFLIGHT_KEY
+    from app.services.outreach_service import compliance_preflight
+
+    try:
+        preflight = await compliance_preflight(db)
+    except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated identity
+        logger.warning(
+            "code=compliance_preflight_unavailable: %s runs without a worker-resolved "
+            "preflight (%s)",
+            agent_type,
+            exc,
+            exc_info=True,
+        )
+        return context
+    return {**context, PREFLIGHT_KEY: preflight}
+
+
 async def _with_agent_quality(db: Any, agent_type: str, context: dict[str, Any]) -> dict[str, Any]:
     """`context` plus the 7-day per-agent quality snapshot (V9/B2(e) worker hook).
 
@@ -705,6 +734,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
         # producer (agents hold no database session). Copy-on-write, own channels only.
         context = await _with_channel_sends(db, agent_type, context)
+        # V12/W-C worker hook: the compliance preflight outreach runs must carry (W1 OPEN(a)) —
+        # same "the worker owns the DB, the agent does not" reasoning as the channel counts.
+        context = await _with_compliance_preflight(db, agent_type, context)
         # V9/B2(e) worker hook: the 7-day per-agent quality snapshot the orchestrator's ONE
         # weekly line reads — same "the worker owns the DB, the agent does not" reasoning as
         # the channel counts above.

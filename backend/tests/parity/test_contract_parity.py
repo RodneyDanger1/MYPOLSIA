@@ -93,6 +93,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/pricing"),
     ("GET", "/api/v1/ops/agent-quality"),
     ("POST", "/api/v1/site/package"),
+    # wave V12 (W-C): the site-package DOWNLOAD (app/api/v1/site.py) — read-only zip of the
+    # written package, exports-root-guarded. Documented by
+    # tests/unit/api/test_v12_site_package_download.py; route verified live in app.routes.
+    ("GET", "/api/v1/site/package/download"),
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     # wave V11 (W1): the public one-click opt-out route — unauthenticated by design, because the

@@ -13,13 +13,15 @@ nobody could be answered from).
 from __future__ import annotations
 
 import html
+import io
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
 from app.models.company import CompanyConfig
 from app.services.company_service import get_company
 
@@ -177,4 +179,85 @@ async def build_site_package(db: AsyncSession, root: Path | None = None) -> dict
     return {"package_dir": str(package_dir), "files": files, "slug": _slug(str(company.name))}
 
 
-__all__ = ["EXPORTS_ROOT", "build_site_package", "render_site_package"]
+# ── V12/W-C: the download READ path (exports-root-guarded; never serves outside the root) ───
+
+#: Only the exact shapes `_slug()` can produce may be resolved on disk.
+_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def resolve_package_dir(slug: str, root: Path | None = None) -> Path:
+    """The exports-root-guarded directory for `slug` — never anything outside the exports root.
+
+    Refuses `E_VALIDATION` BY NAME for any slug `_slug()` could not have produced (slashes,
+    dots, spaces cannot pass the pattern), and re-checks containment after `resolve()` as a
+    second belt — the download route must never serve a path that left the root.
+    """
+    exports_root = (Path(root) if root is not None else EXPORTS_ROOT).resolve()
+    if not _SLUG_PATTERN.fullmatch(slug or ""):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site package slug {slug!r} is not a filesystem-safe slug",
+            how_to_fix="build the package first (POST /api/v1/site/package) and pass its slug",
+            context={"slug": slug},
+        )
+    target = (exports_root / f"site-{slug}").resolve()
+    if not target.is_relative_to(exports_root):  # unreachable past the pattern; belt only
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site package slug {slug!r} resolves outside the exports root",
+            how_to_fix="pass the slug POST /api/v1/site/package returned",
+            context={"slug": slug},
+        )
+    return target
+
+
+def zip_package(package_dir: Path) -> bytes:
+    """The package directory as an in-memory ZIP (sorted entries; symlinks that leave the
+    directory are skipped — a redirect cannot smuggle an outside file into the archive)."""
+    root = package_dir.resolve()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or not path.resolve().is_relative_to(root):
+                continue
+            archive.write(path, arcname=path.relative_to(root).as_posix())
+    return buffer.getvalue()
+
+
+async def build_package_archive(
+    db: AsyncSession, *, slug: str | None = None
+) -> tuple[bytes, str]:
+    """`(zip_bytes, filename)` for the package named by `slug` (default: the current company's).
+
+    Read-only — builds nothing.  A missing package directory is the named `E_NOT_FOUND` (the
+    route answers 404 with how_to_fix), never an empty zip that reads like success.
+    """
+    if slug is None:
+        company = await get_company(db)
+        if company is None:
+            raise PolsiaError(
+                E_CONFIG,
+                "no company profile exists, so there is no package to download",
+                how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
+                context={"missing": "company"},
+            )
+        slug = _slug(str(company.name))
+    package_dir = resolve_package_dir(slug)
+    if not package_dir.is_dir():
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"no site package exists for slug {slug!r}",
+            how_to_fix="build it first with POST /api/v1/site/package, then retry the download",
+            context={"slug": slug},
+        )
+    return zip_package(package_dir), f"site-{slug}.zip"
+
+
+__all__ = [
+    "EXPORTS_ROOT",
+    "build_package_archive",
+    "build_site_package",
+    "render_site_package",
+    "resolve_package_dir",
+    "zip_package",
+]

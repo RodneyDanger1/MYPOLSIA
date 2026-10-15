@@ -383,6 +383,15 @@ async def upsert_revenue_snapshot(
     return snapshot
 
 
+def _normalize_currency(currency: Any) -> str | None:
+    """One normalizer for every persisted currency value (F7/V12-W-C): blank -> None, else
+    stripped lower — the exact shape both writers' CHECK families require on PostgreSQL."""
+    if currency is None:
+        return None
+    text = str(currency).strip().lower()
+    return text or None
+
+
 async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
     """Validate + insert one expense row.
 
@@ -417,7 +426,7 @@ async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
             )
         # `or None` mirrors `record_stripe_event`'s `currency.lower() if currency else None`:
         # a blank is "not recorded", never an empty-string currency.
-        values["currency"] = currency.strip().lower() or None
+        values["currency"] = _normalize_currency(currency)
     expense = ExpenseRecord(**values)
     db.add(expense)
     await db.flush()
@@ -504,7 +513,9 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
 
     Contract: NEVER raises — every failure is returned as the `error` field (a named
     `{"code", "message", ...}` refusal).  The worker owns the transaction, so this
-    flushes only and never commits.  An expense the service refuses (`amount_cents`
+    flushes only and never commits; as of V12/W-C (F22) all writes run inside ONE savepoint — a
+    mid-batch failure rolls THIS persist's rows back, so a caller's later commit can never
+    persist a partial batch (the report says ok=False and reports `rolled_back`).  An expense the service refuses (`amount_cents`
     missing or <= 0, or a row that cannot be formed at all) is counted in
     `skipped_invalid` — never silently dropped, never fake-written.
 
@@ -516,49 +527,53 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
     expenses_written = 0
     skipped_invalid = 0
     try:
-        snapshot = result.get("snapshot")
-        if snapshot is not None:
-            if not isinstance(snapshot, dict):
-                raise PolsiaError(
-                    E_VALIDATION,
-                    f"snapshot is not an object: {type(snapshot).__name__}",
-                    how_to_fix="the finance agent must provide a snapshot object or null",
-                    context={"snapshot": repr(snapshot)[:200]},
-                )
-            snapshot_date = _iso_date(snapshot.get("snapshot_date"))
-            if snapshot_date is None:
-                raise PolsiaError(
-                    E_VALIDATION,
-                    f"snapshot has no usable snapshot_date: {snapshot.get('snapshot_date')!r}",
-                    how_to_fix=(
-                        "the agent must provide snapshot_date = YYYY-MM-DD (UTC); a guessed "
-                        "date would mis-key the UNIQUE row"
-                    ),
-                    context={"snapshot_date": snapshot.get("snapshot_date")},
-                )
-            values = {
-                key: snapshot[key] for key in _SNAPSHOT_COLUMNS if snapshot.get(key) is not None
+        # F22 (V12/W-C): ONE savepoint for this call's writes — a mid-batch failure
+        # rolls THIS persist back WITHOUT aborting the caller's transaction (a later
+        # caller commit after a partially-failed persist was the F22 failure class).
+        async with db.begin_nested():
+            snapshot = result.get("snapshot")
+            if snapshot is not None:
+                if not isinstance(snapshot, dict):
+                    raise PolsiaError(
+                        E_VALIDATION,
+                        f"snapshot is not an object: {type(snapshot).__name__}",
+                        how_to_fix="the finance agent must provide a snapshot object or null",
+                        context={"snapshot": repr(snapshot)[:200]},
+                    )
+                snapshot_date = _iso_date(snapshot.get("snapshot_date"))
+                if snapshot_date is None:
+                    raise PolsiaError(
+                        E_VALIDATION,
+                        f"snapshot has no usable snapshot_date: {snapshot.get('snapshot_date')!r}",
+                        how_to_fix=(
+                            "the agent must provide snapshot_date = YYYY-MM-DD (UTC); a guessed "
+                            "date would mis-key the UNIQUE row"
+                        ),
+                        context={"snapshot_date": snapshot.get("snapshot_date")},
+                    )
+                values = {
+                    key: snapshot[key] for key in _SNAPSHOT_COLUMNS if snapshot.get(key) is not None
+                }
+                row = await upsert_revenue_snapshot(db, snapshot_date=snapshot_date, **values)
+                snapshot_written = row is not None
+            for expense in result.get("expenses") or []:
+                try:
+                    await record_expense(db, **_expense_kwargs(expense))
+                    expenses_written += 1
+                except PolsiaError as exc:
+                    if exc.code != E_VALIDATION:
+                        raise
+                    # `record_expense` refuses `amount_cents<=0` by name (and an entry that
+                    # cannot form a row refuses the same way): one unusable draft must not
+                    # sink the run's good rows — and must not be invented into a write either.
+                    skipped_invalid += 1
+            await db.flush()  # flush only: the worker owns the commit
+            return {
+                "ok": True,
+                "snapshot_written": snapshot_written,
+                "expenses_written": expenses_written,
+                "skipped_invalid": skipped_invalid,
             }
-            row = await upsert_revenue_snapshot(db, snapshot_date=snapshot_date, **values)
-            snapshot_written = row is not None
-        for expense in result.get("expenses") or []:
-            try:
-                await record_expense(db, **_expense_kwargs(expense))
-                expenses_written += 1
-            except PolsiaError as exc:
-                if exc.code != E_VALIDATION:
-                    raise
-                # `record_expense` refuses `amount_cents<=0` by name (and an entry that
-                # cannot form a row refuses the same way): one unusable draft must not
-                # sink the run's good rows — and must not be invented into a write either.
-                skipped_invalid += 1
-        await db.flush()  # flush only: the worker owns the commit
-        return {
-            "ok": True,
-            "snapshot_written": snapshot_written,
-            "expenses_written": expenses_written,
-            "skipped_invalid": skipped_invalid,
-        }
     except Exception as exc:  # noqa: BLE001 - the documented contract is "never raises"
         if isinstance(exc, PolsiaError):
             error: dict[str, Any] = {
@@ -575,9 +590,10 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
             }
         return {
             "ok": False,
-            "snapshot_written": snapshot_written,
-            "expenses_written": expenses_written,
+            "snapshot_written": False,  # F22: the savepoint rolled THIS persist's writes back
+            "expenses_written": 0,
             "skipped_invalid": skipped_invalid,
+            "rolled_back": True,
             "error": error,
         }
 
@@ -638,7 +654,7 @@ async def record_stripe_event(
             event_type=event_type,
             customer_id=customer_id,
             amount_cents=amount_cents,
-            currency=(currency.lower() if currency else None),
+            currency=_normalize_currency(currency),
             status=status,
             raw_payload=stored_payload,
         )

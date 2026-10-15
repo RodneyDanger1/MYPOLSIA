@@ -202,13 +202,36 @@ class BasePolsiaAgent(ABC):
         # (A2 F-08 / T8) Deleted here: a dead budget block that fabricated `$0.00` for an unknown
         # `day_spent_usd` (`or 0.0`) and that NOTHING consumed — honest spend lives in
         # `accounting.spend_summary`.
-        tools = ", ".join(self.capability.allowed_tools) or "none"
-        # V11/W2 truth-fix: the tool claim must match the runtime that will RUN this agent.
-        # The DeepSeek HTTP runtime cannot CALL tools (tool-calling is deferred) — rendering
-        # "Tools available to you: WebFetch, WebSearch" for a competitor_research run under it
-        # was a capability claim the runtime cannot honor.  Under the CLI runtime the tools are
-        # real and are listed exactly as before.
+        # V11/W2 truth-fix + V12/W-B: the tool claim must match the runtime that will RUN this
+        # agent.  Three honest cases:
+        #   * DeepSeek runtime + non-empty REGISTRY allowlist -> the V12/W-A tool-calling loop
+        #     can really call these tools: name them, one short WHEN-to-use line each;
+        #   * DeepSeek runtime + empty allowlist -> this agent has NO tools (the runtime sends
+        #     no `tools` field for it — exactly today's unchanged behavior) and says so;
+        #   * CLI runtime -> the CLI's own tools, listed exactly as before.
+        from app.agents import tool_registry
+        from app.agents.tool_registry import TOOL_GUIDANCE
+
         tool_less = deepseek_runtime.available()
+        registry_tools = tool_registry.tools_for(self.agent_type) if tool_less else ()
+        if tool_less and registry_tools:
+            tool_lines = [
+                f"- Tools available to you: {', '.join(registry_tools)}.",
+                *[f"- {name}: {TOOL_GUIDANCE[name]}" for name in registry_tools
+                  if name in TOOL_GUIDANCE],
+            ]
+            facts_line = "- Use tools for facts; never guess a metric you could have read."
+        elif tool_less:
+            tool_lines = [
+                "- Tools available to you: none for this agent (its tool allowlist is empty — "
+                "the runtime requests no tools for it; work from the context below and name "
+                "any missing fact instead of guessing)."
+            ]
+            facts_line = "- Never guess a metric or fact the context does not carry; say it is missing."
+        else:
+            tools = ", ".join(self.capability.allowed_tools) or "none"
+            tool_lines = [f"- Tools available to you: {tools}."]
+            facts_line = "- Use tools for facts; never guess a metric you could have read."
         outcome_contract = self._outcome_contract()
 
         identity = "\n".join(filter(None, [
@@ -223,18 +246,8 @@ class BasePolsiaAgent(ABC):
         ]))
         tool_doctrine = "\n".join([
             "TOOL DOCTRINE",
-            (
-                "- Tools available to you: none in this runtime (no tool calls — the DeepSeek "
-                "runtime serves context-only runs; work from the context below and name any "
-                "missing fact instead of guessing)."
-                if tool_less
-                else f"- Tools available to you: {tools}."
-            ),
-            (
-                "- Never guess a metric or fact the context does not carry; say it is missing."
-                if tool_less
-                else "- Use tools for facts; never guess a metric you could have read."
-            ),
+            *tool_lines,
+            facts_line,
             "- Every externally visible action (post, email, ad change, payment, PR) is routed "
             "through the policy firewall; a refusal is final for this cycle.",
         ])
@@ -353,6 +366,7 @@ class BasePolsiaAgent(ABC):
         system_prompt_static: str = "",
         resume: bool = False,
         tool_less: bool = False,
+        runtime_tools: tuple[str, ...] | None = None,
     ):
         cap = self.capability
         max_budget = float(accounting.cli_budget_flag(float(settings.agent_run_cost_cap_usd)))
@@ -362,7 +376,8 @@ class BasePolsiaAgent(ABC):
             system_prompt_static=system_prompt_static,
             resume_session=self.session_id if (resume and self.session_id) else None,
             new_session_id=None,
-            allowed_tools=(() if tool_less else cap.allowed_tools),
+            allowed_tools=(() if tool_less else
+                           (cap.allowed_tools if runtime_tools is None else runtime_tools)),
             disallowed_tools=(("*",) if tool_less else cap.denied_tools),
             tools_available=("" if tool_less else cap.tools_available),
             permission_mode="dontAsk",
@@ -386,20 +401,30 @@ class BasePolsiaAgent(ABC):
     ) -> _RawCall:
         """One logical run: bounded retries around a single runtime invocation, then either the
         `result` text or a named refusal."""
-        inv = self._build_invocation(
-            prompt,
-            json_schema=json_schema,
-            system_prompt_static=system_prompt_static,
-            resume=resume,
-            tool_less=tool_less,
-        )
-
         # RD8 — provider seam: when a DeepSeek key is configured (stored in Settings or via
         # DEEPSEEK_API_KEY) the run dispatches to the DeepSeek HTTP runtime; without a key the
         # Claude CLI path is used UNCHANGED. Both return claude_cli.InvokeResult, so the retry
         # ladder, structured-output handling and accounting below are provider-agnostic.
         # Chosen ONCE per logical run: every retry of this run hits the same provider.
         runtime = deepseek_runtime if deepseek_runtime.available() else None
+        # V12/W-B — the invocation's `allowed_tools` is the ONE seam the DeepSeek tool loop
+        # reads to decide whether this run may call tools, so a DeepSeek-bound invocation
+        # carries the agent's REGISTRY allowlist (an empty list stays empty: the runtime sends
+        # no `tools` field and behaves exactly as today); a CLI-bound invocation keeps the CLI
+        # patterns `--allowedTools` always consumed.
+        runtime_tools: tuple[str, ...] | None = None
+        if runtime is not None:
+            from app.agents import tool_registry
+
+            runtime_tools = tool_registry.tools_for(self.agent_type)
+        inv = self._build_invocation(
+            prompt,
+            json_schema=json_schema,
+            system_prompt_static=system_prompt_static,
+            resume=resume,
+            tool_less=tool_less,
+            runtime_tools=runtime_tools,
+        )
         transport = "http" if runtime is not None else inv.transport
 
         def dispatch() -> claude_cli.InvokeResult:

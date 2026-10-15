@@ -362,6 +362,14 @@ def _session_free_send(
     name), provider last — identical to the session path, and nothing here reads a database, so a
     session-less caller cannot silently skip the floor.  `outreach_service.compliance_preflight`
     is what builds this block for the worker.
+
+    V12/F2 (D1): the suppression list's SHAPE is part of the floor.  The old code iterated
+    whatever `preflight["suppressed"]` was handed, so a bare STRING iterated its characters, the
+    membership test could never match, and an address the list named was SENT.  Now: a value
+    that demonstrably names the address (any iterable — e.g. a mapping whose KEYS include it,
+    W-D's hostile-shape floor) still refuses `E_POLICY_DENIED`; anything else — bare string, int,
+    mapping without the address, absent/None — raises the named `E_CONFIG` refusal instead of
+    ever being read as "nothing suppressed".
     """
     identity = preflight.get("company") if isinstance(preflight, dict) else None
     if identity is None:
@@ -380,8 +388,22 @@ def _session_free_send(
         include_ai_disclosure=include_ai_disclosure,
         opt_out_url=_opt_out_url_or_none(_field(identity, "website_url"), address),
     )
-    suppressed = {str(item).strip().lower() for item in ((preflight or {}).get("suppressed") or [])}
-    if address.lower() in suppressed:
+    # V12 settle (parent): mypy narrowing — by contract a None preflight was already refused
+    # upstream (mode (b) engine path); the assert also documents that this read may not see one.
+    assert preflight is not None
+    raw_suppressed = preflight.get("suppressed")
+    matched = False
+    if raw_suppressed is not None:
+        try:
+            matched = address.lower() in {
+                str(item).strip().lower() for item in raw_suppressed
+            }
+        except TypeError:
+            # Not iterable at all: it cannot be READ as a suppression list, and a list that
+            # cannot be read must never read as an empty one — the shape floor below refuses
+            # it by name.
+            matched = False
+    if matched:
         raise PolsiaError(
             E_POLICY_DENIED,
             f"outreach to {address!r} is suppressed: prospect status is 'unsubscribed'",
@@ -390,6 +412,21 @@ def _session_free_send(
                 "(update prospects.status), then retry"
             ),
             context={"status": "unsubscribed", "source": "run context suppression list"},
+        )
+    if not isinstance(raw_suppressed, (list, tuple)):
+        raise PolsiaError(
+            E_CONFIG,
+            "the run context suppression list ('suppressed') is malformed: expected a list of "
+            f"addresses, got {type(raw_suppressed).__name__} — refusing rather than sending with "
+            "the suppression check unread",
+            how_to_fix=(
+                "fix the producer (`outreach_service.compliance_preflight` writes a sorted list "
+                "of addresses under 'suppressed') and retry the send"
+            ),
+            context={
+                "suppressed_type": type(raw_suppressed).__name__,
+                "source": "run context compliance preflight",
+            },
         )
     composed = "\n\n".join(part for part in (body.strip(), footer) if part)
     return integrations.send_email(to=address, subject=subject, body=composed)

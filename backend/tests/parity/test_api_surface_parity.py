@@ -116,6 +116,13 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # site route; NEW pin added deliberately with the route (count 48 -> 52 total this wave for
     # B2's four). Owner-key.
     ("/api/v1/site/package", ("POST",)),
+    # wave V12 (W-C): the site-package DOWNLOAD — the built package as a ZIP from the exports
+    # root (read-only; exports-root-guarded, traversal-refusing, named 404 for an unbuilt slug).
+    # OLD surface had no download route; NEW pin added deliberately with the route. Documented
+    # /api/v1 count chain 64 -> 65; EXPECTED_ROUTES total (65 + `/` + `/ws/activity`) 66 -> 67.
+    # (V12/F2 correction: W-C's first comment chain said "62 -> 63 / total 64 -> 65" — stale
+    # against the live tree; re-measured keys: 64 -> 65 api/v1, 66 -> 67 total.)
+    ("/api/v1/site/package/download", ("GET",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)

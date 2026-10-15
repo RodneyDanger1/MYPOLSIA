@@ -76,6 +76,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
@@ -351,10 +352,14 @@ def _sandbox_note() -> str:
 
 
 def _money_cents(cents: Any) -> str:
-    """Cents -> `$x.yy`; an unmeasured value stays an honest placeholder, never `$0.00`."""
+    """Cents -> `$x.yy`; an unmeasured value stays an honest placeholder, never `$0.00`.
+
+    F17 (V12/W-C): Decimal division — `int(cents) / 100` crossed binary floats and lost the
+    cents past 2^53 ($1,000,000,000,000,000.01 printed as ...00).
+    """
     if cents is None:
         return "not measured"
-    return f"${int(cents) / 100:,.2f}"
+    return f"${Decimal(int(cents)) / 100:,.2f}"
 
 
 def _render_dashboard(row: Any) -> str:
@@ -370,7 +375,7 @@ def _render_dashboard(row: Any) -> str:
 
 def _render_finance(summary: dict[str, Any]) -> str:
     ad_spend = summary.get("total_ad_spend_usd")
-    ad_text = "not measured" if ad_spend is None else f"${float(ad_spend):,.2f}"
+    ad_text = "not measured" if ad_spend is None else f"${Decimal(str(ad_spend)):,.2f}"
     snapshot = summary.get("last_snapshot_date")
     parts = [
         f"MRR {_money_cents(summary.get('mrr_cents'))}",

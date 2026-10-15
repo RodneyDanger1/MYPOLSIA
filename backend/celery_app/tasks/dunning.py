@@ -65,6 +65,9 @@ CLAIM_ACTION = "invoice_dunning_claim"
 CLAIM_STATE_PENDING = "pending"
 CLAIM_STATE_SENT = "sent"
 CLAIM_STATE_REFUSED = "refused"
+#: The COMPANY-LOCAL hour the ladder self-gates on (V12/W-C, audit F12 — the cycles' T2 pattern:
+#: the beat entry is hourly and the 23 non-matching ticks return {"status": "off"} in ms).
+DUNNING_LOCAL_HOUR = 8
 #: The named-refusal record (warning level) — never silent about a refused tick.
 DUNNING_REFUSAL_ACTION = "invoice_dunning_refused"
 #: The offset (days past due) at which a still-`sent` invoice is factually overdue.
@@ -112,10 +115,15 @@ def compose_dunning_email(invoice: Invoice, step: DunningStep) -> tuple[str, str
             ),
             context={"invoice_id": invoice.id, "step": step.key},
         )
+    currency = str(invoice.currency or "").strip()  # F20/V12-W-C: rows can carry NULL currency
     amount = (
         "amount not recorded"
         if invoice.total is None
-        else f"{invoice.total:.2f} {invoice.currency}"
+        else (
+            f"{invoice.total:.2f} {currency}"
+            if currency
+            else f"{invoice.total:.2f} (currency not recorded)"
+        )
     )
     subject = f"Invoice {invoice.number}: {amount} due {invoice.due_date.isoformat()}"
     body = "\n".join(
@@ -131,7 +139,9 @@ def compose_dunning_email(invoice: Invoice, step: DunningStep) -> tuple[str, str
     return subject, body
 
 
-async def _sent_steps(db) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession, kept local
+async def _sent_steps(db, *, claims=None) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession, kept local
+    # F16 (V12/W-C): `claims` lets the tick pass its ONE claim read through instead of this
+    # reading the claim ledger again (and the delivered ledger was re-read per invoice).
     """The column-free ledger: `{invoice_id: {step keys}}` the tick treats as CONSUMED.
 
     Consumed = a delivered `invoice_dunning` row (the V9 ledger), OR a claim row (F5/V11)
@@ -152,7 +162,7 @@ async def _sent_steps(db) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession
         step = detail.get("step")
         if isinstance(invoice_id, int) and isinstance(step, str):
             ledger.setdefault(invoice_id, set()).add(step)
-    for invoice_id, by_step in (await _claim_rows(db)).items():
+    for invoice_id, by_step in (claims if claims is not None else await _claim_rows(db)).items():
         for step, row in by_step.items():
             detail = row.detail if isinstance(row.detail, dict) else {}
             if detail.get("state") != CLAIM_STATE_REFUSED:
@@ -181,7 +191,20 @@ async def _claim_rows(db) -> dict[int, dict[str, ActivityLog]]:  # noqa: ANN001 
 
 @app.task(name="celery_app.tasks.dunning.run_dunning_ladder")
 def run_dunning_ladder() -> dict[str, Any]:
-    """The daily Beat tick (the beat entry itself is the parent's, V9-D4)."""
+    """The hourly Beat tick, SELF-GATED on the company-local hour (V12/W-C, audit F12).
+
+    The old beat entry pinned 13:00 UTC and claimed "08:00 company-CT" — for any other
+    COMPANY_TIMEZONE the ladder's date boundary moved with it.  Ticks outside
+    `DUNNING_LOCAL_HOUR` return `off` and write nothing (the morning/evening/night T2 gate).
+    """
+    local_now = now_utc().astimezone(company_tz())
+    if local_now.hour != DUNNING_LOCAL_HOUR:
+        return {
+            "status": "off",
+            "date": local_now.date().isoformat(),
+            "company_hour": local_now.hour,
+            "self_gate_hour": DUNNING_LOCAL_HOUR,
+        }
     return run_async(_run_dunning())
 
 
@@ -192,8 +215,13 @@ async def _dun_one(
     *,
     sent: list[dict[str, Any]],
     refused: list[dict[str, Any]],
+    consumed: dict[int, set[str]] | None = None,
 ) -> None:
-    """One invoice, one session: re-read state, fire at most ONE owed step, commit the ledger."""
+    """One invoice, one session: re-read state, fire at most ONE owed step, commit the ledger.
+
+    `consumed` is the tick's ONCE-read consumed-steps map (F16/V12-W-C); a direct call without
+    it still reads the ledger for itself (the per-invoice fallback keeps single calls honest).
+    """
     from app.services.invoice_service import deliver_invoice_email, transition_invoice
 
     async with session_factory() as db:
@@ -205,7 +233,9 @@ async def _dun_one(
             InvoiceStatus.OVERDUE,
         ):
             return  # paid/void/draft never get a dunning mail
-        already = (await _sent_steps(db)).get(invoice_id, set())
+        already = (
+            consumed if consumed is not None else await _sent_steps(db)
+        ).get(invoice_id, set())
         pending = [
             step
             for step in DUNNING_STEPS
@@ -344,6 +374,10 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
         # F5 (V11/W2): claims still `pending` at this tick's start are the signature of a crash
         # window (or a live concurrent tick — the residual V9 records).  They CONSUME their step;
         # naming them here keeps the window visible instead of silently eating a reminder.
+        claims = await _claim_rows(db)
+        # F16 (V12/W-C): ONE ledger read for the whole tick — it used to run per invoice
+        # (O(open_invoices x ledger_rows)); the same map is passed into every `_dun_one`.
+        consumed = await _sent_steps(db, claims=claims)
         unfinalized = [
             {
                 "invoice_id": invoice_id,
@@ -351,13 +385,18 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
                 "step": step,
                 "row_id": int(row.id),
             }
-            for invoice_id, by_step in (await _claim_rows(db)).items()
+            for invoice_id, by_step in claims.items()
             for step, row in by_step.items()
             if isinstance(row.detail, dict) and row.detail.get("state") == CLAIM_STATE_PENDING
         ]
     for invoice_id in open_ids:
         await _dun_one(
-            session_factory, int(invoice_id), today, sent=sent, refused=refused
+            session_factory,
+            int(invoice_id),
+            today,
+            sent=sent,
+            refused=refused,
+            consumed=consumed,
         )
 
     result: dict[str, Any] = {
@@ -374,6 +413,7 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
 
 __all__ = [
     "DUNNING_ACTION",
+    "DUNNING_LOCAL_HOUR",
     "DUNNING_REFUSAL_ACTION",
     "DUNNING_STEPS",
     "PAST_DUE_FLIP_AT_DAYS",

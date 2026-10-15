@@ -124,6 +124,12 @@ worker_concurrency = None  # explicit so app.conf cannot inherit a celery defaul
 # rides the scheduler queue exactly like its beat entry's options say.
 task_routes = {
     "celery_app.tasks.daily_cycle.*": {"queue": "scheduler"},
+    # F15b (V12/W-C): the three V8/V9 schedulers were missing here — their beat dispatches carry
+    # explicit options.queue so the ticks DO run today, but a plain `.delay()` on any of them
+    # would publish to the unconsumed `celery` default (a silent never-run under `-Q` workers).
+    "celery_app.tasks.cadence.*": {"queue": "scheduler"},
+    "celery_app.tasks.followups.*": {"queue": "agents"},
+    "celery_app.tasks.dunning.*": {"queue": "agents"},
     "celery_app.tasks.night_task.*": {"queue": "scheduler"},
     "celery_app.tasks.agent_tasks.*": {"queue": "agents"},
     "celery_app.tasks.maintenance.*": {"queue": "maintenance"},

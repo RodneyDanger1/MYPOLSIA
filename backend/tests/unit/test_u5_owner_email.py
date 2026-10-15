@@ -33,6 +33,19 @@ from app.models.task import Task
 from app.services import company_service, notification_service
 from app.services.notification_service import notify_owner_for_terminal_outcome
 
+
+# V12/F2 (D2): owner mail now routes through the shared side-effect gate.  Every leg in this
+# file pins the U5 contract on the FAR side of that gate (the adapter is the monkeypatched
+# edge), so the sandbox is OFF for the whole file — the invoice suite's own convention.  The
+# gate's ON-legs (sandbox refusal + capped channel) live in
+# `tests/unit/test_v12_fix_notification_gate.py`.
+@pytest.fixture(autouse=True)
+def _sandbox_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "sandbox_mode", False)
+
+
 OUTCOMES = ("completed", "failed", "awaiting_approval")
 OWNER = "owner@example.com"
 TOGGLES = (

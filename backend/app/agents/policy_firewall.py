@@ -117,24 +117,59 @@ class AgentCapability:
     tools_available: str = "default"        # CLI --tools value; "" disables builtins
     action_classes: frozenset[ActionClass] = frozenset({ActionClass.READ})
     channels: tuple[str, ...] = ()          # external channels this agent may touch
+    # V12/W-B — the REGISTRY-tool allowlist: the `tool_registry` names this agent may CALL.
+    # Deliberately a SEPARATE namespace from the two CLI fields above: those carry the Claude
+    # CLI argv's permission-rule language (`"*"`, `"mcp__*"`, `WebFetch` — consumed by
+    # `--allowedTools/--disallowedTools`), while `agent_tools` carries registry names
+    # (`web_fetch`, ...) consumed by `decide()`'s tool leg and `tool_registry.execute_tool`.
+    # Mixing them would deny the orchestrator everything (its `denied_tools=("*",)` is a CLI
+    # rule) and would hand the CLI subprocess argv it cannot interpret.
+    agent_tools: tuple[str, ...] = ()
 
 
 # NOTE: every write-class action here still goes through decide(); allowlists restrict which
-# TOOLS exist, decide() gates what they may DO.
+# TOOLS exist, decide() gates what they may DO.  `agent_tools` (V12/W-B) is enforced by
+# `decide()`'s tool leg — `tool_registry.execute_tool` consults it on EVERY call.
 AGENT_CAPABILITIES: dict[str, AgentCapability] = {
     "orchestrator": AgentCapability(
         allowed_tools=(), denied_tools=("*",), tools_available="",
-        action_classes=frozenset({ActionClass.INTERNAL_WRITE}), channels=(),
+        # V12/W-B: READ added — the frozen mapping grants this agent read-class REGISTRY tools
+        # (macro_snapshot/pricing_catalog); external classes stay absent as before.
+        action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
+        # `denied_tools=("*",)` denies every CLI tool; the registry namespace below is separate
+        # (frozen V12 mapping: the orchestrator reasons over macro + pricing facts).
+        agent_tools=("macro_snapshot", "pricing_catalog"),
     ),
     "business_planning": AgentCapability(
         allowed_tools=("Read",), denied_tools=("Bash", "Edit", "Write", "WebFetch", "mcp__*"),
-        action_classes=frozenset({ActionClass.INTERNAL_WRITE}), channels=(),
+        # V12/W-B: READ added for the macro/pricing registry reads (frozen mapping); external
+        # classes stay absent — reads + internal writes only.
+        action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
+        # V12/W-B: plans must read the macro snapshot + market-rate catalog before claiming
+        # numbers (frozen mapping).
+        agent_tools=("macro_snapshot", "pricing_catalog"),
     ),
     "competitor_research": AgentCapability(
-        allowed_tools=("WebFetch", "WebSearch"),
+        # V12/W-B: the stale ("WebFetch", "WebSearch") pair replaced HONESTLY.  `WebSearch` is
+        # removed because no search provider ships in this build (the V12 plan: "web_search
+        # does NOT ship") — advertising it was a capability this runtime cannot honor.  The CLI
+        # `WebFetch` entry stays: it is the CLI argv's own tool name; the DeepSeek runtime's
+        # registry surface is the `agent_tools` below (web_fetch only).
+        allowed_tools=("WebFetch",),
         denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}),
         channels=("web",),
+        agent_tools=("web_fetch",),
+    ),
+    # V12/W-B: company_planner WAS ABSENT from this map — `decide()` denied it as "unknown
+    # agent" before the tool leg could even run, so the frozen mapping (macro_snapshot +
+    # pricing_catalog for the planner) could not exist without an entry.  Least privilege:
+    # read + internal writes, no channels, and the CLI fields mirror the old base_agent
+    # fallback exactly (no CLI tool surface).
+    "company_planner": AgentCapability(
+        allowed_tools=(), denied_tools=(),
+        action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
+        agent_tools=("macro_snapshot", "pricing_catalog"),
     ),
     "social_media": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
@@ -186,6 +221,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE,
                                   ActionClass.EXTERNAL_IRREVERSIBLE}),  # refunds: approval-gated
         channels=("stripe",),
+        # V12/W-B: budget/pricing reasoning reads the macro snapshot + catalog (frozen mapping).
+        agent_tools=("macro_snapshot", "pricing_catalog"),
     ),
 }
 
@@ -193,10 +230,15 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
 def capability_for(agent_type: str) -> AgentCapability | None:
     """Allowlist lookup by agent type.
 
-    ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
-    but called by nothing (production or tests); consumers read `AGENT_CAPABILITIES`
-    directly.  Removal vs adoption is an owner decision (REQUESTS R25-1).
+    ADOPTED (V12/W-B, 2026-10-15): the R25 note below described the pre-V12 state — this
+    function now has a PRODUCTION caller, `tool_registry.tools_for` (the tool allowlist read
+    behind `execute_tool` + the base_agent tool doctrine), which resolves the R25-1
+    adoption question instead of leaving it open.
+
+    Historical note (R25 bounded scan, 2026-10-13; raw grep evidence:
+    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt): exported in `__all__`
+    but then called by nothing (production or tests); consumers read `AGENT_CAPABILITIES`
+    directly.
     """
     return AGENT_CAPABILITIES.get(agent_type)
 
@@ -548,10 +590,11 @@ def decide(
     Order of checks (first DENY wins; REQUIRE_APPROVAL is sticky and checked after the denies):
       1. kill switch (E118)
       2. agent capability exists; action class permitted; channel permitted
-      3. tool allowlist (when a tool call is the action — i.e. the caller supplied `req.tool`;
-         today no production caller does: the CLI session's own argv gates enforce tools inside
-         the subprocess and the DeepSeek runtime requests none, so this leg is a correctly-shaped
-         gate awaiting a wiring decision rather than live enforcement)
+      3. tool allowlist (when a tool call is the action — i.e. the caller supplied `req.tool`).
+         REAL since V12/W-B: `tool_registry.execute_tool` consults this leg on EVERY tool call.
+         A `tool_registry` name is gated by `AgentCapability.agent_tools` (membership IS the
+         allowlist; an exact deny entry wins); every other tool name keeps the CLI
+         permission-rule language (allow globs must be anchored, deny globs always apply)
       4. sandbox mode: external actions are recorded as dry-runs, nothing is sent
       5. rate caps (E117; E114 when a configured cap's count is unknown)
       6. taint/approval/value: irreversible or tainted or >= $25 requires a human (E115)
@@ -593,27 +636,34 @@ def decide(
                               "POLSIA-E114", audit=audit)
 
     if req.tool:
-        # Claude Code permission-rule parity (L3-08). DENY rules keep the wider glob semantics
-        # (`"*"` and `mcp__*` are legal denies); an ALLOW rule that is an unanchored glob (`"*"`,
-        # `"B*"`, `"mcp__*"`) is SKIPPED WITH A WARNING — it never auto-approves anything, and a
-        # `mcp__`-with-parentheses rule is skipped the same way. Fail closed: skipping shrinks
-        # the allowlist, never widens it.
-        usable_allow: list[str] = []
-        for pattern in cap.allowed_tools:
-            if _allow_rule_usable(pattern):
-                usable_allow.append(pattern)
-            else:
-                logger.warning(
-                    "code=tool_allowlist_unanchored_glob: allow rule %r for %s is skipped "
-                    "(unanchored globs never auto-approve; anchor it with a literal "
-                    "mcp__<server>__ prefix or name the tool exactly)",
-                    pattern,
-                    req.agent_type,
-                )
-        allowed = any(_tool_match(req.tool, pat) for pat in usable_allow)
-        denied = any(_tool_match(req.tool, pat) for pat in cap.denied_tools)
-        if denied or not allowed:
-            return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "POLSIA-E114", audit=audit)
+        # V12/W-B — registry names first: when `req.tool` is one of the agent's `agent_tools`
+        # (the tool_registry namespace) membership IS the allowlist, and the CLI globs below
+        # deliberately do not speak about it — the orchestrator denies every CLI tool
+        # (`denied_tools=("*",)`) yet the frozen V12 mapping lets it read macro/pricing.  An
+        # EXACT deny entry for the same name still wins (fail closed).
+        registry_ok = req.tool in cap.agent_tools and req.tool not in cap.denied_tools
+        if not registry_ok:
+            # Claude Code permission-rule parity (L3-08). DENY rules keep the wider glob
+            # semantics (`"*"` and `mcp__*` are legal denies); an ALLOW rule that is an
+            # unanchored glob (`"*"`, `"B*"`, `"mcp__*"`) is SKIPPED WITH A WARNING — it never
+            # auto-approves anything, and a `mcp__`-with-parentheses rule is skipped the same
+            # way. Fail closed: skipping shrinks the allowlist, never widens it.
+            usable_allow: list[str] = []
+            for pattern in cap.allowed_tools:
+                if _allow_rule_usable(pattern):
+                    usable_allow.append(pattern)
+                else:
+                    logger.warning(
+                        "code=tool_allowlist_unanchored_glob: allow rule %r for %s is skipped "
+                        "(unanchored globs never auto-approve; anchor it with a literal "
+                        "mcp__<server>__ prefix or name the tool exactly)",
+                        pattern,
+                        req.agent_type,
+                    )
+            allowed = any(_tool_match(req.tool, pat) for pat in usable_allow)
+            denied = any(_tool_match(req.tool, pat) for pat in cap.denied_tools)
+            if denied or not allowed:
+                return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "POLSIA-E114", audit=audit)
 
     external = req.action_class in (ActionClass.EXTERNAL_REVERSIBLE, ActionClass.EXTERNAL_IRREVERSIBLE)
     # Sandbox BEFORE caps: the caps bound REAL sends, and a sandboxed run performs none. Checking

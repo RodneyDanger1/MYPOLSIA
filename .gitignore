@@ -76,3 +76,8 @@ e2e/run-*.txt
 # The pg_dump + volume tars `make backup` writes here are runtime state, never source: one
 # committed .sql hands over every table, and the backend_data tar carries the DeepSeek key.
 backups/
+
+# ── Wave evidence dirs captured in-repo (A-2 §2): may contain captured headers/log lines with
+# real secrets (e.g. wave-v10/stripe-lab/listen.log carries a Stripe webhook signing secret).
+# NEVER tracked; keep on disk as evidence, out of history forever.
+wave-v10/

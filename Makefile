@@ -87,7 +87,7 @@ BACKUP_VOLUMES = backend_data chroma_data celery_beat_data redis_data
 
 backup:
 	mkdir -p backups
-	docker compose exec -T postgres pg_dump -U polsia polsia > backups/polsia-$$(date +%F).sql
+	docker compose exec -T postgres pg_dump -U $${POSTGRES_USER:-polsia} $${POSTGRES_DB:-polsia} > backups/polsia-$$(date +%F).sql
 	@echo "backup: backups/polsia-$$(date +%F).sql written"
 	@for vol in $(BACKUP_VOLUMES); do \
 		docker volume inspect polsia_$$vol >/dev/null 2>&1 || { echo "make backup: refusing — docker volume polsia_$$vol not found; is the stack up (docker compose up -d)?" >&2; exit 1; }; \
@@ -108,6 +108,6 @@ restore:
 	@echo "RESTORE IS A DRILL — run it against a SCRATCH compose project, never the live stack. Full steps: README.md, 'Volumes & Backup'."
 	@echo "  1. scratch project in its own dir, start from empty: docker compose -p scratch down -v"
 	@echo "  2. seed each data volume from its tar: docker run --rm -v scratch_<volume>:/d -v \"$$(pwd)/$(SRC)\":/b alpine sh -c \"tar xzf /b/<volume>.tgz -C /d\""
-	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U polsia polsia < $(SRC)/polsia-<date>.sql"
+	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U $${POSTGRES_USER:-polsia} $${POSTGRES_DB:-polsia} < $(SRC)/polsia-<date>.sql"
 	@echo "  4. boot the scratch stack: docker compose -p scratch up -d"
 	@echo "  5. smoke: curl -fsS http://localhost/api/v1/health && load one dashboard page"
