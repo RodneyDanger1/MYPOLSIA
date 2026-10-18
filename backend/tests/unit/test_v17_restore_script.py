@@ -90,10 +90,24 @@ def _run(tmp_path: Path, *args: str, docker_body: str | None = DOCKER_SHIM,
         _make_executable(shim / "docker", docker_body or DOCKER_SHIM)
         path = shim.as_posix() + os.pathsep + os.environ["PATH"]
     else:
-        # No docker anywhere: only the POSIX tool dir that hosts `sh` is on PATH.  Docker lives
-        # outside it on this host, so `command -v docker` genuinely fails while validation's
-        # ls/wc/head/grep/tar still work.
-        path = Path(shutil.which("sh")).parent.as_posix()
+        # Simulate "no docker anywhere" PORTABLY.  The Windows trick (PATH = sh's own dir) relied
+        # on docker living outside it; on the Linux CI runner docker IS /usr/bin/docker, so the
+        # script found it, tried to run it and exited 1 — measured red on 2026-10-18.  On POSIX,
+        # build a tool dir holding symlinks to ONLY the tools restore.sh needs.
+        if os.name == "nt":
+            path = Path(shutil.which("sh")).parent.as_posix()  # docker is not beside sh on Windows
+        else:
+            tools = (
+                "sh", "cat", "ls", "wc", "head", "grep", "tar", "gzip", "date", "mktemp",
+                "realpath", "stat", "sed", "awk", "sort", "tail", "cut", "tr", "basename", "dirname",
+            )
+            tooldir = tmp_path / "shim-nodocker"
+            tooldir.mkdir(exist_ok=True)
+            for tool in tools:
+                found = shutil.which(tool)
+                if found and not (tooldir / tool).exists():
+                    os.symlink(found, tooldir / tool)
+            path = tooldir.as_posix()
     env = {
         **os.environ,
         "PATH": path,

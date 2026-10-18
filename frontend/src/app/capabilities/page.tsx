@@ -66,7 +66,7 @@ export default function CapabilitiesPage() {
       </div>
 
       {error ? (
-        <div role="alert" className="border border-alert bg-surface p-3">
+        <div role="alert" data-testid="capabilities-error" className="border border-alert bg-surface p-3">
           <p className="ui-label text-alert">Could not load the capability map</p>
           <p className="mt-1 text-sm text-ink">{error}</p>
           <button

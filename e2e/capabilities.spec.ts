@@ -29,12 +29,15 @@ test.describe("Capabilities", () => {
     await expect(page.getByRole("heading", { name: "Capabilities" })).toBeVisible();
 
     // One of the page's honest states: the registry map, a successful-but-empty map, or the named
-    // failure with its Retry. All three are real answers; a blank page is not.
+    // failure with its Retry. All three are real answers; a blank page is not. The failure state is
+    // targeted by its OWN testid — `getByRole("alert")` also matches Next's framework route
+    // announcer (`#__next-route-announcer__`, role=alert on every page), which made the first CI
+    // run a strict-mode violation with 2 elements (verified 2026-10-18).
     await expect(
       page
         .getByTestId("capabilities-count")
         .or(page.getByTestId("capabilities-empty"))
-        .or(page.getByRole("alert")),
+        .or(page.getByTestId("capabilities-error")),
     ).toBeVisible();
   });
 });
