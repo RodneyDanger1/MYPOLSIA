@@ -1,9 +1,10 @@
-import { ApiError } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 /**
- * The H-P1 wire contract (wave V16, frozen interface) — types, envelope unwrap and validators for
- * every `GET /api/v1/phone/*` read the phone UI performs. ONE module so the dashboard card and the
- * `/phone` page cannot drift apart in how they read the same routes.
+ * The H-P1 wire contract (wave V16, frozen interface) plus the V17 SEND client — types, envelope
+ * unwrap and validators for every `GET /api/v1/phone/*` read the phone UI performs, and for
+ * `POST /api/v1/phone/send`. ONE module so the dashboard card, the `/phone` page and the send
+ * composer cannot drift apart in how they read (or refuse) the same surface.
  *
  * The rules encoded here, in the honesty voice the rest of the frontend uses:
  *
@@ -171,6 +172,84 @@ export function parseCalls(data: unknown): PhoneCall[] {
       dur_s: row.dur_s as number | null | undefined,
     };
   });
+}
+
+/* ── the SEND contract (wave V17, frozen) ────────────────────────────────────────────────── */
+
+/** The composer cap the server enforces too (`BODY_MAX` in `phone_send_service.py`). */
+export const SEND_BODY_MAX = 640;
+/** The one driver name the server accepts; a different one is not a send this UI can trust. */
+export const PHONE_SEND_DRIVER = "cdp-google-messages";
+
+/** `POST /phone/send` → `data`. The server has already observed the send; nothing here is local. */
+export type PhoneSendResult = {
+  sent_at: string;
+  to_masked: string;
+  driver: string;
+};
+
+/** Codes that mean "this deployment cannot send right now" — the composer disables and SAYS WHY.
+ *  `E_VALIDATION` is deliberately absent: a malformed message is fixable in the form, so the
+ *  composer stays enabled and the refusal renders inline. */
+export const SEND_BLOCKING_CODES = [
+  "E_SANDBOX_BLOCKED",
+  "E_PHONE_SEND_UNPAIRED",
+  "E_PHONE_UNAVAILABLE",
+] as const;
+
+/** The refusal vocabulary of `POST /phone/send`, in the user's words. Every branch names its code
+ *  — a send surface that fails silently is worse than one that refuses. */
+const SEND_REASONS: Record<string, string> = {
+  E_SANDBOX_BLOCKED:
+    "Sending is blocked (E_SANDBOX_BLOCKED): SANDBOX_MODE is on — this deployment sends no real SMS.",
+  E_PHONE_SEND_UNPAIRED:
+    "Sending is blocked (E_PHONE_SEND_UNPAIRED): no paired Google Messages web session — pair the phone in the automation Chrome.",
+  E_PHONE_UNAVAILABLE:
+    "Sending is blocked (E_PHONE_UNAVAILABLE): the send driver is unreachable (CDP or driver missing).",
+};
+
+/** Validates `data` of `POST /phone/send`. A result that names a different driver is refused —
+ *  the UI only claims a send the documented driver reported. */
+export function parseSendResult(data: unknown): PhoneSendResult {
+  const refuse = (field: string): never => {
+    throw new Error(`the phone send result did not carry ${field}`);
+  };
+  if (!isRecord(data)) refuse("an object body");
+  const { sent_at, to_masked, driver } = data as Record<string, unknown>;
+  if (typeof sent_at !== "string" || sent_at.trim() === "") refuse("a string sent_at");
+  if (typeof to_masked !== "string" || to_masked.trim() === "") refuse("a string to_masked");
+  if (driver !== PHONE_SEND_DRIVER) refuse(`the "${PHONE_SEND_DRIVER}" driver declaration`);
+  return { sent_at: sent_at as string, to_masked: to_masked as string, driver: PHONE_SEND_DRIVER };
+}
+
+/** The REAL send call — `api.post`, one attempt, no retry (a blind retry could double-text). */
+export async function sendSms(to: string, body: string): Promise<PhoneSendResult> {
+  const payload = await api.post<unknown>("/phone/send", { to, body });
+  return parseSendResult(unwrapEnvelope("send", payload));
+}
+
+/** The refusal code on an ApiError, or null for anything else (a transport failure has no code). */
+export function sendRefusalCode(e: unknown): string | null {
+  if (typeof ApiError !== "undefined" && e instanceof ApiError) return e.code;
+  return null;
+}
+
+/** Does this refusal mean the composer must stay disabled until the deployment changes? */
+export function isSendBlocked(e: unknown): boolean {
+  const code = sendRefusalCode(e);
+  return code !== null && (SEND_BLOCKING_CODES as readonly string[]).includes(code);
+}
+
+/** The NAMED reason shown next to a disabled Send button (empty string = not a blocking code). */
+export function sendBlockedReason(code: string | null): string {
+  return code === null ? "" : (SEND_REASONS[code] ?? "");
+}
+
+/** `sent at HH:MM` from the server's own ISO timestamp — no timezone re-derivation: the clock
+ *  digits are read from the string, and a non-ISO timestamp renders VERBATIM instead of guessing. */
+export function sentClock(sentAt: string): string {
+  const match = /T(\d{2}:\d{2})/.exec(sentAt);
+  return match ? match[1] : sentAt;
 }
 
 /* ── failure classification ────────────────────────────────────────────────────────────────── */

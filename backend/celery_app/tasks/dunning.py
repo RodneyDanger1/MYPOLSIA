@@ -139,6 +139,26 @@ def compose_dunning_email(invoice: Invoice, step: DunningStep) -> tuple[str, str
     return subject, body
 
 
+def _consumed_keys(detail: dict[str, Any]) -> list[str]:
+    """The step keys one ledger/claim row CONSUMES: its own `step` plus every `superseded` rung.
+
+    L3-01 (V17): a fired rung records the earlier owed rungs it superseded in `detail.superseded`
+    ("the LATEST owed step: one email per invoice per tick, no cascade").  Before this helper only
+    the fired rung counted as consumed, so the NEXT daily tick walked the ladder BACKWARDS through
+    the stale rungs it had just declared superseded — a pre-due "please pay by the due date"
+    reminder arriving after the final notice, one per day.  `superseded` is therefore consumption,
+    not decoration; a REFUSED claim is still not (a refusal consumes nothing).
+    """
+    keys: list[str] = []
+    step = detail.get("step")
+    if isinstance(step, str):
+        keys.append(step)
+    superseded = detail.get("superseded")
+    if isinstance(superseded, list):
+        keys.extend(item for item in superseded if isinstance(item, str))
+    return keys
+
+
 async def _sent_steps(db, *, claims=None) -> dict[int, set[str]]:  # noqa: ANN001 - AsyncSession, kept local
     # F16 (V12/W-C): `claims` lets the tick pass its ONE claim read through instead of this
     # reading the claim ledger again (and the delivered ledger was re-read per invoice).
@@ -146,7 +166,9 @@ async def _sent_steps(db, *, claims=None) -> dict[int, set[str]]:  # noqa: ANN00
 
     Consumed = a delivered `invoice_dunning` row (the V9 ledger), OR a claim row (F5/V11)
     whose state is anything but `refused` — a pending claim is exactly the crash-window row
-    that must keep the step from re-sending.
+    that must keep the step from re-sending.  A row ALSO consumes the rungs it names in
+    `detail.superseded` (`_consumed_keys`): the catch-up rule fires the latest owed rung and
+    drops the stale earlier ones, so those must never come back on a later tick.
     """
     rows = await fetch_scalars(
         db,
@@ -159,14 +181,13 @@ async def _sent_steps(db, *, claims=None) -> dict[int, set[str]]:  # noqa: ANN00
     for row in rows:
         detail = row.detail if isinstance(row.detail, dict) else {}
         invoice_id = detail.get("invoice_id")
-        step = detail.get("step")
-        if isinstance(invoice_id, int) and isinstance(step, str):
-            ledger.setdefault(invoice_id, set()).add(step)
+        if isinstance(invoice_id, int):
+            ledger.setdefault(invoice_id, set()).update(_consumed_keys(detail))
     for invoice_id, by_step in (claims if claims is not None else await _claim_rows(db)).items():
-        for step, row in by_step.items():
+        for _step, row in by_step.items():
             detail = row.detail if isinstance(row.detail, dict) else {}
             if detail.get("state") != CLAIM_STATE_REFUSED:
-                ledger.setdefault(invoice_id, set()).add(step)
+                ledger.setdefault(invoice_id, set()).update(_consumed_keys(detail))
     return ledger
 
 

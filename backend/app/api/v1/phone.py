@@ -1,4 +1,4 @@
-"""`/api/v1/phone` — the owner's phone, read-only (the frozen H-P1 surface).
+"""`/api/v1/phone` — the owner's phone: the frozen H-P1 read surface plus the V17 policy-gated send.
 
 THE CONTRACT (frozen before this module was written)
     GET /api/v1/phone/summary                        -> {store_status, unread_total, threads[],
@@ -7,6 +7,10 @@ THE CONTRACT (frozen before this module was written)
     GET /api/v1/phone/calls?limit&missed_only        -> {calls[{when,type,who,num_masked,dur_s}]}
     GET /api/v1/phone/codes?within_hours             -> {codes[{when,from,code,snippet}]}
     GET /api/v1/phone/export                         -> application/zip download
+    POST /api/v1/phone/send                          -> {sent_at, to_masked, driver}
+        body {"to": "<thread_id | E.164 digits>", "body": "1..640 chars"}; sandbox / unpaired /
+        unavailable / validation refuse BY NAME (`services.phone_send_service`), and every attempt
+        (sent or refused) writes one `activity_log` row with the recipient masked and no body text.
     All of them: key-auth (the router dependency), envelope `{"ok": true, "data": {...}}` on
     success and the named refusal shape (`{"ok": false, "error": {code, message, how_to_fix,
     context}}` + `X-Polsia-Error-Code`) on failure — both produced by the SHIPPED plumbing
@@ -50,7 +54,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -58,6 +62,7 @@ from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.data import ExportFileResponse
 from app.core.errors import E_STORAGE, PolsiaError
 from app.services import phone_link_service as phone
+from app.services import phone_send_service as sends
 from app.services.activity_service import log_activity
 
 logger = logging.getLogger(__name__)
@@ -136,6 +141,80 @@ async def phone_codes(
             detail={"count": len(rows), "within_hours": within_hours, "limit": limit},
         )
     return {"ok": True, "data": {"codes": rows}}
+
+
+# ── send ────────────────────────────────────────────────────────────────────────────────────
+
+
+async def _audit_send_attempt(
+    db: AsyncSession,
+    payload: dict[str, Any],
+    outcome: sends.SendResult | None,
+    refusal: PolsiaError | None,
+) -> None:
+    """Write the ONE audit row per attempt — masked recipient, body LENGTH, never the body.
+
+    An audit failure is logged and swallowed: the send already happened (or refused) and the
+    caller's answer must not turn into a 500 because the feed is unavailable. The row itself never
+    carries the message text or an unmasked number — `activity_log` is rendered in the dashboard.
+    """
+    to_masked = sends.mask_target(payload.get("to"))
+    body = payload.get("body")
+    detail: dict[str, Any] = {
+        "target": to_masked,
+        "to_masked": to_masked,
+        "body_chars": len(body) if isinstance(body, str) else 0,
+    }
+    if refusal is not None:
+        summary = f"Phone SMS send refused: {refusal.code}"
+        detail["code"] = refusal.code
+        level = "warning"
+    else:
+        assert outcome is not None
+        summary = f"Phone SMS sent to {outcome.to_masked} via {outcome.driver}"
+        detail.update(
+            {"driver": outcome.driver, "sent_at": outcome.sent_at, "to_masked": outcome.to_masked}
+        )
+        level = "info"
+    try:
+        await log_activity(
+            db, sends.AUDIT_AGENT, sends.AUDIT_ACTION, summary=summary, level=level, detail=detail
+        )
+        # COMMIT the row HERE, before the caller raises its refusal: `get_db` auto-commits on a
+        # successful response but ROLLS BACK when the route raises, so a refusal's audit row would
+        # otherwise be erased with the transaction.  Measured live (V17 drill): the sandbox 403
+        # answered correctly while ZERO phone_send rows ever landed; two-session pin added.
+        await db.commit()
+    except Exception:  # noqa: BLE001 — the audit must never rewrite the outcome it records
+        logger.exception("phone send audit row could not be written")
+
+
+@router.post("/send")
+async def phone_send(
+    payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Send one SMS through the owner's paired Google Messages web session.
+
+    The body is read as a plain dict (not a pydantic model) on purpose: every validation mistake
+    must answer the app's own named `E_VALIDATION` envelope AND leave an audit row, which FastAPI's
+    request-validation handler cannot do (it answers before the route body runs).
+
+    Ordering is the service's: sandbox -> validation -> driver present -> subprocess. Refusals are
+    raised as CODED `HTTPException`s (`sends.http_refusal`) so `E_PHONE_SEND_UNPAIRED` keeps its 409
+    without a `core/errors.py` edit; `main.py`'s coded handler supplies the envelope and header.
+    """
+    with refusal_guard():
+        outcome: sends.SendResult | None = None
+        refusal: PolsiaError | None = None
+        try:
+            outcome = await sends.send(payload.get("to"), payload.get("body"))
+        except PolsiaError as exc:
+            refusal = exc
+        await _audit_send_attempt(db, payload, outcome, refusal)
+        if refusal is not None:
+            raise sends.http_refusal(refusal) from refusal
+        assert outcome is not None
+    return {"ok": True, "data": outcome.payload()}
 
 
 # ── export ───────────────────────────────────────────────────────────────────────────────────

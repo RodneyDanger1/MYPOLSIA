@@ -7,7 +7,7 @@ import { Button, Card } from "@/components/ui";
 import { safeHref } from "@/components/planner/CandidateCard";
 import { ApiError, api } from "@/lib/api";
 
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
  * The left rail's `Website` card (wave V8b / BEAT B16).
@@ -75,7 +75,7 @@ export function WebsiteCard() {
         if (!cancelled) setConfig(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setConfigError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setConfigError(readErrorText(e));
       });
     return () => {
       cancelled = true;
@@ -108,7 +108,7 @@ export function WebsiteCard() {
         } else {
           setHealth({
             kind: "failed",
-            message: e instanceof Error ? e.message : String(e),
+            message: readErrorText(e),
             checkedAt: new Date(),
           });
         }

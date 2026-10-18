@@ -38,8 +38,8 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
-| **Phone** | `/phone` | *Shipping in this wave (V16)* — read-only texts/calls/codes + archive download; see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
-| **Capabilities** | `/capabilities` | *Shipping in this wave (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
+| **Phone** | `/phone` | *Live (V16)* — texts/calls/codes + archive download, plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation; send is served by the host-run API — see USAGE §5 Send); see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 
 ## How to use it
 
@@ -356,13 +356,13 @@ polsia/
 ├── frontend/
 │   └── src/
 │       ├── app/             # Next.js 14 pages (15 nav routes incl. /phone; the /capabilities
-│       │                    # page ships with wave V16, linked from Settings)
+│       │                    # page is live since V16, linked from Settings)
 │       ├── components/      # ActivityFeed, MetricsCard, AgentStatusGrid, Sidebar
 │       ├── hooks/           # useActivityFeed (WebSocket), useAgentStatus (polling)
 │       └── lib/             # Typed API client
 ├── e2e/                     # Playwright end-to-end tests
 ├── nginx/                   # Reverse proxy config
-├── scripts/                 # init_db.sh, seed_company.py, backup.sh
+├── scripts/                 # init_db.sh, seed_company.py, backup.sh, restore.sh
 ├── docker-compose.yml
 ├── docker-compose.ci.yml    # CI override (CLAUDE_CLI_MOCK=true, no nginx)
 ├── Makefile
@@ -387,7 +387,8 @@ The stack's state lives in five named Docker volumes; `make backup` snapshots al
 
 ```bash
 make backup                     # backups/polsia-<date>.sql + backups/<volume>.tgz (4 data volumes)
-make restore SRC=backups        # prints the drill steps; verifies the dump exists first
+make restore SRC=backups        # prints the scratch-project drill steps; verifies the dump exists first
+make restore-drill SRC=backups  # EXECUTES the restore into a throwaway container and verifies it
 ```
 
 `make backup` requires the stack to be up (`docker-compose up -d`) and REFUSES by name when a
@@ -414,10 +415,34 @@ backup). SIGTERM ends the loop cleanly; the next start runs a fresh cycle immedi
   name) and `ls -la backups/` (the `.sql` should be non-trivial in size;
   `tar tzf backups/backend_data.tgz` should list files).
 - Stop/start: `docker compose stop backup` / `docker compose up -d backup`.
-- `make backup` is unchanged and still works for on-demand snapshots; `make restore SRC=backups`
-  consumes either tool's output (identical artifact names).
+- `make backup` is unchanged and still works for on-demand snapshots; `make restore SRC=backups` and
+  `make restore-drill SRC=backups` consume either tool's output (identical artifact names).
 
-### Restore drill (scratch compose project — never the live stack)
+### Restore drill (`make restore-drill` — executes; never the live stack)
+
+`scripts/restore.sh` proves the backup restores. It never touches the live compose project: it starts
+**one** throwaway `postgres:16-alpine` container named `polsia-restore-drill-pg` with **no published
+ports**, loads the newest `polsia-*.sql` into a fresh `polsia` database, verifies the result against a
+manifest parsed out of the dump itself (public table count + row counts for `activity_log`,
+`agent_runs`, `tasks`, `memory_entries`, `task_schedules`, `chat_messages`, `company_config`), extracts
+every volume archive into a temp dir and proves each listed member materialised, then **always** tears
+the container down through a trap (`docker rm -f`) — on success, failure, Ctrl-C and SIGTERM. The full
+command list it ran is printed in the log.
+
+```bash
+make restore-drill SRC=backups   # execute it: exit 0 PASS, 1 FAIL, 2 refusal
+DRY=1 make restore-drill         # print the plan + exact commands; touches nothing
+```
+
+Refusals are by name and exit 2: missing `--src`; no `polsia-*.sql`; no `*.tgz`; a missing canonical
+volume archive; an unreadable/corrupt archive; a dump with no pg_dump header; docker absent; or a
+container named `polsia-restore-drill-pg` that already exists (it never reuses or replaces one — set
+`RESTORE_PG_CONTAINER` for a second parallel drill). Both dump formats route correctly: plain-SQL
+artifacts (what `make backup` and the backup sidecar write) load through `psql -v ON_ERROR_STOP=1`;
+`PGDMP` custom-format artifacts through `pg_restore --no-owner --no-privileges`.
+
+**Full-stack drill (optional, scratch compose project)** — the script proves the *data*; booting a
+second stack proves the *app*. Never against the live project:
 
 1. Scratch project: its own directory with its own copy of `docker-compose.yml`; start from
    empty with `docker compose -p scratch down -v`.

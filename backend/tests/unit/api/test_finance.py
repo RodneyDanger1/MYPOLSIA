@@ -138,7 +138,17 @@ async def test_finance_stripe_events_empty(api_client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_stripe_webhook_missing_secret(api_client):
-    """Returns 500 when webhook secret is not configured."""
+    """RE-PINNED (V17/L3, L3-04): was 500, now the named `E_CONFIG` 503 refusal.
+
+    The old assertion (`== 500`) recorded the bug, not a contract: the route raised a bare
+    `HTTPException(500, detail="Stripe webhook secret not configured")`, a plain-string detail, so
+    a public route answered every Stripe delivery with an UNCODED 500 and no
+    `X-Polsia-Error-Code` for the operator to grep.  The same missing-configuration condition
+    elsewhere in the API is `E_CONFIG` — 503, how_to_fix, machine-readable header
+    (`api/v1/data.py`: APPROVAL_SECRET unset).  Nothing about the refusal's CAUSE changed; only
+    its shape, which is now the app's one named-refusal shape.  The exact envelope is pinned in
+    `tests/unit/test_v17_l3_sweep.py::test_stripe_webhook_missing_secret_is_the_named_e_config_refusal`.
+    """
     from app.config import settings
     original = settings.stripe_webhook_secret
     settings.stripe_webhook_secret = ""
@@ -148,7 +158,9 @@ async def test_stripe_webhook_missing_secret(api_client):
             content=b'{"id":"evt_test"}',
             headers={"stripe-signature": "t=1,v1=abc"},
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "E_CONFIG"
+        assert resp.headers.get("X-Polsia-Error-Code") == "E_CONFIG"
     finally:
         settings.stripe_webhook_secret = original
 

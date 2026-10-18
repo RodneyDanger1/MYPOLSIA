@@ -1,8 +1,8 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V16)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V17)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
-## 0. Where things stand (as of the V16 close)
+## 0. Where things stand (as of the V16 close; V17 in flight — see §3b)
 - **Landed & committed (pushed):** V1–V16 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
   agent orchestration, firewalled tool-calling (DeepSeek-first runtime), compliance-gated outreach,
   Stripe billing/webhooks, finance & planning, memory layer, activity feed, ops console, hardened nginx,
@@ -17,13 +17,15 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
-`Desktop\PhoneLink-Archive`). **The Polsia-side integration is IN (wave V16, live-proven against the
+`Desktop\PhoneLink-Archive`). **The Polsia-side integration is LIVE (wave V16, live-proven against the
 real store):** read-only mount (`PHONE_LINK_DB_DIR`; container target `/phone-link`), `E_PHONE_UNAVAILABLE`
 refusal by name (503, both body and header), `GET /api/v1/phone/*` routes (codes = key-only +
 audit-logged, values never logged), streaming export ZIP (messages.json + calls.csv + contacts.json),
 orchestrator activity feed (per-kind dedupe ledger; convergent — tick7 = tick8 = 0), dashboard Phone
-card, `/phone` page (+nav; 15 routes). **No send path** (no local send API exists) — see the limits
-section of that file.
+card, `/phone` page (+nav; 16 routes). **Send (V17):** `POST /api/v1/phone/send` — a policy-gated
+CDP driver against a paired Google Messages web session; **off by default**, refusing by name
+(`E_SANDBOX_BLOCKED` / `E_PHONE_SEND_UNPAIRED` / `E_PHONE_UNAVAILABLE` / `E_VALIDATION`) and writing
+one audit row per attempt; the live send is owner-gated (see `USAGE.md` §5 Send).
 
 ## 2. WAVE V15 — CROSSED OFF (all verified at V15 close)
 - **2R-01…2R-09 ✅** — rate-limit zones + named 429 on the three public routes · docs auto-hide when
@@ -79,6 +81,21 @@ section of that file.
 - **Gate at V16 close:** backend 0F/0E, ruff + mypy clean, FE jest ×2, `tsc` 0, `next build` 0,
   and **CI (`ci.yml`, `integration.yml`, `docker-build`) fully green** at `a002100`.
 
+## 3b. WAVE V17 — IN FLIGHT (this section is updated by the release-ops lane)
+- **Restore drill — NEW, executed ✅.** `scripts/restore.sh` + `make restore-drill SRC=backups` prove a
+  backup restores: one throwaway `postgres:16-alpine` container (`polsia-restore-drill-pg`, **no
+  published ports**, never the compose project), dump loaded into a fresh `polsia` database, public
+  table count + core-set row counts verified against a manifest parsed from the dump itself, every
+  volume archive extracted with each listed member proven present, and trap teardown (`docker rm -f`)
+  on every exit path. Refusals by name (exit 2) for missing/corrupt artifacts, docker absent, or a
+  name collision. Pins: `backend/tests/unit/test_v17_restore_script.py` (13 tests).
+- **Release checklist execution.** §1 (hygiene/secret scan), the locally-safe §2 item (ruff on the new
+  pin) and §5 read-only probes (`docker compose config -q`, security headers, health) are executed in
+  the V17 receipt with evidence; §4 CI and the owner-run §5 drills (sandbox flip, rate-limit burst,
+  full-stack restore) stay with the parent/owner.
+- **Docs truth pass.** Phone + capabilities are stated as **live (V16)** with the real-store drill
+  citation; `make restore-drill` is documented in README/USAGE/DEPENDENCIES.
+
 ## 4. Open offers / owner decisions (nothing built unasked)
 - **E7 carry-forward findings (V15.5 receipts; not yet ordered):** re-arm clears `paused_release` on
   broker acceptance → an accept-then-lost message can strand a `pending` non-scheduler row (only
@@ -87,7 +104,9 @@ section of that file.
   expiry can terminal-fail a row that mostly sat queued) · `integrations._day_window` documented UTC
   but uses `date.today()` (process-local). Details: `wave-v16/e7-delta-sweep/FINDINGS.md`.
 - **Phone SENDING** (no local send API): optional path = pair Google Messages web to this PC, then drive
-  it via the user's own browser (CDP). Say "do the sending path" to schedule it. Out of scope in V16.
+  it via the user's own browser (CDP). **Scheduled in V17** — `POST /api/v1/phone/send` (CDP driver,
+  sandbox-blocked by default, refusals by name); the real-send proof needs the owner's paired browser
+  (parent live-check). Out of scope in V16.
 - **Production Stripe**: the burned live key was expired (correctly); a NEW restricted live key is needed
   when real payments go live (test key + webhook secret are wired in `.env`, never in git).
 - **website_url**: still the placeholder in config (`https://yourcompany.com`) — set a real domain in

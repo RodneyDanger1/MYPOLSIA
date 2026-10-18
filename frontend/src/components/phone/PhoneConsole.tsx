@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { Button, SectionHeader } from "@/components/ui";
@@ -11,13 +11,20 @@ import { API_KEY, ApiError } from "@/lib/api";
 import {
   CALLS_WINDOW,
   MESSAGES_WINDOW,
+  SEND_BODY_MAX,
+  isSendBlocked,
   isPhoneUnavailable,
   parseCalls,
   parseMessages,
   parseSummary,
   parseThreadParam,
   phoneErrorText,
+  sendBlockedReason,
+  sendRefusalCode,
+  sendSms,
+  sentClock,
   type PhoneMessage,
+  type PhoneSendResult,
 } from "./phoneApi";
 import { PhoneUnavailable } from "./PhoneStates";
 import { usePhoneRead } from "./usePhoneRead";
@@ -30,11 +37,17 @@ import { usePhoneRead } from "./usePhoneRead";
  *   GET /api/v1/phone/calls?limit&missed_only          -> calls list, filterable
  *   GET /api/v1/phone/export                           -> streaming ZIP download (below)
  *
- * What is deliberately NOT here: no sending, no composing, no poll loop (the store is read-only in
- * this deployment and the page says so); search is CLIENT-side over the one loaded window, and the
- * page states that window ("search filters what was loaded") instead of pretending to search the
- * whole store — the H-P1 messages route serves one window and nothing more. `?thread=N` follows
- * the tasks-page deep-link law: digits only; a junk param is the documented no-op.
+ * What is deliberately NOT here: no poll loop (the store is read-only in this deployment and the
+ * page says so); search is CLIENT-side over the one loaded window, and the page states that window
+ * ("search filters what was loaded") instead of pretending to search the whole store — the H-P1
+ * messages route serves one window and nothing more. `?thread=N` follows the tasks-page deep-link
+ * law: digits only; a junk param is the documented no-op.
+ *
+ * SENDING (wave V17): the composer is the REAL `POST /api/v1/phone/send`. It never optimistically
+ * renders a send: the confirmation appears only after the server answered with the driver-observed
+ * `sent_at` and a masked recipient. A sandbox/unpaired/unavailable refusal disables the composer
+ * and states the NAMED reason (plus a "Try again" that re-attempts, because the deployment can be
+ * fixed while the page is open); a validation refusal renders inline and leaves the form usable.
  *
  * The page gate: the summary read decides whether ANY data surface renders. Unavailable
  * (`E_PHONE_UNAVAILABLE`, or store_status != "ok") renders the ONE shared PHONE LINK UNAVAILABLE
@@ -111,9 +124,6 @@ export function PhoneConsole() {
 
   const [query, setQuery] = useState("");
 
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [downloadDone, setDownloadDone] = useState<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -121,6 +131,54 @@ export function PhoneConsole() {
       mounted.current = false;
     };
   }, []);
+
+  // ── the send composer (wave V17) ───────────────────────────────────────────────────────────
+  // `to` prefills from the page's own deep link; the rest is deliberately plain state. The result
+  // is cleared on every edit (a stale "sent" next to new text would be a lie by layout).
+  const [sendTo, setSendTo] = useState(threadId === null ? "" : String(threadId));
+  const [sendBody, setSendBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendBlocked, setSendBlocked] = useState<string | null>(null);
+  const [sendResult, setSendResult] = useState<PhoneSendResult | null>(null);
+  const [sendAttempts, setSendAttempts] = useState(0);
+
+  useEffect(() => {
+    setSendTo(threadId === null ? "" : String(threadId));
+    setSendResult(null);
+  }, [threadId]);
+
+  const canSend =
+    sendTo.trim() !== "" && sendBody.trim() !== "" && !sending && sendBlocked === null;
+
+  const submitSend = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!canSend) return;
+      setSending(true);
+      setSendError(null);
+      setSendResult(null);
+      setSendAttempts((count) => count + 1);
+      try {
+        const result = await sendSms(sendTo.trim(), sendBody);
+        if (!mounted.current) return;
+        // The server's own observation, rendered as-is: `sent_at` clock + masked recipient.
+        setSendResult(result);
+        setSendBody("");
+      } catch (e: unknown) {
+        if (!mounted.current) return;
+        setSendError(phoneErrorText(e));
+        if (isSendBlocked(e)) setSendBlocked(sendBlockedReason(sendRefusalCode(e)));
+      } finally {
+        if (mounted.current) setSending(false);
+      }
+    },
+    [canSend, sendBody, sendTo],
+  );
+
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadDone, setDownloadDone] = useState<string | null>(null);
 
   const download = useCallback(async () => {
     setDownloading(true);
@@ -185,8 +243,8 @@ export function PhoneConsole() {
         <div>
           <h1 className="text-3xl font-bold text-ink">Phone</h1>
           <p className="text-sm text-ink-muted">
-            The phone-link store, read-only: threads, messages and calls exactly as the store
-            answers. Nothing on this page sends anything.
+            The phone-link store, read exactly as it answers — plus a send composer that only
+            claims a send the paired Google Messages page confirmed.
           </p>
         </div>
         <Button data-testid="phone-download" onClick={download} disabled={downloading}>
@@ -230,6 +288,98 @@ export function PhoneConsole() {
 
       {summaryRead.kind === "ok" && summaryRead.data.store_status === "ok" ? (
         <>
+
+          <section aria-label="Send a message" data-testid="phone-composer" className="space-y-2">
+            <SectionHeader kicker="SEND" title="Send a message" />
+            <p data-testid="phone-send-note" className="ui-label text-ink-muted">
+              One SMS through the paired Google Messages web session. The confirmation names the
+              masked recipient and the server&apos;s own send time — nothing is claimed until the
+              page confirms it.
+            </p>
+            <form onSubmit={submitSend} className="space-y-2">
+              <label className="block text-sm text-ink">
+                To
+                <input
+                  type="text"
+                  data-testid="phone-send-to"
+                  aria-label="Send to: a thread id or E.164 digits"
+                  placeholder="thread id or +15550104477"
+                  value={sendTo}
+                  onChange={(event) => {
+                    setSendTo(event.target.value);
+                    setSendResult(null);
+                  }}
+                  className="mt-1 w-full border border-line bg-surface px-2 py-1 font-mono text-sm text-ink"
+                />
+              </label>
+              <label className="block text-sm text-ink">
+                Message
+                <textarea
+                  data-testid="phone-send-body"
+                  aria-label="Message body"
+                  rows={3}
+                  maxLength={SEND_BODY_MAX}
+                  value={sendBody}
+                  onChange={(event) => {
+                    setSendBody(event.target.value);
+                    setSendResult(null);
+                  }}
+                  className="mt-1 w-full border border-line bg-surface px-2 py-1 text-sm text-ink"
+                />
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" data-testid="phone-send-submit" disabled={!canSend}>
+                  {sending ? "Sending…" : "Send"}
+                </Button>
+                <span className="ui-label text-ink-muted">
+                  {sendBody.length}/{SEND_BODY_MAX}
+                </span>
+              </div>
+            </form>
+
+            {sendBlocked !== null ? (
+              <div
+                role="status"
+                data-testid="phone-send-blocked"
+                className="border border-line bg-surface p-3"
+              >
+                <p className="text-sm text-ink">{sendBlocked}</p>
+                <p className="ui-label mt-1 text-ink-muted">
+                  The composer stays disabled until the deployment changes. Fixed it? Retry.
+                </p>
+                <Button
+                  type="button"
+                  data-testid="phone-send-retry"
+                  onClick={() => {
+                    setSendBlocked(null);
+                    setSendError(null);
+                  }}
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : null}
+
+            {sendError !== null ? (
+              <div
+                key={`phone-send-error-${sendAttempts}`}
+                role="alert"
+                data-testid="phone-send-error"
+                className="border border-alert bg-surface p-3"
+              >
+                <p className="ui-label text-alert">Send refused</p>
+                <p className="mt-1 text-sm text-ink">{sendError}</p>
+              </div>
+            ) : null}
+
+            {sendResult !== null ? (
+              <p role="status" data-testid="phone-send-result" className="text-sm text-ink">
+                Sent at {sentClock(sendResult.sent_at)} to {sendResult.to_masked} — confirmed by the
+                page.
+              </p>
+            ) : null}
+          </section>
+
           <section aria-label="Phone threads" className="space-y-2">
             <SectionHeader kicker="THREADS" title="Threads" />
             {summaryRead.data.threads.length === 0 ? (

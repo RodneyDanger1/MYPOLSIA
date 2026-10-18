@@ -1,0 +1,17 @@
+<!--
+  TEST FIXTURE — the Google Messages web PAIRING screen (no conversation list yet), used ONLY by
+  backend/tests/unit/api/test_v17_phone_send.py to prove the driver reports `paired: false` instead
+  of guessing. NOT product markup; never served.
+-->
+<!doctype html>
+<html lang="en">
+  <body>
+    <mw-app>
+      <mw-pairing>
+        <mw-qr-code></mw-qr-code>
+        <h1>Pair with your phone</h1>
+        <p>Open Google Messages on your phone and scan this code.</p>
+      </mw-pairing>
+    </mw-app>
+  </body>
+</html>

@@ -7,7 +7,7 @@ import { Card, Chip } from "@/components/ui";
 import { api, type Task } from "@/lib/api";
 
 import { agentLabel, relativeTime } from "./format";
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
  * The wire row this preview reads. `GET /tasks` answers with `TaskResponse`
@@ -61,7 +61,7 @@ export function TasksPreview() {
         if (!cancelled) setRows(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

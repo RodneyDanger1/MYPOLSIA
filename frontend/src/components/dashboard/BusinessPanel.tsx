@@ -6,17 +6,7 @@ import { Card } from "@/components/ui";
 import { api, type DashboardSummary } from "@/lib/api";
 
 import { NOT_MEASURED, kpiText, moneyText, percentText } from "./format";
-import { PanelError, PanelSkeleton } from "./states";
-
-/** The failure text for a read: `ApiError.display` (code + message + the server's fix hint) when the
- *  error carries one — read STRUCTURALLY, because this panel is also rendered by suites that mock
- *  `@/lib/api` down to `{api}`, where an `instanceof ApiError` check would throw. Anything else
- *  shows its own message. */
-function readErrorText(e: unknown): string {
-  const display = (e as { display?: unknown } | null | undefined)?.display;
-  if (typeof display === "string" && display !== "") return display;
-  return e instanceof Error ? e.message : String(e);
-}
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /** The planning view's margin template, as `GET /finance/planning` serves it (plan §9 B2). Typed
  *  for the fields this panel reads; every input is `number | null` (unmeasured = null + the reason
@@ -67,7 +57,7 @@ export function BusinessPanel() {
         if (!cancelled) setSummary(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

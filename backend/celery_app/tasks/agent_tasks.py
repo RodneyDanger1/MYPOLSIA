@@ -711,8 +711,13 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         logger.warning("run_agent_task(%s): %s — claim released, work stays queued", task_id, paused_reason)
         async with session_factory() as db:
             # ONE statement: status back to `pending`, claimed_by/claimed_at/heartbeat_at
-            # cleared (the service's graceful release verb, not a hand-rolled UPDATE).
-            await release_claim(db, task_id, me)
+            # cleared (the service's graceful release verb, not a hand-rolled UPDATE), and the
+            # claim's `attempts` increment REFUNDED — the gate refuses before anything runs, so
+            # a pause cycle must not burn the retry ladder (E7 F-05).
+            # `release_kind="paused"` is task_service.RELEASE_KIND_PAUSED's value, passed as the
+            # literal on purpose: the caller-contract pin requires this from-import to carry
+            # callables only, so the constant stays the service module's vocabulary (V-01/V-02).
+            await release_claim(db, task_id, me, release_kind="paused")
             task_row = await get_task(db, task_id)
             if task_row is not None:
                 # Merge — never replace — the marker into the per-task payload channel; a

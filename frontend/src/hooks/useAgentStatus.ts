@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api, type AgentStatus } from "@/lib/api";
+import { readErrorText } from "@/components/dashboard/states";
 
 /**
  * Polls `/agents/status`.
@@ -42,7 +43,7 @@ export function useAgentStatus(pollIntervalMs = 30000) {
         }
       } catch (e) {
         if (!cancelled && seq === requestSeq.current) {
-          setError(e instanceof Error ? e.message : String(e));
+          setError(readErrorText(e));
         }
       } finally {
         clearTimeout(timeout);

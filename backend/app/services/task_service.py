@@ -547,22 +547,48 @@ async def heartbeat_task(db: AsyncSession, task_id: int, worker: str) -> Task:
     )
 
 
-async def release_claim(db: AsyncSession, task_id: int, worker: str) -> bool:
-    """Give a claim back (graceful shutdown / re-plan).  ONE statement.
+#: The `release_claim(release_kind=...)` vocabulary.  `paused` is the V15 pause gate's release:
+#: the gate refuses BEFORE anything ran (no provider call, no ledger row), so that release is NOT
+#: an execution and must not consume the retry ladder (E7 F-05).
+RELEASE_KIND_PAUSED = "paused"
+_RELEASE_KINDS = frozenset({RELEASE_KIND_PAUSED})
+
+
+async def release_claim(
+    db: AsyncSession, task_id: int, worker: str, *, release_kind: str | None = None
+) -> bool:
+    """Give a claim back (graceful shutdown / re-plan / pause).  ONE statement.
 
     Returns True when this worker's claim was released back to `pending`; a task
     held by somebody else raises `E_TASK_CLAIMED`, a missing task `E_NOT_FOUND` —
     a `False`-only contract would hide both.
+
+    `attempts` counts executions, and `claim_task` is what increments it — so a claim that is
+    released WITHOUT having run must return that increment.  `release_kind="paused"` does exactly
+    that (floored at 0): the pause gate claims, sees the owner's STOP, and releases before any
+    work, and without the refund three pause/resume cycles burned `task_max_attempts` (3) on work
+    that ran zero times — one later lease expiry then wrote `failed`/"attempts exhausted"
+    (E7 F-05).  A plain release (no kind) keeps the shipped semantics byte-for-byte: an unknown
+    kind is a caller error, refused rather than silently treated as plain.
     """
+    if release_kind is not None and release_kind not in _RELEASE_KINDS:
+        raise ValueError(
+            f"release_claim got unknown release_kind {release_kind!r}; "
+            f"valid kinds: {sorted(_RELEASE_KINDS)} or None"
+        )
+    values: dict[str, Any] = {
+        "status": "pending",
+        "claimed_by": None,
+        "claimed_at": None,
+        "heartbeat_at": None,
+    }
+    if release_kind == RELEASE_KIND_PAUSED:
+        attempts = func.coalesce(Task.attempts, 0)
+        values["attempts"] = case((attempts > 0, attempts - 1), else_=0)
     stmt = (
         update(Task)
         .where(Task.id == task_id, Task.claimed_by == str(worker))
-        .values(
-            status="pending",
-            claimed_by=None,
-            claimed_at=None,
-            heartbeat_at=None,
-        )
+        .values(**values)
         .returning(Task.id)
         .execution_options(synchronize_session=False)
     )

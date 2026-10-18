@@ -9,6 +9,10 @@
  *
  * RED leg (raw output in wave-v16/w3-phone-ui/raw/): written before the table change — pre-fix
  * the table holds 14 entries and no /phone href, so both pins here fail exactly so.
+ *
+ * V17/L4 re-pin: the exact href list below moved 15 -> 16 when the Capabilities route was added
+ * (`/capabilities`, system cluster before Settings). Only the list grew; the /phone assertions above
+ * are untouched — the phone route still sits in the comms cluster after Support.
  */
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
@@ -20,7 +24,7 @@ describe("nav table — the phone route (15th)", () => {
     expect(items[0].icon).toBeDefined();
   });
 
-  it("is the frozen fifteen-route IA, /phone in the comms cluster after Support", () => {
+  it("is the frozen sixteen-route IA, /phone in the comms cluster after Support", () => {
     expect(NAV_ITEMS.map((item) => item.href)).toEqual([
       "/dashboard",
       "/agents",
@@ -36,6 +40,7 @@ describe("nav table — the phone route (15th)", () => {
       "/invoices",
       "/usage",
       "/memory",
+      "/capabilities",
       "/settings",
     ]);
   });

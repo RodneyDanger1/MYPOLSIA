@@ -28,12 +28,20 @@ route's named 422 `E_VALIDATION` refusal, not a 502 schema-ladder failure.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+
+#: A float that must be a FINITE measurement.  pydantic's default (`allow_inf_nan=True`) accepts
+#: the non-standard JSON tokens, and this schema validates UNTRUSTED MODEL OUTPUT: L3-03 (V17) —
+#: a NaN in `price_band`/`est_variable_cost` survived into the proposal ledger and (on confirm)
+#: into `company_config.confirmed_idea`, where reads laundered it to `null` and the planning
+#: view's margin math inherited a non-finite number.  `E_AGENT_BAD_OUTPUT` (the repair ladder) is
+#: the right answer for a model that emits one.
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 
 
 def is_http_url(value: object) -> bool:
@@ -69,11 +77,11 @@ class PlannerIdeaDraft(BaseModel):
     name: str
     one_liner: str = ""
     buyer: str = ""
-    price_band: list[float] = Field(default_factory=list)   # [low, high] USD per sale
+    price_band: list[FiniteFloat] = Field(default_factory=list)   # [low, high] USD per sale
     channel: str = ""
     unit_cost_sketch: str = ""
-    est_variable_cost: float                                 # USD per sale (CM gate input)
-    launch_cost_usd: float                                   # cash the start needs (budget gate)
+    est_variable_cost: FiniteFloat                           # USD per sale (CM gate input)
+    launch_cost_usd: FiniteFloat                             # cash the start needs (budget gate)
     days_to_first_dollar: int                                # days until first payment
     competition_level: Literal["none", "low", "medium", "high", "saturated"]
     fleet_fit: Literal["high", "medium", "low"]

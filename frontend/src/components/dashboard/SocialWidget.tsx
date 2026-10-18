@@ -7,7 +7,7 @@ import { Card, Chip } from "@/components/ui";
 import { api } from "@/lib/api";
 
 import { absoluteStamp } from "./format";
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
  * The wire row of `GET /social/posts` (`SocialPostResponse`): `status`/`published_at`/
@@ -53,7 +53,7 @@ export function SocialWidget() {
         if (!cancelled) setPosts(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

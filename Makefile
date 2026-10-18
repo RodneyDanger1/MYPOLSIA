@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore
+.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore restore-drill
 
 up:
 	docker-compose up -d
@@ -111,3 +111,12 @@ restore:
 	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U $${POSTGRES_USER:-polsia} $${POSTGRES_DB:-polsia} < $(SRC)/polsia-<date>.sql"
 	@echo "  4. boot the scratch stack: docker compose -p scratch up -d"
 	@echo "  5. smoke: curl -fsS http://localhost/api/v1/health && load one dashboard page"
+
+# `make restore-drill SRC=backups` EXECUTES the restore for real: scripts/restore.sh starts a
+# THROWAWAY postgres:16-alpine container (name polsia-restore-drill-pg, no published ports, never
+# the compose project), loads the dump, verifies table/row counts against a manifest parsed from
+# the dump itself, extracts every volume archive, and always tears the container down via trap.
+# Exit 0 = PASS, 1 = FAIL (a named check failed), 2 = refusal (bad/missing artifacts, docker
+# absent, or a container with that name already exists).  DRY=1 prints the plan and touches nothing.
+restore-drill:
+	@sh scripts/restore.sh --src "$${SRC:-backups}" $${DRY:+--dry-run}

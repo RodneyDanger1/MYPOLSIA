@@ -54,6 +54,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/phone/calls"),
     ("GET", "/api/v1/phone/codes"),
     ("GET", "/api/v1/phone/export"),
+    # wave V17 (L2): the policy-gated SEND route — documented by app/api/v1/phone.py and
+    # tests/unit/api/test_v17_phone_send.py; refusals by name, audit row per attempt.
+    ("POST", "/api/v1/phone/send"),
     # wave V8 (C1): the owner <-> Polsia chat — documented by app/api/v1/chat.py and
     # app/schemas/chat.py; routes verified live in app.routes as [POST]/[POST]/[GET] (checked
     # 2026-10-14). OLD surface had no chat routes; NEW pins added deliberately.

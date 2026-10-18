@@ -274,7 +274,9 @@ describe("BusinessPanel (Q-09)", () => {
     render(<BusinessPanel />);
 
     expect(await screen.findByText("7")).toBeInTheDocument();
-    expect(screen.getByText("$1234")).toBeInTheDocument();
+    // V17/L4 re-pin: the dashboard money shape is the finance family's (grouping + two decimals);
+    // the raw-float "$1234" this used to pin was the Q-13 split the shell had left behind.
+    expect(screen.getByText("$1,234.00")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("4.5%")).toBeInTheDocument();
     expect(screen.getByText("no report yet")).toBeInTheDocument();

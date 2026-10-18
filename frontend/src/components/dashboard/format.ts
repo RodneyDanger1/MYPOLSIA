@@ -7,6 +7,8 @@
  * renders as the same "date unknown" placeholder the tasks page uses. Nothing here invents data.
  */
 
+import { usdText } from "@/components/finance/format";
+
 /** The one "not measured" marker this project uses. */
 export const NOT_MEASURED = "—";
 
@@ -35,10 +37,22 @@ export function kpiNumber(value: unknown): number | null {
   return null;
 }
 
-/** Dollar-prefixed reading; a value that already carries a currency symbol is left alone. */
+/** Dollar-prefixed reading; a value that already carries a currency symbol is left alone.
+ *
+ *  A NUMBER (or a numeric string — the KPI bag is `Record<string, unknown>`, so `"1234"` happens)
+ *  goes through the house money shape: thousands separators and always two decimals, exactly
+ *  `finance/format.ts`'s `usdText`. Before V17/L4 this printed the raw float (`$1234`, `$12.5`) —
+ *  the same Q-13 split the ads card's comment says "cannot come back", still alive on the dashboard
+ *  (MRR, Auto Mode spend). A display STRING that is not a bare number is left as the server sent it
+ *  (it may carry a symbol, a suffix or words); a measured 0 stays a reading (`$0.00`).
+ */
 export function moneyText(value: unknown): string {
+  if (typeof value === "number") return usdText(value);
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+    return usdText(Number(value.trim()));
+  }
   const text = kpiText(value);
-  if (typeof text === "number") return `$${text}`;
+  if (typeof text === "number") return usdText(text);
   if (text === NOT_MEASURED) return NOT_MEASURED;
   const asString = String(text);
   return asString.startsWith("$") ? asString : `$${asString}`;

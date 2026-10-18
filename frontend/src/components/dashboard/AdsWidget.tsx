@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui";
 import { api } from "@/lib/api";
 
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /** The wire row of `GET /ads/campaigns` (`AdCampaignResponse`); `status`/`daily_budget_usd`/
  *  `total_spent_usd` are nullable server-side — null means "not recorded", never a fabricated
@@ -50,7 +50,7 @@ export function AdsWidget() {
         if (!cancelled) setCampaigns(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

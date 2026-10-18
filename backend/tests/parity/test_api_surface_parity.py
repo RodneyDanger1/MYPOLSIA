@@ -101,6 +101,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/phone/codes", ("GET",)),                            # key-only + activity_log audit row per call
     ("/api/v1/phone/export", ("GET",)),                           # application/zip: messages.json + calls.csv + contacts.json
     ("/api/v1/phone/messages", ("GET",)),
+    # wave V17 (L2): the policy-gated SEND composer's route — sandbox / unpaired / unavailable /
+    # validation refuse by name; one activity_log row per attempt; documented by
+    # app/api/v1/phone.py + tests/unit/api/test_v17_phone_send.py.
+    ("/api/v1/phone/send", ("POST",)),
     ("/api/v1/phone/summary", ("GET",)),
     ("/api/v1/ops/sandbox", ("GET",)),                           # V11 unit 2: read-only SANDBOX_MODE flag behind the UI banner; OLD surface had no sandbox route — NEW pin added deliberately with the route (parent-surgical)
     ("/api/v1/outreach/prospects", ("GET",)),

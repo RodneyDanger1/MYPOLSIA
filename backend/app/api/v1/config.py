@@ -17,8 +17,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_NOT_FOUND, ERROR_HINTS
-from app.schemas.company import CompanyConfigResponse, CompanyConfigUpdate
+from app.core.errors import E_DB, E_NOT_FOUND, ERROR_HINTS, PolsiaError
+from app.schemas.company import (
+    CompanyConfigResponse,
+    CompanyConfigUpdate,
+    first_non_finite_field,
+)
 from app.schemas.secret import (
     DeepSeekKeyStatus,
     DeepSeekKeyUpdate,
@@ -48,13 +52,40 @@ def _not_seeded() -> HTTPException:
     )
 
 
+def _config_response(company: object) -> CompanyConfigResponse:
+    """Serialize the singleton row; a row carrying NaN/Infinity anywhere is refused BY NAME.
+
+    L3-02 (V17), the invoices precedent (`invoices.py::_invoice_response`): pydantic's serializer
+    turns a non-finite float into `null` on the wire, so a poisoned row used to read as a clean
+    200 whose `confirmed_idea.price_band[0]` looked "unmeasured" — with no reason beside it and a
+    NaN still waiting for every server-side consumer (the planner's gates, the planning view's
+    margin math).  A stored non-finite number is corruption, not an absence: name it (`E_DB`,
+    503) and keep the value out of the wire shape.  The WRITE side refuses these values up front
+    (`CompanyConfigUpdate`'s model validator); this is the belt for rows written before that.
+    """
+    hit = first_non_finite_field(company)
+    if hit is not None:
+        column, paths = hit
+        raise PolsiaError(
+            E_DB,
+            f"company_config.{column} carries non-finite numbers ({', '.join(paths)}) — "
+            "refusing to render the configuration",
+            how_to_fix=(
+                f"repair the {column} value (PUT /api/v1/config with finite numbers, or clear it "
+                "with null); NaN/Infinity are corruption, not measurements"
+            ),
+            context={"column": column, "paths": paths},
+        )
+    return CompanyConfigResponse.model_validate(company)
+
+
 @router.get("", response_model=CompanyConfigResponse)
 async def read_config(db: AsyncSession = Depends(get_db)) -> CompanyConfigResponse:
     with refusal_guard():
         company = await get_company(db)
     if company is None:
         raise _not_seeded()
-    return CompanyConfigResponse.model_validate(company)
+    return _config_response(company)
 
 
 @router.put("", response_model=CompanyConfigResponse)
@@ -72,7 +103,7 @@ async def update_config(
     await db.refresh(company)
     # The profile just changed: any cached agent context is now wrong.
     invalidate_company_context()
-    return CompanyConfigResponse.model_validate(company)
+    return _config_response(company)
 
 
 # ── DeepSeek key lifecycle ──────────────────────────────────────────────────────────────────

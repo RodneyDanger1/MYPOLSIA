@@ -1,13 +1,60 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.common import ORMModel
+
+#: The FREE-FORM JSON columns of `company_config`.  They carry caller/model data (an idea's
+#: price band, goals, KPIs, checklist state) and their inner numbers are NOT typed by pydantic,
+#: so the finiteness rule S4-F1 established for the typed money fields must be applied by hand.
+JSON_FIELDS: tuple[str, ...] = (
+    "pricing_model",
+    "goals",
+    "kpis",
+    "confirmed_idea",
+    "checklist_state",
+)
+
+
+def non_finite_paths(value: Any, prefix: str = "") -> list[str]:
+    """Dotted/indexed path of every non-finite number inside a JSON-ish value ([] when clean).
+
+    `NaN` / `±Infinity` are the S4-F1 class (wave-v13 s4-errors): JSON's non-standard tokens are
+    accepted by Python's `json`, so a NaN can reach a JSON column and persist.  Every consumer then
+    inherits a non-finite number — and the WIRE laundered it into `null` (pydantic serializes
+    non-finite floats as null), which reads as "unmeasured" without a reason.  Shared by the
+    write-side model validator and the read-side route guard so both name the SAME path.
+    """
+    if isinstance(value, float):
+        return [prefix] if not math.isfinite(value) else []
+    if isinstance(value, Decimal):
+        return [prefix] if not value.is_finite() else []
+    if isinstance(value, dict):
+        paths: list[str] = []
+        for key, item in value.items():
+            paths.extend(non_finite_paths(item, f"{prefix}.{key}" if prefix else str(key)))
+        return paths
+    if isinstance(value, (list, tuple)):
+        paths = []
+        for index, item in enumerate(value):
+            paths.extend(non_finite_paths(item, f"{prefix}[{index}]"))
+        return paths
+    return []
+
+
+def first_non_finite_field(row: Any) -> tuple[str, list[str]] | None:
+    """`(column, paths)` for the first JSON column of a company row carrying a non-finite number."""
+    for name in JSON_FIELDS:
+        paths = non_finite_paths(getattr(row, name, None), name)
+        if paths:
+            return name, paths
+    return None
 
 
 class CompanyConfigResponse(ORMModel):
@@ -214,3 +261,25 @@ class CompanyConfigUpdate(BaseModel):
         if value is None or isinstance(value, Decimal):
             return value
         return Decimal(str(value))
+
+    @model_validator(mode="after")
+    def _no_non_finite_numbers_in_json_fields(self) -> CompanyConfigUpdate:
+        """Refuse NaN/±Infinity anywhere inside the FREE-FORM JSON columns (L3-02, V17).
+
+        WHY a model validator: `pricing_model`/`goals`/`kpis`/`confirmed_idea`/`checklist_state`
+        are `dict[str, Any]`, so their inner numbers never pass through a typed field — pydantic's
+        float checks cannot see them.  Before this check a `PUT /config` whose `confirmed_idea`
+        carried `[NaN, 100]` answered 200 and STORED the non-standard token; reads then served
+        `null` in its place (pydantic serializes non-finite as null), a fabricated "unmeasured"
+        with no reason, and every consumer inherited a non-finite number.  The S4-F1 rule — a
+        non-finite number is not a measurement — is enforced HERE for the same reason it exists on
+        `invoices.py`'s money fields: the write boundary is cheaper than any repair.
+        """
+        for field in JSON_FIELDS:
+            paths = non_finite_paths(getattr(self, field, None), field)
+            if paths:
+                raise ValueError(
+                    f"{', '.join(paths)} carries NaN/Infinity — not valid JSON and not a "
+                    "measurement; send finite numbers (or null for unmeasured)"
+                )
+        return self

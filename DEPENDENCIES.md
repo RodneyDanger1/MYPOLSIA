@@ -45,7 +45,7 @@ TCP port **80** free on localhost — nginx publishes `127.0.0.1:80` (loopback o
 | SendGrid | outreach email sending | [sendgrid.com](https://sendgrid.com) |
 | Google Ads API | ads management agent | [developers.google.com/google-ads](https://developers.google.com/google-ads/api/docs/get-started/introduction) |
 | Meta Marketing API | ads management agent | [developers.facebook.com/docs/marketing-apis](https://developers.facebook.com/docs/marketing-apis) |
-| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) **ships in wave V16** — see `PHONELINK-MCP-TEST.md` | built into Windows 10/11 |
+| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) is **live since V16** — proven against the real store 2026-10-15 (`PHONELINK-MCP-TEST.md`). The optional send driver additionally needs Google Messages web paired in a browser | built into Windows 10/11 |
 
 ## 5) First run (after §1–§2)
 
@@ -83,7 +83,9 @@ curl http://localhost/api/v1/health
 | integration tests skipped | testcontainers missing / Docker down | `uv pip install "testcontainers[postgres,redis]"`, start Docker |
 | Playwright `No such built-in module: node:sqlite` | Node < 22 | install Node ≥22 (`winget install -e --id OpenJS.NodeJS`) |
 | `npm ci` fails on a stale lockfile | lockfile drift | `npm install` (same fallback the CI uses) |
-| `/api/v1/phone/*` answers 503 `E_PHONE_UNAVAILABLE` | Phone Link store not mounted / empty (the V16 phone feature) | set `PHONE_LINK_DB_DIR` to the store root and `docker compose up -d`; keep the Phone Link app running for fresh sync (`PHONELINK-MCP-TEST.md`) |
+| `/api/v1/phone/*` answers 503 `E_PHONE_UNAVAILABLE` | Phone Link store not mounted / empty (the phone feature, live since V16) | set `PHONE_LINK_DB_DIR` to the store root and `docker compose up -d`; keep the Phone Link app running for fresh sync (`PHONELINK-MCP-TEST.md`) |
+| `make restore-drill` exits 2 with `REFUSED: a container named "polsia-restore-drill-pg" already exists` | a previous drill was interrupted before its trap could tear down | `docker rm -f polsia-restore-drill-pg`, then re-run; the script never reuses or replaces an existing container |
+| `make restore-drill` exits 2 with `docker is not available on PATH` | Docker Desktop not running / CLI not on PATH | start Docker Desktop; verify `docker ps` works in the same shell |
 
 ## 8) CI parity (what GitHub Actions installs)
 

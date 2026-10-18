@@ -94,7 +94,11 @@ export default function UsagePage() {
     setOffset(0);
     setReloadKey((n) => n + 1);
   }, []);
-  const canNext = data !== null && offset + data.items.length < data.total;
+  // V17/L4: NEXT also requires a row on THIS page. `offset + shown < total` alone stayed true when
+  // the ledger shrank between reads (or an offset past the rows came back empty): every further
+  // press re-read the same empty page — a control promising rows the page just said it did not get.
+  const canNext =
+    data !== null && data.items.length > 0 && offset + data.items.length < data.total;
 
   return (
     <div className="space-y-4">

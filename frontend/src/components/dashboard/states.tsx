@@ -2,10 +2,29 @@
  * The dashboard's shared three-state vocabulary, in one place.
  *
  * Every region on the dashboard reads a real endpoint and can be in exactly three states — not read
- * yet, failed, or answered. These two helpers keep those first two states identical everywhere (the
+ * yet, failed, or answered. These helpers keep those first two states identical everywhere (the
  * same skeleton, the same "Could not load <what>: <real error>" sentence), so no panel can drift
  * into rendering an empty list for a failure or dashes for "not read yet".
  */
+
+/**
+ * The failure text for a read — the refusal, BY NAME.
+ *
+ * `ApiError.display` is `code: message — how_to_fix`; every page-level hook already renders it
+ * (useInvoices, useSchedules, useFinanceRead, useAdsRead), while the dashboard panels used to keep
+ * only `e.message` — so the same 403 read as `E_SANDBOX_BLOCKED: …` on /invoices and as a code-less
+ * sentence on the dashboard (V17/L4 finding L4-02). One helper, used by every panel, so the two can
+ * never drift again.
+ *
+ * Read STRUCTURALLY, not with `instanceof ApiError`: several suites factory-mock `@/lib/api` down to
+ * `{api}`, where the class is undefined and `instanceof` would throw. Anything that carries a
+ * non-empty string `display` is a named refusal; everything else shows its own message.
+ */
+export function readErrorText(e: unknown): string {
+  const display = (e as { display?: unknown } | null | undefined)?.display;
+  if (typeof display === "string" && display !== "") return display;
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** "Not read yet" is neither "empty" nor "no data" — a skeleton, with `aria-busy` for the reader
  *  who cannot see it (the idiom the other pages already use). */

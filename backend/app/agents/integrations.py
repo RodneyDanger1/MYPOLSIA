@@ -27,7 +27,7 @@ from app.agents.side_effects import integration_call, named_refusal
 from app.agents.tool_registry import egress_policy_refusal
 from app.config import settings
 from app.core.errors import E_INTEGRATION, E_VALIDATION
-from app.core.timeutil import now_utc
+from app.core.timeutil import now_utc, today_utc
 
 _TWEEPY_HINT = "pip install tweepy==4.14.0 and set TWITTER_API_KEY/TWITTER_API_SECRET/TWITTER_ACCESS_TOKEN/TWITTER_ACCESS_SECRET"
 _SENDGRID_HINT = "pip install sendgrid and set SENDGRID_API_KEY/SENDGRID_FROM_EMAIL"
@@ -726,8 +726,15 @@ def update_ad_budget(*, platform: str, campaign_ref: str, budget_change_usd: flo
 
 
 def _day_window(days: int) -> tuple[date, date]:
-    """The inclusive UTC day window `days` covers (today is the last day)."""
-    end = date.today()
+    """The inclusive UTC day window `days` covers (today is the last day).
+
+    The end is the UTC day, not the worker process's local day (E7 F-06): this window is sent to
+    Google Ads (`segments.date BETWEEN`), Meta (`time_range`) and Stripe (`created.gte`), all of
+    which read it as a calendar date, so a host clock west/east of UTC shifted every provider
+    window by the offset while the envelope and these docstrings claimed UTC.  `today_utc()` is
+    the project's one UTC-day helper (`app.core.timeutil`) — never `date.today()`.
+    """
+    end = today_utc()
     return end - timedelta(days=max(1, int(days or 1)) - 1), end
 
 

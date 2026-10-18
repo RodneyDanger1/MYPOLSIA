@@ -87,8 +87,10 @@ async def test_no_secret_configured_fails_closed_before_processing(api_client, a
     resp = await api_client.post(
         WEBHOOK, content=body, headers={"stripe-signature": _header(SECRET, body)}
     )
-    assert resp.status_code == 500                      # the documented fail-closed posture
-    assert "secret not configured" in resp.text
+    # L3-04 deliberate re-pin (500 -> named 503 E_CONFIG): an install with no webhook secret now
+    # answers the app's coded refusal envelope instead of an uncoded 500 — still fail-closed.
+    assert resp.status_code == 503
+    assert "secret is not configured" in resp.text
     assert len(await _event_rows(async_db_session)) == 0
 
 

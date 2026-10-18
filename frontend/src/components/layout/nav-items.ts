@@ -7,6 +7,7 @@ import {
   DollarSign,
   FileText,
   Gauge,
+  Layers,
   LifeBuoy,
   Mail,
   Megaphone,
@@ -24,8 +25,8 @@ import type { LucideIcon } from "lucide-react";
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
  * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
  * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
- * count claim moves with the table (eleven -> fifteen), labels stay as short as the live
- * menu items.
+ * count claim moves with the table (eleven -> sixteen; V17/L4 added Capabilities), labels stay as
+ * short as the live menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -59,6 +60,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/memory", label: "Memory", icon: Database },
+  // V17/L4: the read-only capability map (agent -> tool -> action, shipped in V16) was reachable
+  // only from Settings; it is a reference surface, so it joins the system cluster here and Settings
+  // stays the last item (the file's own convention).
+  { href: "/capabilities", label: "Capabilities", icon: Layers },
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const;
 

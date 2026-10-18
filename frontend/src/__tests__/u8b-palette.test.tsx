@@ -187,7 +187,7 @@ describe("CommandPalette — open/close grammar", () => {
  * ------------------------------------------------------------------------- */
 
 describe("CommandPalette — ROUTES", () => {
-  it("lists all ten routes first, in the shared nav table's order, and a query narrows them", async () => {
+  it("lists every route first, in the shared nav table's order, and a query narrows them", async () => {
     const user = userEvent.setup();
     wire();
     render(<CommandPalette />);
@@ -196,7 +196,9 @@ describe("CommandPalette — ROUTES", () => {
 
     expect(screen.getByRole("group", { name: "ROUTES" })).toBeInTheDocument();
     const options = screen.getAllByRole("option");
-    // Ten routes + two tasks + one run + one report.
+    // Every route + two tasks + one run + one report (the count is derived from NAV_ITEMS, so it
+    // moved with the table automatically when V17/L4 added Capabilities — the stale word here was
+    // "ten" while the table held fifteen).
     expect(options).toHaveLength(NAV_ITEMS.length + 2 + 1 + 1);
     for (const [index, item] of NAV_ITEMS.entries()) {
       expect(options[index].textContent).toContain(item.label);

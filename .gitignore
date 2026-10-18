@@ -81,3 +81,7 @@ backups/
 # real secrets (e.g. wave-v10/stripe-lab/listen.log carries a Stripe webhook signing secret).
 # NEVER tracked; keep on disk as evidence, out of history forever.
 wave-v10/
+
+# drill leftovers (never commit env copies)
+.env.bak
+.env.*.bak

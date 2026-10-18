@@ -260,17 +260,23 @@ silently.
 ### 4.16 Backups, export, wipe
 `make backup` (stack up) snapshots Postgres + the four data volumes into `backups/`, refusing by
 name when a volume is missing (an empty tar is a green-looking, worthless backup). The compose
-**backup sidecar** does the same on a 24 h loop with 14-day retention. Restore is a **drill** on a
-scratch compose project (`make restore SRC=backups` prints the steps). Data export/wipe: see §4.15.
-Full detail: README "Volumes & Backup".
+**backup sidecar** does the same on a 24 h loop with 14-day retention. Restore is **executable**:
+`make restore-drill SRC=backups` starts one throwaway `postgres:16-alpine` container (no published
+ports, never the compose project), loads the dump, verifies table/row counts against a manifest
+parsed from the dump itself, extracts every volume archive, and always tears it down via trap —
+exit 0 PASS / 1 FAIL / 2 refusal. `DRY=1 make restore-drill` prints the plan and touches nothing;
+`make restore SRC=backups` still prints the optional full-stack scratch-project steps. Data
+export/wipe: see §4.15. Full detail: README "Volumes & Backup".
 
 ---
 
-## 5. Phone in Polsia — **shipping in wave V16**
+## 5. Phone in Polsia — **live (V16)**
 
-Status: **in flight in wave V16** (frozen interface H-P1). The Hermes-side bridge already works
-today — see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md). This wave lands the app's own native
-read path:
+Status: **live since V16** — proven against the real Phone Link store on 2026-10-15
+(`wave-v16/v-final/live-drill2.txt`: P1 `store_status='ok'`, unread 57, threads 10 · P4 codes
+10 rows · P5 export zip carries `messages.json` + `calls.csv` + `contacts.json`). The Hermes-side
+bridge predates it — see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md). The app's own native read
+path:
 
 - **Mount:** `docker-compose.yml` bind-mounts the Windows Phone Link store **read-only** at
   `/phone-link:ro`; host root from **`PHONE_LINK_DB_DIR`** (blank = the measured Windows default).
@@ -282,19 +288,33 @@ read path:
   it exists for auth flows) · `…/export` (streaming zip: messages.json, calls.csv, contacts.json).
 - **Visibility:** a ≤5-minute tick publishes "SMS received: …" / "Missed call: …" into the activity
   feed (dedupe by kind+id — a re-run publishes nothing twice); dashboard **Phone** card + `/phone`
-  page (15th nav route: recent/thread/search/calls + download).
-- **Honest limits:** read-only, no send path, Windows-only, Phone Link app must run for fresh sync.
+  page (16th nav route: recent/thread/search/calls + download).
+- **Honest limits:** read-only by default, Windows-only, Phone Link app must run for fresh sync.
+- **Send (V17):** `POST /api/v1/phone/send` is the one write path — a CDP driver against a paired
+  Google Messages web session. It is **off by default**: sandbox mode refuses it by name
+  (`E_SANDBOX_BLOCKED`), an unpaired driver refuses (`E_PHONE_SEND_UNPAIRED`), a missing store/CDP
+  refuses (`E_PHONE_UNAVAILABLE`), and a send that did not happen is never reported as one. Every
+  attempt — sent or refused — leaves exactly ONE `activity_log` row (masked recipient, body length;
+  the body text is never stored), committed before a refusal raises.
+  **Deployment note (measured):** the driver must run where it can reach the desktop Chrome's
+  loopback CDP port, so the send path is served by the **host-run API** (`make dev-backend`); the
+  Docker stack answers `E_PHONE_UNAVAILABLE` ("driver is missing") by name — the container cannot
+  reach a loopback CDP socket, and this project does not expose the debug port to the LAN.
+  The final send is owner-gated: launch the automation Chrome (dedicated profile,
+  `--remote-debugging-port=9223`), confirm `python scripts/phone_send_driver.py --check` says
+  `paired:true`, set `SANDBOX_MODE=false`, then `POST /api/v1/phone/send`.
 
-## 6. Capabilities — agents see their real toolbox (**shipping in wave V16**)
+## 6. Capabilities — agents see their real toolbox (**live, V16**)
 
-Status: **in flight in wave V16** (frozen interface H-C1). The capability manifest is **derived from
+Status: **live since V16** (frozen interface H-C1; real-store drill P6 `agents=10 registry_tools=3
+with_tools=5`, `wave-v16/v-final/live-drill2.txt`). The capability manifest is **derived from
 the single registry sources** (`policy_firewall.AGENT_CAPABILITIES` + `tool_registry`) — never
 hand-copied — and is injected into each agent's assembled context (`base_agent`), so every agent
 knows its real tools (descriptions included), action classes, and channels; the orchestrator gets
 the full cross-agent map. `GET /api/v1/ops/capabilities` serves the same shape for tooling
 (`{agents:[{agent_type, tools, action_classes, channels}], registry_tools}`), with a drift pin
-(registry change → parity pin fails). A read-only **Capabilities** page (`/capabilities`, linked
-from Settings — not a nav item this wave) renders it honestly (empty registry → honest empty;
+(registry change → parity pin fails). A read-only **Capabilities** page (`/capabilities` — the 16th nav route since V17; also linked
+from Settings) renders it honestly (empty registry → honest empty;
 never fabricated rows).
 
 ---

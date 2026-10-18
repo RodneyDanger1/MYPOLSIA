@@ -802,7 +802,8 @@ describe("BusinessPanel — GROSS MARGIN row (plan §9 v1.1)", () => {
 
     expect(await screen.findByTestId("gross-margin-value")).toHaveTextContent("—");
     expect(screen.getByTestId("margin-read-error")).toHaveTextContent("E_HTTP_503: planning down — retry");
-    expect(screen.getByText("$1234")).toBeInTheDocument(); // the summary read is unaffected
+    // V17/L4 re-pin: same money shape as the dashboard suite above (was the raw float "$1234").
+    expect(screen.getByText("$1,234.00")).toBeInTheDocument(); // the summary read is unaffected
   });
 });
 

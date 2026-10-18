@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 
 /**
  * The Ctrl+K command palette (ui-gap §11) — one overlay that searches and navigates the SHIPPED
- * product: the fifteen routes (`components/layout/nav-items.ts` — the shared table is the
+ * product: the sixteen routes (`components/layout/nav-items.ts` — the shared table is the
  * count), tasks, runs and reports, all through deep links that already exist.
  *
  * Purely client-side: no new endpoint, no new backend call shape. Three lazy READS (the same
@@ -273,7 +273,7 @@ export function CommandPalette() {
   }, [trimmedQuery, tasksRead, runsRead, reportsRead]);
 
   /** Apply the per-section cap and build the FLATTENED visible list the arrows move over.
-   *  The ROUTES table is the fixed fifteen-route IA (`components/layout/nav-items.ts` — the
+   *  The ROUTES table is the fixed sixteen-route IA (`components/layout/nav-items.ts` — the
    *  table itself is the count; this comment drifted at "ten" between V11's three route
    *  additions and the V15/W2 P2-02 correction, and moved 14 → 15 with V16/W3's Phone route) and
    *  is exempt: the acceptance ("lists all route

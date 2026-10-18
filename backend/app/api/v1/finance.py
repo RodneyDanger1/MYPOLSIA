@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
-from app.core.errors import E_VALIDATION, ERROR_HINTS
+from app.core.errors import E_CONFIG, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_window, today_in
 from app.models.finance import ExpenseRecord
 from app.models.task import AgentRun
@@ -268,9 +268,20 @@ async def stripe_webhook(
     """
     secret = settings.stripe_webhook_secret or ""
     if not secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stripe webhook secret not configured",
+        # L3-04 (V17): this used to be an UNCODED `HTTPException(500, detail="…")` — a plain
+        # string detail, so neither the named envelope nor `X-Polsia-Error-Code` reached Stripe
+        # (a public route: every delivery was an unexplained 500 and the operator had no code to
+        # grep).  The same missing-configuration condition elsewhere in the API is `E_CONFIG`
+        # (`api/v1/data.py`: APPROVAL_SECRET unset -> 503 + how_to_fix); this route now answers
+        # the same way.  Nothing was verified and nothing was stored.
+        raise PolsiaError(
+            E_CONFIG,
+            "the Stripe webhook secret is not configured, so no delivery can be verified",
+            how_to_fix=(
+                "set STRIPE_WEBHOOK_SECRET in .env to the endpoint's signing secret "
+                "(Stripe dashboard -> Developers -> Webhooks), then restart the service"
+            ),
+            context={"setting": "STRIPE_WEBHOOK_SECRET"},
         )
     raw_body = await request.body()
     signature = request.headers.get("stripe-signature")

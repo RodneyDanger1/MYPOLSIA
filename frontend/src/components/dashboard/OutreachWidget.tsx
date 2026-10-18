@@ -7,7 +7,7 @@ import { Card, Chip } from "@/components/ui";
 import { api } from "@/lib/api";
 
 import { relativeTime } from "./format";
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /** The wire row of `GET /outreach/prospects` (`ProspectResponse`); `status`/`created_at` are
  *  nullable server-side. Declared locally — the shared api module does not carry the type. */
@@ -53,7 +53,7 @@ export function OutreachWidget() {
         if (!cancelled) setProspects(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

@@ -5,13 +5,18 @@ result**; anything else = not ready. Gates and live drills are **parent/owner-ru
 convention: writers never run docker/live; the wave verifier + parent own the definitive pass).
 
 ## 1. Repo hygiene (2 min)
-- [ ] `git status --short` — only the intended files (no strays, no `.env`, no `backups/`).
-- [ ] `.env` is ignored: `git check-ignore .env` prints a path.
-- [ ] Secret scan over tracked content — expect **no matches** except documented placeholders:
-      `git grep -nE "(sk_live_[0-9a-zA-Z]{10,}|whsec_[0-9a-zA-Z]{20,}|AKIA[0-9A-Z]{16})"`
+- [x] `git status --short` — base `3873450` + exactly the wave-V17 lane edits (L1–L5 files); no `.env`,
+      no `backups/`, no strays. Evidence: `wave-v17/l5-release-ops/out/checklist-1-hygiene.txt`.
+- [x] `.env` is ignored: `git check-ignore .env` prints `.env`; `git ls-files --error-unmatch .env`
+      → path not tracked. (same evidence file)
+- [x] Secret scan over tracked content — **one match only**, the AWS documentation placeholder
+      `AKIAIOSFODNN7EXAMPLE` in `backend/tests/unit/test_fix3_scanner.py` (a fixture asserting that
+      credential shapes are flagged); zero `sk_live_*`, zero `whsec_*`, zero real `AKIA*` keys.
+      Command: `git grep -nE "(sk_live_[0-9a-zA-Z]{10,}|whsec_[0-9a-zA-Z]{20,}|AKIA[0-9A-Z]{16})"`
       (`dev-key`, `polsia_password` and empty values are the intentional defaults).
-- [ ] No mock/demo/stub paths introduced: `git diff <base>..HEAD --stat` reviewed; every new
-      handler either works against the real system or refuses **by name**.
+- [x] No mock/demo/stub introduced in this lane: `scripts/restore.sh` either works against the real
+      system or refuses **by name** (13 pins, `backend/tests/unit/test_v17_restore_script.py`); sibling
+      lanes' diffs are evidenced in their own receipts.
 
 ## 2. Static gates (backend)
 ```bash
@@ -25,6 +30,9 @@ python -m pytest tests/unit tests/redteam tests/parity -q   # → 0 failed / 0 e
       skipped count named (testcontainers tests skip without Docker — integration runs in CI).
 - [ ] Coverage gate holds: `python -m pytest tests/unit -q --cov=app` ≥ the ratchet in
       `pyproject.toml` (`fail_under`).
+- Executed locally in V17 (L5): `ruff check tests/unit/test_v17_restore_script.py` → "All checks
+  passed!" (`wave-v17/l5-release-ops/out/checklist-2-5-gates.txt`). `mypy app/`, the full pytest run
+  and the coverage ratchet are **UNRUN in this lane** — the verifier runs them once for the wave.
 
 ## 3. Static gates (frontend)
 ```bash
@@ -36,6 +44,8 @@ npm run build                                # `next build` → exit 0 (own gate
 - [ ] Full jest suite green ×2, same totals both runs.
 - [ ] `next build` shows every route; new routes appear (phone `/phone`; capabilities surface) and
       no prerender-baked empty state regression (client components where the repo pattern says so).
+- Frontend gates are **not executed in this lane** (verifier L6 runs them once for the wave); this
+  lane's only FE-adjacent claim is that no FE file was touched by it.
 
 ## 4. CI on the push
 - [ ] `ci.yml` green (lint job: ruff hard gate, mypy advisory; unit job: `pytest tests/unit -q` +
@@ -47,49 +57,90 @@ npm run build                                # `next build` → exit 0 (own gate
       platform-dynamic; integration `loop_scope` fix intact.
 
 ## 5. Live stack drills (parent/owner; needs Docker + the real `.env`)
-- [ ] `docker compose config -q` → exit 0 (parses with the real `.env`; phone mount env row included).
-- [ ] `docker compose up -d` → all services healthy; `curl http://localhost/api/v1/health` →
-      `{"status":"ok"}`; one dashboard page renders **real** rows (not its empty state).
+The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — evidence in
+`wave-v17/l5-release-ops/out/` (`checklist-2-5-gates.txt`, `checklist-5-ws-log.txt`,
+`restore-drill-real.txt`, `cleanup-proof.txt`). Nothing below POSTs, mutates or restarts the stack.
+
+- [x] `docker compose config -q` → exit 0 (parses with the real `.env`; phone mount env row included).
+- [ ] `docker compose up -d` → all services healthy; one dashboard page renders **real** rows (not
+      its empty state).
+  - [x] `curl -fsS http://localhost/api/v1/health` → `{"status":"ok"}` (GET-only).
+  - [ ] Page-render half — needs a browser session (parent live-check).
 - [ ] **Sandbox honesty:** with `SANDBOX_MODE=true`, trigger one send-capable action → it lands as a
-      **labelled draft**, not a send; the app-wide sandbox banner shows.
+      **labelled draft**, not a send; the app-wide sandbox banner shows. *(owner — the probe is a POST)*
 - [ ] **Docs auto-hide:** set `SANDBOX_MODE=false`, restart backend → `/docs`, `/redoc`,
-      `/openapi.json` = 404; API root `"docs": null`; flip back → 200s.
+      `/openapi.json` = 404; API root `"docs": null`; flip back → 200s. *(owner — needs a restart)*
 - [ ] **Rate limit:** burst `curl` the health/unsubscribe/webhook routes → tail of `429`s with the
-      named `E_RATE_LIMITED` envelope (not 500/502); other routes unaffected.
+      named `E_RATE_LIMITED` envelope (not 500/502); other routes unaffected. *(owner — deliberate burst)*
 - [ ] **Security headers:** `curl -sI http://localhost/` shows CSP + `X-Frame-Options` +
       `nosniff`; open the routes and confirm zero CSP console violations.
-- [ ] **WS log:** load the dashboard (feed binds) → `docker compose exec nginx tail -20
-      /var/log/nginx/access.log` has **no** `/ws/activity?key=` lines; the feed still updates live.
+  - [x] Header half — `HTTP/1.1 307` + `Content-Security-Policy: default-src 'self'; …object-src
+        'none'` + `X-Frame-Options: SAMEORIGIN` + `X-Content-Type-Options: nosniff`.
+  - [ ] Console half — needs a browser session (parent live-check).
+- [ ] **WS log:** load the dashboard (feed binds) → the nginx access log has **no**
+      `/ws/activity?key=` lines; the feed still updates live.
+  - [x] Command corrected: in this image `/var/log/nginx/access.log` is a **symlink to `/dev/stdout`**,
+        so the old `docker compose exec nginx tail -20 /var/log/nginx/access.log` **blocks forever**
+        (observed: 180 s timeout). Read it as `docker compose logs --since <nginx start> nginx | grep -c
+        '/ws/activity?key='` instead.
+  - [x] Current run: **0** matches since the container start (`2026-10-15T23:21:51Z`) and
+        `access_log off` in the `/ws/` location (`nginx/nginx.conf:127`). The 365 historical matches in
+        the same container's log all predate that restart (pre-fix run) — they are history, not a live
+        leak. Only 2 log lines exist since the restart, so no WS traffic has been exercised.
+  - [ ] Feed-still-updates half — needs a browser session (parent live-check).
 - [ ] **Backups:** `docker compose up -d backup` → logs `cycle start` → `database dump written` →
       4× `volume archive written`; `backups/` shows the `.sql` + four tars; `tar tzf
       backups/backend_data.tgz` lists files; `docker compose stop backup` logs a clean stop.
       `make backup` still refuses by name when a volume is missing.
+  - [x] Artifact half — `backups/` holds `polsia-2026-10-14.sql` (346,917 B) + `backend_data.tgz`,
+        `chroma_data.tgz`, `celery_beat_data.tgz`, `redis_data.tgz`; `tar tzf` lists files in each.
+  - [ ] Sidecar cycle/stop leg — parent (L5 must not start compose services).
 - [ ] **Data export/wipe:** `GET /api/v1/data/export` downloads a ZIP that opens (manifest + CSVs +
-      JSON); `DELETE /api/v1/data?dry_run=true` reports counts and wipes nothing.
-- [ ] **Restore drill** on a scratch compose project (README "Restore drill") — never the live stack.
+      JSON); `DELETE /api/v1/data?dry_run=true` reports counts and wipes nothing. *(owner — the DELETE
+      verb is owner-run even with `dry_run=true`)*
+- [x] **Restore drill** — EXECUTED by `make restore-drill SRC=backups` on 2026-10-18 against the real
+      `backups/` artifacts: **PASS** — 23/23 public tables, 7/7 core row-count checks
+      (`activity_log` 58, `agent_runs` 42, `tasks` 41, `memory_entries` 0, `task_schedules` 0,
+      `chat_messages` 17, `company_config` 1), 4/4 volume archives with 14/14 members materialised,
+      teardown logged, **no drill container left behind** (`docker ps -a` clean). Never touched the
+      compose project; never published a port.
+      Evidence: `wave-v17/l5-release-ops/out/restore-drill-real.txt` + `cleanup-proof.txt`.
+      The optional full-stack boot (README "Restore drill", steps 1–5) remains a parent live-check.
 
 ## 6. V16 feature drills
-- [ ] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,
+- [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,
       `/api/v1/phone/summary|messages|calls` return real fixture rows; null ≠ 0 enforced; export zip
       opens and contains `messages.json`, `calls.csv`, `contacts.json`.
-- [ ] **Phone (real store, parent-only):** point `PHONE_LINK_DB_DIR` at the real Phone Link store →
+      Evidence: 138 phone+capability unit tests, exit 0 (`wave-v17/l5-release-ops/out/checklist-6-phone-capabilities.txt`).
+- [x] **Phone (real store, parent-only):** point `PHONE_LINK_DB_DIR` at the real Phone Link store →
       `/phone/summary` shows real threads/unread; `/phone` page + dashboard card render real data;
       `codes` route writes its `activity_log` audit row; activity tick twice → **one** event.
-- [ ] **Phone refusal:** unmount/point at a missing path → 503 `E_PHONE_UNAVAILABLE` **by name**
+      Evidence: `wave-v16/v-final/live-drill2.txt` lines 15–21 — P1 `store_status='ok'`, unread 57,
+      threads 10 · P2 messages · P3 calls 50/missed 38 · P4 codes 10 rows · P5 export zip members.
+      Executed 2026-10-15 (V16 close).
+- [x] **Phone refusal:** unmount/point at a missing path → 503 `E_PHONE_UNAVAILABLE` **by name**
       everywhere (routes + card + page states), never fabricated data, never a 500.
-- [ ] **Capabilities:** `GET /api/v1/ops/capabilities` equals the registry-derived set (parity pin
+      Evidence: `wave-v16/v-verify/VERIFY.md:37` — hostile-absent / hostile-partial 6/6 each, five
+      routes 503 with the missing file NAMED; the named-refusal pins are inside the 138-test run above.
+- [x] **Capabilities:** `GET /api/v1/ops/capabilities` equals the registry-derived set (parity pin
       green); agent contexts carry their real tool list; the UI page renders agents → tools →
       actions honestly (empty registry → honest empty state).
-- [ ] **Docs truth at close:** README links resolve (USAGE.md, DEPENDENCIES.md, RELEASE-CHECKLIST.md,
+      Evidence: `wave-v16/v-final/live-drill2.txt:22-23` — P6 `agents=10 registry_tools=3 with_tools=5`,
+      sorted; drift simulation flips the parity pin (`wave-v16/v-verify/VERIFY.md`).
+- [x] **Docs truth at close:** README links resolve (USAGE.md, DEPENDENCIES.md, RELEASE-CHECKLIST.md,
       NEXTSTEPS.md, PHONELINK-MCP-TEST.md all present); `PHONELINK-MCP-TEST.md` status line matches
       shipped reality; every `make` target named in docs exists (`make -n <target>`).
+      Evidence: `wave-v17/l5-release-ops/out/docs-link-target-audit.txt` — every markdown link in the
+      six docs resolves; every `make <target>` named in them exists (`make -n` clean); zero
+      "shipping/in flight" phone claims remain.
 
 ## 7. Release actions (after all boxes)
 - [ ] Commit with the wave summary (gates + live-drill results stated honestly, skips named).
 - [ ] Push; watch CI to green (§4).
 - [ ] Rollback point recorded: the previous commit = the rollback base; backups exist in `backups/`.
 - [ ] Repo description/topics updated if the wave changed what the repo is.
-- [ ] NEXTSTEPS.md updated: items crossed off with their evidence; new in-flight items listed.
+- [x] NEXTSTEPS.md updated: items crossed off with their evidence; new in-flight items listed
+      (§3b — the V17 block: restore drill executed, checklist status, docs truth pass).
 
 **Not ready if:** any gate has failures not named as pre-existing, any drill shows a fabricated
 state (empty-as-error, 0-as-null, success-on-refusal), any doc claims a feature the frozen tree

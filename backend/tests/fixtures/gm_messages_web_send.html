@@ -1,0 +1,45 @@
+<!--
+  TEST FIXTURE — a saved-shape Google Messages web DOM used ONLY by
+  backend/tests/unit/api/test_v17_phone_send.py to prove the CDP driver's selector map and thread
+  matching against real markup. This is NOT product markup and it is never served: the product
+  driver talks to the live messages.google.com page over CDP. Nothing here can send a message.
+-->
+<!doctype html>
+<html lang="en">
+  <body>
+    <mw-app>
+      <mw-main-nav>
+        <a href="/web/conversations">Messages</a>
+      </mw-main-nav>
+      <mw-conversation-list aria-label="Conversations">
+        <mw-thread-item data-thread-id="11">
+          <div class="name">Dana Whitfield</div>
+          <div class="snippet">
+            <span class="number">+1 (555) 010-4477</span>
+            <span>See you at 6</span>
+          </div>
+        </mw-thread-item>
+        <mw-thread-item data-thread-id="12">
+          <div class="name">Mitch Alvarez</div>
+          <div class="snippet">
+            <span class="number">+1 (555) 010-9931</span>
+            <span>thanks!</span>
+          </div>
+        </mw-thread-item>
+      </mw-conversation-list>
+      <mw-conversation-header>
+        <div class="name">Dana Whitfield</div>
+      </mw-conversation-header>
+      <mw-message-list>
+        <mw-message-bubble class="incoming"><mws-message-wrapper>on my way</mws-message-wrapper></mw-message-bubble>
+        <mw-message-bubble class="outgoing"><mws-message-wrapper>Running ten minutes late — see you at the café.</mws-message-wrapper></mw-message-bubble>
+      </mw-message-list>
+      <mw-message-input>
+        <div contenteditable="true" role="textbox" aria-label="Text message"></div>
+      </mw-message-input>
+      <mw-send-button>
+        <button aria-label="Send message" type="submit">Send</button>
+      </mw-send-button>
+    </mw-app>
+  </body>
+</html>

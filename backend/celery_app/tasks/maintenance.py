@@ -56,7 +56,10 @@ the resume half of the paused-dispatch contract — while the company is NOT pau
 re-dispatches `pending` rows the pause gate released (marker `tasks.metadata.paused_release`)
 through `run_agent_task.delay`, clearing the marker on acceptance so the resume re-arms each
 row EXACTLY ONCE; a broker refusal keeps the marker for the next tick, and while paused the
-tick hands nothing to the broker.
+tick hands nothing to the broker.  ACCEPTANCE IS NOT DELIVERY (E7 F-03): `.delay()` returning
+means the broker took the publish, so a message accepted then lost leaves the row `pending` and
+marker-less — `reconcile_stranded_pending_tasks` covers that population too, through the
+`rearmed_at` stamp the clear leaves behind (any `source`, unclaimed, older than one window).
 """
 from __future__ import annotations
 
@@ -78,9 +81,29 @@ logger = logging.getLogger(__name__)
 PENDING_RECONCILE_AFTER_SECONDS = 30 * 60
 #: One sweep's work bound (larger than any healthy tick's fan-out; the next sweep continues).
 PENDING_RECONCILE_BATCH = 200
+#: A re-armed row is fed again after one full window with no claim observed (E7 F-03): the re-arm
+#: clears its marker on broker ACCEPTANCE, and `.delay()` returning only means the broker took the
+#: publish — an accept-then-lost message left a NON-scheduler row `pending`, unclaimed and with no
+#: second net.  The same window as the scheduler net: two cadence periods.
+REARM_REDISPATCH_AFTER_SECONDS = PENDING_RECONCILE_AFTER_SECONDS
 #: Activity actions — a re-dispatch and a refused re-dispatch are both visible, never silent.
 REDISPATCHED_ACTION = "task_pending_redispatched"
 REDISPATCH_FAILED_ACTION = "task_pending_redispatch_failed"
+
+
+def _metadata_instant(value: Any) -> datetime | None:
+    """An ISO timestamp from `tasks.metadata` as an aware UTC instant, or None.
+
+    Absent, non-string and unparseable values are None (a skip, never an exception): the metadata
+    channel is caller-owned, so a malformed stamp must not take a maintenance tick down.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 @app.task(name="celery_app.tasks.maintenance.cleanup_old_activity")
@@ -240,15 +263,25 @@ def reconcile_stranded_pending_tasks() -> dict[str, Any]:
 
 
 async def _reconcile_stranded_pending() -> dict[str, Any]:
-    """`pending` + `source='scheduler'` + never claimed + older than the window -> hand off again.
+    """`pending` + never claimed + older than the window -> hand off again.
+
+    Two shapes are stranded and both go back to the broker:
+
+    * `source='scheduler'` with `created_at` older than the window (the V11 commit->dispatch gap);
+    * ANY source carrying the pause re-arm's own evidence (`metadata.rearmed_at` older than one
+      window, E7 F-03).  The re-arm clears `paused_release` on broker ACCEPTANCE, so a message the
+      broker accepted and then lost left a non-scheduler row looking exactly like a fresh
+      `pending` row — with nothing to feed it again.  The re-arm stamp is the evidence, the claim
+      is the proof of life, and a row that IS claimed or no longer `pending` is never re-sent.
 
     One row at a time through the SAME broker call the workers' entrypoint uses
     (`run_agent_task.delay`); a duplicate delivery is safe because the claim
     (`task_service.claim_task`) is atomic and a non-`pending` row is a named skip in
     `_execute_agent_task`.  A row whose `dispatched_at` marker is still INSIDE the window is
-    a live hand-off (it pushed its own next attempt out by another window), not a stranded row.
+    a live hand-off (it pushed its own next attempt out by another window), not a stranded row —
+    so each row is re-dispatched at most ONCE per window, whichever shape matched.
     """
-    from sqlalchemy import select
+    from sqlalchemy import String, and_, cast, or_, select
 
     from app.core.database import get_session_factory
     from app.models.task import Task
@@ -261,12 +294,16 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
         bound = as_bound_instant(cutoff, db)
         rows = (
             await db.execute(
-                select(Task.id, Task.metadata_json)
+                select(Task.id, Task.source, Task.created_at, Task.metadata_json)
                 .where(
                     Task.status == "pending",
-                    Task.source == "scheduler",
                     Task.claimed_at.is_(None),
-                    Task.created_at < bound,
+                    or_(
+                        and_(Task.source == "scheduler", Task.created_at < bound),
+                        # prefilter only (dialect-portable LIKE on the rendered JSON); the exact
+                        # timestamp comparison below decides.
+                        cast(Task.metadata_json, String).like("%rearmed_at%"),
+                    ),
                 )
                 .order_by(Task.id)
                 .limit(PENDING_RECONCILE_BATCH)
@@ -276,23 +313,25 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
     from celery_app.tasks.agent_tasks import run_agent_task  # lazy: the broker edge
 
     redispatched_ids: list[int] = []
+    rearmed_ids: list[int] = []
     failed_ids: list[int] = []
     skipped_recent: list[int] = []
-    for task_id, metadata in rows:
+    for task_id, source, created_at, metadata in rows:
         task_id = int(task_id)
         meta = metadata if isinstance(metadata, dict) else {}
-        dispatched_at = meta.get("dispatched_at")
-        if isinstance(dispatched_at, str):
-            try:
-                last = datetime.fromisoformat(dispatched_at)
-            except ValueError:
-                last = None
-            if last is not None:
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=UTC)
-                if last > cutoff:
-                    skipped_recent.append(task_id)  # live hand-off inside the window
-                    continue
+        rearmed_at = _metadata_instant(meta.get("rearmed_at"))
+        scheduler_stranded = (
+            str(source) == "scheduler"
+            and created_at is not None
+            and (created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)) < cutoff
+        )
+        rearm_stranded = rearmed_at is not None and rearmed_at < cutoff
+        if not (scheduler_stranded or rearm_stranded):
+            continue  # selected by the prefilter but inside the window for its own shape
+        last = _metadata_instant(meta.get("dispatched_at"))
+        if last is not None and last > cutoff:
+            skipped_recent.append(task_id)  # live hand-off inside the window
+            continue
         try:
             run_agent_task.delay(task_id)
         except Exception as exc:  # noqa: BLE001 - broker refusal is NAMED below, row stays pending
@@ -300,6 +339,8 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
             failed_ids.append(task_id)
             continue
         redispatched_ids.append(task_id)
+        if rearm_stranded:
+            rearmed_ids.append(task_id)
 
     if redispatched_ids:
         await mark_tasks_dispatched(redispatched_ids)
@@ -318,6 +359,7 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
                     detail={
                         "task_ids": redispatched_ids,
                         "window_seconds": PENDING_RECONCILE_AFTER_SECONDS,
+                        "rearmed_ids": rearmed_ids,
                     },
                 )
             if failed_ids:
@@ -341,6 +383,7 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
         "failed": failed_ids,
         "skipped_recent": skipped_recent,
         "task_ids": redispatched_ids,
+        "rearmed_ids": rearmed_ids,
         "window_seconds": PENDING_RECONCILE_AFTER_SECONDS,
     }
     logger.info("pending reconciler: %s", result)
@@ -606,10 +649,20 @@ async def _clear_paused_markers(task_ids: list[int]) -> None:
     Re-assigns a NEW dict per row (the JSON column tracks attribute assignment, not in-place
     mutation — the `_common.create_task_deduped` metadata rule), keeping every other key and
     stamping `rearmed_at` so the resume is auditable from the row itself.
+
+    E7 F-04 — the read-modify-write is guarded by a ROW LOCK taken BEFORE the payload is read.
+    The merge writes the whole JSON blob, so a read without the lock let any concurrent metadata
+    writer that committed between this SELECT and this COMMIT have its keys silently erased
+    (JSON is last-write-wins; measured: a second writer's disjoint key vanished).  The no-op
+    UPDATE is the dialect-portable lock — PostgreSQL takes the row lock for it and SQLite its
+    single writer lock — and `with_for_update()` states the same intent for the re-select that
+    follows (it compiles to `FOR UPDATE` on PostgreSQL; SQLite has no such clause and is already
+    serialised by the write lock the UPDATE took).  The stamp is captured once, outside, so the
+    audit value is the acceptance instant, not the flush instant.
     """
     if not task_ids:
         return
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     from app.core.database import get_session_factory
     from app.models.task import Task
@@ -618,7 +671,10 @@ async def _clear_paused_markers(task_ids: list[int]) -> None:
     stamp = now_utc().isoformat()
     ids = [int(item) for item in task_ids]
     async with get_session_factory()() as db:
-        rows = (await db.execute(select(Task).where(Task.id.in_(ids)))).scalars().all()
+        await db.execute(update(Task).where(Task.id.in_(ids)).values(updated_at=Task.updated_at))
+        rows = (
+            await db.execute(select(Task).where(Task.id.in_(ids)).with_for_update())
+        ).scalars().all()
         for row in rows:
             existing = row.metadata_json if isinstance(row.metadata_json, dict) else {}
             merged = {**existing, "rearmed_at": stamp}

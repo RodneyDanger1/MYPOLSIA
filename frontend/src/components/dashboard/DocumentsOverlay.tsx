@@ -6,7 +6,7 @@ import type { KeyboardEvent } from "react";
 import { Button, Tabs, type TabItem } from "@/components/ui";
 import { api } from "@/lib/api";
 
-import { PanelError, PanelSkeleton } from "./states";
+import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
  * The overlay's read size ("read `/dashboard/reports?limit=50` fresh" on every open, wave V8b).
@@ -87,7 +87,7 @@ export function DocumentsOverlay({ open, onClose }: { open: boolean; onClose: ()
         if (!cancelled) setList(data);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(readErrorText(e));
       });
     return () => {
       cancelled = true;

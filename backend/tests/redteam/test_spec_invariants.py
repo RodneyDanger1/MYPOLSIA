@@ -267,7 +267,7 @@ async def test_open_endpoints_need_no_key(api_client):
         content=b'{"id":"evt_1"}',
         headers={"stripe-signature": "t=1,v1=deadbeef"},
     )
-    assert resp.status_code == 500  # reached the handler (no key configured)
+    assert resp.status_code == 503  # reached the handler; named E_CONFIG (was an uncoded 500 — L3-04)
     assert resp.status_code != 401
 
 
