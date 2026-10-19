@@ -153,6 +153,13 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # (V12/F2 correction: W-C's first comment chain said "62 -> 63 / total 64 -> 65" — stale
     # against the live tree; re-measured keys: 64 -> 65 api/v1, 66 -> 67 total.)
     ("/api/v1/site/package/download", ("GET",)),
+    # wave V24 (L3): the WEBSITE BUILDER — POST generates a real static site under
+    # `data/sites/<slug>/` (201 {slug,url,bytes}); GET lists what is on disk, newest first
+    # (`?slug=` reads one and refuses E_NOT_FOUND).  NEW pins added deliberately WITH the routes:
+    # documented /api/v1 count 78 -> 80; EXPECTED_ROUTES total 80 -> 83 (the two routes below plus
+    # the `/sites` mount row).
+    ("/api/v1/sites", ("GET",)),
+    ("/api/v1/sites", ("POST",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)
@@ -160,6 +167,12 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/tasks", ("POST",)),
     ("/api/v1/tasks/{task_id}", ("GET",)),
     ("/api/v1/tasks/{task_id}/status", ("PATCH",)),               # T12/D20 (build/decisions/DECISIONS.md): the typed status write TaskStatusUpdate documents — OLD surface had no status route; NEW pin added deliberately with the route
+    # wave V24 (L1): the RUN verb — `POST /api/v1/tasks/{task_id}/run` dispatches ONE existing
+    # `pending` task to the worker (202 `{task_id,status:"dispatched"}`; 404 E_NOT_FOUND;
+    # E_TASK_NOT_RUNNABLE with the current status for any other state; 503 on broker refusal,
+    # row untouched). Documented by app/api/v1/tasks.py + tests/unit/test_v24_task_run.py.
+    # OLD surface had no run route; NEW pin added deliberately with the route.
+    ("/api/v1/tasks/{task_id}/run", ("POST",)),
     # wave V9 settle (V9-D3, parent): the planner / invoices / economics routers, wired by the
     # parent commit after their writers settled — each documented by its module + wave tests.
     ("/api/v1/economics/context", ("GET",)),
@@ -177,6 +190,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # 60 -> 62; EXPECTED_ROUTES total (the 62 above + `/` + `/ws/activity`) 62 -> 64.
     ("/api/v1/data", ("DELETE",)),
     ("/api/v1/data/export", ("GET",)),
+    # wave V24 (L3): the `StaticFiles` mount that SERVES generated sites — this is the public
+    # address a client actually opens (`/sites/<slug>/`), so drift in it is drift in the public
+    # surface.  A Mount carries no `methods`; it uses the same `None` sentinel as the websocket
+    # route below (never "unknown").  NEW pin added deliberately WITH the mount.
+    ("/sites", None),
     ("/ws/activity", None),                                    # websocket: methods is None
 ]
 

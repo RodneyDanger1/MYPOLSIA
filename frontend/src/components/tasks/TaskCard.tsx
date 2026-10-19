@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
+import { readErrorText } from "@/components/dashboard/states";
 import { Button, Chip, cn } from "@/components/ui";
 
-import { triggerTaskRun } from "./actions";
+import { runThisTask, triggerTaskRun } from "./actions";
 import { recoveryFor } from "./recovery";
 import { errorText, statusChipClass, statusLabel } from "./status";
 import type { TaskRow } from "./types";
@@ -50,16 +51,32 @@ export function TaskCard({
   task,
   isNext,
   onOpen,
+  onTaskQueued,
 }: {
   task: TaskRow;
   /** The newest TO DO row (see `TaskBoard` — the "next task" outline is an INFERENCE). */
   isNext: boolean;
   onOpen: (task: TaskRow) => void;
+  /** Called after a write that changes the board (V24: a dispatched run) — the page re-reads. */
+  onTaskQueued?: () => void;
 }) {
   const done = task.status === "completed";
+  const pending = task.status === "pending";
   const recovery = recoveryFor(task);
   const [runBusy, setRunBusy] = useState(false);
   const [runNotice, setRunNotice] = useState<{ tone: "status" | "alert"; text: string } | null>(null);
+  /**
+   * Latch the V24 "Run this task" action after a 202. The board re-reads immediately, but the
+   * server's answer can still be `pending` until a worker claims the row — re-dispatching in
+   * that window would enqueue the same task twice. The latch clears only when the row LEAVES
+   * pending (a real state change) or when a refusal proves nothing was dispatched.
+   */
+  const [runThisLatched, setRunThisLatched] = useState(false);
+  const [runThisBusy, setRunThisBusy] = useState(false);
+
+  useEffect(() => {
+    if (!pending) setRunThisLatched(false);
+  }, [pending]);
   /**
    * Latches ONE trigger per card instance after a success. The ref — not just the `disabled`
    * attribute — is the real guard: two clicks inside one tick cannot slip past a re-render.
@@ -83,6 +100,34 @@ export function TaskCard({
     }
   };
 
+  /**
+   * V24/L1 — run THIS row. `POST /tasks/{id}/run` returns 202 `{task_id, status:"dispatched"}`
+   * or a named refusal (404 / 409 E_TASK_NOT_RUNNABLE / 503). The success text quotes only
+   * what the server said: the broker accepted the dispatch, and the status will move when a
+   * worker claims the row — the card never prints `in_progress` on its own. `onTaskQueued`
+   * triggers the board's ONE refetch path so the next read is the server's, not an invention.
+   */
+  const runThis = async () => {
+    if (runThisBusy || runThisLatched) return;
+    setRunThisBusy(true);
+    setRunNotice(null);
+    try {
+      const result = await runThisTask(task);
+      setRunThisLatched(true);
+      setRunNotice({
+        tone: "status",
+        text: `Task #${result.task_id} ${result.status} — the worker will claim it; the status here is still the server’s.`,
+      });
+      onTaskQueued?.();
+    } catch (e) {
+      // Nothing was dispatched: the latch stays off so a retry is honest. `readErrorText` is
+      // the shared refusal renderer (`E_TASK_NOT_RUNNABLE: … — how_to_fix`), not a rewrite.
+      setRunNotice({ tone: "alert", text: readErrorText(e) });
+    } finally {
+      setRunThisBusy(false);
+    }
+  };
+
   return (
     <div className="group relative">
       <button
@@ -95,7 +140,7 @@ export function TaskCard({
         style={isNext ? { outline: "2px solid hsl(var(--accent-soft))", outlineOffset: "1px" } : undefined}
         className="card-surface block min-h-[93px] w-full p-3 text-left hover:border-line-strong"
       >
-        <span className="flex w-full items-start gap-2">
+        <span className={cn("flex w-full items-start gap-2", pending && "pr-28")}>
           <span className="min-w-0 truncate text-base font-bold leading-snug text-ink">{task.title}</span>
           {done ? (
             // The DONE ✓-in-a-square at the title row (DOSSIER §3.3 / cap-05).
@@ -132,6 +177,24 @@ export function TaskCard({
           </span>
         </span>
       </button>
+
+      {/* V24/L1 — "Run this task": the action that executes THIS queued row. It lives OUTSIDE
+          the card button (invalid DOM to nest) and outside the V7 quick-action row (whose
+          labels the shipped suites pin), anchored top-right with the title yielding space.
+          Pending only: no other state has anything to dispatch. Default (non-glossy) variant
+          on purpose — the board itself carries no primary action. */}
+      {pending ? (
+        <div data-testid="task-run-this" className="absolute right-2 top-2">
+          <Button
+            size="sm"
+            aria-busy={runThisBusy || undefined}
+            disabled={runThisBusy || runThisLatched}
+            onClick={runThis}
+          >
+            {runThisBusy ? "Dispatching…" : "Run this task"}
+          </Button>
+        </div>
+      ) : null}
 
       {/* The quick-action row (V7-T16) — a sibling of the card button, per the recipe above. */}
       <div

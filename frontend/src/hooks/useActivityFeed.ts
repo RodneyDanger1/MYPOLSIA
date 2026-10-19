@@ -97,6 +97,54 @@ export function declaredTotal(raw: string | null): number | null {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+/** The shared shape of one activity snapshot read. `ok` says the body was a list; a malformed body
+ *  keeps its old total (the pre-dedupe behaviour) instead of committing a count nobody measured. */
+type ActivitySnapshot = { rows: ActivityEvent[]; total: number | null; ok: boolean };
+
+/** In-flight snapshot reads, keyed by URL.
+ *
+ *  V24/L5 (measured duplicate): the root layout mounts `ActivityStrip` and the dashboard mounts
+ *  `ActivityFeed` — two consumers of this hook on ONE page — and each fired its own
+ *  `GET /dashboard/activity?limit=50` on socket open. The reads are identical, so the second joins
+ *  the first's promise instead of issuing a second request.
+ *
+ *  Only a read started while ANOTHER consumer is mounted is shared; a lone consumer always reads
+ *  fresh. A shared entry is dropped the moment it settles, and when the last consumer unmounts the
+ *  map is cleared — so no stale body, and no pending read from a previous page/test can leak into
+ *  a later one. */
+type SharedSnapshotRead = { promise: Promise<ActivitySnapshot> };
+const snapshotReads = new Map<string, SharedSnapshotRead>();
+
+/** Live hook instances. Sharing is only safe between consumers alive at the same time. */
+let mountedFeeds = 0;
+
+function readActivitySnapshot(limit: number): Promise<ActivitySnapshot> {
+  const path = `/dashboard/activity?limit=${limit}`;
+  const existing = snapshotReads.get(path);
+  if (existing && mountedFeeds > 1) return existing.promise;
+
+  // V23/L4: the declared total rides the SAME response as the rows (the shared onHeaders hook), so
+  // the label can never describe a different read.
+  const captured: { total: number | null } = { total: null };
+  const read = api
+    .get<ActivityEvent[]>(path, {
+      onHeaders: (headers) => {
+        captured.total = declaredTotal(headers.get("X-Polsia-Total"));
+      },
+    })
+    .then((body) => ({
+      rows: Array.isArray(body) ? body : [],
+      total: captured.total,
+      ok: Array.isArray(body),
+    }))
+    .finally(() => {
+      if (snapshotReads.get(path)?.promise === read) snapshotReads.delete(path);
+    });
+
+  snapshotReads.set(path, { promise: read });
+  return read;
+}
+
 /** Close description for a CloseEvent that may be missing fields (close code 1006 = abnormal). */
 function closeText(event: CloseEvent | undefined): string {
   const code = event?.code;
@@ -130,6 +178,16 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
   const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stableTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Count live consumers so the shared snapshot map is only consulted between concurrent mounts
+  // and is dropped when the last one leaves (no cross-page/test residue).
+  useEffect(() => {
+    mountedFeeds += 1;
+    return () => {
+      mountedFeeds -= 1;
+      if (mountedFeeds === 0) snapshotReads.clear();
+    };
+  }, []);
 
   /** Merge incoming events: drop duplicates by id, newest first, cap at maxEvents. */
   const merge = useCallback(
@@ -198,18 +256,10 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       lastSnapshotAt = Date.now();
       try {
         const { snapshotLimit: limit, merge: mergeNow } = engineOptions.current;
-        // V23/L4: the declared total rides the SAME response as the rows (the shared onHeaders
-        // hook), so the label can never describe a different read. A local capture is committed
-        // only with a parsed body: a malformed snapshot fails the read and keeps the old total.
-        const captured: { total: number | null } = { total: null };
-        const recent = await api.get<ActivityEvent[]>(`/dashboard/activity?limit=${limit}`, {
-          onHeaders: (headers) => {
-            captured.total = declaredTotal(headers.get("X-Polsia-Total"));
-          },
-        });
-        if (mounted.current && Array.isArray(recent)) {
-          setTotal(captured.total);
-          mergeNow(recent);
+        const snapshot = await readActivitySnapshot(limit);
+        if (mounted.current && snapshot.ok) {
+          setTotal(snapshot.total);
+          mergeNow(snapshot.rows);
         }
       } catch (e) {
         // The live socket is the primary channel: a failed snapshot must not break the feed — but it

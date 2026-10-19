@@ -42,10 +42,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import and_, select
 from sqlalchemy import func as sa_func
-from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy import update as sa_update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
@@ -54,6 +55,7 @@ from app.core.timeutil import as_bound_instant
 from app.models.auto_mode import AutoModeSession
 from app.models.task import AgentRun
 from app.services.finance_service import money
+from app.services.query_helpers import db_refusal
 
 #: The frozen `stop_reason` value set (schema comment: duration_end|day_cap|user_stop|error).
 STOP_REASON_DURATION_END = "duration_end"
@@ -188,9 +190,19 @@ async def _close_rows(
     reason: str,
     now: datetime,
 ) -> list[AutoModeSession]:
-    """Stamp `stopped_at`/`stop_reason` on each row and snapshot its final measured spend."""
+    """Stamp `stopped_at`/`stop_reason` on each row and snapshot its final measured spend.
+
+    V24/L6: the spend sums are ONE grouped statement, not one SUM per row.  `_close_rows` used
+    to call `spend_over_window` inside this loop; `close_stale_sessions` then cost 1 + N
+    statements (measured: 14 on `GET /auto-mode` with 6 expired windows —
+    `pre/probe_bench_before.json`).  The join below attributes each run to the window that
+    covers its `started_at`, so every row still gets ITS OWN sum — never a pooled total.  A row
+    whose window has no runs, or whose bounds are NULL, gets no value (None = not measured),
+    exactly like `spend_over_window`, which returns None for a missing bound.
+    """
+    spend_by_id = await spend_by_session(db, rows)
     for row in rows:
-        spend = await spend_over_window(db, row.started_at, row.ends_at)
+        spend = spend_by_id.get(row.id)
         row.stopped_at = now
         row.stop_reason = reason
         if spend is not None:
@@ -198,6 +210,39 @@ async def _close_rows(
     if rows:
         await db.flush()
     return rows
+
+
+async def spend_by_session(
+    db: AsyncSession, rows: list[AutoModeSession]
+) -> dict[int, Decimal | None]:
+    """`{session_id: SUM(agent_runs.cost_usd) inside that window]}` in ONE statement.
+
+    Rows with no matching run are ABSENT from the dict (not 0): nothing measured is None, the
+    same rule `spend_over_window` follows.  A NULL `started_at`/`ends_at` cannot be joined and
+    is likewise absent.
+    """
+    ids = [int(row.id) for row in rows if row.id is not None]
+    if not ids:
+        return {}
+    stmt = (
+        select(AutoModeSession.id, sa_func.sum(AgentRun.cost_usd))
+        .select_from(AutoModeSession)
+        .join(
+            AgentRun,
+            and_(
+                AgentRun.started_at.is_not(None),
+                AgentRun.started_at >= AutoModeSession.started_at,
+                AgentRun.started_at <= AutoModeSession.ends_at,
+            ),
+        )
+        .where(AutoModeSession.id.in_(ids), AutoModeSession.started_at.is_not(None))
+        .group_by(AutoModeSession.id)
+    )
+    try:
+        result = await db.execute(stmt)
+    except SQLAlchemyError as exc:
+        raise db_refusal("auto-mode session spend", exc) from exc
+    return {int(session_id): money(total) for session_id, total in result.all()}
 
 
 async def close_stale_sessions(

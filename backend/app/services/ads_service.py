@@ -221,6 +221,13 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
     `task_service._as_column_decimal` (the A-T17 single boundary), imported lazily like
     `agent_tasks._apply_run_usage` does.
 
+    V24/L4 revenue truth: `revenue_usd` is written ONLY when the payload reports it.  An absent
+    (or `None`) revenue writes nothing — the frozen column is `NUMERIC(14,4) DEFAULT '0' NOT
+    NULL` (alembic 0002:203-207 / 0003:71), so "unreported" keeps the column's own default and
+    this writer never fabricates a `0` measurement; existing rows are not backfilled.  The read
+    side (`api/v1/ads.py::_metric_response`) serves that unmeasurable default as `null` and
+    computes ROAS only from a measured revenue/spend pair.
+
     IDEMPOTENCY (the beat re-runs every 6h): campaigns dedupe on the provider's own id
     (`platform`+`external_id`; `(platform, name)` fallback when no id was reported) and existing
     rows are REUSED, never updated; metrics dedupe on `(campaign_id, date)` — the key the shipped

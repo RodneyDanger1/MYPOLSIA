@@ -722,6 +722,17 @@ def update_ad_budget(*, platform: str, campaign_ref: str, budget_change_usd: flo
 # Money discipline (the repo's INTEGER-CENTS law): provider USD values are converted to cents
 # once, here, and every derived ratio (`roas`) is computed from the cent values; a zero spend
 # yields `roas: None` ("unmeasurable"), never a fabricated ratio.
+#
+# V24/L4 revenue truth: the envelope's `revenue_usd` is the provider's OWN revenue measurement,
+# never a derivation from clicks or impressions:
+#   * Google Ads — `metrics.conversions_value` (the value the account attributes to conversions);
+#   * Meta — `purchase_roas` × measured spend (the provider's own return on ad spend,
+#     de-normalised to dollars at the same attribution).  When Meta does not return
+#     `purchase_roas`, the purchase action value (`action_values`, already the legacy
+#     `conversions_value_usd` source) is the fallback revenue measurement — it is the same
+#     purchase value the platform reports, so it is measured, not guessed.
+# A provider payload that carries neither leaves `revenue_usd: None` and `roas: None`; nothing is
+# estimated.  `revenue_basis` names which provider field was used (or is None).
 # ---------------------------------------------------------------------------
 
 
@@ -761,33 +772,69 @@ def _usd_to_cents(value: Any) -> int | None:
         return None
 
 
+def _cents_to_usd(cents: int | None) -> float | None:
+    """Integer cents as a wire USD float, or None — never a fabricated `$0.00` for "unknown"."""
+    return None if cents is None else round(cents / 100.0, 2)
+
+
 def _metrics_result(platform: str, days: int, buckets: list[dict[str, Any]]) -> dict[str, Any]:
     """Assemble per-campaign rows + totals from aggregated provider facts.
 
-    `buckets` entries carry exact `spend_cents` / `value_cents` / `conversions` (already
-    aggregated by the caller); every USD field is a cents-derived rounding OF the measured
-    numbers, and `roas` is None when spend is 0 (an unmeasurable ratio stays unmeasured).
+    `buckets` entries carry exact, OPTIONAL cents (`spend_cents`, `value_cents`,
+    `revenue_cents`) and a `revenue_basis` naming the provider field the revenue came from.
+    Every USD field is a cents-derived rounding OF the measured numbers; `revenue_usd` and
+    `conversions_value_usd` are `None` when the provider exposed nothing to measure, and `roas`
+    is `None` unless BOTH revenue and spend are measured (a zero or absent denominator is an
+    unmeasurable ratio — never `0`).
+
+    Totals: revenue sums the measured rows; `roas` divides by the spend of the rows where BOTH
+    were measured, so a measured-revenue campaign is never diluted by an unmeasured one.
     """
     campaigns: list[dict[str, Any]] = []
-    total_cents = 0
+    total_spend_cents = 0
     total_value_cents = 0
+    total_revenue_cents = 0
+    paired_spend_cents = 0
     total_conversions = 0.0
+    any_spend = False
+    any_value = False
+    any_revenue = False
+    any_paired = False
     for bucket in buckets:
-        spend_cents = int(bucket.get("spend_cents") or 0)
-        value_cents = int(bucket.get("value_cents") or 0)
+        spend_cents = bucket.get("spend_cents")
+        value_cents = bucket.get("value_cents")
+        revenue_cents = bucket.get("revenue_cents")
         conversions = float(bucket.get("conversions") or 0.0)
-        total_cents += spend_cents
-        total_value_cents += value_cents
+        if spend_cents is not None:
+            total_spend_cents += int(spend_cents)
+            any_spend = True
+        if value_cents is not None:
+            total_value_cents += int(value_cents)
+            any_value = True
+        if revenue_cents is not None:
+            total_revenue_cents += int(revenue_cents)
+            any_revenue = True
+            if spend_cents is not None:
+                paired_spend_cents += int(spend_cents)
+                any_paired = True
         total_conversions += conversions
+        measured_roas = (
+            round(revenue_cents / spend_cents, 4)
+            if revenue_cents is not None and spend_cents
+            else None
+        )
         campaigns.append({
             "campaign_id": str(bucket.get("campaign_id") or ""),
             "name": str(bucket.get("name") or ""),
             "status": str(bucket.get("status") or ""),
-            "spend_cents": spend_cents,
-            "spend_usd": round(spend_cents / 100.0, 2),
+            "spend_cents": int(spend_cents) if spend_cents is not None else 0,
+            "spend_usd": _cents_to_usd(spend_cents),
+            "spend_measured": spend_cents is not None,
             "conversions": conversions,
-            "conversions_value_usd": round(value_cents / 100.0, 2),
-            "roas": round(value_cents / spend_cents, 4) if spend_cents else None,
+            "conversions_value_usd": _cents_to_usd(value_cents),
+            "revenue_usd": _cents_to_usd(revenue_cents),
+            "revenue_basis": bucket.get("revenue_basis"),
+            "roas": measured_roas,
         })
     start, end = _day_window(days)
     return {
@@ -797,13 +844,44 @@ def _metrics_result(platform: str, days: int, buckets: list[dict[str, Any]]) -> 
         "fetched_at": now_utc().isoformat(),
         "campaigns": campaigns,
         "totals": {
-            "spend_cents": total_cents,
-            "spend_usd": round(total_cents / 100.0, 2),
+            "spend_cents": total_spend_cents,
+            "spend_usd": _cents_to_usd(total_spend_cents) if any_spend else None,
             "conversions": total_conversions,
-            "conversions_value_usd": round(total_value_cents / 100.0, 2),
-            "roas": round(total_value_cents / total_cents, 4) if total_cents else None,
+            "conversions_value_usd": _cents_to_usd(total_value_cents) if any_value else None,
+            "revenue_usd": _cents_to_usd(total_revenue_cents) if any_revenue else None,
+            "roas": (
+                round(total_revenue_cents / paired_spend_cents, 4)
+                if any_paired and paired_spend_cents
+                else None
+            ),
         },
     }
+
+
+def _google_metric_bucket(aggregated: dict[str, dict[str, Any]], row: Any) -> None:
+    """Fold one GAQL row into its campaign bucket, preserving MEASURED vs absent revenue.
+
+    `metrics.conversions_value` is Google's own conversion-value measurement.  It is optional in
+    the response proto: a row that does not carry it contributes NOTHING to revenue (the bucket
+    stays `value_measured=False`), never a zero.  `cost_micros` is always present on a metrics
+    row, so spend counts as measured.
+    """
+    bucket = aggregated.setdefault(str(row.campaign.id), {
+        "campaign_id": str(row.campaign.id),
+        "name": str(row.campaign.name or ""),
+        "status": getattr(row.campaign.status, "name", None) or str(row.campaign.status or ""),
+        "micros": 0,
+        "value_cents": 0,
+        "value_measured": False,
+        "conversions": 0.0,
+    })
+    metrics = row.metrics
+    bucket["micros"] += int(getattr(metrics, "cost_micros", 0) or 0)
+    value_cents = _usd_to_cents(getattr(metrics, "conversions_value", None))
+    if value_cents is not None:
+        bucket["value_cents"] += value_cents
+        bucket["value_measured"] = True
+    bucket["conversions"] += _as_float(getattr(metrics, "conversions", 0.0)) or 0.0
 
 
 def _google_ads_read(days: int) -> Any:  # pragma: no cover - requires the provider
@@ -832,22 +910,19 @@ def _google_ads_read(days: int) -> Any:  # pragma: no cover - requires the provi
     )
     aggregated: dict[str, dict[str, Any]] = {}
     for row in service.search(customer_id=customer_id, query=query):
-        metrics = row.metrics
-        bucket = aggregated.setdefault(str(row.campaign.id), {
-            "campaign_id": str(row.campaign.id),
-            "name": str(row.campaign.name or ""),
-            "status": getattr(row.campaign.status, "name", None) or str(row.campaign.status or ""),
-            "micros": 0,
-            "value_cents": 0,
-            "conversions": 0.0,
+        _google_metric_bucket(aggregated, row)
+    buckets: list[dict[str, Any]] = []
+    for bucket in aggregated.values():
+        spend_cents = int(bucket.pop("micros")) // 10_000        # micros -> cents
+        measured = bool(bucket.pop("value_measured", False))
+        value_cents = int(bucket.pop("value_cents") or 0) if measured else None
+        buckets.append({
+            **bucket,
+            "spend_cents": spend_cents,
+            "value_cents": value_cents,
+            "revenue_cents": value_cents,                        # Google's OWN revenue measure
+            "revenue_basis": "google.conversions_value" if measured else None,
         })
-        bucket["micros"] += int(getattr(metrics, "cost_micros", 0) or 0)
-        bucket["value_cents"] += _usd_to_cents(getattr(metrics, "conversions_value", 0.0)) or 0
-        bucket["conversions"] += _as_float(getattr(metrics, "conversions", 0.0)) or 0.0
-    buckets = [
-        {**bucket, "spend_cents": int(bucket.pop("micros")) // 10_000}   # micros -> cents
-        for bucket in aggregated.values()
-    ]
     return _metrics_result("google_ads", days, buckets)
 
 
@@ -863,8 +938,50 @@ def _first_purchase_value(entries: Any) -> Any:
     return None
 
 
+def _purchase_roas_value(entries: Any) -> float | None:
+    """Meta's own `purchase_roas` for the purchase action, or None.
+
+    The insights field is a list of `{action_type, value}` entries (value is a string multiple,
+    e.g. `"2.5"`).  Only a finite, non-negative multiple is a measurement; anything else is
+    absent — never coerced to 0.
+    """
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if "purchase" in str(entry.get("action_type") or "").lower():
+            value = _as_float(entry.get("value"))
+            if value is not None and value >= 0:
+                return value
+    return None
+
+
+def _roas_times_spend_cents(roas_value: float | None, spend_cents: int | None) -> int | None:
+    """`purchase_roas × measured spend` in integer cents — the provider's own revenue figure.
+
+    A ratio without a measured spend has no dollar magnitude (None); the multiplication is done
+    in Decimal so a `"2.5"` multiple over `1050` cents lands `2625` exactly, not a float artefact.
+    """
+    if roas_value is None or spend_cents is None:
+        return None
+    try:
+        from decimal import Decimal, InvalidOperation
+
+        return int((Decimal(str(roas_value)) * Decimal(spend_cents)).to_integral_value())
+    except (ImportError, InvalidOperation, ValueError):
+        return None
+
+
 def _meta_ads_read(days: int) -> Any:  # pragma: no cover - requires the provider
-    """Campaign-level insights read through the Graph API (facebook-business)."""
+    """Campaign-level insights read through the Graph API (facebook-business).
+
+    Revenue: `purchase_roas` × measured `spend` when BOTH are present — the provider's own return
+    on ad spend de-normalised to dollars.  When Meta does not return `purchase_roas`, the purchase
+    action value (`action_values`) is the fallback measured revenue (the same value the legacy
+    `conversions_value_usd` exposes).  When neither is returned, `revenue_usd` is None and
+    `roas` is None: this reader never derives revenue from clicks or from an unmeasured spend.
+    """
     from facebook_business.adobjects.adaccount import AdAccount
     from facebook_business.api import FacebookAdsApi
 
@@ -872,7 +989,9 @@ def _meta_ads_read(days: int) -> Any:  # pragma: no cover - requires the provide
     account = AdAccount(f"act_{str(settings.meta_ads_account_id).strip()}")
     start, end = _day_window(days)
     rows = account.get_insights(
-        fields=["campaign_id", "campaign_name", "spend", "actions", "action_values"],
+        fields=[
+            "campaign_id", "campaign_name", "spend", "actions", "action_values", "purchase_roas",
+        ],
         params={
             "level": "campaign",
             "time_range": {"since": start.isoformat(), "until": end.isoformat()},
@@ -883,14 +1002,25 @@ def _meta_ads_read(days: int) -> Any:  # pragma: no cover - requires the provide
         data = dict(row)
         spend_cents = _usd_to_cents(data.get("spend"))
         value_cents = _usd_to_cents(_first_purchase_value(data.get("action_values")))
-        conversions = _as_float(_first_purchase_value(data.get("actions")))
+        revenue_cents = _roas_times_spend_cents(
+            _purchase_roas_value(data.get("purchase_roas")), spend_cents
+        )
+        if revenue_cents is not None:
+            revenue_basis = "meta.purchase_roas_x_spend"
+        elif value_cents is not None:
+            revenue_cents = value_cents
+            revenue_basis = "meta.purchase_action_value"
+        else:
+            revenue_basis = None
         buckets.append({
             "campaign_id": str(data.get("campaign_id") or ""),
             "name": str(data.get("campaign_name") or ""),
             "status": "",
-            "spend_cents": spend_cents or 0,
-            "value_cents": value_cents or 0,
-            "conversions": conversions or 0.0,
+            "spend_cents": spend_cents,
+            "value_cents": value_cents,
+            "revenue_cents": revenue_cents,
+            "revenue_basis": revenue_basis,
+            "conversions": _as_float(_first_purchase_value(data.get("actions"))) or 0.0,
         })
     return _metrics_result("meta_ads", days, buckets)
 
@@ -900,10 +1030,14 @@ def read_ad_metrics(*, platform: str = "google_ads", days: int = 7) -> dict[str,
 
     H2-frozen interface (V15/4-02, branch "a" LOCKED): returns the standard integration envelope
     — `{"ok": True, "result": {platform, days, window, fetched_at, campaigns[], totals}}` with
-    money in INTEGER CENTS (`spend_cents`, `conversions_value_usd`) and `roas` from measured
-    values only — or a NAMED refusal (`E_INTEGRATION` naming the missing credentials;
-    `E_VALIDATION` for an unknown platform).  The worker attach stores this envelope VERBATIM
-    under `metadata["ad_metrics"]`; the agent consumes it via `ad_metrics_extra_context`.
+    money in INTEGER CENTS plus wire-USD fields, and `roas` from measured values only — or a
+    NAMED refusal (`E_INTEGRATION` naming the missing credentials; `E_VALIDATION` for an unknown
+    platform).  The worker attach stores this envelope VERBATIM under `metadata["ad_metrics"]`;
+    the agent consumes it via `ad_metrics_extra_context`.
+
+    V24/L4: each campaign carries the provider's own `revenue_usd` (`revenue_basis` names the
+    field it came from) and `spend_measured`.  `revenue_usd`/`conversions_value_usd`/`roas` are
+    `None` when the provider exposed nothing to measure — never `0` as a stand-in for absence.
     """
     normalized_days = max(1, int(days or 1))
     if platform == "google_ads":

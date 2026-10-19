@@ -5,6 +5,11 @@ No mocks on the real path: `web_fetch` is exercised against a REAL loopback HTTP
 REAL services (`economics_service._CACHE` is seeded exactly like the service serves it;
 `pricing_service` reads the shipped 50-row catalog).  Refusals are NAMED: bad scheme, timeout,
 non-2xx, oversize, unknown tool, denied agent, kill switch — never a throw.
+
+V24/L2 re-pin (deliberate): the registry vocabulary grew from four names to eight —
+`web_search` (the DeepSeek Search API) and `code_write`/`code_read`/`code_list` (the run's
+text workspace) joined.  This file's set-equality pin is the tripwire that made the change
+deliberate; their own behaviour is pinned by test_v24_search_tool.py / test_v24_code_tools.py.
 """
 from __future__ import annotations
 
@@ -96,7 +101,9 @@ def _fetch(server: str, path: str, *, agent_type: str = "competitor_research", *
 def test_specs_are_openai_function_schemas_with_the_frozen_names():
     names = [spec["function"]["name"] for spec in tool_registry.TOOL_SPECS]
     # V20/L2: `phone_read` joined the frozen registry vocabulary (read-only, codes absent).
-    assert set(names) == {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
+    # V24/L2: `web_search` + the three code tools joined it (8 names, deliberate re-pin).
+    assert set(names) == {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
+                          "phone_read", "code_write", "code_read", "code_list"}
     for spec in tool_registry.TOOL_SPECS:
         assert spec["type"] == "function"
         function = spec["function"]

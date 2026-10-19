@@ -70,8 +70,33 @@ def test_registry_tools_are_every_spec_sorted_by_name():
 
 
 def test_empty_allowlist_renders_an_empty_list_never_a_default_set():
-    for agent_type in ("social_media", "email_outreach", "ads_management", "code_generation"):
+    # V24/L2: code_generation LEFT this list (it now holds the three code tools).
+    for agent_type in ("social_media", "email_outreach", "ads_management"):
         assert capability_manifest.tool_entries_for(agent_type) == [], agent_type
+
+
+def test_the_v24_tools_are_visible_exactly_where_the_allowlist_grants_them():
+    """V24/L2 — `web_search` and the code tools ride the same derivation as every other tool.
+
+    `web_search` appears in the manifest for competitor_research ONLY, the three code tools for
+    code_generation ONLY, each with the registry's OWN description; the registry catalog carries
+    all four.  (The literal drift rows below are the byte-level pin.)
+    """
+    holders = {
+        agent_type: [tool["name"] for tool in capability_manifest.tool_entries_for(agent_type)]
+        for agent_type in pf.AGENT_CAPABILITIES
+    }
+    assert holders["competitor_research"] == ["web_fetch", "web_search"]
+    assert holders["code_generation"] == ["code_write", "code_read", "code_list"]
+    assert {agent for agent, names in holders.items() if "web_search" in names} == {
+        "competitor_research"}
+    assert {agent for agent, names in holders.items()
+            if {"code_write", "code_read", "code_list"} & set(names)} == {"code_generation"}
+    registry_names = [tool["name"] for tool in capability_manifest.registry_tool_entries()]
+    for name in ("web_search", "code_write", "code_read", "code_list"):
+        assert name in registry_names
+    entry = capability_manifest.tool_entries_for("competitor_research")[1]
+    assert entry["description"] == _spec_description("web_search")
 
 
 def test_the_phone_tool_is_visible_exactly_where_the_allowlist_grants_it():
@@ -125,16 +150,28 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
 #     see/use the phone"); `customer_support` gains it as its ONLY registry tool (it already
 #     reads the owner's inbound correspondence).  Every other agent's row is UNCHANGED.
 # The rows below are the deliberate re-pin for that change; no action class or channel moved.
+#
+# WAVE V24 (L2, real agent tools): FOUR tools joined the registry and TWO agent rows moved —
+#   * PINNED_REGISTRY_TOOLS gains `web_search`, `code_write`, `code_read`, `code_list`
+#     (8 tools, sorted) — the frozen V24 interface: DeepSeek Search API + the workspace trio;
+#   * `competitor_research` gains `web_search` AFTER `web_fetch` (append-only): its ROLE already
+#     instructed "Use WebSearch to find candidates and WebFetch to read the pages";
+#   * `code_generation` moves from `()` to (`code_write`, `code_read`, `code_list`): the agent
+#     whose duty is "ship a change" finally has a real (workspace-confined) file surface.
+#   * the ORCHESTRATOR row is deliberately UNCHANGED (no code_read/code_list): "a planner that
+#     can act is a planner that can be injected into acting" (its own module docstring).
+# No action class or channel moved anywhere in V24.
 
 PINNED_REGISTRY_TOOLS: tuple[str, ...] = (
-    "macro_snapshot", "phone_read", "pricing_catalog", "web_fetch")
+    "code_list", "code_read", "code_write", "macro_snapshot", "phone_read", "pricing_catalog",
+    "web_fetch", "web_search")
 
 PINNED_AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "ads_management": (),
     "business_planning": ("macro_snapshot", "pricing_catalog"),
-    "code_generation": (),
+    "code_generation": ("code_write", "code_read", "code_list"),
     "company_planner": ("macro_snapshot", "pricing_catalog"),
-    "competitor_research": ("web_fetch",),
+    "competitor_research": ("web_fetch", "web_search"),
     "customer_support": ("phone_read",),
     "email_outreach": (),
     "finance": ("macro_snapshot", "pricing_catalog"),

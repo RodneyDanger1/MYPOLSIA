@@ -301,40 +301,61 @@ async def attach_pending(db: AsyncSession, *, now: datetime | None = None) -> li
         .all()
     )
 
+    # V24/L6 — ONE dedupe prefetch for the whole batch.  The old loop called
+    # `create_task_deduped` per item and, on every dedupe hit, a second SELECT for the existing
+    # id: a sweep over N already-attached items issued 2N SELECTs (measured: 9 SELECTs for 4
+    # items, `pre/red_run_1.txt`).  The prefetch answers the same question in one statement;
+    # `create_task_deduped` is still called for genuinely-new items, so its savepoint still
+    # protects a concurrent insert race, and the post-race re-read below stays as the last
+    # resort for a key that appeared between the prefetch and the insert.
+    keys = {item.provider_message_id: inbox_task_dedupe_key(item.provider_message_id) for item in pending}
+    existing_ids: dict[str, int] = {}
+    if keys:
+        rows = await db.execute(
+            select(Task.dedupe_key, Task.id).where(Task.dedupe_key.in_(list(keys.values())))
+        )
+        existing_ids = {str(key): int(task_id) for key, task_id in rows.all() if key is not None}
+
     attached: list[dict[str, Any]] = []
     for item in pending:
-        key = inbox_task_dedupe_key(item.provider_message_id)
-        task = await create_task_deduped(
-            db,
-            title=f"Reply to support email from {item.from_address}",
-            agent_type="customer_support",
-            dedupe_key=key,
-            priority=3,
-            source="scheduler",
-            metadata={
-                "inbox_item": {
-                    "id": item.provider_message_id,
-                    "from": item.from_address,
-                    "subject": item.subject,
-                    "body": item.body,
-                }
-            },
-        )
-        if task is not None:
-            task_id, task_created = int(task.id), True
+        key = keys[item.provider_message_id]
+        if key in existing_ids:
+            task_id, task_created = existing_ids[key], False
+            logger.info("dedupe hit: %s already exists (task %s)", key, task_id)
         else:
-            # Dedupe hit: the task for this item already exists (None is "already created",
-            # never a failure).  Resolve its id so the item can terminate pending-ness with a
-            # real task reference instead of being re-attempted forever.
-            existing_id = await db.scalar(select(Task.id).where(Task.dedupe_key == key).limit(1))
-            if existing_id is None:
-                raise PolsiaError(
-                    E_VALIDATION,
-                    f"dedupe key {key!r} conflicted but no task row could be re-read",
-                    how_to_fix="retry attach_pending; if it persists, check ix_tasks_dedupe_key",
-                    context={"dedupe_key": key},
-                )
-            task_id, task_created = int(existing_id), False
+            task = await create_task_deduped(
+                db,
+                title=f"Reply to support email from {item.from_address}",
+                agent_type="customer_support",
+                dedupe_key=key,
+                priority=3,
+                source="scheduler",
+                metadata={
+                    "inbox_item": {
+                        "id": item.provider_message_id,
+                        "from": item.from_address,
+                        "subject": item.subject,
+                        "body": item.body,
+                    }
+                },
+            )
+            if task is not None:
+                task_id, task_created = int(task.id), True
+                existing_ids[key] = task_id   # a later duplicate key in this batch re-uses it
+            else:
+                # Lost a race with a concurrent sweep between the prefetch and this insert:
+                # resolve the winner's id so the item can terminate pending-ness with a real
+                # task reference instead of being re-attempted forever.
+                existing_id = await db.scalar(select(Task.id).where(Task.dedupe_key == key).limit(1))
+                if existing_id is None:
+                    raise PolsiaError(
+                        E_VALIDATION,
+                        f"dedupe key {key!r} conflicted but no task row could be re-read",
+                        how_to_fix="retry attach_pending; if it persists, check ix_tasks_dedupe_key",
+                        context={"dedupe_key": key},
+                    )
+                task_id, task_created = int(existing_id), False
+                existing_ids[key] = task_id
 
         marked = (
             await db.execute(

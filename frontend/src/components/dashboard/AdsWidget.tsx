@@ -41,9 +41,13 @@ function usdText(value: number | null): string {
 export function AdsWidget() {
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // V24/L5: the failure's Retry re-issues this read.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setCampaigns(null);
+    setError(null);
     api
       .get<Campaign[]>(`/ads/campaigns?limit=${WIDGET_LIMIT}`)
       .then((data) => {
@@ -55,7 +59,7 @@ export function AdsWidget() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = campaigns === null && !error;
 
@@ -69,7 +73,14 @@ export function AdsWidget() {
       }
     >
       {loading ? <PanelSkeleton rows={2} /> : null}
-      {!loading && error ? <PanelError label="ad campaigns" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="ad campaigns"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="ads-widget-retry"
+        />
+      ) : null}
       {!loading && !error && campaigns && campaigns.length === 0 ? (
         <p className="text-sm text-ink-muted">
           No campaigns yet. The ads agent creates campaigns during its cycles — run it from the

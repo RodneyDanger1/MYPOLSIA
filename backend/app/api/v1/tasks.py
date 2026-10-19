@@ -15,20 +15,34 @@ service's `VALID_TASK_STATUSES` remains the single authority over the value set 
 unknown status is refused by name with the accepted values in the context (E_VALIDATION ->
 422, via `refusal_guard`).  `result_summary`/`error_message` are only written when the body
 supplies them.  The row is committed by `get_db` on success, like every other write route.
+
+`POST /{task_id}/run` (V24/L1) is the missing verb between "created" and "executed": it loads
+the row through `task_service.get_runnable_task` (404 `E_NOT_FOUND`; any status but `pending`
+is `E_TASK_NOT_RUNNABLE` with the CURRENT status in context), then hands the id to the SAME
+Celery task the scheduler uses (`run_agent_task.delay`).  The broker call is blocking, so it
+runs through `asyncio.to_thread` exactly like `agents.py`'s trigger — a dead broker must not
+stall the event loop while it climbs redis-py's retry ladder.  A broker refusal is a named
+503 `E_TASK_NOT_RUNNABLE` and the row is LEFT HONEST: this route never marks anything
+`in_progress`; only the worker's atomic `claim_task` may do that after a real delivery.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.totals import TOTAL_HEADER, declared_total
-from app.core.errors import E_NOT_FOUND, ERROR_HINTS
+from app.core.errors import E_NOT_FOUND, E_TASK_NOT_RUNNABLE, ERROR_HINTS
 from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskResponse, TaskStatusUpdate
 from app.services.task_service import (
     TaskRunTotals,
     create_task,
+    get_runnable_task,
     get_task,
     get_task_run_totals,
     list_tasks,
@@ -36,7 +50,21 @@ from app.services.task_service import (
     update_task_status,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(verify_api_key)])
+
+
+class TaskRunDispatchResponse(BaseModel):
+    """The frozen V24/L1 wire shape of a run dispatch (202) — nothing is claimed here.
+
+    `status` is the literal `"dispatched"`: the broker accepted ONE message for this row. It
+    deliberately says nothing about the task's own status, which only the worker's claim moves
+    (`pending` -> `in_progress`); a client must re-read the task to learn that.
+    """
+
+    task_id: int
+    status: str
 
 
 def _fill_truth(response: TaskResponse, task: Task, totals: TaskRunTotals | None) -> TaskResponse:
@@ -141,6 +169,63 @@ async def get_task_endpoint(task_id: int, db: AsyncSession = Depends(get_db)) ->
         )
     with refusal_guard():
         return await _task_response(db, task)
+
+
+@router.post(
+    "/{task_id}/run",
+    response_model=TaskRunDispatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_task_endpoint(
+    task_id: int, db: AsyncSession = Depends(get_db)
+) -> TaskRunDispatchResponse:
+    """Dispatch ONE existing pending task to the worker queue (V24/L1, frozen interface).
+
+    Order of operations, each deliberate:
+      1. `get_runnable_task` loads the row and refuses by NAME before anything is dispatched
+         (404 `E_NOT_FOUND`, or 409 `E_TASK_NOT_RUNNABLE` with the current status in context);
+      2. `.delay()` runs in a thread (`asyncio.to_thread`) — it is a blocking broker call;
+      3. a broker refusal answers 503 `E_TASK_NOT_RUNNABLE` and this route writes NOTHING to
+         the row: `pending` + no claim fields is the honest state of "no worker was told".
+    The 202 body names the row and the dispatch fact, never a task status the worker has not
+    written yet.
+    """
+    with refusal_guard():
+        task = await get_runnable_task(db, task_id)
+    dispatched_id = int(task.id)
+
+    try:
+        # The import is lazy for the same reason `agents.py` keeps it lazy: importing the Celery
+        # task module pulls in the whole worker stack, and the API must boot without a broker.
+        from celery_app.tasks.agent_tasks import run_agent_task
+
+        # `.delay()` is BLOCKING (redis-py's connection retry ladder). Called directly from an
+        # async handler it stalls the uvicorn event loop for the whole ladder — measured in this
+        # repo's e2e (agents.py:93-99). `to_thread` keeps the loop free.
+        await asyncio.to_thread(run_agent_task.delay, dispatched_id)
+    except Exception as exc:  # broker unavailable: NO delivery was accepted for this row
+        logger.warning("failed to dispatch task %s", dispatched_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": E_TASK_NOT_RUNNABLE,
+                "message": (
+                    f"task {dispatched_id} could not be handed to a worker: the broker did not "
+                    f"accept the dispatch ({exc.__class__.__name__})"
+                ),
+                "how_to_fix": (
+                    "check REDIS_URL and that the broker/worker are running, then run the task "
+                    "again; the row was left pending and untouched"
+                ),
+                "context": {
+                    "task_id": dispatched_id,
+                    "status": "pending",
+                    "reason": exc.__class__.__name__,
+                },
+            },
+        ) from exc
+
+    return TaskRunDispatchResponse(task_id=dispatched_id, status="dispatched")
 
 
 @router.patch("/{task_id}/status", response_model=TaskResponse)

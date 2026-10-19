@@ -7,6 +7,7 @@ import {
   DollarSign,
   FileText,
   Gauge,
+  Globe,
   Layers,
   LifeBuoy,
   Mail,
@@ -25,8 +26,8 @@ import type { LucideIcon } from "lucide-react";
  * `MENU ▾` dropdown (agent1-live-chrome/DOSSIER.md §1.2/§1.9, cross-cutting A;
  * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
  * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
- * count claim moves with the table (eleven -> sixteen; V17/L4 added Capabilities), labels stay as
- * short as the live menu items.
+ * count claim moves with the table (eleven -> sixteen; V17/L4 added Capabilities; V24/L3 added
+ * Sites, so seventeen), labels stay as short as the live menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -54,6 +55,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // the real export download) — sits with the comms cluster, after the support inbox.
   { href: "/phone", label: "Phone", icon: Phone },
   { href: "/ads", label: "Ads", icon: Megaphone },
+  // V24/L3: the website builder — the one surface that writes AND hosts a real page. It sits with
+  // the publishing cluster (Ads), before the money/system surfaces; the count claim above moves
+  // sixteen -> seventeen with this row.
+  { href: "/sites", label: "Sites", icon: Globe },
   { href: "/finance", label: "Finance", icon: DollarSign },
   // V11 unit 2: invoices + dunning are visible billing surfaces (wiring audit F2) — they shipped
   // backend-only in V9; the page sits beside Finance.

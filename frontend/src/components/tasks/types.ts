@@ -37,6 +37,16 @@ export type AgentTriggerResponse = {
 };
 
 /**
+ * `POST /tasks/{task_id}/run` (V24/L1, backend tasks.py — 202). This is the verb that runs the
+ * EXISTING row: it does not create a task. `status` is the literal `"dispatched"` (one message
+ * accepted by the broker) — it is NOT the task's status, which only the worker's claim moves.
+ */
+export type TaskRunDispatchResponse = {
+  task_id: number;
+  status: string;
+};
+
+/**
  * `POST /approvals` (approvals.py:103-140, 201). `token` is present on the wire but is
  * deliberately never rendered — the sheet reports the mint and its expiry, not the secret.
  * `expires_at` is integer epoch SECONDS (`int(minted.expires_at)` server-side).

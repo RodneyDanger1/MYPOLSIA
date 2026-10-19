@@ -575,8 +575,55 @@ Re-run the command on the frozen tree at settle: this ledger is only true of the
   on a command line.
 - **Production Stripe**: the burned live key was expired (correctly); a NEW restricted live key is needed
   when real payments go live (test key + webhook secret are wired in `.env`, never in git).
-- **website_url**: still the placeholder in config (`https://yourcompany.com`) — set a real domain in
-  Settings → Company when one exists (unsubscribe links depend on it).
+- **website_url**: blank in the live config since V22 — the old `https://yourcompany.com` placeholder was
+  removed and compliance now refuses BY NAME (`E_CONFIG`, `missing: [website_url]`) until a real domain
+  exists. Set it in Settings → Company before real outbound email (unsubscribe links depend on it).
+
+## 4b. Wave V24 settlement (2026-10-19) — runnable tasks, agent tools, websites, ads truth
+
+Six lanes landed on `51affcf`; the tree is verified and the stack is live.
+
+**Gates on the final tree:** backend **2,903 / 0 failed / 0 errors / 13 skipped** (was 2,745 — V24 added
+158 tests), jest **94 suites / 918 tests, exit 0**, Playwright **43 passed / 8 skipped / 0 failed**,
+smoke **PASS — 13 checks**, `tsc --noEmit` exit 0, ruff `All checks passed!`, migration chain at
+**`0012` (head)** on live PostgreSQL.
+
+**What is now true (all live-drilled against the rebuilt stack):**
+- **Tasks actually run.** `POST /api/v1/tasks/{id}/run` → 202 for a pending row; the worker claims it and
+  the row reaches `completed` (drill: 18 s). A second immediate dispatch while the row is still pending
+  is accepted by the frozen contract and produces **exactly ONE run** (the worker's atomic claim is the
+  mutex — measured); a terminal row is refused **409 `E_TASK_NOT_RUNNABLE`** with its current status.
+- **Agents genuinely use the web.** `web_search` calls DeepSeek `POST /v1/tools/search` with the app's
+  own key resolution; a live `competitor_research` run returned 5 ranked results, fetched `polsia.com`
+  through `web_fetch`, and recorded `tools_used: ["web_search", "web_fetch"]` in the run ledger
+  (run 238: 18.3 s, 26,721 tokens, $0.0027).
+- **Code workspace tools.** `code_write` / `code_read` / `code_list` (traversal/absolute/symlink
+  refusals, text ≤256 KiB) are firewalled to `code_generation`; the registry now exposes **8 tools**
+  (smoke `registry_tools=8`).
+- **Websites.** `POST /api/v1/sites` generates a self-contained, script-free `index.html` + `styles.css`
+  from the company profile and serves it at `/sites/<slug>/` through nginx (drill: 201 → page 200 →
+  `styles.css` 200); `GET /api/v1/sites` lists from disk; the `/sites` page creates, lists and previews.
+- **Ads truth.** `revenue_usd` is a measured-or-`None` field; `roas` exists only when revenue and spend
+  are both measured (no fabricated 0; drill confirms honest empty when no campaigns exist).
+- **UI polish (measured):** focus/visibility refresh with a 30 s throttle, one activity read for two
+  consumers, hidden-tab polling stopped, skeletons shaped like the loaded DOM, working Retry on shared
+  error states, lazy chat rail (−0.7 kB on `/dashboard`).
+
+**Settle fixes by the parent (both required, both pinned):**
+1. **nginx `/sites` collision** — with only `location /sites/`, nginx answered `/sites` itself with a 301
+   to `/sites/`, which landed on the static mount's 404 (the FE page was unreachable). An exact
+   `location = /sites` now hands the page to Next; the prefix keeps generated sites on the backend.
+   `test_v21_gates.py` + `test_v15_e4_ops_static.py` stay green (21/21).
+2. **V18 `get_or_create` pin** — V24/L6 split the tolerant read (`get_daily_report`, detached snapshot)
+   from the write-path ORM read (`_get_report_orm`). The interleaving test now patches the write seam it
+   always meant; same forced race, same assertions, 9/9 green.
+
+**Honest residuals (not hidden):** `ori_question` is accepted by the search tool but the runtime's
+`invoke()` seam carries no task title, so it rides only when the model supplies it; the code workspace
+is ONE root (`settings.code_workspace_dir`), not a per-run subdirectory; generated sites are self-hosted
+only (no cloud deploy); the browser daemon timed out while capturing `/sites`, so that page's proof is
+HTTP + DOM (200, title, script-free) rather than a screenshot.
+
 - **API_KEY rotation** (F-02 residual): the loopback bind (`127.0.0.1:80`) removes the measured network
   exposure, so rotation is deliberately not executed; do it BEFORE ever publishing the stack beyond
   localhost (set `API_KEY` + `NEXT_PUBLIC_API_KEY` and rebuild the frontend image — they must match).

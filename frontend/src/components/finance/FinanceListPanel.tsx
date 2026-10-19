@@ -42,6 +42,8 @@ type FinanceListPanelProps<T> = {
   columns: FinanceColumn<T>[];
   /** Bumped by the page's Refresh so every region re-reads together. */
   reloadKey: number;
+  /** The page's own re-read (the same Refresh handler) — the failure's Retry re-issues THIS panel. */
+  onRetry?: () => void;
 };
 
 export function FinanceListPanel<T>({
@@ -55,6 +57,7 @@ export function FinanceListPanel<T>({
   rowKey,
   columns,
   reloadKey,
+  onRetry,
 }: FinanceListPanelProps<T>) {
   const { data, error, loading } = useFinanceRead<T[]>(path, reloadKey);
   const rows = data !== null && Array.isArray(data) ? data : null;
@@ -77,7 +80,12 @@ export function FinanceListPanel<T>({
       {loading ? <ListSkeleton testId={`${testId}-loading`} /> : null}
 
       {!loading && (error !== null || brokenBody) ? (
-        <ReadError label={errorLabel} message={error ?? "the server returned no list of rows"} />
+        <ReadError
+          label={errorLabel}
+          message={error ?? "the server returned no list of rows"}
+          onRetry={onRetry}
+          retryTestId={`${testId}-retry`}
+        />
       ) : null}
 
       {!loading && error === null && !brokenBody && rows !== null && rows.length === 0 ? (

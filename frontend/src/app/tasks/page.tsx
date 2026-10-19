@@ -274,7 +274,11 @@ function TasksPageContent() {
                   : `Showing the first ${TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may exist`}
               </p>
             ) : null}
-            <TaskBoard rows={rows} onOpen={(task) => setOpenId(task.id)} />
+            <TaskBoard
+              rows={rows}
+              onOpen={(task) => setOpenId(task.id)}
+              onTaskQueued={() => setReloadSeq((n) => n + 1)}
+            />
           </>
         ) : null}
       </div>

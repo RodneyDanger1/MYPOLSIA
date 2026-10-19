@@ -337,7 +337,10 @@ def test_an_unknown_tool_still_names_the_known_set():
     assert payload["ok"] is False
     assert payload["error"]["code"] == E_VALIDATION
     message = payload["error"]["message"]
-    assert "phone_read" in message and "web_fetch" in message, "the known set includes the new tool"
+    # V20/L2: phone_read is in the known set.  V24/L2: so are web_search and the code trio —
+    # the refusal's "known set" is the LIVE registry, never a stale hand-copy.
+    for name in ("phone_read", "web_fetch", "web_search", "code_write", "code_read", "code_list"):
+        assert name in message, name
 
 
 # ── codes are absent BY CONSTRUCTION (hostile probe) ────────────────────────────────────────

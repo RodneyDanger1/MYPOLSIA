@@ -4,9 +4,11 @@ import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 
 import { absoluteStamp, agentLabel, NOT_MEASURED, relativeTime } from "@/components/dashboard/format";
+import { readErrorText } from "@/components/dashboard/states";
 import { Button, Chip, cn } from "@/components/ui";
 import { api } from "@/lib/api";
 
+import { runThisTask } from "./actions";
 import { fingerprintsFrom } from "./approval";
 import { recoveryFor } from "./recovery";
 import { costUsdText, tokenText } from "./runTruth";
@@ -44,12 +46,21 @@ export function TaskDetailContent({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "status" | "alert"; text: string } | null>(null);
   const [updated, setUpdated] = useState<TaskRow | null>(null);
+  /** V24/L1 — the "Run this task" dispatch (the EXISTING row, not a new one). */
+  const [runThisBusy, setRunThisBusy] = useState(false);
+  const [runThisLatched, setRunThisLatched] = useState(false);
 
   useEffect(() => {
     setUpdated(null);
   }, [task]);
 
   const row = updated ?? task;
+
+  useEffect(() => {
+    // A real state change (the server moved the row) re-arms the dispatch control; until then
+    // the latch prevents a second enqueue of the same pending row.
+    if (row.status !== "pending") setRunThisLatched(false);
+  }, [row.status]);
   const fingerprints = fingerprintsFrom(row.result_summary);
   /**
    * B3 (wave U3): ONE recovery grammar for this card's state — the footer below renders the
@@ -84,6 +95,31 @@ export function TaskDetailContent({
       setNotice({ tone: "alert", text: errorText(e) });
     } finally {
       setBusyAction(null);
+    }
+  };
+
+  /**
+   * V24/L1 — `Run this task`: dispatch the EXISTING row (`POST /tasks/{id}/run`, 202). The
+   * success notice quotes the server (`{task_id, status:"dispatched"}`) and then calls
+   * `onTaskQueued`, so the sheet/page re-reads the row; the status shown is always the
+   * server's, never an optimistic `in_progress`. A refusal renders `readErrorText`.
+   */
+  const runThis = async () => {
+    if (runThisBusy || runThisLatched) return;
+    setRunThisBusy(true);
+    setNotice(null);
+    try {
+      const result = await runThisTask(row);
+      setRunThisLatched(true);
+      setNotice({
+        tone: "status",
+        text: `Task #${result.task_id} ${result.status} — the worker will claim it; the status below is still the server's.`,
+      });
+      onTaskQueued?.();
+    } catch (e) {
+      setNotice({ tone: "alert", text: readErrorText(e) });
+    } finally {
+      setRunThisBusy(false);
     }
   };
 
@@ -234,6 +270,32 @@ export function TaskDetailContent({
         </div>
       ) : null}
 
+      {/* ── V24/L1: run THIS row ────────────────────────────────────────────────────────
+          Separate from the B3 recovery footer on purpose: the footer's `Run now` creates a
+          NEW task (its helper says so), while this control dispatches the queued row itself.
+          Pending only — every other state has nothing dispatchable. Default variant (not
+          `.btn-glossy`): one PRIMARY per card, as the shipped pins require. */}
+      {row.status === "pending" ? (
+        <section data-testid="run-this-task" className="mt-3 border border-line bg-surface-sunk p-3">
+          <p className="ui-label text-ink">Execute this task</p>
+          <p className="mt-1 text-sm text-ink-muted">
+            Run this task dispatches <strong>this</strong> queued row to the worker queue — it
+            does not create a new task. The server moves it to in_progress when a worker claims
+            it; the detail re-reads after the dispatch and never assumes that transition.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              size="sm"
+              aria-busy={runThisBusy || undefined}
+              disabled={runThisBusy || runThisLatched}
+              onClick={runThis}
+            >
+              {runThisBusy ? "Dispatching…" : "Run this task"}
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       {recovery.kind === "approve" ? (
         <section data-recovery="approve" className="mt-3 border border-line bg-surface-sunk p-3">
           <p className="ui-label text-ink">Approval</p>
@@ -301,7 +363,6 @@ export function TaskDetailContent({
       <div className="mt-4 border-t border-line pt-3">
         <p className="ui-label text-ink-muted">Not in this build</p>
         <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-ink-muted">
-          <li>Repeat (re-running this exact row): no endpoint exists — a new run means a new task.</li>
           <li>
             Changing a task&rsquo;s text, or removing a task: no endpoint exists anywhere in the
             API — no controls are drawn for them.

@@ -3,7 +3,7 @@ import { AdsWidget } from "@/components/dashboard/AdsWidget";
 import { AutoModePanel } from "@/components/auto_mode/AutoModePanel";
 import { BusinessPanel } from "@/components/dashboard/BusinessPanel";
 import { CapsPanel } from "@/components/dashboard/CapsPanel";
-import { ChatRail } from "@/components/chat/ChatRail";
+import { LazyChatRail } from "@/components/dashboard/LazyChatRail";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboarding";
 import { MediaCard } from "@/components/dashboard/MediaCard";
@@ -107,7 +107,7 @@ export default function DashboardPage() {
           label="Chat rail"
           className="h-[640px] lg:col-span-2 2xl:col-span-1 2xl:col-start-4"
         >
-          <ChatRail />
+          <LazyChatRail />
         </WidgetSlot>
       </div>
     </div>

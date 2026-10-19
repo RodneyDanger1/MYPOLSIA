@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { SocialPostCard, type SocialPost } from "@/components/social/SocialPostCard";
+import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
 import { ApiError, api } from "@/lib/api";
 
 /** The read's page size — matches the server default and the page's historical `?limit=50`. */
@@ -62,6 +63,8 @@ export default function SocialPage() {
   }, [reloadCount]);
 
   const refresh = useCallback(() => setReloadCount((n) => n + 1), []);
+  // V24/L5: back to the tab → one honest re-read once the 30 s window has passed (no polling).
+  useRefreshOnFocus(refresh);
   const truncated = data !== null && data.length === LIST_LIMIT;
 
   return (
@@ -76,16 +79,47 @@ export default function SocialPage() {
       </div>
 
       {error ? (
-        <p role="alert" className="text-sm text-alert">
-          Could not load posts: {error}
-        </p>
+        <div role="alert" className="text-sm text-alert">
+          <p>Could not load posts: {error}</p>
+          {/* V24/L5: the failure re-issues the same list read instead of being a dead end. */}
+          <button
+            type="button"
+            className="link ui-label mt-2"
+            data-testid="social-retry"
+            onClick={refresh}
+          >
+            Retry
+          </button>
+        </div>
       ) : null}
 
       {!error && data === null ? (
+        // V24/L5: the skeleton is shaped like the LOADED card (card-surface, content lines, the
+        // chip meta row, the hairline footer) instead of three bare h-24 blocks, so the list keeps
+        // its row rhythm when the read lands.
         <div className="space-y-3" data-testid="social-loading" aria-busy="true">
           <p className="ui-label text-ink-muted">Loading…</p>
           {Array.from({ length: 3 }).map((_, index) => (
-            <div key={index} className="h-24 animate-pulse border border-line bg-surface-strong" />
+            <div key={index} className="card-surface" data-testid="social-skeleton-post">
+              <div className="px-3 py-3">
+                <div data-testid="social-skeleton-content" className="space-y-2">
+                  <div className="h-4 w-11/12 animate-pulse bg-surface-strong" />
+                  <div className="h-4 w-3/4 animate-pulse bg-surface-strong" />
+                </div>
+                <div data-testid="social-skeleton-meta" className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="h-5 w-20 animate-pulse bg-surface-strong" />
+                  <div className="h-5 w-16 animate-pulse bg-surface-strong" />
+                  <div className="h-3 w-28 animate-pulse bg-surface-strong" />
+                </div>
+                <div
+                  data-testid="social-skeleton-footer"
+                  className="mt-2 flex flex-wrap items-center gap-3 border-t border-line pt-2"
+                >
+                  <div className="h-3 w-24 animate-pulse bg-surface-strong" />
+                  <div className="h-3 w-16 animate-pulse bg-surface-strong" />
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       ) : null}

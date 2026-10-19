@@ -68,6 +68,11 @@ backend/data/chroma/
 # runtime state as well: a committed marker would leak the wipe history and could burn a
 # future owner's confirm token as "already used".
 backend/data/data_wipe_consumed.json
+# V24/L3: the website builder's generated sites (`services/site_service.py` writes
+# backend/data/sites/<slug>/{index.html,styles.css,meta.json}).  Runtime output of the company
+# profile, recreated by POST /api/v1/sites — never source, and a committed copy would go stale
+# against the profile that produced it.
+backend/data/sites/
 
 # run-suite.sh writes one run log per invocation (e2e/run-<label>.txt) — runtime artifact.
 e2e/run-*.txt

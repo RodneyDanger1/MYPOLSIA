@@ -28,14 +28,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant, company_tz, day_window, now_utc
 from app.models.outreach import EmailLog
 from app.models.social import SocialPost
-from app.services.query_helpers import fetch_scalar
+from app.services.query_helpers import fetch_rows, fetch_scalar
 
 # Which local table can count a send per channel. A channel absent from both branches has no
 # local record at all -> `None` (unknown), never `0` (see module docstring).
@@ -149,14 +149,96 @@ async def channel_sends_snapshot(
     agents read `[channel]["today"]` / `[channel]["hour"]` and hand the raw value to the
     firewall. `None` entries are deliberate — they tell the firewall the count is unknown, and
     it refuses a configured cap it cannot verify.
+
+    V24/L6 — WHY THIS IS NOT A LOOP OF `channel_sends_today`/`channel_sends_this_hour` ANY MORE:
+    the per-channel functions issue one COUNT each, so the snapshot cost 2 statements PER
+    CHANNEL — 14 on `GET /channels/caps` (7 policy channels) and 14 more on every agent run
+    that needed the context (measured: `pre/probe_bench_before.json`, `/channels/caps` sql=14).
+    The counts are now computed by at most TWO grouped statements — one over `social_posts`
+    (per platform, both windows as conditional SUMs) and one over `email_logs` — so the cost is
+    constant in the channel count.  The values are unchanged: a channel with a local send table
+    and no matching rows is a measured 0, and a channel with no local record stays `None`.
     """
+    requested = list(dict.fromkeys(channels))   # dedupe, keep the caller's order
     anchor = _as_utc(now)
-    snapshot: dict[str, dict[str, int | None]] = {}
-    for channel in dict.fromkeys(channels):   # dedupe, keep the caller's order
-        snapshot[channel] = {
-            "today": await channel_sends_today(db, channel, now=anchor),
-            "hour": await channel_sends_this_hour(db, channel, now=anchor),
-        }
+    snapshot: dict[str, dict[str, int | None]] = {
+        channel: {"today": None, "hour": None} for channel in requested
+    }
+
+    social = [channel for channel in requested if channel in _SOCIAL_CHANNELS]
+    email_wanted = _EMAIL_CHANNEL in requested
+    if not social and not email_wanted:
+        return snapshot
+
+    day_start, day_end = day_window(db, day=anchor.astimezone(company_tz()).date())
+    hour_start = as_bound_instant(anchor - timedelta(hours=1), db)   # exclusive lower bound
+    hour_end = as_bound_instant(anchor, db)                          # inclusive upper bound
+    # One WHERE that is a superset of both windows; each window is a conditional SUM below.
+    lower = min(day_start, hour_start)
+    upper = max(day_end, hour_end)
+
+    if social:
+        today_branch = and_(
+            SocialPost.published_at >= day_start, SocialPost.published_at < day_end
+        )
+        hour_branch = and_(
+            SocialPost.published_at > hour_start, SocialPost.published_at <= hour_end
+        )
+        rows = await fetch_rows(
+            db,
+            select(
+                SocialPost.platform,
+                func.sum(case((today_branch, 1), else_=0)).label("today"),
+                func.sum(case((hour_branch, 1), else_=0)).label("hour"),
+            )
+            .where(
+                SocialPost.platform.in_(social),
+                SocialPost.status == "published",
+                SocialPost.published_at >= lower,
+                SocialPost.published_at <= upper,
+            )
+            .group_by(SocialPost.platform),
+            what="social channel send counts",
+        )
+        measured = {platform: (int(today or 0), int(hour or 0)) for platform, today, hour in rows}
+        for channel in social:
+            today, hour = measured.get(channel, (0, 0))   # measured zero, not unknown
+            snapshot[channel] = {"today": today, "hour": hour}
+
+    if email_wanted:
+        rows = await fetch_rows(
+            db,
+            select(
+                func.sum(
+                    case(
+                        (
+                            and_(EmailLog.sent_at >= day_start, EmailLog.sent_at < day_end),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("today"),
+                func.sum(
+                    case(
+                        (
+                            and_(EmailLog.sent_at > hour_start, EmailLog.sent_at <= hour_end),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("hour"),
+            ).where(
+                EmailLog.status == "sent",
+                EmailLog.sent_at >= lower,
+                EmailLog.sent_at <= upper,
+            ),
+            what="email channel send counts",
+        )
+        today, hour = rows[0] if rows else (None, None)
+        # The aggregate always yields one row; a NULL sum there is zero matching rows, and email
+        # HAS a local send table — so this is a measured 0, never the unknown None.
+        snapshot[_EMAIL_CHANNEL] = {"today": int(today or 0), "hour": int(hour or 0)}
+
     return snapshot
 
 

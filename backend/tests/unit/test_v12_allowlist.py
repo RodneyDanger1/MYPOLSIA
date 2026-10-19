@@ -4,6 +4,13 @@ Pins the frozen V12 mapping (competitor_research: web_fetch; business_planning /
 orchestrator / company_planner: macro_snapshot + pricing_catalog; everyone else: none), the
 now-REAL tool leg of `decide()`, `execute_tool`'s denial path, the base_agent tool-doctrine
 renderer in both runtime cases, and the invocation seam W-A's tool loop reads.
+
+V24/L2 re-pin (deliberate): `web_search` now SHIPS and is granted to `competitor_research`
+(its ROLE already instructed a search — "Use WebSearch to find candidates and WebFetch to read
+the pages"), and `code_generation` — previously the tool-less "code" agent — holds
+`code_write`/`code_read`/`code_list` confined to `settings.code_workspace_dir`.  The
+`web_search does NOT ship` V12 pin is REVERSED here, by name, because the V24 plan freezes the
+provider interface; every other agent's allowlist is unchanged.
 """
 from __future__ import annotations
 
@@ -12,12 +19,15 @@ from app.agents import tool_registry
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass, ActionRequest, Decision, decide
 
-#: V20/L2: `phone_read` joined the registry (read-only, codes structurally absent), so the frozen
-#: vocabulary is four names. The V12 seam deliberately goes red when a tool joins — this is that
-#: re-pin, with the wave recorded.
-FROZEN = {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
+#: V20/L2: `phone_read` joined the registry (read-only, codes structurally absent).
+#: V24/L2: `web_search` + the three code tools joined — eight frozen names.
+#: The V12 seam deliberately goes red when a tool joins; this is that re-pin, with the wave
+#: recorded.
+FROZEN = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
+          "phone_read", "code_write", "code_read", "code_list"}
 READ_MACRO_AGENTS = ("business_planning", "finance", "company_planner")
-NO_TOOL_AGENTS = ("social_media", "email_outreach", "ads_management", "code_generation")
+#: V24/L2: `code_generation` LEFT this list — it now owns the three code tools.
+NO_TOOL_AGENTS = ("social_media", "email_outreach", "ads_management")
 
 
 def _probe(agent_type: str) -> BasePolsiaAgent:
@@ -32,12 +42,16 @@ def _probe(agent_type: str) -> BasePolsiaAgent:
 # ── the mapping ──────────────────────────────────────────────────────────────────────────────
 
 def test_the_frozen_agent_tool_mapping_is_wired():
-    assert tool_registry.tools_for("competitor_research") == ("web_fetch",)
+    # V24/L2: the market-intelligence agent holds the search tool after `web_fetch` (append-only).
+    assert tool_registry.tools_for("competitor_research") == ("web_fetch", "web_search")
     for agent_type in READ_MACRO_AGENTS:
         assert tool_registry.tools_for(agent_type) == ("macro_snapshot", "pricing_catalog")
     # V20/L2: the orchestrator already held owner-data reads, so `phone_read` joins its toolbox.
     assert tool_registry.tools_for("orchestrator") == (
         "macro_snapshot", "pricing_catalog", "phone_read")
+    # V24/L2: the code agent finally has a filesystem surface (workspace-confined).
+    assert tool_registry.tools_for("code_generation") == (
+        "code_write", "code_read", "code_list")
     # V20/L2: customer_support's only toolbox entry is the read-only phone tool.
     assert tool_registry.tools_for("customer_support") == ("phone_read",)
     for agent_type in NO_TOOL_AGENTS:
@@ -50,19 +64,36 @@ def test_every_allowlisted_name_is_a_frozen_tool_spec():
         assert set(capability.agent_tools) <= FROZEN
 
 
-def test_web_search_does_not_ship():
-    """No provider exists for web search (V12 plan): the name must not be advertised anywhere."""
-    for capability in pf.AGENT_CAPABILITIES.values():
-        assert not any("search" in name for name in capability.agent_tools)
-    payload = tool_registry.execute_tool("web_search", {}, agent_type="competitor_research")
-    assert '"E_VALIDATION"' in payload, "an unknown tool is refused by name"
+def test_web_search_ships_and_only_the_market_intelligence_agent_holds_it():
+    """V24/L2 REVERSED the V12 "web_search does NOT ship" rule: the DeepSeek Search API is a
+    real provider now, and the wave plan freezes the interface.  It is granted to exactly one
+    agent — competitor_research, whose ROLE already said "Use WebSearch to find candidates" —
+    so the other tool-less agents stay tool-less (least privilege, evidence in the RECEIPT)."""
+    holders = {agent_type for agent_type, capability in pf.AGENT_CAPABILITIES.items()
+               if "web_search" in capability.agent_tools}
+    assert holders == {"competitor_research"}
+    payload = tool_registry.execute_tool(
+        "web_search", {"query": "x"}, agent_type="social_media")
+    assert '"E_POLICY_DENIED"' in payload, "the firewall refuses it by name for a non-holder"
 
 
-def test_competitor_research_keeps_web_fetch_only_and_drops_the_stale_cli_search():
+def test_competitor_research_holds_web_fetch_and_web_search_and_drops_the_stale_cli_search():
     cap = pf.AGENT_CAPABILITIES["competitor_research"]
-    assert cap.agent_tools == ("web_fetch",)
-    assert "WebSearch" not in cap.allowed_tools, "the stale search entry is gone (no provider ships)"
+    # V24/L2: append-only — the existing fetch stays first, the shipped search joins it.
+    assert cap.agent_tools == ("web_fetch", "web_search")
+    assert "WebSearch" not in cap.allowed_tools, (
+        "CLI search was never honorable under the DeepSeek runtime; the REGISTRY tool replaced it"
+    )
     assert "WebFetch" in cap.allowed_tools, "the CLI namespace keeps the CLI's own tool name"
+
+
+def test_code_generation_gains_the_workspace_tools_without_gaining_a_cli_shell():
+    """V24/L2: the code agent's registry surface is the workspace (write/read/list); its CLI
+    walls are UNCHANGED — no push, no remote, no rm, no curl/wget, no MCP."""
+    cap = pf.AGENT_CAPABILITIES["code_generation"]
+    assert cap.agent_tools == ("code_write", "code_read", "code_list")
+    assert "Bash(git push *)" in cap.denied_tools and "Bash(rm *)" in cap.denied_tools
+    assert "mcp__*" in cap.denied_tools
 
 
 # ── decide(): the (formerly dormant) tool leg ────────────────────────────────────────────────
@@ -235,7 +266,8 @@ def test_real_call_hands_the_deepseek_loop_the_registry_tool_list(monkeypatch):
     run = _fake_roundtrip(monkeypatch, capture=capture)
     run(_probe("competitor_research"), "prompt")
 
-    assert _allowed_tools(capture["inv"]) == ("web_fetch",), (
+    # V24/L2: the registry list rides the seam in allowlist order (fetch, then search).
+    assert _allowed_tools(capture["inv"]) == ("web_fetch", "web_search"), (
         "the invocation carries the REGISTRY tools under the DeepSeek runtime"
     )
 

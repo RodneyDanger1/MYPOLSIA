@@ -140,7 +140,13 @@ def test_get_or_create_recovers_when_two_writers_pass_the_same_check(queue_db, m
             await winner_db.commit()
             winner_id = int(winner.id)
 
-        real_read = report_service.get_daily_report
+        # wave V24 (L6): the write path now reads through `_get_report_orm` (a LIVE ORM
+        # instance the caller may mutate), while `get_daily_report` became the tolerant
+        # READ-only loader that returns a detached snapshot.  This test instruments the
+        # interleaving at the WRITE path's existence read — the seam it always meant —
+        # so it patches `_get_report_orm`.  Same forced interleaving, same assertions:
+        # the loser must answer with the winner's row after re-reading it.
+        real_read = report_service._get_report_orm
         seen = {"n": 0}
 
         async def read_as_if_before_the_commit(db, report_date):
@@ -149,7 +155,7 @@ def test_get_or_create_recovers_when_two_writers_pass_the_same_check(queue_db, m
                 return None  # this writer's check: the row did not exist yet
             return await real_read(db, report_date)
 
-        monkeypatch.setattr(report_service, "get_daily_report", read_as_if_before_the_commit)
+        monkeypatch.setattr(report_service, "_get_report_orm", read_as_if_before_the_commit)
         async with queue_db.factory() as loser_db:
             got = await report_service.get_or_create_daily_report(loser_db, DUE)
             await loser_db.commit()

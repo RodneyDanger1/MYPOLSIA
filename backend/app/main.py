@@ -18,6 +18,7 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import (
@@ -43,6 +44,7 @@ from app.api.v1 import (
     pricing,
     schedules,
     site,
+    sites,  # wave V24 (L3): the website builder — generate + list sites (files under data/sites)
     social,
     support,
     tasks,
@@ -62,6 +64,7 @@ from app.core.errors import (
     to_http_detail,
 )
 from app.core.redis_client import close_redis
+from app.services import site_service
 
 
 class _JsonFormatter(logging.Formatter):
@@ -479,8 +482,21 @@ def create_app() -> FastAPI:
     api_v1.include_router(invoices.router)   # V9 (B4): invoices v1 — create/list/get/send/void (owner)
     api_v1.include_router(economics.router)  # V9 (B7): keyless macro context — inflation/CPI/FX (owner)
     api_v1.include_router(data.router)       # wave V10 (H1/D7): the data portability surface — export ZIP + guarded wipe (owner)
+    # wave V24 (L3): the website builder — POST generate / GET list, disk-backed (data/sites/<slug>/
+    # meta.json).  The router is included BEFORE the /sites static mount so the /api/v1 prefix is
+    # matched by a route, never by the mount.
+    api_v1.include_router(sites.router)
     application.include_router(api_v1)
     application.include_router(ws.router)
+
+    # wave V24 (L3): serve the generated sites as REAL static files at `/sites/<slug>/` (nginx
+    # proxies `/sites/` here; the FE iframe previews the same URL).  `html=True` makes a directory
+    # request serve its index.html.  The directory is created HERE, at app construction, because
+    # StaticFiles checks it while the mount is built — a fresh install with no site yet must boot
+    # and answer /api/v1/sites with an honest empty list, not fail on a missing folder.
+    sites_root = site_service.SITES_ROOT
+    sites_root.mkdir(parents=True, exist_ok=True)
+    application.mount("/sites", StaticFiles(directory=str(sites_root), html=True), name="sites")
 
     @application.get("/", include_in_schema=False)
     async def root() -> dict[str, str | None]:

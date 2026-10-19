@@ -11,6 +11,8 @@ Two rules this module exists to enforce:
 """
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 from sqlalchemy import Select, distinct, func, literal
@@ -18,6 +20,36 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+
+logger = logging.getLogger(__name__)
+
+
+def json_or_none(raw: Any) -> Any:
+    """A JSON column read as TEXT, parsed tolerantly: junk is `None`, never a 500.
+
+    Why this exists: SQLAlchemy's JSON result processor raises `JSONDecodeError` WHILE FETCHING
+    when one at-rest row holds bytes that are not JSON (a raw/ops writer can leave them).  One
+    such row used to refuse the WHOLE feed with an uncoded 500 — `run_service` and
+    `notifications` already avoid it by casting the column to Text, and this is the shared
+    per-row parse for the reads that followed (V24/L6: admin reports + the activity feed).
+
+    Rules: NULL -> None; a dict/list (PostgreSQL JSONB already decoded) -> itself; text ->
+    `json.loads`; anything that fails -> None plus a WARNING naming the bytes.  The caller
+    decides whether the parsed shape is acceptable (a detail must be an object, a list must be
+    a list).  `None` means "not measured / not readable", NEVER an invented stand-in.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, (str, bytes, bytearray)):
+        logger.warning("ignoring JSON at rest of unexpected type %s", type(raw).__name__)
+        return None
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        logger.warning("ignoring malformed JSON at rest: %.60r", raw)
+        return None
 
 
 def db_refusal(what: str, exc: BaseException) -> PolsiaError:

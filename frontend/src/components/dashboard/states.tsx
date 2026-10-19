@@ -39,11 +39,37 @@ export function PanelSkeleton({ rows = 3 }: { rows?: number }) {
 }
 
 /** One failure sentence, from the real error. The failure is named instead of being rendered as an
- *  empty list, an em-dash row, or a plausible zero. */
-export function PanelError({ label, message }: { label: string; message: string }) {
+ *  empty list, an em-dash row, or a plausible zero.
+ *
+ *  V24/L5: a dashboard panel that failed used to stay failed until a full page reload — the one
+ *  surface with no Refresh of its own. A panel that owns an attempt counter passes `onRetry` and
+ *  the failure re-issues exactly its own read. */
+export function PanelError({
+  label,
+  message,
+  onRetry,
+  retryTestId,
+}: {
+  label: string;
+  message: string;
+  onRetry?: () => void;
+  retryTestId?: string;
+}) {
   return (
-    <p role="alert" className="text-sm text-alert">
-      Could not load {label}: {message}
-    </p>
+    <div className="text-sm text-alert">
+      <p role="alert">
+        Could not load {label}: {message}
+      </p>
+      {onRetry ? (
+        <button
+          type="button"
+          className="link ui-label mt-1"
+          data-testid={retryTestId}
+          onClick={onRetry}
+        >
+          Retry
+        </button>
+      ) : null}
+    </div>
   );
 }

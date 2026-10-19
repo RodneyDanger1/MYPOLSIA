@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
 import { InboxComposer } from "@/components/support/InboxComposer";
 import { InboxItemRow } from "@/components/support/InboxItemRow";
 import type { SupportInboxItem, SupportInboxStatus } from "@/components/support/types";
@@ -68,6 +69,9 @@ export default function SupportPage() {
   }, [filter, reloadCount]);
 
   const refresh = () => setReloadCount((n) => n + 1);
+  // V24/L5: returning to this tab re-reads the inbox once its 30 s window has passed. The mount
+  // read is the baseline, so an immediate focus does not double it; nothing polls.
+  useRefreshOnFocus(refresh);
   const truncated = items !== null && items.length === LIST_LIMIT;
 
   return (
@@ -111,18 +115,36 @@ export default function SupportPage() {
         <div role="alert" className="border border-alert bg-surface p-3">
           <p className="ui-label text-alert">Could not load the inbox</p>
           <p className="mt-1 text-sm text-ink">{error}</p>
+          {/* V24/L5: the failure is not a dead end — Retry re-issues this exact filtered read. */}
+          <button
+            type="button"
+            className="link ui-label mt-2"
+            data-testid="support-retry"
+            onClick={refresh}
+          >
+            Retry
+          </button>
         </div>
       ) : null}
 
       {error === null && items === null ? (
-        <div className="space-y-2" data-testid="support-loading" aria-busy="true">
-          <p className="ui-label text-ink-muted">Loading the inbox…</p>
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="card-surface px-3 py-3">
-              <div className="h-3 w-2/5 animate-pulse bg-surface-strong" />
-              <div className="mt-2 h-3 w-3/5 animate-pulse bg-surface-strong" />
-            </div>
-          ))}
+        // V24/L5: the skeleton now reproduces the LOADED structure — one card-surface holding the
+        // same `border-b px-3 py-3` rows the list renders — instead of four separate cards, and it
+        // reserves the count line's box so the list does not jump down when the read lands.
+        <div data-testid="support-loading" aria-busy="true">
+          <p className="ui-label h-[16px] text-ink-muted" data-testid="support-count-placeholder" aria-hidden="true" />
+          <ul className="card-surface">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <li key={index} className="border-b border-line px-3 py-3 last:border-b-0">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <div className="h-4 w-1/3 animate-pulse bg-surface-strong" />
+                  <div className="ml-auto h-3 w-24 animate-pulse bg-surface-strong" />
+                </div>
+                <div className="mt-1 h-4 w-3/4 animate-pulse bg-surface-strong" />
+                <div className="mt-1 h-3 w-full animate-pulse bg-surface-strong" />
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 

@@ -22,6 +22,12 @@ import { useAdsRead } from "./useAdsRead";
  * the app-wide marker. A measured 0 is a reading: counts print `0`, money `$0.00`, CTR `0.00%`.
  * The three generated ratios are fractions/multiples, not money — CTR renders as a percent, ROAS
  * as a multiple, and CPC keeps four decimals so a real sub-cent cost cannot collapse to `$0.00`.
+ *
+ * V24/L4: the summary strip above the table shows the campaign's Revenue (sum of the days whose
+ * revenue was measured) and ROAS (computed only from the days where BOTH revenue and spend were
+ * measured — the coverage line names the subset).  The API serves an unmeasurable revenue/ROAS as
+ * `null`, so the strip dashes rather than claiming `$0.00` / `0.00×`; a genuinely measured zero
+ * still renders as a zero reading.
  */
 
 export type AdMetric = {
@@ -67,6 +73,40 @@ function multipleText(value: number | null): string {
   const multiple = finite(value);
   if (multiple === null) return NOT_MEASURED;
   return `${multiple.toFixed(2)}×`;
+}
+
+/** Campaign-level revenue truth over the loaded days (V24/L4).
+ *
+ *  - `revenueUsd` sums every day whose `revenue_usd` is a finite number; `null` when NO day
+ *    carried a measurement (the honest dash — never `$0.00` for "not reported").
+ *  - `roas` divides revenue by spend over ONLY the days where BOTH are measured, so an unmeasured
+ *    day can never dilute (or zero-fill) the ratio.  A zero spend denominator leaves it `null`.
+ *  - `pairedDays` is the coverage the card discloses when it is smaller than the loaded window.
+ */
+function summariseRevenue(rows: AdMetric[]): {
+  revenueUsd: number | null;
+  roas: number | null;
+  pairedDays: number;
+} {
+  let revenueUsd: number | null = null;
+  let pairedRevenue = 0;
+  let pairedSpend = 0;
+  let pairedDays = 0;
+  for (const row of rows) {
+    const dayRevenue = finite(row.revenue_usd);
+    if (dayRevenue === null) continue;
+    revenueUsd = (revenueUsd ?? 0) + dayRevenue;
+    const daySpend = finite(row.spend_usd);
+    if (daySpend === null) continue;
+    pairedRevenue += dayRevenue;
+    pairedSpend += daySpend;
+    pairedDays += 1;
+  }
+  return {
+    revenueUsd,
+    roas: pairedSpend > 0 ? pairedRevenue / pairedSpend : null,
+    pairedDays,
+  };
 }
 
 const METRIC_COLUMNS: Column<AdMetric>[] = [
@@ -120,8 +160,34 @@ function MetricsBody({ campaignId }: { campaignId: number }) {
     );
   }
 
+  const revenue = summariseRevenue(rows);
+
   return (
     <div className="mt-2 border border-line px-2 py-1">
+      {rows.length > 0 ? (
+        <div
+          className="mb-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line pb-1"
+          data-testid={`campaign-metrics-summary-${campaignId}`}
+        >
+          <span className="ui-label text-ink-muted">
+            Revenue{" "}
+            <span className="text-ink" data-testid={`campaign-revenue-${campaignId}`}>
+              {usdText(revenue.revenueUsd)}
+            </span>
+          </span>
+          <span className="ui-label text-ink-muted">
+            ROAS{" "}
+            <span className="text-ink" data-testid={`campaign-roas-${campaignId}`}>
+              {multipleText(revenue.roas)}
+            </span>
+          </span>
+          {revenue.pairedDays < rows.length ? (
+            <span className="ui-label text-ink-muted" data-testid={`campaign-roas-coverage-${campaignId}`}>
+              {`ROAS covers ${revenue.pairedDays} of ${rows.length} days with both revenue and spend measured.`}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <DataTable<AdMetric>
         label={`Stored metrics for campaign ${campaignId}`}
         columns={METRIC_COLUMNS}

@@ -2,17 +2,68 @@
 stored-metrics read V19/L2 wired)."""
 from __future__ import annotations
 
+import math
+from typing import Any
+
 from fastapi import APIRouter, Depends, Path, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.status_filters import AD_CAMPAIGN_STATUSES, require_status
 from app.api.v1.totals import TOTAL_HEADER, declared_total
-from app.models.ads import AdCampaign
+from app.models.ads import AdCampaign, AdMetric
 from app.schemas.social import AdCampaignResponse, AdMetricResponse
 from app.services.ads_service import list_campaigns, list_metrics
 
 router = APIRouter(prefix="/ads", tags=["ads"], dependencies=[Depends(verify_api_key)])
+
+
+def _wire_float(value: Any) -> float | None:
+    """A stored Numeric as a finite wire float, or None — never `NaN`, never an exception."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _metric_response(metric: AdMetric) -> AdMetricResponse:
+    """One stored metric day with revenue/ROAS served on the measured-only rule.
+
+    `revenue_usd` is served when it is a real positive measurement.  The frozen DDL holds it
+    `NUMERIC(14,4) DEFAULT '0' NOT NULL` (alembic 0002:203-207 / 0003:71), so an unreported
+    revenue and a measured zero are the SAME stored value and no backfill may invent the
+    difference.  Until the column can carry NULL, a stored 0 is served as `null` (the honest
+    dash): the route will not print a `$0.00` it cannot certify, and it will never print the
+    generated column's `0` ROAS for a row whose revenue was never measured.
+
+    `roas` is therefore computed HERE — only when BOTH revenue and spend are measured and spend
+    is a usable denominator — instead of echoing `ad_metrics.roas`, whose GENERATED expression
+    turns an absent numerator into `0`.
+    """
+    revenue = _wire_float(metric.revenue_usd)
+    spend = _wire_float(metric.spend_usd)
+    measured_revenue = revenue if revenue is not None and revenue > 0 else None
+    roas = (
+        round(measured_revenue / spend, 6)
+        if measured_revenue is not None and spend is not None and spend > 0
+        else None
+    )
+    return AdMetricResponse(
+        id=metric.id,
+        campaign_id=metric.campaign_id,
+        date=metric.date,
+        impressions=metric.impressions,
+        clicks=metric.clicks,
+        conversions=metric.conversions,
+        spend_usd=spend,
+        revenue_usd=measured_revenue,
+        ctr=_wire_float(metric.ctr),
+        cpc=_wire_float(metric.cpc),
+        roas=roas,
+    )
 
 
 @router.get("/campaigns", response_model=list[AdCampaignResponse])
@@ -59,7 +110,11 @@ async def ads_campaign_metrics(
     consumer; an unknown campaign is the service's named `E_NOT_FOUND` (a refusal, never an
     empty list that reads like
     "no metrics yet").
+
+    V24/L4 — the response is built row-by-row (`_metric_response`) so revenue is the stored
+    measurement and ROAS is derived only from the measured revenue/spend pair; the raw
+    `ad_metrics.roas` GENERATED column (0 when revenue is absent) is deliberately not served.
     """
     with refusal_guard():
         metrics = await list_metrics(db, campaign_id, limit=limit)
-    return [AdMetricResponse.model_validate(metric) for metric in metrics]
+    return [_metric_response(metric) for metric in metrics]

@@ -67,9 +67,13 @@ export function DailyReportPanel() {
   const [error, setError] = useState<string | null>(null);
   const [docsOpen, setDocsOpen] = useState(false);
   const viewAllRef = useRef<HTMLButtonElement>(null);
+  // V24/L5: the failure's Retry re-issues this read.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setReport(undefined);
+    setError(null);
     api
       .get<DailyReport | null>("/dashboard/reports/daily")
       .then((data) => {
@@ -81,7 +85,7 @@ export function DailyReportPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = report === undefined && !error;
 
@@ -113,7 +117,14 @@ export function DailyReportPanel() {
         }
       >
       {loading ? <PanelSkeleton rows={3} /> : null}
-      {!loading && error ? <PanelError label="the daily report" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="the daily report"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="daily-report-retry"
+        />
+      ) : null}
       {!loading && !error && report === null ? (
         <p className="text-sm text-ink-muted">
           No report for today yet. The daily cycle writes one after the evening run — check back

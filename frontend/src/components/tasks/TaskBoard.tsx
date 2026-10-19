@@ -63,7 +63,16 @@ export function groupTasks(rows: TaskRow[]): Group[] {
  * mobile capture does not exist (UNVERIFIED in the spec), so the stacking behaviour is ours.
  * Each column scrolls independently (live shows the TO DO column's own scrollbar).
  */
-export function TaskBoard({ rows, onOpen }: { rows: TaskRow[]; onOpen: (task: TaskRow) => void }) {
+export function TaskBoard({
+  rows,
+  onOpen,
+  onTaskQueued,
+}: {
+  rows: TaskRow[];
+  onOpen: (task: TaskRow) => void;
+  /** V24: after a dispatched run, the page re-reads its ONE board read (no optimistic rows). */
+  onTaskQueued?: () => void;
+}) {
   const groups = groupTasks(rows);
 
   // The "next" task (DOSSIER §3.2 #5): live outlines ONE card in orange but never says how that
@@ -84,7 +93,7 @@ export function TaskBoard({ rows, onOpen }: { rows: TaskRow[]; onOpen: (task: Ta
       {groups
         .filter((group) => group.alwaysVisible || group.rows.length > 0)
         .map((group) => (
-          <TaskColumn key={group.key} group={group} nextId={nextId} onOpen={onOpen} />
+          <TaskColumn key={group.key} group={group} nextId={nextId} onOpen={onOpen} onTaskQueued={onTaskQueued} />
         ))}
     </div>
   );
@@ -94,10 +103,12 @@ function TaskColumn({
   group,
   nextId,
   onOpen,
+  onTaskQueued,
 }: {
   group: Group;
   nextId: number | null;
   onOpen: (task: TaskRow) => void;
+  onTaskQueued?: () => void;
 }) {
   // Collapse/expand per column (tasks.md §3.2): the disclosure glyph toggles the body and the
   // count stays visible in BOTH states. Live evidence only shows the expanded state, so the
@@ -130,6 +141,7 @@ function TaskColumn({
                 task={task}
                 isNext={group.key === "todo" && task.id === nextId}
                 onOpen={onOpen}
+                onTaskQueued={onTaskQueued}
               />
             ))
           )}

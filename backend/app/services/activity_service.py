@@ -24,17 +24,20 @@ Measured facts this module encodes (lane 06, `DATA-PERF.md` §2.7 / §5.4):
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import Text, cast, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import events
 from app.core.database import utcnow
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.report import ActivityLog
-from app.services.query_helpers import fetch_scalars
+from app.services.query_helpers import fetch_rows, json_or_none
+
+logger = logging.getLogger(__name__)
 
 ACTIVITY_CHANNEL = events.ACTIVITY_CHANNEL  # "polsia:activity"
 
@@ -147,12 +150,50 @@ async def get_recent_activity(
 
     `before_id` is the cursor: pass the `id` of the last row already shown to get
     the next page.  Without it the call is exactly the original tail query.
+
+    V24/L6: `detail` is read as TEXT and parsed per row (`query_helpers.json_or_none`).
+    Reading the ORM JSON column made the driver raise `JSONDecodeError` while fetching when one
+    at-rest row held malformed bytes — `GET /dashboard/activity` answered a bare 500 for the
+    whole feed (measured: `pre/probe_junk_json.txt`).  A detail that is not a JSON OBJECT is
+    served as null (the response field's type is `dict | None`), with a warning naming the row;
+    the honest columns beside it always serve.  The returned rows are DETACHED snapshots.
     """
-    stmt = select(ActivityLog)
+    stmt = select(
+        ActivityLog.id,
+        ActivityLog.agent_type,
+        ActivityLog.action,
+        ActivityLog.summary,
+        ActivityLog.level,
+        cast(ActivityLog.detail, Text).label("detail_text"),
+        ActivityLog.created_at,
+    )
     if before_id is not None:
         stmt = stmt.where(ActivityLog.id < before_id)
     stmt = stmt.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).limit(limit)
-    return await fetch_scalars(db, stmt, what="recent activity")
+    entries = await fetch_rows(db, stmt, what="recent activity")
+    return [_activity_from_row(entry) for entry in entries]
+
+
+def _activity_from_row(entry: Any) -> ActivityLog:
+    """A detached `ActivityLog` whose `detail` was parsed tolerantly to a dict (or None)."""
+    values = entry._mapping
+    detail = json_or_none(values["detail_text"])
+    if detail is not None and not isinstance(detail, dict):
+        logger.warning(
+            "activity row %s carries a non-object detail (%s); serving null",
+            values["id"],
+            type(detail).__name__,
+        )
+        detail = None
+    return ActivityLog(
+        id=values["id"],
+        agent_type=values["agent_type"],
+        action=values["action"],
+        summary=values["summary"],
+        level=values["level"],
+        detail=detail,
+        created_at=values["created_at"],
+    )
 
 
 __all__ = ["ACTIVITY_CHANNEL", "get_recent_activity", "log_activities", "log_activity"]

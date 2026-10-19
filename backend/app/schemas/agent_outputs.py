@@ -391,17 +391,27 @@ class AdMetricRow(BaseModel):
     spend_usd: float = Field(default=0.0, ge=0.0)
     # D17/R33: `ad_metrics.revenue_usd` is the real money column both engines hold (`Numeric(14,4)
     # DEFAULT '0' NOT NULL`, alembic 0002:203-207 / 0003:71) and the input `roas` is GENERATED
-    # from (`models/ads.py:75-87`).  The persist path already maps it
-    # (`ads_service.record_ads_run`, the `("spend_usd", "revenue_usd")` money loop), but the field
-    # itself was missing HERE — and this model is the contract: the run payload is validated with
-    # it and re-dumped before the worker sees it, so an undeclared key was dropped at validation
-    # and the column could only ever hold its default.  `ge=0.0` mirrors `ck_ad_metrics_nonneg`
-    # (PostgreSQL-only; the writer asserts it for both engines).  Not-reported stays absent from
-    # the row — the column default is the writer's, never a fabricated measurement.
-    revenue_usd: float = Field(default=0.0, ge=0.0)
+    # from (`models/ads.py:75-87`).  The persist path maps it (`ads_service.record_ads_run`, the
+    # `("spend_usd", "revenue_usd")` money loop).
+    #
+    # V24/L4: this field is OPTIONAL and defaults to `None` — never `0.0`.  The old default made
+    # every ads run that did not report revenue assert a $0 measurement, which the generated
+    # `roas` then turned into a real-looking `0×`.  "Not reported" is absence, and absence is
+    # `None`.  `ge=0.0` still mirrors `ck_ad_metrics_nonneg` (PostgreSQL-only; the writer asserts
+    # it for both engines).
+    #
+    # The DDL cannot hold NULL for this column, so at rest an unreported revenue is the column's
+    # own default (0) exactly like a measured zero — the writer writes NOTHING for an absent value
+    # and `api/v1/ads.py` serves a stored 0 as `null` (unmeasured), because it cannot certify the
+    # zero was measured.  No backfill is performed on existing rows.
+    revenue_usd: float | None = Field(default=None, ge=0.0)
     ctr: float = Field(default=0.0, ge=0.0)
     cpc: float = Field(default=0.0, ge=0.0)
-    roas: float = Field(default=0.0, ge=0.0)
+    # V24/L4: like revenue, an unreported ratio is absent — not `0`.  The column is GENERATED from
+    # the measured pair by the database and is never written from this payload
+    # (`ads_service.record_ads_run` ignores it); the API computes it only when both revenue and
+    # spend are measured.
+    roas: float | None = Field(default=None, ge=0.0)
 
 
 class AdsOutput(AgentEnvelope):

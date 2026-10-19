@@ -1,6 +1,6 @@
 import { api } from "@/lib/api";
 
-import type { AgentTriggerResponse, TaskRow } from "./types";
+import type { AgentTriggerResponse, TaskRow, TaskRunDispatchResponse } from "./types";
 
 /**
  * The ONE shared request shape for a task's `run` recovery action — `POST
@@ -23,4 +23,18 @@ export function triggerTaskRun(task: TaskRow): Promise<AgentTriggerResponse> {
     description: task.description ?? undefined,
     priority: task.priority ?? undefined,
   });
+}
+
+/**
+ * V24/L1 — the OTHER run verb: execute THIS row (`POST /tasks/{task_id}/run`, 202). Manually
+ * created tasks used to sit `pending` forever because the only run control (`triggerTaskRun`
+ * above) creates a NEW task; this one dispatches the row in front of you.
+ *
+ * No body is needed — the path names the task. The response's `status` is `"dispatched"`
+ * (the broker accepted the message), never the task's own status: the UI must re-read the task
+ * to learn whether a worker has claimed it. A refusal (404, 409 E_TASK_NOT_RUNNABLE, 503) is
+ * the shared `ApiError.display` text, rendered by `readErrorText` at the call site.
+ */
+export function runThisTask(task: TaskRow): Promise<TaskRunDispatchResponse> {
+  return api.post<TaskRunDispatchResponse>(`/tasks/${task.id}/run`);
 }

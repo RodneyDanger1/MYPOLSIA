@@ -110,6 +110,33 @@ def test_the_phone_tool_rides_the_block_exactly_where_the_allowlist_grants_it(mo
         )
 
 
+def test_the_v24_tools_ride_the_block_exactly_where_the_allowlist_grants_them(monkeypatch):
+    """V24/L2 — `web_search` and the three code tools are advertised with the registry's OWN
+    descriptions to the ONE agent that holds each, and to no other agent.
+
+    The block is DERIVED (`AGENT_CAPABILITIES` + `TOOL_SPECS`), so this is also the proof that
+    the V24 allowlist grew the prompt truth without a second hand-copy anywhere.  The search
+    line must also be honest about WHEN to use it (discovery) versus `web_fetch` (a known URL).
+    """
+    research = _doctrine("competitor_research", deepseek=True, monkeypatch=monkeypatch)
+    assert "web_search" in research
+    assert _spec_description("web_search") in research
+    assert "discovery" in research.lower()
+
+    code = _doctrine("code_generation", deepseek=True, monkeypatch=monkeypatch)
+    for name in ("code_write", "code_read", "code_list"):
+        assert name in code, f"code_generation holds {name} — it must be named"
+        assert _spec_description(name) in code
+
+    # The orchestrator is excluded HERE on purpose: it carries the fleet map, which legitimately
+    # names every agent's tools (that is the planner's material — pinned elsewhere).  Its OWN
+    # toolbox is asserted through `tools_for` in the allowlist pins.
+    for agent_type in ("social_media", "business_planning", "finance"):
+        doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)
+        assert "web_search" not in doctrine, f"{agent_type} does not hold web_search"
+        assert "code_write" not in doctrine, f"{agent_type} does not hold code_write"
+
+
 def test_the_block_names_the_channels_of_every_agent(monkeypatch):
     for agent_type, cap in pf.AGENT_CAPABILITIES.items():
         doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)

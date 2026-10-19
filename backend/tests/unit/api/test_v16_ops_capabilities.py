@@ -116,3 +116,33 @@ async def test_phone_read_is_listed_exactly_where_the_allowlist_says(api_client,
     registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}
     assert registry_tools["phone_read"] == _spec_description("phone_read")
     assert list(registry_tools) == sorted(registry_tools), "registry_tools stays sorted by name"
+
+
+@pytest.mark.asyncio
+async def test_v24_tools_are_listed_exactly_where_the_allowlist_says(api_client, auth_headers):
+    """V24/L2 DRIFT PIN — the H-C1 payload gains FOUR tools and TWO agent rows, deliberately.
+
+    Wave V24 shipped `web_search` (DeepSeek Search API → competitor_research, after web_fetch)
+    and `code_write`/`code_read`/`code_list` (the workspace trio → code_generation, which was
+    tool-less before).  This is the wire-level re-pin: the holders name them with the registry's
+    OWN descriptions, the orchestrator names NONE of them (the evidence-based decision), and
+    `registry_tools` still lists every tool sorted by name.  A future spec/allowlist change
+    fails here until this payload expectation is re-pinned on purpose.
+    """
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    rows = {row["agent_type"]: row for row in data["agents"]}
+    assert [tool["name"] for tool in rows["competitor_research"]["tools"]] == [
+        "web_fetch", "web_search"]
+    assert [tool["name"] for tool in rows["code_generation"]["tools"]] == [
+        "code_write", "code_read", "code_list"]
+    assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
+        "macro_snapshot", "pricing_catalog", "phone_read"]
+
+    registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}
+    for name in ("web_search", "code_write", "code_read", "code_list"):
+        assert registry_tools[name] == _spec_description(name), name
+    assert len(registry_tools) == len(tool_registry.TOOL_SPECS)
+    assert list(registry_tools) == sorted(registry_tools)

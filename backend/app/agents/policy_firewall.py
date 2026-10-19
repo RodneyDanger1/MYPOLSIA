@@ -142,6 +142,13 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # orchestrator holds the READ action class and plans from the owner's real situation,
         # so the read-only `phone_read` joins its registry toolbox.  Codes are NEVER reachable
         # through it (`tool_registry`: no codes field exists; code-shaped bodies are withheld).
+        # V24/L2 — DECISION: the orchestrator gets NO code_read/code_list.  Its own module
+        # docstring is the evidence: "Tools: NONE ... The orchestrator is a planner: it reads
+        # the context it is given and emits a plan. It cannot fetch, post or spend, which is the
+        # entire point of keeping it tool-less (a planner that can act is a planner that can be
+        # injected into acting)."  Its prompts name what it is given — company profile, KPIs,
+        # yesterday's summary, the task board and the budget — and never the workspace, so a
+        # workspace reader would widen a planner into an actor for no planning benefit.
         agent_tools=("macro_snapshot", "pricing_catalog", "phone_read"),
     ),
     "business_planning": AgentCapability(
@@ -155,15 +162,25 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
     ),
     "competitor_research": AgentCapability(
         # V12/W-B: the stale ("WebFetch", "WebSearch") pair replaced HONESTLY.  `WebSearch` is
-        # removed because no search provider ships in this build (the V12 plan: "web_search
-        # does NOT ship") — advertising it was a capability this runtime cannot honor.  The CLI
-        # `WebFetch` entry stays: it is the CLI argv's own tool name; the DeepSeek runtime's
-        # registry surface is the `agent_tools` below (web_fetch only).
+        # removed because the registry namespace is where a real call lives; advertising a CLI
+        # search the DeepSeek runtime cannot run was a capability this build could not honor.
+        # The CLI `WebFetch` entry stays: it is the CLI argv's own tool name; the DeepSeek
+        # runtime's registry surface is the `agent_tools` below.
         allowed_tools=("WebFetch",),
         denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}),
         channels=("web",),
-        agent_tools=("web_fetch",),
+        # V24/L2 — `web_search` SHIPS (the wave's frozen interface: DeepSeek
+        # `POST https://api.deepseek.com/v1/tools/search`).  This is the ONE agent whose own
+        # ROLE already instructed a search — "Use WebSearch to find candidates and WebFetch to
+        # read the pages that matter (pricing pages, positioning pages, launch posts, funding
+        # notes)" — so until V24 its prompt demanded a capability the runtime did not have.
+        # Least privilege keeps every other agent's allowlist unchanged: `company_planner`
+        # explicitly says "never ask for or attempt fetches of your own", `business_planning`
+        # reasons from the context it is given, and the orchestrator's docstring is "It cannot
+        # fetch, post or spend ... a planner that can act is a planner that can be injected into
+        # acting".  `web_fetch` stays first (append-only re-pin).
+        agent_tools=("web_fetch", "web_search"),
     ),
     # V12/W-B: company_planner WAS ABSENT from this map — `decide()` denied it as "unknown
     # agent" before the tool leg could even run, so the frozen mapping (macro_snapshot +
@@ -225,6 +242,13 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
                                   ActionClass.EXTERNAL_REVERSIBLE,
                                   ActionClass.EXTERNAL_IRREVERSIBLE}),
         channels=("github",),
+        # V24/L2 — the registry was the hole in this agent's story: its duty is "Ship features"
+        # / "implement small, verifiable changes", yet `agent_tools` was EMPTY, so on the
+        # DeepSeek runtime it could only describe code in prose.  All three tools are bounded to
+        # `settings.code_workspace_dir` (text only, ≤256 KiB, traversal-proof) and `code_write`
+        # is gated as `internal_write`; they are NOT the repository, NOT a shell and NOT the
+        # network — the existing git/PR walls above are unchanged.
+        agent_tools=("code_write", "code_read", "code_list"),
     ),
     "finance": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),

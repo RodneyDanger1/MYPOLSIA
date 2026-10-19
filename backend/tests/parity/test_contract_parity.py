@@ -35,6 +35,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # T12/D20 (build/decisions/DECISIONS.md): the typed task-status update route — the deliberate
     # new surface of wave-T12; verified live in app.routes as [PATCH] on this path.
     ("PATCH", "/api/v1/tasks/{task_id}/status"),
+    # wave V24 (L1): the RUN verb — `POST /api/v1/tasks/{task_id}/run` executes the EXISTING row
+    # (202 dispatched; 404 E_NOT_FOUND; E_TASK_NOT_RUNNABLE for a non-pending status; 503 broker
+    # refusal with the row untouched). Documented by app/api/v1/tasks.py's module docstring and
+    # tests/unit/test_v24_task_run.py. OLD surface had no run route; NEW pin added deliberately.
+    ("POST", "/api/v1/tasks/{task_id}/run"),
     ("GET", "/api/v1/agents/status"),
     ("POST", "/api/v1/agents/{agent_type}/trigger"),
     # T02/D1 (build/decisions/DECISIONS.md): the approvals channel's mint — owner-authenticated,
@@ -111,6 +116,13 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # written package, exports-root-guarded. Documented by
     # tests/unit/api/test_v12_site_package_download.py; route verified live in app.routes.
     ("GET", "/api/v1/site/package/download"),
+    # wave V24 (L3): the WEBSITE BUILDER — POST /sites generates a real static site under
+    # data/sites/<slug>/ (201 {slug,url,bytes}); GET /sites lists it from disk, newest first
+    # (?slug= reads one and refuses E_NOT_FOUND). Documented by app/api/v1/sites.py and
+    # tests/unit/test_v24_sites.py; routes verified live in app.routes as [GET]/[POST].
+    # OLD surface had no sites routes; NEW pins added deliberately with the routes.
+    ("GET", "/api/v1/sites"),
+    ("POST", "/api/v1/sites"),
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     # wave V11 (W1): the public one-click opt-out route — unauthenticated by design, because the

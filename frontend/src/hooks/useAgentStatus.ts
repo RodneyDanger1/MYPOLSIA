@@ -30,6 +30,10 @@ export function useAgentStatus(pollIntervalMs = 30000) {
 
     const fetchStatuses = async () => {
       if (inFlight.current || cancelled) return;
+      // V24/L5: a hidden tab does not need a fresh dashboard read — browsers throttle its timers
+      // anyway, but the tick that DOES fire was still a real request nobody could see. Skipping it
+      // leaves the counters untouched; the next visible tick (or a refocus) updates them.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       inFlight.current = true;
       const seq = ++requestSeq.current;
       const controller = new AbortController();

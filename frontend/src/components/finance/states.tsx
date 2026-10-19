@@ -39,12 +39,38 @@ export function ListSkeleton({ testId }: { testId: string }) {
 }
 
 /** One failure sentence, from the real error. The failure is named — never an empty grid, never a
- *  dash row standing in for it (Q-09's class). */
-export function ReadError({ label, message }: { label: string; message: string }) {
+ *  dash row standing in for it (Q-09's class).
+ *
+ *  V24/L5: a read that failed is not a dead end. When the caller owns a re-read (`onRetry`, the
+ *  page's existing reload key) the failure carries a Retry that re-issues THAT read; callers with
+ *  nothing to re-issue (auxiliary regions) omit it and keep the old one-line voice. */
+export function ReadError({
+  label,
+  message,
+  onRetry,
+  retryTestId,
+}: {
+  label: string;
+  message: string;
+  onRetry?: () => void;
+  retryTestId?: string;
+}) {
   return (
-    <p role="alert" className="text-sm text-alert">
-      Could not load {label}: {message}
-    </p>
+    <div className="text-sm text-alert">
+      <p role="alert">
+        Could not load {label}: {message}
+      </p>
+      {onRetry ? (
+        <button
+          type="button"
+          className="link ui-label mt-1"
+          data-testid={retryTestId}
+          onClick={onRetry}
+        >
+          Retry
+        </button>
+      ) : null}
+    </div>
   );
 }
 

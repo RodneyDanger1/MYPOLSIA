@@ -52,9 +52,13 @@ const STATUS_TEXT: Record<string, string> = {
 export function TasksPreview() {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // V24/L5: the failure's Retry re-issues THIS read (the panel had no way back before).
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setRows(null);
+    setError(null);
     api
       .get<TaskRow[]>(`/tasks?limit=${TASKS_PREVIEW_LIMIT}`)
       .then((data) => {
@@ -66,7 +70,7 @@ export function TasksPreview() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = rows === null && !error;
 
@@ -80,7 +84,14 @@ export function TasksPreview() {
       }
     >
       {loading ? <PanelSkeleton rows={3} /> : null}
-      {!loading && error ? <PanelError label="tasks" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="tasks"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="tasks-preview-retry"
+        />
+      ) : null}
       {!loading && !error && rows && rows.length === 0 ? (
         <p className="text-sm text-ink-muted">
           No tasks yet. Agents add tasks during their cycles — trigger one from the Agents page,

@@ -30,8 +30,13 @@ def _prompt_text(layers: dict) -> str:
 def test_tools_claim_is_honest_under_the_deepseek_runtime(monkeypatch):
     """V12/W-B update (this test pinned the pre-tool-loop truth): the DeepSeek runtime CAN call
     tools now (the W-A tool loop + the W-B registry).  For an agent whose REGISTRY allowlist is
-    non-empty the doctrine names the real tool (`web_fetch`); the CLI-tool names (WebFetch /
-    WebSearch) are still NOT the DeepSeek claim, and `web_search` does not ship at all."""
+    non-empty the doctrine names the real tools (`web_fetch`); the CLI-tool names (WebFetch /
+    WebSearch) are still NOT the DeepSeek claim.
+
+    V24/L2 RE-PIN: `web_search` DOES ship now (DeepSeek Search API) and competitor_research
+    holds it — so the doctrine must name it too.  The pre-V24 assertion here ("no search
+    provider ships — the name is absent") was true then and is false now; that reversal is the
+    V24 plan's frozen interface, not a drift."""
     from app.agents import deepseek_runtime
     from app.agents.competitor_research.agent import CompetitorResearchAgent
 
@@ -46,7 +51,7 @@ def test_tools_claim_is_honest_under_the_deepseek_runtime(monkeypatch):
         "the CLI tool names are not the DeepSeek runtime's claim"
     )
     assert "web_fetch" in doctrine, "the registry tool the loop can really call is named"
-    assert "web_search" not in doctrine, "no search provider ships — the name is absent"
+    assert "web_search" in doctrine, "V24/L2: the search provider ships and this agent holds it"
 
 
 def test_tools_claim_for_a_tool_less_agent_under_deepseek_stays_honest(monkeypatch):

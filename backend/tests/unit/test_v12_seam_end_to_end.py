@@ -35,7 +35,9 @@ from app.agents.base_agent import BasePolsiaAgent
 SAFE_TEST_KEY = "sk-f1-seam-test-key"
 
 #: V20/L2: `phone_read` joined the registry — the frozen wire vocabulary is four names.
-FROZEN_TOOL_NAMES = {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
+#: V24/L2: `web_search` + the three code tools joined — the frozen wire vocabulary is eight.
+FROZEN_TOOL_NAMES = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
+                     "phone_read", "code_write", "code_read", "code_list"}
 
 
 def _agent(agent_type: str) -> BasePolsiaAgent:
@@ -121,7 +123,8 @@ def _argv_flag(argv: list[str], flag: str) -> str | None:
 
 @pytest.mark.parametrize(("agent_type", "expected"), [
     # (A-2's own parent-live-check agent) CLI map says `WebFetch` — the argv must say `web_fetch`.
-    ("competitor_research", ("web_fetch",)),
+    # V24/L2: the shipped search joins it (append-only; the registry order is the offer order).
+    ("competitor_research", ("web_fetch", "web_search")),
     # CLI map is EMPTY — only the REGISTRY list can turn this agent's loop on at all.
     ("finance", ("macro_snapshot", "pricing_catalog")),
 ])

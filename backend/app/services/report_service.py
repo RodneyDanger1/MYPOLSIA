@@ -18,16 +18,16 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Text, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
-from app.core.timeutil import day_window, today_in
+from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.report import DailyReport
 from app.services import pricing_service
-from app.services.query_helpers import fetch_rows, fetch_scalar
+from app.services.query_helpers import fetch_rows, fetch_scalar, json_or_none
 
 
 class _Unset:
@@ -51,18 +51,90 @@ class _Unset:
 _UNSET = _Unset()
 
 
-async def get_daily_report(db: AsyncSession, report_date: date) -> DailyReport | None:
-    """The day's report, or `None`; a driver failure is a named `E_DB` (R32).
+async def _get_report_orm(db: AsyncSession, report_date: date) -> DailyReport | None:
+    """The row as a LIVE ORM object — the WRITE path's read (`get_or_create` mutates it).
 
-    `fetch_scalar` is `scalar_one_or_none`'s single-column result — exactly equivalent under
-    the UNIQUE(`report_date`) constraint — plus the refusal translation, the same shape R28
-    used for `task_service.get_task`.
+    Kept separate from the tolerant read below on purpose: a writer must hold a session-bound
+    instance, and the tolerant loader returns a detached snapshot.  A corrupt JSON cell therefore
+    still refuses the write path (documented residual, RECEIPT "RESIDUAL" #1); the READ paths the
+    UI calls on every dashboard load must not 500 over it.
     """
     return await fetch_scalar(
         db,
         select(DailyReport).where(DailyReport.report_date == report_date),
         what=f"daily report {report_date}",
     )
+
+
+def _report_read_columns(db: AsyncSession) -> tuple:
+    """Every column of `daily_reports`, with the JSON cells read as TEXT.
+
+    Reading `metrics_snapshot` as the ORM JSON column makes SQLAlchemy's result processor raise
+    `JSONDecodeError` WHILE FETCHING when one at-rest row holds malformed bytes — the whole
+    `GET /dashboard/reports/daily` answered a bare 500 (measured:
+    `pre/probe_junk_json.txt`: `500 /api/v1/dashboard/reports/daily`).  As TEXT, one bad cell is
+    parsed per row below and reads as null ("not measured"), the same rule `run_service` and
+    `notifications` already apply to their JSON columns.
+    """
+    if dialect_name(db) == "postgresql":
+        # `insights` is a real text[] on PostgreSQL: the driver can only return a list, and
+        # casting it to Text would produce array-literal text rather than JSON.
+        insights = DailyReport.insights
+    else:
+        insights = cast(DailyReport.insights, Text)
+    return (
+        DailyReport.id,
+        DailyReport.report_date,
+        DailyReport.morning_plan,
+        DailyReport.evening_summary,
+        DailyReport.tasks_planned,
+        DailyReport.tasks_completed,
+        DailyReport.tasks_failed,
+        cast(DailyReport.metrics_snapshot, Text).label("metrics_snapshot_text"),
+        insights.label("insights_value"),
+        DailyReport.created_at,
+        DailyReport.updated_at,
+    )
+
+
+def _report_from_row(row: Any) -> DailyReport:
+    """A detached `DailyReport` with the JSON cells parsed tolerantly (junk -> None)."""
+    values = row._mapping
+    report = DailyReport(
+        id=values["id"],
+        report_date=values["report_date"],
+        morning_plan=values["morning_plan"],
+        evening_summary=values["evening_summary"],
+        tasks_planned=values["tasks_planned"],
+        tasks_completed=values["tasks_completed"],
+        tasks_failed=values["tasks_failed"],
+        created_at=values["created_at"],
+        updated_at=values["updated_at"],
+    )
+    report.metrics_snapshot = json_or_none(values["metrics_snapshot_text"])
+    insights = values["insights_value"]
+    if isinstance(insights, str):        # SQLite stores it as JSON text
+        insights = json_or_none(insights)
+    report.insights = insights if isinstance(insights, list) else None
+    return report
+
+
+async def get_daily_report(db: AsyncSession, report_date: date) -> DailyReport | None:
+    """The day's report, or `None`; a driver failure is a named `E_DB` (R32).
+
+    V24/L6: the row is read column-by-column with its JSON cells cast to TEXT, so ONE malformed
+    at-rest cell cannot turn this read into an uncaught `JSONDecodeError` 500 — it reads as
+    null ("not measured") and the honest columns beside it still serve.  The object returned is
+    DETACHED (read-only); the write path uses `_get_report_orm`.
+    """
+    rows = await fetch_rows(
+        db,
+        select(*_report_read_columns(db))
+        .where(DailyReport.report_date == report_date)
+        .limit(1),
+        what=f"daily report {report_date}",
+    )
+    return _report_from_row(rows[0]) if rows else None
 
 
 async def get_or_create_daily_report(db: AsyncSession, report_date: date) -> DailyReport:
@@ -80,7 +152,7 @@ async def get_or_create_daily_report(db: AsyncSession, report_date: date) -> Dai
     Flushes (so `.id` is populated) but never commits - the caller owns the
     transaction.
     """
-    existing = await get_daily_report(db, report_date)
+    existing = await _get_report_orm(db, report_date)
     if existing is not None:
         return existing
 
@@ -94,7 +166,7 @@ async def get_or_create_daily_report(db: AsyncSession, report_date: date) -> Dai
         # rollback discards OUR insert; theirs is the answer.
         if report in db:
             db.expunge(report)
-        winner = await get_daily_report(db, report_date)
+        winner = await _get_report_orm(db, report_date)
         if winner is None:
             raise
         return winner
@@ -162,12 +234,19 @@ async def save_evening_summary(
 
 async def get_latest_daily_report(db: AsyncSession) -> DailyReport | None:
     """Newest report, or `None`; a driver failure is a named `E_DB` (R32 — same raw-execute
-    class as `get_daily_report` above; this file had exactly those two raw `db.execute` sites)."""
-    return await fetch_scalar(
+    class as `get_daily_report` above; this file had exactly those two raw `db.execute` sites).
+
+    V24/L6: same tolerant column read as `get_daily_report` — a malformed JSON cell in the
+    newest row must not 500 the dashboard/chat formatting that only wanted its text.
+    """
+    rows = await fetch_rows(
         db,
-        select(DailyReport).order_by(DailyReport.report_date.desc()).limit(1),
+        select(*_report_read_columns(db))
+        .order_by(DailyReport.report_date.desc())
+        .limit(1),
         what="latest daily report",
     )
+    return _report_from_row(rows[0]) if rows else None
 
 
 # ── the daily report's cash/tax block (V9 B2, plan §9 lines 454-456) ──────────────────────────

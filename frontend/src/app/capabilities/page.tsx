@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
+
 import { CapabilityMapView } from "@/components/capabilities/CapabilityMapView";
 import { capabilitiesFrom, type CapabilitiesRead } from "@/components/capabilities/types";
 import { ApiError, api } from "@/lib/api";
@@ -53,6 +55,10 @@ export default function CapabilitiesPage() {
       cancelled = true;
     };
   }, [reloadCount]);
+
+  // V24/L5: the capability map is a read-only report; coming back to the tab re-reads it after the
+  // shared 30 s throttle (the registry can change between deploys) — still no polling.
+  useRefreshOnFocus(() => setReloadCount((n) => n + 1));
 
   return (
     <div className="space-y-4">

@@ -11,6 +11,7 @@ import { IdleNotice, ListSkeleton, ReadError, SummarySkeleton } from "@/componen
 import { isIdleSummary } from "@/components/finance/summary";
 import type { ExpenseRow, RevenueSnapshotRow, StripeEventRow } from "@/components/finance/types";
 import { useFinanceRead } from "@/components/finance/useFinanceRead";
+import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
 import { Card, Chip } from "@/components/ui";
 import type { FinanceSummary } from "@/lib/api";
 
@@ -445,6 +446,9 @@ export default function FinancePage() {
   const [reloadKey, setReloadKey] = useState(0);
   const { data, error, loading } = useFinanceRead<FinanceSummary>("/finance/summary", reloadKey);
   const refresh = useCallback(() => setReloadKey((n) => n + 1), []);
+  // V24/L5: returning to the tab re-reads every finance region once its 30 s window has passed.
+  // The mount read is the baseline; an immediate focus cannot double it, and nothing polls.
+  useRefreshOnFocus(refresh);
 
   // A successful status whose body is not an object at all is a broken read, named as one.
   const summary = data !== null && typeof data === "object" && !Array.isArray(data) ? data : null;
@@ -478,11 +482,21 @@ export default function FinancePage() {
       {loading ? <SummarySkeleton /> : null}
 
       {!loading && error !== null ? (
-        <ReadError label="the finance summary" message={error} />
+        <ReadError
+          label="the finance summary"
+          message={error}
+          onRetry={refresh}
+          retryTestId="finance-summary-retry"
+        />
       ) : null}
 
       {!loading && error === null && brokenBody ? (
-        <ReadError label="the finance summary" message="the server returned no summary object" />
+        <ReadError
+          label="the finance summary"
+          message="the server returned no summary object"
+          onRetry={refresh}
+          retryTestId="finance-summary-retry"
+        />
       ) : null}
 
       {!loading && error === null && idle ? <IdleNotice /> : null}
@@ -511,6 +525,7 @@ export default function FinancePage() {
         rowKey={(row) => row.id}
         columns={REVENUE_COLUMNS}
         reloadKey={reloadKey}
+        onRetry={refresh}
       />
 
       <FinanceListPanel
@@ -524,6 +539,7 @@ export default function FinancePage() {
         rowKey={(row) => row.id}
         columns={EXPENSE_COLUMNS}
         reloadKey={reloadKey}
+        onRetry={refresh}
       />
 
       <FinanceListPanel
@@ -537,6 +553,7 @@ export default function FinancePage() {
         rowKey={(row) => row.id}
         columns={EVENT_COLUMNS}
         reloadKey={reloadKey}
+        onRetry={refresh}
       />
     </div>
   );

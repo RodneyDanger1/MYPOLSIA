@@ -204,6 +204,14 @@ class Settings(BaseSettings):
     # Reads only: nothing in this repository ever writes to the store.
     phone_link_db_dir: str = ""
 
+    # --- agent code workspace (wave V24, L2: the code_generation filesystem surface) ---
+    # The root the `code_write`/`code_read`/`code_list` registry tools work inside.  Relative
+    # paths resolve against the backend working directory (backend/data/… locally, /app/data/…
+    # in the image — the same rule as `deepseek_key_file`); an absolute path is used as given.
+    # The tools create it on first use, resolve every requested path and refuse (BY NAME)
+    # absolute paths, `..` and symlink escapes — nothing outside this directory is reachable.
+    code_workspace_dir: str = "data/workspace"
+
 
 @lru_cache
 def get_settings() -> Settings:

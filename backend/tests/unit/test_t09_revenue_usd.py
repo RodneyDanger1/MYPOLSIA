@@ -5,6 +5,11 @@ is validated against (`AdMetricRow`, `app/schemas/agent_outputs.py`), so a repor
 survives validation, reaches the writer's money loop (`ads_service.record_ads_run`) and lands in
 the `Numeric(14,4)` column — and `roas` (a GENERATED column) is computed by the engine from it.
 
+V24/L4 moved the field's default: absent revenue is `None` (never `0.0`), because the old zero
+default made every run that did not report revenue assert a `$0` measurement.  The persist leg is
+unchanged — the writer writes only what was reported, and the column's frozen NOT NULL DEFAULT
+stands for an unreported value.
+
 RED leg (measured, receipt §RED): delete the `revenue_usd` field from `AdMetricRow` and
 `test_a_reported_revenue_round_trips` fails — Pydantic drops the unknown key, the writer never
 sees it and the row keeps the column default (the R33 residual this ticket closes).
@@ -43,14 +48,14 @@ def _payload(revenue: float | None) -> dict:
 # ── the declared field ─────────────────────────────────────────────────────────────────────────
 
 
-def test_the_field_is_declared_defaulted_and_non_negative():
+def test_the_field_is_declared_optional_and_non_negative():
     from app.schemas.agent_outputs import AdMetricRow
 
     field = AdMetricRow.model_fields["revenue_usd"]
-    assert field.default == 0.0, "an unreported revenue is the column's own default, not required"
+    assert field.default is None, "an unreported revenue is absent — never a fabricated zero"
     assert AdMetricRow(
         campaign_external_id="g-1", date="2026-10-13"
-    ).revenue_usd == 0.0
+    ).revenue_usd is None
     with pytest.raises(ValidationError):
         AdMetricRow(campaign_external_id="g-1", date="2026-10-13", revenue_usd=-0.01)
 

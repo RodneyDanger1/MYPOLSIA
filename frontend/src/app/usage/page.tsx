@@ -9,6 +9,7 @@ import { ListSkeleton, ReadError } from "@/components/finance/states";
 import { ExportButton } from "@/components/usage/ExportButton";
 import { OpsPanel } from "@/components/usage/OpsPanel";
 import { useRuns, type RunsRow } from "@/components/usage/useRuns";
+import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
 import { Button, Card, DataTable, type Column } from "@/components/ui";
 
 /**
@@ -109,6 +110,10 @@ export default function UsagePage() {
     setOffset(0);
     setReloadKey((n) => n + 1);
   }, []);
+  // V24/L5: refocusing the tab re-reads the CURRENT page (a returning reader must not be silently
+  // thrown back to page 1); the header's Refresh keeps its reset-to-first-page behaviour.
+  const refreshCurrentPage = useCallback(() => setReloadKey((n) => n + 1), []);
+  useRefreshOnFocus(refreshCurrentPage);
   // V17/L4: NEXT also requires a row on THIS page. `offset + shown < total` alone stayed true when
   // the ledger shrank between reads (or an offset past the rows came back empty): every further
   // press re-read the same empty page — a control promising rows the page just said it did not get.
@@ -141,7 +146,7 @@ export default function UsagePage() {
         {loading ? <ListSkeleton testId="usage-loading" /> : null}
 
         {!loading && error !== null ? (
-          <ReadError label="the usage ledger" message={error} />
+          <ReadError label="the usage ledger" message={error} onRetry={refresh} retryTestId="usage-retry" />
         ) : null}
 
         {!loading && error === null && data !== null ? (

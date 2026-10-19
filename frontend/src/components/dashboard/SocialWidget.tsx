@@ -44,9 +44,13 @@ const WIDGET_LIMIT = 5;
 export function SocialWidget() {
   const [posts, setPosts] = useState<SocialPost[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // V24/L5: the failure's Retry re-issues this read.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setPosts(null);
+    setError(null);
     api
       .get<SocialPost[]>(`/social/posts?limit=${WIDGET_LIMIT}`)
       .then((data) => {
@@ -58,7 +62,7 @@ export function SocialWidget() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = posts === null && !error;
 
@@ -72,7 +76,14 @@ export function SocialWidget() {
       }
     >
       {loading ? <PanelSkeleton rows={2} /> : null}
-      {!loading && error ? <PanelError label="social posts" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="social posts"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="social-widget-retry"
+        />
+      ) : null}
       {!loading && !error && posts && posts.length === 0 ? (
         <p className="text-sm text-ink-muted">
           No posts yet. The social media agent drafts posts during its cycles — run it from the

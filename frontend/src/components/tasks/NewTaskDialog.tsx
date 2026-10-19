@@ -102,7 +102,7 @@ export function NewTaskDialog({
       });
       setNotice({
         tone: "status",
-        text: `Task #${created.id} created — status "${created.status ?? "unknown"}" (the server's response). The row now exists in the queue.`,
+        text: `Task #${created.id} created — status "${created.status ?? "unknown"}" (the server's response). It waits in the queue until you run it (or an agent cycle claims it); creating it starts nothing by itself.`,
       });
       onCreated?.(created);
     } catch (e) {
@@ -254,7 +254,8 @@ export function NewTaskDialog({
 
           <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">
             <p className="ui-label mr-auto text-ink-muted">
-              POST /tasks — the task is created immediately in the pending queue.
+              POST /tasks — the task is created immediately in the pending queue; it waits there
+              until you run it (or an agent cycle claims it).
             </p>
             <Button variant="glossy" disabled={!canSubmit} onClick={submit}>
               {busy ? "Creating…" : "Create task"}

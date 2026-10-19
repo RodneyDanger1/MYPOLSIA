@@ -186,6 +186,50 @@ async def get_task(db: AsyncSession, task_id: int) -> Task | None:
     return await fetch_scalar(db, select(Task).where(Task.id == task_id), what=f"task {task_id}")
 
 
+async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
+    """Load the ONE row `POST /api/v1/tasks/{task_id}/run` may dispatch — `pending`, or refuse.
+
+    V24/L1's guard rail: the run route must never hand a terminal/in-flight row to the broker,
+    because the worker's `claim_task` accepts ONLY `pending` rows — a dispatch of anything else
+    would produce a retry ladder around a refusal instead of an answer to the caller.
+
+    Two named refusals, both BEFORE anything is mutated (the row is left byte-identical):
+      * a missing id is `E_NOT_FOUND` — the same envelope every task read answers;
+      * any other status (null included) is `E_TASK_NOT_RUNNABLE` with the CURRENT status in
+        `context`, so an `already running` click is distinguishable from a `completed` one.
+
+    The status comparison is against `TaskStatus.PENDING` (a `StrEnum`), so a raw string row
+    and an ORM-loaded row both compare by VALUE; the message spells the status in the caller's
+    vocabulary ("in_progress"), never as a Python repr.
+    """
+    task = await get_task(db, task_id)
+    if task is None:
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"task {task_id} does not exist",
+            how_to_fix=ERROR_HINTS[E_NOT_FOUND],
+            context={"task_id": task_id},
+        )
+    current_status = str(task.status or "")
+    if current_status != TaskStatus.PENDING:
+        raise PolsiaError(
+            E_TASK_NOT_RUNNABLE,
+            f"task {task_id} is {current_status or 'unknown'!r}, not 'pending'; only a queued "
+            "task can be run",
+            how_to_fix=(
+                "inspect the task's status (GET /api/v1/tasks/{task_id}); a pending task can be "
+                "run, an in-progress one is already claimed, and a terminal row must be "
+                "re-created through POST /api/v1/tasks if the work is still needed"
+            ),
+            context={
+                "task_id": task_id,
+                "status": current_status,
+                "expected": str(TaskStatus.PENDING),
+            },
+        )
+    return task
+
+
 async def list_tasks(
     db: AsyncSession,
     status: str | None = None,

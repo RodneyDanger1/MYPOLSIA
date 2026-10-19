@@ -667,7 +667,11 @@ def test_the_real_registry_seam_matches_the_frozen_interface():
                                                       "pricing_catalog"}
 
     sig = inspect.signature(tool_registry.execute_tool)
-    assert list(sig.parameters) == ["name", "arguments", "agent_type"]
+    # V24/L2: `task_title` is the OPTIONAL keyword the executor uses for web_search's
+    # ori_question — keyword-only with a None default, so every pre-V24 call site is unchanged.
+    assert list(sig.parameters) == ["name", "arguments", "agent_type", "task_title"]
     assert sig.parameters["agent_type"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["task_title"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["task_title"].default is None
     assert sig.return_annotation in (str, "str")
     assert deepseek_runtime._tool_registry() is tool_registry   # the lazy seam resolves it

@@ -44,9 +44,13 @@ const WIDGET_LIMIT = 5;
 export function OutreachWidget() {
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // V24/L5: the failure's Retry re-issues this read.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setProspects(null);
+    setError(null);
     api
       .get<Prospect[]>(`/outreach/prospects?limit=${WIDGET_LIMIT}`)
       .then((data) => {
@@ -58,7 +62,7 @@ export function OutreachWidget() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = prospects === null && !error;
 
@@ -72,7 +76,14 @@ export function OutreachWidget() {
       }
     >
       {loading ? <PanelSkeleton rows={2} /> : null}
-      {!loading && error ? <PanelError label="prospects" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="prospects"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="outreach-widget-retry"
+        />
+      ) : null}
       {!loading && !error && prospects && prospects.length === 0 ? (
         <p className="text-sm text-ink-muted">
           No prospects yet. The outreach agent finds prospects when it runs — dispatch it from the
