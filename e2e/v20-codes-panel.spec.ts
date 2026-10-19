@@ -91,8 +91,52 @@ async function stubCodes(page: Page, body: unknown, status = 200): Promise<void>
   });
 }
 
-/** Open `/phone` and wait for the page gate to mount the panel (summary `store_status: "ok"`). */
+/**
+ * Open `/phone` and wait for the page gate to mount the panel (summary `store_status: "ok"`).
+ *
+ * The panel's contract is with API PAYLOADS, so this spec stubs the two reads the page needs to
+ * mount — a healthy summary and an empty calls window — at the route layer. That keeps the panel
+ * provable in ANY environment, including CI where no Phone Link store exists (the store-unavailable
+ * test below pins the honest 503 path). Nothing here touches product code.
+ */
+const HEALTHY_SUMMARY = {
+  store_status: "ok",
+  unread_total: 0,
+  threads: [
+    { thread_id: 11, with: "Ada Lovelace", unread: 0, last_when: "Today 14:02", last_text: "hi" },
+  ],
+  missed_calls_today: [],
+};
+
+async function stubHealthyPhone(page: Page): Promise<void> {
+  await page.route("**/api/v1/phone/summary**", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ ok: true, data: HEALTHY_SUMMARY }),
+    });
+  });
+  await page.route("**/api/v1/phone/calls**", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ ok: true, data: { calls: [] } }),
+    });
+  });
+}
+
 async function openPhone(page: Page): Promise<void> {
+  await stubHealthyPhone(page);
   await page.goto("/phone");
   await expect(page.getByTestId("phone-codes")).toBeVisible();
   await expect(page.getByTestId("phone-codes-read")).toBeEnabled();
