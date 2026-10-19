@@ -93,6 +93,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/ops/agent-quality", ("GET",)),
     ("/api/v1/ops/events/reset", ("POST",)),                     # R22: clear the activity publish breaker after an incident (owner)
     ("/api/v1/ops/events/stats", ("GET",)),                      # R22: the breaker's counters + last error (owner)
+    ("/api/v1/ops/activity-publish", ("GET",)),                  # V23/L4: the WORKER process's breaker stats (shared Redis store; data|null|E_REDIS)
     # wave V16 (E6/H-C1): the capability map — ONE derivation read live from AGENT_CAPABILITIES +
     # tool_registry (documented by app/api/v1/ops.py and tests/unit/api/test_v16_ops_capabilities.py).
     # Documented /api/v1 count 65 -> 66; EXPECTED_ROUTES total 67 -> 68.

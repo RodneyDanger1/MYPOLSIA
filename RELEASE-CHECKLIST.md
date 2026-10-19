@@ -254,7 +254,59 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       the commit, `git show HEAD:frontend/src/components/ads/AdCampaignCard.tsx | grep -c CampaignMetrics`
       ≥ 1, `… app/invoices/page.tsx | grep -c line_items` ≥ 1, and
       `… frontend/src/lib/api.ts | grep -c onHeaders` ≥ 1 must all pass; otherwise the ads-metrics
-      route and the totals fixes regress.
+      route and the totals fixes regress. (Settlement records this as done at `cc3be4e` —
+      `COMPLETENESS.md` §7.4 item 12; re-run the three greps if in doubt.)
+- [ ] **V23 — migration 0011 + rebuild (parent; migration)** — `make migrate` must land the single
+      head **`0011_company_human_rate`** (chain `0011 ← 0010`); `docker compose exec backend alembic
+      heads` prints exactly one row, `alembic current` prints `0011`. The column is
+      `company_config.human_hourly_rate FLOAT NULL` (no default; existing rows NULL = "no rate").
+      Rebuild the backend + frontend images after it — the served bundle predates V23.
+      Evidence: `wave-v23/l3-human-rate/RECEIPT.md` §2.
+- [ ] **V23 — cycle-report toggle round-trip (parent live-check)** — Settings → Emails: the switch
+      state equals `GET /api/v1/config` → `cycle_report_email`. Toggle it: DevTools shows
+      `PUT /api/v1/config` with a body of exactly `{"cycle_report_email":true}` (or `false`); the
+      switch must NOT move until the response returns, then must match the response body (a
+      server response that disagrees with the click wins). Reload → value persisted; no
+      localStorage/sessionStorage key written. Force a refusal (stop the API or use a bad key) →
+      the inline sentence names `code: message — fix`, the switch stays unchanged. Evidence:
+      `wave-v23/l1-cycle-email/RECEIPT.md`.
+- [ ] **V23 — KPI editor save/clear (parent live-check)** — Settings → Business KPIs, boxes
+      prefilled from the page's single `GET /config`. Blank one key → **Save KPIs** → one
+      `PUT /api/v1/config` whose `kpis` object omits that key (never sends 0); the dashboard Business
+      panel shows `—` for it. Type a number → Save → the box rebases to the server's returned value.
+      **Clear all KPIs** → exactly one `PUT {"kpis":{}}`, all boxes blank, note all `—`. A poisoned
+      value/stopped API → "KPI save refused" + the server's code/message, typed values kept.
+      Evidence: `wave-v23/l2-kpi-editor/RECEIPT.md`.
+- [ ] **V23 — human rate set → margin measurable (parent live-check)** — `/finance` → **Human rate**
+      card (above Planning): on a fresh DB it reads "Not set" and the Planning `human_rate` row shows
+      `—` with the Finance reason. Enter `30` → **Save rate** → the value row comes from the PUT
+      response; `GET /api/v1/finance/planning` shows `margin_template.human_rate: 30`; the margin is a
+      numeric percent **only** when price, AI cost (needs capacity) and human hours are also measured —
+      otherwise it stays null with reasons and the `human_rate` reason is absent. **Clear rate** →
+      "Not set", and the `human_rate` reason returns. A rate of `0` is a real measured zero (shows
+      `$0.00 per hour`), never "not set". Evidence: `wave-v23/l3-human-rate/RECEIPT.md` §1, §4.
+- [ ] **V23 — worker card after a maintenance tick (parent live-check)** — run the healthcheck or
+      wait for the 15-minute beat, then
+      `curl -s -H "X-API-Key: $KEY" http://127.0.0.1/api/v1/ops/activity-publish` → 
+      `{"data":{"failures":…,"skipped_while_open":…,"breaker_open":…,"ts":"…"}}`.
+      `docker compose exec redis redis-cli DEL polsia:activity-publish:stats` → `{"data":null}`;
+      stop Redis → **503** with
+      `X-Polsia-Error-Code: E_REDIS`. `/usage` → the **Worker process** card shows the published
+      counters with their publish time, or the honest "not published yet" (no fabricated zeros); the
+      old "worker invisible" sentence is gone. Evidence: `wave-v23/l4-observability/RECEIPT.md`.
+- [ ] **V23 — feed count (parent live-check)** — open `/dashboard`: the Activity feed header reads
+      `N events` (`1 event` singular) and `N` equals the `X-Polsia-Total` response header on the
+      activity snapshot request (DevTools → Network). A response without the header draws **no
+      count** — never the number of rows on hand. Evidence: `wave-v23/l4-observability/RECEIPT.md`.
+- [ ] **V23 — commit content (parent)** — the wave commit must include
+      `frontend/src/components/settings/KpiEditor.tsx`, `frontend/src/components/finance/HumanRateCard.tsx`,
+      `backend/alembic/versions/0011_company_human_rate.py`, the four new `v23-*.test.tsx` suites and
+      `backend/tests/unit/test_v23_*.py`. After the commit:
+      `git show HEAD:frontend/src/app/settings/page.tsx | grep -c KpiEditor` ≥ 1,
+      `… EmailsSection.tsx | grep -c cycle_report_email` ≥ 1,
+      `… backend/app/api/v1/ops.py | grep -c activity-publish` ≥ 1,
+      `… frontend/src/components/dashboard/ActivityFeed.tsx | grep -c activity-feed-total` ≥ 1.
+      Without them the five COMPLETENESS §7 closures regress to open asks.
 
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,

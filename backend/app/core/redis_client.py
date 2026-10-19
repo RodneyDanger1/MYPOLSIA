@@ -21,6 +21,10 @@ detail — same pattern the service layer uses for `stripe_signature_tolerance`.
 """
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from typing import Any
+
 import redis.asyncio as aioredis
 from redis.backoff import NoBackoff
 from redis.retry import Retry
@@ -73,6 +77,36 @@ def get_redis_subscriber() -> aioredis.Redis:
             retry_on_timeout=False,
         )
     return _subscriber
+
+
+# ── the worker's publish-breaker snapshot (V23/L4, COMPLETENESS #8) ──────────────────────────
+#
+# The activity breaker's counters are module globals in `app.core.events`, i.e. PER PROCESS.  The
+# API's own numbers are served by GET /ops/events/stats; the CELERY WORKER's numbers used to exist
+# only in the worker log.  `check_activity_publish_health` (the 15-minute beat tick) now publishes
+# its snapshot here and `GET /ops/activity-publish` reads the SAME key — the one bridge between the
+# two processes' views.  The TTL is one beat period: a key that expired is a worker that stopped
+# publishing, and the route reports `data: null` rather than serving a stale snapshot as current.
+
+#: The shared key the worker writes and the ops route reads.
+ACTIVITY_PUBLISH_STATS_KEY = "polsia:activity-publish:stats"
+#: One beat period (15 min): the snapshot outlives nothing it did not measure.
+ACTIVITY_PUBLISH_STATS_TTL_SECONDS = 15 * 60
+
+
+async def write_activity_publish_stats(stats: Mapping[str, Any]) -> None:
+    """Publish the worker's stats snapshot under the shared key, with the beat-period TTL.
+
+    RAISES on a Redis failure ON PURPOSE: only the caller knows whether the write is allowed to
+    fail its job.  The maintenance tick catches it and continues (a broken observability write must
+    never take the maintenance sweep down); a future caller with a different contract can decide
+    for itself instead of inheriting a silent swallow.
+    """
+    await get_redis().set(
+        ACTIVITY_PUBLISH_STATS_KEY,
+        json.dumps(dict(stats), sort_keys=True),
+        ex=ACTIVITY_PUBLISH_STATS_TTL_SECONDS,
+    )
 
 
 async def close_redis() -> None:

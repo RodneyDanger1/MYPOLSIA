@@ -185,8 +185,11 @@ same branch **fails closed** to a hard deny (`E_POLICY_DENIED`). Tier enforcemen
 ### 4.6 Activity feed — the honest log
 The dashboard feed is live (`/ws/activity`; the nginx access log deliberately does not log the
 socket URL). Every meaningful runtime fact lands here: runs, task transitions, approval waits,
-requeues, backups, phone events (V16). The publish breaker (a Redis outage skips-and-counts instead
-of stalling) is visible on `/usage` (§4.12) and its 15-minute worker-side healthcheck logs a
+requeues, backups, phone events (V16). **V23:** the feed header prints the server's own total —
+`N events` (`1 event` singular) — read from `X-Polsia-Total` on the same response as the rows; when
+the header is absent the header shows **no count at all**, never the number of rows on hand. The
+publish breaker (a Redis outage skips-and-counts instead of stalling) is visible on `/usage`
+(§4.12); its 15-minute worker-side healthcheck publishes the worker's own counters there and logs a
 warning while anything is non-clean.
 
 ### 4.7 Schedules (`/schedules`) — recurring work
@@ -222,6 +225,13 @@ fail-closed.
 - **Finance:** the seven KPI cards from `GET /finance/summary` plus revenue / expenses / invoices
   lists — a field that was never measured prints **null, never a fabricated 0**. Finance runs read
   real revenue facts (30-day window) and attach them; failed payments get their own leg.
+  **Human rate (V23):** a card above the Planning panel shows the owner's hourly rate, or a plain
+  "Not set"; **Save rate** writes `PUT /config {"human_hourly_rate": n}` and **Clear rate** writes
+  `null`, and the screen always shows the server's response (a refusal keeps the old value and names
+  the error). Setting a rate is what makes gross margin computable — and only when the price, the AI
+  cost (which needs a measurable client capacity from your weekly owner hours and the catalog's hours
+  per client) and the human hours are all measured too; otherwise margin stays `—` with the reason
+  naming the missing input.
 - **Invoices:** create → send → (paid / overdue / void). Send renders + delivers through the
   firewall — in sandbox it refuses with `E_SANDBOX_BLOCKED`, and a row flips to `sent` **only on a
   confirmed provider delivery** (never optimistically). **Line items (V22):** the create form accepts
@@ -238,8 +248,13 @@ fail-closed.
 ### 4.12 Usage (`/usage`) — runs ledger + ops panel
 The agent-runs ledger (filters + `GET /runs/export?format=csv`, whose `X-Polsia-Row-Count` is the
 full filtered count by contract), plus the **OpsPanel**: agent-quality reads, the activity publish
-breaker stats, and a reset. Process boundary, stated not hidden: the breaker counters are
-per-process — the panel reports the API process; the worker reports its own every 15 minutes.
+breaker stats, and a reset. Process boundary, stated not hidden: the API-process breaker counters
+are per-process — the panel reports the API process. **Worker process (V23):** the 15-minute
+maintenance tick publishes the worker's own `{failures, skipped_while_open, breaker_open, ts}` to a
+shared Redis key (TTL 15 min), and the **Worker process** card reads
+`GET /api/v1/ops/activity-publish` — it shows the worker's LAST PUBLISHED snapshot (with its
+publish time), never live values. If the worker has not published yet the card says so and shows
+no counters rather than fabricated zeros; if Redis is unreachable the card names `E_REDIS`.
 
 **Run detail (V22).** Every ledger row's `RUN` column links to `/runs/{id}`, which reads
 `GET /api/v1/runs/{id}`: the stored counters (`num_turns`, `is_error` — `null` means not recorded,
@@ -253,8 +268,10 @@ id is refused before any request.
 Every 5 min: task-lease sweep (a dead worker's claim requeues), stranded-pending reconciler
 (crash between scheduler commit and broker hand-off re-dispatches), stale agent-run closer
 (`E_RUN_STALE`, no fabricated cost), paused-release re-arm (resume nudge exactly once). Daily
-03:00: activity retention (default 90 days). Every 15 min: publish healthcheck. Missed/expired
-ticks collapse into the next one by design (`expires` on every beat entry).
+03:00: activity retention (default 90 days). Every 15 min: publish healthcheck — it also publishes
+the worker's breaker snapshot to Redis for the `/usage` Worker process card (§4.12; a Redis failure
+is logged and never fails the tick). Missed/expired ticks collapse into the next one by design
+(`expires` on every beat entry).
 
 ### 4.14 Memory (`/memory`) and the chat rail
 Memory is explicit: search on request, honest states (never-searched / searching / named failure /
@@ -264,10 +281,25 @@ agent types via the base layer. The dashboard **ChatRail** talks to the orchestr
 confirm-card flow for anything consequential.
 
 ### 4.15 Settings — the rest of the control panel
-Below the form card: **Data** (export ZIP of everything; dry-run wipe counts; a real wipe needs the
-single-use confirm token minted for the dry-run fingerprint), **Pricing**, **Site package**
-(download the site bundle ZIP), **Capabilities** (V16 — the link to the read-only agent → tool →
-action map, `/capabilities`), **Night task**, **Owner profile**, and the DeepSeek key section.
+Below the form card: **Business KPIs** (V23 — the KPI editor), **Data** (export ZIP of everything;
+dry-run wipe counts; a real wipe needs the single-use confirm token minted for the dry-run
+fingerprint), **Pricing**, **Site package** (download the site bundle ZIP), **Capabilities** (V16 —
+the link to the read-only agent → tool → action map, `/capabilities`), **Night task**, **Owner
+profile**, **Emails**, and the DeepSeek key section.
+
+**KPI editor (V23).** Six owner-entered measurements — `mrr_usd`, `active_customers`, `churn_rate`,
+`cac_usd`, `ltv_usd`, `nps` — saved together with one `PUT /config {"kpis": {…}}`. A blank box
+**removes** that key (an unmeasured value is absent, never 0); the stored-note line shows `—` for
+keys that are not stored. Save shows the server's returned object, not what you typed; **Clear all
+KPIs** writes `{}` in one PUT. A refused save prints "KPI save refused" with the server's
+`code: message — fix` inline.
+
+**Cycle-report email (V23).** The Emails section carries a switch for `cycle_report_email`: ON means
+one email per morning and evening cycle report, sent to the Notification Email address **after** the
+report is saved. It needs that address set; a skipped or failed send is recorded in the activity
+feed. The switch saves on click through `PUT /config {"cycle_report_email": true|false}` and only
+moves when the server answers — a refusal keeps the old state and names the error.
+
 `PUT /config` is strict: an unknown key is a 422 naming it (`extra_forbidden`) — typos never save
 silently.
 

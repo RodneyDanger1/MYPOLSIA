@@ -187,7 +187,8 @@ export default function UsagePage() {
 
       {/* V11-W6 (unit 2): the operator surfaces for the ledger's writers. The breaker card reads
           and resets the API process's counters (per-process truth spelled out in its copy); the
-          quality card is the deterministic per-agent read. */}
+          quality card is the deterministic per-agent read. V23/L4 adds the worker-process card
+          (the beat tick's published snapshot, honest absence included). */}
       <OpsPanel />
     </div>
   );

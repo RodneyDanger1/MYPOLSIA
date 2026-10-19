@@ -21,7 +21,11 @@ readers — the "a skip is never silent" contract was visible to tests only. The
 stats into the worker's log every 15 min. PROCESS BOUNDARY, stated not hidden: the counters are
 module globals in `app.core.events`, so this tick reports the WORKER process's state (where
 agent-task activity publishes happen); the API process's counters are served by
-GET /api/v1/ops/events/stats (owner auth).
+GET /api/v1/ops/events/stats (owner auth). V23/L4 (COMPLETENESS #8) closes the visibility gap
+between those two processes: the tick also publishes the four-value snapshot
+`{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key
+`redis_client.ACTIVITY_PUBLISH_STATS_KEY` (TTL one beat period), and
+`GET /api/v1/ops/activity-publish` serves it to the Usage page's worker-process card.
 
 `reconcile_stranded_pending_tasks` is the fourth job (V11/W2, audit F1): `cadence` and
 `followups` commit `pending` rows and THEN hand them to the broker; a crash between the two (or
@@ -68,6 +72,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.config import settings
+from app.core import redis_client
 from app.core.events import publish_stats
 from app.core.timeutil import UTC, as_bound_instant, now_utc
 from app.services.task_service import requeue_stale_claims
@@ -215,13 +220,42 @@ def check_activity_publish_health() -> dict[str, Any]:
     line per tick.  The counters are cumulative since worker start (or the last
     `POST /api/v1/ops/events/reset`), so the warning repeats until an operator resets after
     fixing the incident — that repetition is the point: a skip is never silent.
+
+    V23/L4 (COMPLETENESS #8): the same snapshot is also PUBLISHED under
+    `redis_client.ACTIVITY_PUBLISH_STATS_KEY` (TTL one beat period) so the API process can serve
+    the worker's numbers — `GET /api/v1/ops/activity-publish`.  The write is observability, not
+    work: any Redis failure is logged and the tick still returns its stats, never failing the
+    maintenance job over a stats mirror.
     """
+    return run_async(_check_activity_publish_health())
+
+
+async def _check_activity_publish_health() -> dict[str, Any]:
     stats = publish_stats()
     dirty = bool(stats["failures"]) or bool(stats["skipped_while_open"]) or bool(stats["breaker_open"])
     if dirty:
         logger.warning("activity publish breaker is not clean: %s", stats)
     else:
         logger.debug("activity publish breaker clean: %s", stats)
+
+    snapshot = {
+        "failures": int(stats["failures"]),
+        "skipped_while_open": int(stats["skipped_while_open"]),
+        "breaker_open": bool(stats["breaker_open"]),
+        "ts": now_utc().isoformat(),
+    }
+    try:
+        await redis_client.write_activity_publish_stats(snapshot)
+    except Exception as exc:  # noqa: BLE001 - a stats mirror must NEVER fail the tick
+        # INFO, not WARNING: the clean-tick contract leaves WARNING for a dirty breaker, and this
+        # tick's own result/log still carry the real counters.  The worker card's honest
+        # "not published yet" state is where an operator sees the consequence.
+        logger.info(
+            "activity publish stats were not written to Redis (%s: %s); the tick continues",
+            type(exc).__name__,
+            exc,
+        )
+
     return {"status": "completed", "clean": not dirty, "stats": stats}
 
 

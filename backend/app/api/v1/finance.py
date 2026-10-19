@@ -65,7 +65,7 @@ from app.schemas.finance import (
 )
 from app.schemas.planning import FinancePlanningResponse
 from app.services import pricing_service
-from app.services.company_service import get_company
+from app.services.company_service import get_company, measured_human_hourly_rate
 from app.services.finance_service import (
     extract_payment_intent_id,
     get_ai_spend_summary,
@@ -624,10 +624,17 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
             "no client capacity is measured, so the measured AI spend cannot be allocated per client"
         )
 
-    human_rate: float | None = None
-    reasons["margin_template.human_rate"] = (
-        "no human hourly rate is configured anywhere (the owner profile carries hours, not a rate)"
-    )
+    # V23/L3: the rate is READ from company_config (migration 0011), never hard-coded.  Absent
+    # stays None + a reason that says where to set it; present makes the margin measurable — but
+    # ONLY together with capacity (owner hours -> max_clients -> ai_cost), which `margin_fraction`
+    # and the `ai_cost` branch above already require.  A reason is written for an unmeasured field
+    # ONLY: the panel prints every reason it is given.
+    human_rate = measured_human_hourly_rate(company)
+    if human_rate is None:
+        reasons["margin_template.human_rate"] = (
+            "no human hourly rate is set — set it on the Finance page's Human rate card, and "
+            "this margin template will use it"
+        )
 
     margin = margin_fraction(price, ai_cost, hours_hi, human_rate)
     if margin is None:

@@ -86,6 +86,17 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** The declared FULL match count from ONE response's `X-Polsia-Total` header (V23/L4,
+ *  COMPLETENESS #6), or null when the header is absent or does not carry a real count.
+ *
+ *  NEVER inferred from the rows on hand: a page shows at most `limit` rows, so their count is a
+ *  page length, not a total.  An absent header -> null -> the feed prints no count at all. */
+export function declaredTotal(raw: string | null): number | null {
+  if (raw === null || raw.trim() === "") return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 /** Close description for a CloseEvent that may be missing fields (close code 1006 = abnormal). */
 function closeText(event: CloseEvent | undefined): string {
   const code = event?.code;
@@ -108,6 +119,9 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
   const [status, setStatus] = useState<FeedStatus>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
+  /** The server's own full match count from the LAST successful snapshot's `X-Polsia-Total`
+   *  (V23/L4).  null = the response declared none; the header region then prints no count. */
+  const [total, setTotal] = useState<number | null>(null);
 
   const seen = useRef<Set<string>>(new Set());
   const mounted = useRef(true);
@@ -184,12 +198,28 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       lastSnapshotAt = Date.now();
       try {
         const { snapshotLimit: limit, merge: mergeNow } = engineOptions.current;
-        const recent = await api.get<ActivityEvent[]>(`/dashboard/activity?limit=${limit}`);
-        if (mounted.current && Array.isArray(recent)) mergeNow(recent);
+        // V23/L4: the declared total rides the SAME response as the rows (the shared onHeaders
+        // hook), so the label can never describe a different read. A local capture is committed
+        // only with a parsed body: a malformed snapshot fails the read and keeps the old total.
+        const captured: { total: number | null } = { total: null };
+        const recent = await api.get<ActivityEvent[]>(`/dashboard/activity?limit=${limit}`, {
+          onHeaders: (headers) => {
+            captured.total = declaredTotal(headers.get("X-Polsia-Total"));
+          },
+        });
+        if (mounted.current && Array.isArray(recent)) {
+          setTotal(captured.total);
+          mergeNow(recent);
+        }
       } catch (e) {
         // The live socket is the primary channel: a failed snapshot must not break the feed — but it
         // must not be invisible either (audit Q-07), so it surfaces through `error` like any failure.
-        if (mounted.current) setError(`activity snapshot failed: ${message(e)}`);
+        if (mounted.current) {
+          // The count is only ever THIS read's evidence: with the read failed, a number left on
+          // screen would be a guess about rows nobody measured.
+          setTotal(null);
+          setError(`activity snapshot failed: ${message(e)}`);
+        }
       } finally {
         snapshotInFlight = false;
         if (snapshotQueued) {
@@ -362,5 +392,5 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { events, connected: status === "live", status, error, attempts };
+  return { events, connected: status === "live", status, error, attempts, total };
 }

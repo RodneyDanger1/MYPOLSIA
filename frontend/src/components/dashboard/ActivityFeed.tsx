@@ -105,7 +105,7 @@ function pillText(status: FeedStatus, attempts: number): string {
 type DayGroup = { key: string; label: string; items: ActivityEvent[] };
 
 export function ActivityFeed() {
-  const { events, status, error, attempts } = useActivityFeed();
+  const { events, status, error, attempts, total } = useActivityFeed();
 
   // Read ONCE on mount, then immediately book this visit — so NEXT visit's events newer than this
   // moment carry the NEW mark. (Deliberately not cleared during the visit: an event that arrives
@@ -145,7 +145,20 @@ export function ActivityFeed() {
       className="flex h-full flex-col rounded-sm border border-[#E3E3E3] bg-white"
     >
       <div className="flex items-center justify-between border-b border-[#E3E3E3] px-3 py-2.5">
-        <h2 className="font-serif text-base text-[#111]">Live Activity</h2>
+        <div className="flex items-baseline gap-2">
+          <h2 className="font-serif text-base text-[#111]">Live Activity</h2>
+          {/* V23/L4 (COMPLETENESS #6): the server's OWN declared total for the snapshot read
+              (`X-Polsia-Total` on the same response as the rows). Absent header -> no count at
+              all: the rows on hand are a page, never a total. */}
+          {typeof total === "number" && (
+            <span
+              className="font-mono text-[10px] text-[#8b8b8b]"
+              data-testid="activity-feed-total"
+            >
+              {total === 1 ? "1 event" : `${total} events`}
+            </span>
+          )}
+        </div>
         <span
           role="status"
           className={`flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider ${pill.textClass}`}

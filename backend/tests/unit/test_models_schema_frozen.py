@@ -123,6 +123,17 @@ with NO default: NULL = never recorded, `[]` = recorded and no tool ran.  Append
 canonical sha256 `f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106` ->
 `c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (V23/L3, 2026-10-19): `company_config.human_hourly_rate` — the owner's
+human hourly rate (COMPLETENESS §7 item 11: the Finance margin was permanently unmeasurable
+because `build_planning_view` hard-coded `human_rate = None` and no column existed) — is now a
+real column, added by `backend/alembic/versions/0011_company_human_rate.py`.  FLOAT (DOUBLE
+PRECISION on PostgreSQL), NULLABLE with NO default: NULL = no rate was ever set (margin stays
+null WITH its named reason), a stored `>= 0` value is the rate the Finance page writes.  Appended
+after `dispatch_paused` (the ORM/migration column order).  One column row added; no other row
+changed.  Old canonical sha256 `c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1`
+-> `7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36eaade848` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -141,7 +152,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1"
+DDL_SHA256 = "7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36eaade848"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -275,6 +286,9 @@ FROZEN_COLUMNS = {
         ('confirmed_idea', 'JSON', True, '', '', '', False),
         ('checklist_state', 'JSON', False, 'dict', '{}', '', False),
         ('dispatch_paused', 'BOOLEAN', False, 'False', 'false', '', False),
+        # V23/0011 (L3): the owner's human hourly rate — NULLABLE, no default (NULL = no rate
+        # was ever set; the Finance planning view keeps margin unmeasurable WITH a reason).
+        ('human_hourly_rate', 'FLOAT', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
         ('updated_at', 'DATETIME', True, '', 'now()', '', False),
     ),

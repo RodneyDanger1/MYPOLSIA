@@ -114,6 +114,10 @@ class CompanyConfigResponse(ORMModel):
     confirmed_idea: dict[str, Any] | None = None
     checklist_state: dict[str, Any] = {}
     dispatch_paused: bool = False
+    # V23/L3 (0011): the human hourly rate the Finance planning view reads.  NULLABLE — None is
+    # "no rate was ever set" and is served as null (never 0); a stored value is what the Finance
+    # page wrote, bounded at the write boundary (ge 0 + finite).
+    human_hourly_rate: float | None = None
     created_at: UtcDatetime | None = None
     updated_at: UtcDatetime | None = None
 
@@ -189,6 +193,10 @@ class CompanyConfigUpdate(BaseModel):
     confirmed_idea: dict[str, Any] | None = None
     checklist_state: dict[str, Any] | None = None
     dispatch_paused: bool | None = None
+    # V23/L3 (0011): the owner's human hourly rate, in USD per hour.  `ge=0` accepts a MEASURED
+    # ZERO; present-but-null clears the value (the Finance page's Clear action).  A rate is money
+    # and a measurement: NaN/±Infinity are refused by the validator below (S4-F1).
+    human_hourly_rate: float | None = Field(default=None, ge=0)
 
     @field_validator("timezone")
     @classmethod
@@ -258,6 +266,23 @@ class CompanyConfigUpdate(BaseModel):
     def _none_is_the_empty_object(cls, value: Any) -> Any:
         """`null` for the NOT NULL checklist stores {} (the column's server default)."""
         return {} if value is None else value
+
+    @field_validator("human_hourly_rate")
+    @classmethod
+    def _rate_is_a_finite_non_negative_measurement(cls, value: float | None) -> float | None:
+        """A stored rate is a measurement: refuse NaN/±Infinity BY NAME (S4-F1).
+
+        `ge=0` already rejects negatives (and NaN, whose comparison is false); it does NOT reject
+        `+Infinity` (`inf >= 0` is true).  A non-finite rate would poison `margin_fraction`'s
+        Decimal math later, so the write boundary refuses it here — the same rule the app applies
+        to every money-shaped field.  `None` stays the honest "no rate" (clears the column).
+        """
+        if value is not None and not math.isfinite(value):
+            raise ValueError(
+                "human_hourly_rate must be a finite number greater than or equal to 0 — "
+                "NaN/Infinity are not measurements; send null to clear it"
+            )
+        return value
 
     @field_validator("owner_budget_usd", mode="before")
     @classmethod

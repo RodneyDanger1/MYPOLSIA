@@ -25,6 +25,7 @@ would make first boot (before `make seed`) sticky.
 from __future__ import annotations
 
 import copy
+import math
 import time
 import weakref
 from typing import Any
@@ -126,6 +127,32 @@ async def get_daily_cycle_hour(db: AsyncSession) -> int | None:
     if company is None:
         return None
     return company.daily_cycle_hour
+
+
+def measured_human_hourly_rate(company: CompanyConfig | None) -> float | None:
+    """The stored human hourly rate as a measurement, or None when there is no honest value.
+
+    `company_config.human_hourly_rate` (migration 0011, V23/L3) is `float | None`: NULL is "no
+    rate was ever set" and is answered as None — the Finance planning view then keeps
+    `margin_template.human_rate: null` WITH its named reason and never fabricates a rate (the
+    owner profile's hours are not a rate).  A stored value is the rate the owner entered on the
+    Finance page; the write boundary (`CompanyConfigUpdate`) bounds it to a finite `>= 0` number,
+    and this accessor re-checks it for rows written before that boundary existed (raw SQL, an
+    old seed): a negative / non-finite / non-numeric stored value is treated as NO VALUE — the
+    unmeasured state with a reason — rather than forwarded into money math.
+    """
+    if company is None:
+        return None
+    raw = company.human_hourly_rate
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
 
 
 def _cached_context(db: AsyncSession) -> dict[str, Any] | None:
@@ -337,4 +364,5 @@ __all__ = [
     "get_daily_cycle_hour",
     "get_full_context",
     "invalidate_company_context",
+    "measured_human_hourly_rate",
 ]

@@ -152,6 +152,7 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # R22: the activity publish breaker's operator surface — read the counters, reset after an
     # incident (documented by app/api/v1/ops.py and tests/unit/api/test_r22_ops_events.py).
     ("GET", "/api/v1/ops/events/stats"),
+    ("GET", "/api/v1/ops/activity-publish"),  # V23/L4: worker-side breaker stats (data|null|E_REDIS)
     ("POST", "/api/v1/ops/events/reset"),
     # V11 unit 2 (parent-surgical): the read-only SANDBOX_MODE flag behind the UI banner
     # (documented by app/api/v1/ops.py and tests/unit/api/test_v11_ops_sandbox.py).

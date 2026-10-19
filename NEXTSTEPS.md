@@ -1,4 +1,4 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V21)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V23)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
@@ -20,10 +20,17 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
   errors / 13 skipped**, e2e **7/7**, smoke **12 checks**, `fail_under = 88` —
   `wave-v21/V21-PLAN.md`). All five lanes + verifier PASSed (frozen-tree **2715/0/0/13**, coverage
   **92.19%**); settlement items closed by the parent. Details in §3f.
-- **Wave V22 is IN FLIGHT** — base `4f6a834`. Eight seats: W1 wiring audit, W2 honesty audit, four
-  writers (tools persistence · phone thread view · wiring fixes · proof/coverage), docs/completeness
-  (L5), riding verifier (L6). Lane status by receipt in §3g; the wave is **not settled** until L6's
-  gate and the parent's rebuild/live checks land.
+- **Wave V22 is SETTLED and committed** — base `4f6a834`, committed at `cc3be4e` (65 files), live
+  settle done (`COMPLETENESS.md` §7.4 items 12–17). Eight seats: W1 wiring audit, W2 honesty audit,
+  four writers (tools persistence · phone thread view · wiring fixes · proof/coverage), docs (L5),
+  riding verifier (L6). Details in §3g.
+- **Wave V23 is IN FLIGHT** — base `06d99d7`. Five writer seats + verifier: cycle-report email toggle
+  (L1) · KPI editor (L2) · human hourly rate (L3) · observability (L4) · docs (L5), each with a
+  receipt under `wave-v23/`. All four product items are implemented and focused-suite green, but the
+  tree is **unsettled**: nothing is committed, L6's frozen-tree gate **PASSED** (backend
+  **2,745 / 0 / 0 / 13**, jest **23 suites / 278**, `tsc` 0, ruff clean), migration `0011` is not
+  applied to the live DB, and the parent live checks are outstanding
+  (`RELEASE-CHECKLIST.md` §5, V23 block). Details in §3h.
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
@@ -344,12 +351,12 @@ the record of what each lane proved.
    the parent mid-wave), the two parity pins (L2 — the tests mandate the update), the v15 nginx
    `add_header` count pin 3→6 (L1 — the docs CSP needs its own headers; exact count kept).
 
-## 3g. WAVE V22 — IN FLIGHT (base `4f6a834`; receipts under `wave-v22/`)
+## 3g. WAVE V22 — SETTLED (base `4f6a834`; receipts under `wave-v22/`)
 
 L5 wrote this block at 09:55 CDT and updated it at **10:42 CDT, 2026-10-19**, after reading the
 receipts and matrices that now exist. Status is stated **by receipt existence**. **L6's frozen-tree
-gate has PASSED**; the wave remains **unsettled** until the parent's rebuild/live checks and the
-commit/CI are done.
+gate PASSED**; the parent's rebuild/live checks and the wave commit (`cc3be4e`, 65 files) are
+recorded in `COMPLETENESS.md` §7.4 items 12–17.
 
 - **Wiring audit (W1) — DONE ✅** (`wave-v22/w1-wiring/WIRING-MATRIX.md`, 50 KB, final at 10:04).
   77 backend surfaces enumerated twice (AST + live `/openapi.json`, **0 missing / 0 extra**; 76 HTTP +
@@ -357,9 +364,9 @@ commit/CI are done.
   (**73 / 3 / 1** at base `4f6a834`); **0 GAP-DEADREAD**; 4/4 registry tools wired; Celery 15 wired +
   2 API-only; ops/dev 1 wired + 4 API-only; **0 frontend calls point at a route the API does not
   serve**. Open findings (W1 F3 numbering): GAP-1 `X-Polsia-Total` (4/5 closed by L3;
-  `/dashboard/activity` remains), GAP-2 invoice items (closed by L3, both display and entry),
+  `/dashboard/activity` closed in V23), GAP-2 invoice items (closed by L3, both display and entry),
   GAP-3 the closures are uncommitted, GAP-4 three unimported components, GAP-5 worker counters
-  invisible (a feature, not a wire).
+  invisible (closed in V23 — §3h).
 - **Honesty audit (W2) — DONE ✅** (`wave-v22/w2-honesty/MOCK-AUDIT.md`, 46 KB, STATUS: COMPLETE).
   **96 hits in 61 unique files** (L6's re-count of the raw artifact; W2's prose said 70); **95/96
   individually triaged** (the exception is a comment line at `deepseek_runtime.py:201`), with **zero
@@ -410,11 +417,94 @@ commit/CI are done.
   served FE predates it (e2e specs RED by design), the W2 audit needs PII redaction, CI has not run.
 
 **Settlement owned by the parent after L6:** rebuild backend + frontend images, reload nginx, run the
-e2e sweep and `make smoke` on the rebuilt stack, then commit/push/CI. **The commit is not optional
-bookkeeping:** every lane's files are uncommitted — L3's 17 modified/new product files + 6 new FE test
-files (its receipt lists them), plus L1's column/migration/API/service/panel files and L2's
-`PhoneThreadView.tsx` + test — and without them the ads-metrics route and the totals fixes re-open.
-Until that happens the V22 tree is **unsettled** no matter how many lane receipts exist.
+e2e sweep and `make smoke` on the rebuilt stack, then commit/push/CI. **The commit was not optional
+bookkeeping:** every lane's files were uncommitted at L6's gate — L3's 17 modified/new product files +
+6 new FE test files (its receipt lists them), plus L1's column/migration/API/service/panel files and
+L2's `PhoneThreadView.tsx` + test. That settlement is recorded as done in `COMPLETENESS.md` §7.4
+items 12–17 (commit `cc3be4e`, live probe evidence).
+
+## 3h. WAVE V23 — IN FLIGHT (base `06d99d7`; receipts under `wave-v23/`)
+
+L5 wrote this block at **12:40 CDT, 2026-10-19** and refreshed it at **13:09** by **receipt existence
+only** — every claim below quotes the lane's own `RECEIPT.md`. All four product lanes have receipts;
+the wave is **unsettled** (no commit; L6's frozen-tree gate **PASSED** — 2,745/0/0/13; migration
+`0011` not applied to the live DB; parent live checks outstanding). Source of truth:
+`COMPLETENESS.md` §7 items 6, 8, 9, 10, 11 (now CLOSED).
+
+- **Cycle-report email toggle (L1) — DONE ✅** (`wave-v23/l1-cycle-email/RECEIPT.md`, 12:18).
+  `frontend/src/components/settings/EmailsSection.tsx` gains a switch that reads
+  `GET /config` → `cycle_report_email` and writes `PUT /config {"cycle_report_email": bool}`; it
+  awaits the server's own response (no optimistic flip; `aria-busy` + disabled while in flight; a
+  response that disagrees with the request wins) and a refusal keeps the old value with the shared
+  `readErrorText` inline sentence. Copy names the shipped route: one email per morning and evening
+  cycle report to the Notification Email, sent **after the report is saved**; skips/failures are
+  recorded in the activity feed (`notification_service.py:287-352`, `daily_cycle.py:687,833`).
+  Proof: RED **8/8 failed** (no `role="switch"` existed) → GREEN **8/8**; Settings neighbours
+  **6 suites / 81 tests** green; scoped `tsc` **0 bytes**; no storage/console (pinned by spies).
+  **UNRUN:** full jest, backend pytest, `next build`, e2e, any live PUT.
+- **KPI editor (L2) — DONE ✅** (`wave-v23/l2-kpi-editor/RECEIPT.md`, 12:21). New
+  `frontend/src/components/settings/KpiEditor.tsx`, mounted below the Settings form card: the six
+  keys `mrr_usd, active_customers, churn_rate, cac_usd, ltv_usd, nps` saved through one
+  `PUT /config {"kpis": {…}}`; a blank box **removes** the key (never sent as 0); the stored-note
+  line shows `—` for absent keys; Save reflects the server's returned object; clear-all writes `{}`;
+  refusals print "KPI save refused" + `code: message — fix`. Proof: RED **9/9 failed** → GREEN
+  **9/9**; Settings
+  neighbours **8 suites / 102 tests**; scoped `tsc` **0 bytes**. Deviations: `type="text"` +
+  `inputMode="decimal"` (Q-18 precedent, so hostile text is visible and refused rather than silently
+  blanked); clear-all writes immediately; the stored-note reflects the server object only.
+  **UNRUN:** live PUT, e2e, full jest, whole-project `tsc` (blocked by other lanes mid-edit at its
+  run).
+- **Human hourly rate (L3) — DONE ✅** (`wave-v23/l3-human-rate/RECEIPT.md`, 12:29).
+  `company_config.human_hourly_rate` nullable `Float`, migration **`0011_company_human_rate`**
+  (`0011 ← 0010`, single head, additive + reversible; real SQLite upgrade → downgrade → re-upgrade
+  proven, offline PG/SQLite DDL rendered). `PUT /config` accepts `ge=0` and `null` clears (NaN/±Inf
+  refused); `GET /config` serves it. `finance.py::build_planning_view` now reads
+  `measured_human_hourly_rate(company)` instead of hard-coded `None`: with price, AI cost (capacity),
+  human hours and rate measured, the fixture margin is `(1500 − (10 + 25×30)) / 1500 ≈ 0.4933`;
+  rate alone leaves margin null **with** the honest reasons. New `HumanRateCard` on `/finance`
+  (show / not-set / set / clear / named error; always reflects the PUT response). Proof: RED backend
+  **6 failed / 6**, RED frontend (module absent) → GREEN backend **7/7** in the new file and **176**
+  focused pins, frontend **63 passed / 4 suites**, ruff clean, eslint 0. **UNRUN:** PostgreSQL live
+  apply, full suites, browser/e2e click-through.
+- **Observability (L4) — DONE ✅** (`wave-v23/l4-observability/RECEIPT.md`, 12:27). The 15-minute
+  `check_activity_publish_health` tick now writes `{failures, skipped_while_open, breaker_open, ts}`
+  to `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job).
+  `GET /api/v1/ops/activity-publish` serves `{data:{…}}`, `{data:null}` when the worker never wrote,
+  or **503 `E_REDIS`** when Redis is unreachable or the value is not the frozen shape (no coercion of
+  `"2"`/`true`). `/usage` gains a **Worker process** card (four counters or an honest "not published
+  yet — no counters rather than fabricated zeros"); the old "worker invisible" copy is corrected.
+  The dashboard feed header prints `N events` (`1 event` singular) from the SAME response's
+  `X-Polsia-Total`; absent/non-integer header → no count. Proof: RED frontend **6 failed / 1 passed**
+  → `v23-observability` **7/7**; backend **12** + neighbours **110** and **174** green; `u11-ops`
+  **12**; FE neighbours **122 / 7 suites**; `tsc` **0 bytes**. Deviation: the header lives in
+  `components/dashboard/ActivityFeed.tsx` (the page is a server component), not `dashboard/page.tsx`.
+  **UNRUN:** live GET of the new route (backend was down), a real worker/Redis tick, full suites,
+  e2e, ruff/mypy/eslint.
+- **Docs (L5) — DONE at this write.** `COMPLETENESS.md` §7 rows 6, 8, 9, 10, 11 flipped to CLOSED
+  with the receipt evidence; §2/§3 route counts corrected to **77 HTTP operations / 26 modules**
+  (78 surfaces with the WebSocket; 75 WIRED · 3 API-only · 0 UNWIRED); shortest-path sentence and
+  §7.4 item 18 (V23 settlement) updated; §7.5 untouched. `NEXTSTEPS` §0 + this block;
+  README/USAGE/RELEASE-CHECKLIST updated for the four features and their live checks. L6 rates L5
+  **PASS-WITH-NOTES** (one stale receipt hash — refreshed in `wave-v23/l5-docs/RECEIPT.md` §8; one
+  `:390`→`:395` citation — fixed).
+- **Verifier (L6) — PASSED ✅ on the frozen tree** (`wave-v23/v-verify/VERIFY.md`, final 13:03).
+  Backend **2,745 tests / 0 failures / 0 errors / 13 skipped** (junit, 416.9 s), jest **23 suites /
+  278 tests**, `tsc` **0 bytes**, ruff **clean**. Verdicts: **L1 PASS · L2 PASS · L3 PASS · L4
+  PASS-WITH-NOTES · L5 PASS-WITH-NOTES** — both notes are LOW traceability accuracy only (L4: two
+  stale receipt hashes + a comment-only `usage/page.tsx` edit; L5: one stale receipt hash and one
+  `:390`→`:395` citation). The L5 citation is fixed in `COMPLETENESS.md`; this receipt's hashes are
+  refreshed below. Gate #1's two failures were the new route missing from both parity pins; the
+  parent's two additive rows were audited by L6 and gate #2 is green. Its probes: config **23/23**,
+  migration **18/18** (applied/downgraded on scratch SQLite), planning **23/23**, breaker **19/19**,
+  FE **21/21**. **Unsettled (L6's own list):** no commit, `0011` not live, images/served FE predate
+  V23, and the five live checks are unrun.
+
+**Settlement owned by the parent now (L6 has passed):** the two parity rows for
+`GET /ops/activity-publish` are already in the tree; apply `make migrate` to the single head **0011**,
+rebuild backend + frontend images, then run the five V23 live checks in `RELEASE-CHECKLIST.md` §5
+(toggle round-trip · KPI save/clear · rate set → margin measurable · worker card after a maintenance
+tick · feed count) and commit/push/CI. Until then the V23 tree is **unsettled** no matter how many
+lane receipts exist.
 
 ## 4. Open offers / owner decisions (nothing built unasked)
 

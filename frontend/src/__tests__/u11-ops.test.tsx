@@ -80,6 +80,8 @@ function opsWire(agents: OpsQualityRow[], stats: unknown = STATS): Record<string
     ...LEDGER,
     "/ops/agent-quality": { agents },
     "/ops/events/stats": stats,
+    // V23/L4: the worker-process card's read (the honest never-published state here).
+    "/ops/activity-publish": { data: null },
   };
 }
 
@@ -352,7 +354,7 @@ describe("Ops panel — the reset is guarded and calls the REAL verb", () => {
  * ------------------------------------------------------------------------- */
 
 describe("Ops panel — explicit Refresh", () => {
-  it("re-issues both ops reads", async () => {
+  it("re-issues every ops read", async () => {
     wire(opsWire([]));
 
     render(<UsagePage />);
@@ -365,6 +367,7 @@ describe("Ops panel — explicit Refresh", () => {
 
     await user.click(screen.getByTestId("ops-refresh"));
 
-    await waitFor(() => expect(opsCalls()).toBe(before + 2));
+    // V23/L4 added the worker-process read: three ops reads per Refresh, never a poll.
+    await waitFor(() => expect(opsCalls()).toBe(before + 3));
   });
 });

@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { countText } from "@/components/finance/format";
 import { ListSkeleton, ReadError } from "@/components/finance/states";
+import { errorText } from "@/components/finance/useFinanceRead";
 import { useOpsBreaker, useOpsQuality, type OpsQualityRow } from "@/components/usage/useOpsRead";
+import { api } from "@/lib/api";
 import { Button, Card, DataTable, type Column } from "@/components/ui";
 
 /**
@@ -15,8 +17,10 @@ import { Button, Card, DataTable, type Column } from "@/components/ui";
  *
  * PROCESS BOUNDARY, in the copy itself: the breaker's counters are module globals in
  * `app.core.events`, i.e. PER PROCESS. This panel reads and resets the API process's counters;
- * the Celery worker keeps its own and the 15-minute beat tick writes them to the worker log.
- * Neither surface sees the other's numbers, and the card says so instead of hiding it.
+ * the Celery worker keeps its own; the 15-minute beat tick publishes a snapshot of those
+ * numbers to a shared Redis key (V23/L4), and the worker-process card below reads it. What that
+ * card shows is the worker's LAST PUBLISHED SNAPSHOT, never live values — the copy says exactly
+ * that instead of overclaiming in either direction.
  *
  * Null law per cell: a null `success_rate` / `last_failure_at` / `cost_per_completed_task` renders
  * the app's markers (em dash, "none recorded"), never a fabricated 0; a measured 0 renders as the
@@ -63,6 +67,92 @@ const QUALITY_COLUMNS: Column<OpsQualityRow>[] = [
   },
 ];
 
+/* ── the worker process's published breaker snapshot (V23/L4, COMPLETENESS #8) ─────────────── */
+
+/**
+ * GET /ops/activity-publish -> what the CELERY WORKER last published about its own activity
+ * breaker: `{data: {failures, skipped_while_open, breaker_open, ts}}` when the 15-minute tick has
+ * written the shared key, `{data: null}` when it never has. The API process cannot see the
+ * worker's module globals, so this is a SNAPSHOT with a TTL — never live counters.
+ */
+export type OpsWorkerPublish = {
+  failures: number;
+  skipped_while_open: number;
+  breaker_open: boolean;
+  /** The instant the WORKER wrote the snapshot (aware ISO-8601), not the read time. */
+  ts: string;
+};
+
+/** A finite number, or null (never NaN / Infinity / a string that merely looks numeric). */
+function workerCountOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The frozen `{data: {...}|null}` envelope, or null when the wire is not it. `data: null` is a
+ * VALID, honest answer (the worker never published) and is preserved as such; a body that is not
+ * the frozen shape is null here so the card NAMES the broken read instead of rendering four
+ * fabricated zeros.
+ */
+export function workerPublishOf(body: unknown): { data: OpsWorkerPublish | null } | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const b = body as Record<string, unknown>;
+  if (!("data" in b)) return null;
+  if (b.data === null) return { data: null };
+  if (typeof b.data !== "object" || Array.isArray(b.data)) return null;
+  const d = b.data as Record<string, unknown>;
+  const failures = workerCountOrNull(d.failures);
+  const skipped = workerCountOrNull(d.skipped_while_open);
+  if (failures === null || skipped === null || typeof d.breaker_open !== "boolean") return null;
+  if (typeof d.ts !== "string" || d.ts === "") return null;
+  return {
+    data: {
+      failures,
+      skipped_while_open: skipped,
+      breaker_open: d.breaker_open,
+      ts: d.ts,
+    },
+  };
+}
+
+/** Four honest states — `never` is distinct from `loading`, which `data === null` cannot express. */
+type WorkerPublishRead =
+  | { state: "loading" }
+  | { state: "never" }
+  | { state: "published"; snapshot: OpsWorkerPublish }
+  | { state: "error"; message: string };
+
+/** GET /ops/activity-publish. Nothing is polled: the panel's Refresh is the only re-read. */
+function useOpsWorkerPublish(reloadKey: number): WorkerPublishRead {
+  const [read, setRead] = useState<WorkerPublishRead>({ state: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setRead({ state: "loading" });
+    api
+      .get<unknown>("/ops/activity-publish")
+      .then((body) => {
+        if (cancelled) return;
+        const parsed = workerPublishOf(body);
+        if (parsed === null) {
+          setRead({ state: "error", message: "the server returned no worker publish stats" });
+          return;
+        }
+        setRead(
+          parsed.data === null ? { state: "never" } : { state: "published", snapshot: parsed.data },
+        );
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setRead({ state: "error", message: errorText(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  return read;
+}
+
 /** One labelled counter, in the house mono-caps label + serif value voice. */
 function Stat({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
@@ -80,7 +170,9 @@ export function OpsPanel() {
   const [confirming, setConfirming] = useState(false);
   const [resetDone, setResetDone] = useState(false);
   const quality = useOpsQuality(reloadKey);
+  // V23/L4 (COMPLETENESS #8): the worker process's last published snapshot.
   const breaker = useOpsBreaker(reloadKey);
+  const worker = useOpsWorkerPublish(reloadKey);
 
   const refresh = useCallback(() => {
     setResetDone(false);
@@ -118,8 +210,9 @@ export function OpsPanel() {
       <Card title="Activity breaker" kicker="OPS · API PROCESS" data-testid="ops-breaker">
         <p className="text-sm text-ink-muted" data-testid="ops-breaker-scope">
           These counters are module globals in the API process and are reported and reset per
-          process. The Celery worker keeps its own counters, written to the worker log by the
-          15-minute beat tick. Neither surface sees the other&apos;s numbers.
+          process. The Celery worker keeps its own counters; the 15-minute beat tick publishes
+          the worker&apos;s snapshot to a shared Redis key that the worker process card below
+          reads. That card shows the worker&apos;s last published numbers, never live values.
         </p>
 
         {breaker.loading ? <ListSkeleton testId="ops-breaker-loading" /> : null}
@@ -198,6 +291,60 @@ export function OpsPanel() {
                 ) : null}
               </div>
             )}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card title="Worker process" kicker="OPS · WORKER PROCESS" data-testid="ops-worker">
+        <p className="text-sm text-ink-muted" data-testid="ops-worker-scope">
+          The Celery worker keeps its own activity-publish counters (module globals, per process).
+          The 15-minute beat tick publishes them to a shared Redis key that expires after 15
+          minutes, and this card reads that snapshot. It is the worker&apos;s last published
+          numbers, not live values, so an idle or stopped worker shows the honest absence below.
+        </p>
+
+        {worker.state === "loading" ? <ListSkeleton testId="ops-worker-loading" /> : null}
+
+        {worker.state === "error" ? (
+          <ReadError label={"the worker's publish stats"} message={worker.message} />
+        ) : null}
+
+        {worker.state === "never" ? (
+          <p className="mt-2 text-sm text-ink" data-testid="ops-worker-never">
+            The worker has not published stats yet. The beat tick writes them after its next run,
+            and the key expires after 15 minutes; this is also what a stopped worker looks like.
+            No counters are shown rather than fabricated zeros.
+          </p>
+        ) : null}
+
+        {worker.state === "published" ? (
+          <div className="mt-2 space-y-3">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 md:grid-cols-4">
+              <Stat
+                label="FAILED PUBLISHES"
+                value={countText(worker.snapshot.failures)}
+                testId="ops-worker-failures"
+              />
+              <Stat
+                label="SKIPPED WHILE OPEN"
+                value={countText(worker.snapshot.skipped_while_open)}
+                testId="ops-worker-skipped"
+              />
+              <Stat
+                label="BREAKER"
+                value={worker.snapshot.breaker_open ? "OPEN" : "closed"}
+                testId="ops-worker-state"
+              />
+              <Stat
+                label="PUBLISHED"
+                value={absoluteStamp(worker.snapshot.ts)}
+                testId="ops-worker-published"
+              />
+            </dl>
+            <p className="text-sm text-ink-muted">
+              Counters are cumulative since the worker process started or last reset. The publish
+              instant above is the worker&apos;s own write time, not this page&apos;s read time.
+            </p>
           </div>
         ) : null}
       </Card>

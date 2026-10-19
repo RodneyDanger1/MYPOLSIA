@@ -5,6 +5,7 @@ import { CapabilitiesSection } from "@/components/capabilities/CapabilitiesSecti
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
+import { KpiEditor } from "@/components/settings/KpiEditor";
 import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
 import {
   OWNER_FIELD_KEYS,
@@ -35,12 +36,13 @@ import { Button, Switch, cn } from "@/components/ui";
  * page's tests can pin the nullable contract at COMPILE time: a fixture declaring `timezone: null`
  * stops compiling the moment one side drops the null.
  *
- * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo` (`dict` fields with no
- * editor anywhere). They are deliberately NOT rendered and NOT sent: this form owns exactly the
+ * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo`. `kpis` is edited by
+ * `KpiEditor` (V23/L2), which owns its own single-key PUT (`{"kpis": {...}}` — the same
+ * `exclude_unset` route); the other three fields still have no editor. This form owns exactly the
  * `FIELD_KEYS` drafts (the original fourteen fields plus the seven V15/W1 owner-profile drafts),
  * the six booleans and the two night-task numbers — and `PUT /config` copies only the provided
- * keys onto the row (`update_config` → `model_dump(exclude_unset=True)`), so unrendered fields
- * keep their stored value.
+ * keys onto the row (`update_config` → `model_dump(exclude_unset=True)`), so fields rendered
+ * elsewhere (or nowhere) keep their stored value.
  */
 export type SettingsConfig = {
   name: string;
@@ -89,6 +91,10 @@ export type SettingsConfig = {
   risk_tolerance?: string | null;
   channels_ready?: string[] | null;
   market_locale?: string | null;
+  /** V23/L2 (COMPLETENESS #10): the owner's KPI readings — a free-form `dict` at rest, editable
+   *  through `KpiEditor` below the form card. Optional-and-nullable so pre-V23 fixtures keep
+   *  compiling and an absent key reads as "nothing measured" (blank boxes, `—` in the note). */
+  kpis?: Record<string, unknown> | null;
 };
 
 /** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
@@ -738,6 +744,15 @@ export default function SettingsPage() {
         ) : null}
       </section>
 
+      {/* V23/L2 (COMPLETENESS #10): the owner's KPI measurements — the root of the fixed D1.
+          Seeded from this page's ONE GET /config (it fires no read of its own) and saved through
+          its own single-key PUT; a save rebases this page's config with the SERVER's answer. */}
+      <KpiEditor
+        kpis={config.kpis}
+        onSaved={(nextKpis) =>
+          setConfig((current) => (current === null ? current : { ...current, kpis: nextKpis }))
+        }
+      />
       {/* V11/W4: the sections that finish the owner's control panel, BELOW the form card on
           purpose — the pinned u3/u7 suites assert the tab list is exactly the four above and that
           `tabpanel` is singular, so these are plain sections, not tabs. None of them fires a

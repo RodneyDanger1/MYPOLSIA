@@ -32,16 +32,19 @@ counters and nothing else — no DB row, no external call, nothing that can refu
 """
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
-from app.core import events
+from app.core import events, redis_client
+from app.core.errors import E_REDIS, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_window, iso_utc, today_in
 from app.models.task import AgentRun
 from app.schemas.ops import (
@@ -67,6 +70,69 @@ async def reset_event_publish_breaker() -> EventPublishStatsResponse:
     """Clear the breaker and its counters after an incident; returns the fresh (clean) stats."""
     events.reset_publish_breaker()
     return EventPublishStatsResponse.model_validate(events.publish_stats())
+
+
+# ── GET /ops/activity-publish (V23/L4, COMPLETENESS #8) ──────────────────────────────────────
+#
+# The breaker's counters are module globals in `app.core.events`, i.e. PER PROCESS.  The routes
+# above serve the API process's numbers; the CELERY WORKER's numbers are published by the
+# 15-minute beat tick (`check_activity_publish_health`) under a shared Redis key whose TTL is one
+# beat period.  This route is the honest read of that snapshot:
+#
+#   200 {"data": {...}}   the worker published: failures / skipped_while_open / breaker_open / ts
+#   200 {"data": null}    the worker never published (or the key expired): NO fabricated zeros
+#   503 E_REDIS           Redis is unreachable, or the stored value is not the frozen shape
+#
+# The models live here rather than in `app/schemas/ops.py` for the same reason the invoice request
+# models live in their router: the schemas package is frozen for this wave.
+
+
+class ActivityPublishStatsBody(BaseModel):
+    """The worker's own snapshot — exactly the four keys `check_activity_publish_health` writes."""
+
+    failures: int
+    skipped_while_open: int
+    breaker_open: bool
+    #: The instant the WORKER wrote the snapshot (aware ISO-8601), never this request's time.
+    ts: str
+
+
+class ActivityPublishResponse(BaseModel):
+    """`{data: ...}` — null is a measured absence (the worker never published), never zeros."""
+
+    data: ActivityPublishStatsBody | None
+
+
+@router.get("/activity-publish", response_model=ActivityPublishResponse)
+async def read_activity_publish_stats() -> ActivityPublishResponse:
+    """The worker process's last published breaker counters — or an honest null."""
+    with refusal_guard():
+        try:
+            raw = await redis_client.get_redis().get(redis_client.ACTIVITY_PUBLISH_STATS_KEY)
+        except Exception as exc:  # noqa: BLE001 - a dependency failure is NAMED, not a bare 500
+            raise PolsiaError(
+                E_REDIS,
+                f"activity publish stats could not be read from Redis: {type(exc).__name__}: {exc}",
+                how_to_fix=ERROR_HINTS[E_REDIS],
+                context={"key": redis_client.ACTIVITY_PUBLISH_STATS_KEY},
+            ) from exc
+
+        if raw is None:
+            return ActivityPublishResponse(data=None)
+
+        try:
+            snapshot = ActivityPublishStatsBody.model_validate(json.loads(raw), strict=True)
+        except (TypeError, ValueError, ValidationError) as exc:
+            # A value that is not the shape this worker writes cannot be rendered as counters —
+            # serving it would fabricate a reading.  Named, in the same dependency class.
+            raise PolsiaError(
+                E_REDIS,
+                "activity publish stats in Redis are unreadable (not the frozen shape)",
+                how_to_fix=ERROR_HINTS[E_REDIS],
+                context={"key": redis_client.ACTIVITY_PUBLISH_STATS_KEY},
+            ) from exc
+
+        return ActivityPublishResponse(data=snapshot)
 
 
 # ── GET /ops/sandbox (V11 unit 2) ─────────────────────────────────────────────────────────────

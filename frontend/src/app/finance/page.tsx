@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { FinanceListPanel, type FinanceColumn } from "@/components/finance/FinanceListPanel";
 import { FinanceSummaryGrid } from "@/components/finance/FinanceSummaryGrid";
+import { HumanRateCard } from "@/components/finance/HumanRateCard";
 import { centsText, countText, textOrDash, usdText } from "@/components/finance/format";
 import { IdleNotice, ListSkeleton, ReadError, SummarySkeleton } from "@/components/finance/states";
 import { isIdleSummary } from "@/components/finance/summary";
@@ -489,6 +490,11 @@ export default function FinancePage() {
       {!loading && error === null && summary !== null && !idle ? (
         <FinanceSummaryGrid summary={summary} />
       ) : null}
+
+      {/* V23/L3: the owner's human hourly rate — the input the planning margin template was
+          permanently missing. The card owns its own GET/PUT /config read+write and its own three
+          states, so its failure cannot blank the summary or the planning panel. */}
+      <HumanRateCard reloadKey={reloadKey} />
 
       {/* V9/B5: the planning panel reads its own endpoint and keeps its own three states, so a
           failed planning read cannot blank the finance page (and vice versa). */}

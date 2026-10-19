@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, false, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -101,6 +101,14 @@ class CompanyConfig(Base):
     dispatch_paused: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # ── Human hourly rate (V23/L3 migration 0011; frozen name) ─────────────────────────────
+    # NULLABLE with NO default: NULL is the honest "no rate was ever set" (the state that keeps
+    # the Finance planning view's margin unmeasurable WITH a reason).  A stored value is what the
+    # owner typed on the Finance page, read by `build_planning_view`; it is NEVER a fallback
+    # (`''`, 0 or the owner's hours are not a rate).  Money-shaped input is bounded at the write
+    # boundary (`CompanyConfigUpdate`: ge 0 + finite), so this column never carries a negative or
+    # a NaN.
+    human_hourly_rate: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
