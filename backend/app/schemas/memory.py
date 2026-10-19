@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class MemoryCreate(BaseModel):
@@ -25,7 +24,7 @@ class MemoryEntryResponse(ORMModel):
     source: str | None = None
     tags: list[str] | None = None
     chroma_id: str | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class MemoryItem(BaseModel):
@@ -49,4 +48,4 @@ class MemoryItem(BaseModel):
     chroma_id: str | None = None
     distance: float | None = None
     fallback: str | None = None  # "sql_like" | "sql_unfiltered" | None (semantic)
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None

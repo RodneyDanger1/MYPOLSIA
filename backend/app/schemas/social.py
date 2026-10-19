@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date
 from typing import Any
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class SocialPostResponse(ORMModel):
@@ -19,10 +19,10 @@ class SocialPostResponse(ORMModel):
     content: str
     status: str | None = None
     tweet_id: str | None = None
-    scheduled_for: datetime | None = None
-    published_at: datetime | None = None
+    scheduled_for: UtcDatetime | None = None
+    published_at: UtcDatetime | None = None
     engagement: dict[str, Any] | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class ProspectResponse(ORMModel):
@@ -41,7 +41,7 @@ class ProspectResponse(ORMModel):
     title: str | None = None
     source: str | None = None
     status: str | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class AdCampaignResponse(ORMModel):
@@ -61,4 +61,28 @@ class AdCampaignResponse(ORMModel):
     status: str | None = None
     daily_budget_usd: float | None = None
     total_spent_usd: float | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
+
+
+class AdMetricResponse(ORMModel):
+    """One stored `ad_metrics` day (V19/L2 — the read `list_metrics` never had).
+
+    WHY: the R33 writer stores each completed ads run's `metrics[]` as `AdMetric` rows, but the
+    API exposed NO read for them — `list_metrics` had no module-external consumer and was
+    V17/L3-08/V18 DEBT.  The write is real; a stored measurement nobody can read is the dead
+    half of the seam.  Money is served as float (the repo's `*_usd` wire convention; the column
+    stays `NUMERIC(14,4)` exact at rest); `ctr`/`cpc`/`roas` are the engines' GENERATED columns,
+    `null` when the denominator is zero/absent (never a fabricated ratio).
+    """
+
+    id: int
+    campaign_id: int
+    date: date
+    impressions: int | None = None
+    clicks: int | None = None
+    conversions: int | None = None
+    spend_usd: float | None = None
+    revenue_usd: float | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    roas: float | None = None

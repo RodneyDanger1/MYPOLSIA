@@ -28,6 +28,7 @@ import {
   type PhoneSendResult,
 } from "./phoneApi";
 import { PhoneUnavailable } from "./PhoneStates";
+import { PhoneCodesPanel } from "./PhoneCodesPanel";
 import { PhoneMediaSection } from "./PhoneMedia";
 import { usePhoneRead } from "./usePhoneRead";
 
@@ -39,6 +40,8 @@ import { usePhoneRead } from "./usePhoneRead";
  *   GET /api/v1/phone/calls?limit&missed_only          -> calls list, filterable
  *   GET /api/v1/phone/media?thread_id=N                -> per-thread media grid (V18)
  *   GET /api/v1/phone/media/{part_id}                  -> one streamed part (viewer/download)
+ *   GET /api/v1/phone/codes?limit&within_hours         -> the owner-requested codes panel (V19;
+ *                                                         fetch-on-click ONLY — see PhoneCodesPanel)
  *   GET /api/v1/phone/export                           -> streaming ZIP download (below)
  *
  * What is deliberately NOT here: no poll loop (the store is read-only in this deployment and the
@@ -529,6 +532,8 @@ export function PhoneConsole() {
               </ul>
             ) : null}
           </section>
+
+          <PhoneCodesPanel />
         </>
       ) : null}
     </div>

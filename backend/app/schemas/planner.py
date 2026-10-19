@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.schemas.common import UtcDatetime
 
 #: A float that must be a FINITE measurement.  pydantic's default (`allow_inf_nan=True`) accepts
 #: the non-standard JSON tokens, and this schema validates UNTRUSTED MODEL OUTPUT: L3-03 (V17) —
@@ -186,10 +187,10 @@ class ConfirmResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    """`{"confirmed": {...}|null, "last_proposed_at": str|null}` — nulls stay null."""
+    """`{"confirmed": {...}|null, "last_proposed_at": instant|null}` — nulls stay null."""
 
     confirmed: dict[str, Any] | None = None
-    last_proposed_at: str | None = None
+    last_proposed_at: UtcDatetime | None = None
 
 
 __all__ = [

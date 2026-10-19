@@ -90,6 +90,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictInstant
 from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.timeutil import iso_utc
+from app.schemas.common import UtcDatetime
 from app.services.run_service import RunFilters, RunRowData, export_runs, list_runs
 
 router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(verify_api_key)])
@@ -120,8 +122,8 @@ class RunRow(BaseModel):
     run_type: str | None
     status: str | None
     attempt: int | None
-    started_at: datetime | None
-    ended_at: datetime | None
+    started_at: UtcDatetime | None
+    ended_at: UtcDatetime | None
     duration_secs: float | None
     tokens_input: int | None
     tokens_output: int | None
@@ -207,7 +209,9 @@ def _csv_cell(value: object) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):
-        return value.isoformat()
+        # V19/L2: the export promises "exactly the values served by the list" — the list
+        # serves `...Z` (UtcDatetime), so the CSV cell must use the same UTC spelling.
+        return iso_utc(value)
     return str(value)
 
 

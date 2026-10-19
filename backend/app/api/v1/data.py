@@ -106,6 +106,7 @@ from app.core.errors import (
     E_VALIDATION,
     PolsiaError,
 )
+from app.core.timeutil import iso_utc
 from app.models.chat import ChatMessage
 from app.models.company import CompanyConfig
 from app.models.finance import RevenueSnapshot
@@ -277,7 +278,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int]:
     manifest = {
         "product": "polsia",
         "export_version": 1,
-        "exported_at": datetime.now(UTC).isoformat(),
+        "exported_at": iso_utc(datetime.now(UTC)),
         "members": manifest_members,
         "total_rows": total_rows,
         "not_included": [
@@ -568,7 +569,7 @@ async def delete_data_route(
                 {
                     "sig": sig,
                     "fingerprint": DATA_WIPE_ACTION_FINGERPRINT,
-                    "consumed_at": datetime.now(UTC).isoformat(),
+                    "consumed_at": iso_utc(datetime.now(UTC)),
                 }
             )
             _persist_consumed(consumed)

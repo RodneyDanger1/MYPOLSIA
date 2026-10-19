@@ -43,13 +43,12 @@ AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router 
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.schemas.common import UtcDatetime
 from app.services import auto_mode_service as ams
 
 router = APIRouter(
@@ -70,9 +69,9 @@ class AutoModeSessionView(BaseModel):
     """One session row + its live counters (see the module docstring for provenance)."""
 
     id: int
-    started_at: datetime
-    ends_at: datetime
-    stopped_at: datetime | None
+    started_at: UtcDatetime
+    ends_at: UtcDatetime
+    stopped_at: UtcDatetime | None
     stop_reason: str | None
     tasks_run: int
     spend_used: float | None

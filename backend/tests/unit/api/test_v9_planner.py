@@ -351,6 +351,11 @@ async def test_confirm_writes_confirmed_idea_and_status_reports_it(
     assert set(body) == {"confirmed", "last_proposed_at"}
     assert body["confirmed"]["id"] == candidate["id"]
     # last_proposed_at is the propose ledger row's OWN created_at — never a synthesized clock.
+    # V19/L2 deliberate re-pin: the wire now spells EVERY datetime as aware UTC (`...Z`) instead
+    # of SQLite's naive `.isoformat()`.  The old assertion pinned the DIALECT's spelling, not the
+    # contract; the instant is unchanged.
+    from app.core.timeutil import iso_utc
+
     row = (
         await async_db_session.execute(
             select(ActivityLog)
@@ -359,7 +364,7 @@ async def test_confirm_writes_confirmed_idea_and_status_reports_it(
             .limit(1)
         )
     ).scalar_one()
-    assert body["last_proposed_at"] == row.created_at.isoformat()
+    assert body["last_proposed_at"] == iso_utc(row.created_at)
 
 
 @pytest.mark.asyncio

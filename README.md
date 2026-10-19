@@ -38,7 +38,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
-| **Phone** | `/phone` | *Live (V16)* — texts/calls/codes + media (photos/attachments stream from the store) + archive download, plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation; send is served by the host-run API — see USAGE §5 Send); see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser — see USAGE §5.1–5.2; see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 
 ## How to use it
@@ -477,15 +477,20 @@ What it proves: `/api/v1/health` is exactly `{"status":"ok"}` · `/` carries CSP
 envelope with it · `/api/v1/ops/capabilities` has agents (>0) in sorted order · `/api/v1/phone/summary`
 is either real (`store_status=ok`) or a **named** 503, and `/api/v1/phone/media?thread_id=…` returns
 the frozen `parts[]` shape or a named refusal (a raw 500, or a plain 404 from a missing route, is a
-FAIL) · `/docs` visibility matches `SANDBOX_MODE` in `.env` (when the base fronts the Next app at
-`/docs`, the check reports a named SKIP and tells you to pass `--api-base`) · the proxy does not
-disclose its version in `Server` · `backups/` holds a dump plus the four volume archives (WARN-only —
-a fresh clone has none until `make backup`).
+FAIL) · `/api/v1/phone/codes?limit=1` answers `data.codes[]` and the check reports a **count only** —
+code values are never printed, even on failure · `/docs` visibility matches `SANDBOX_MODE` in `.env`
+(when the base fronts the Next app at `/docs`, the check reports a named SKIP and tells you to pass
+`--api-base`) · the proxy does not disclose its version in `Server` · the optional **send bridge**
+answers `200 {status:"ok"}` at `$PHONE_SEND_BRIDGE_URL/health` when the URL is exported, and is a
+**named SKIP** when it is not (bridge OFF — the default; never a silent pass) · `backups/` holds a
+dump plus the four volume archives (WARN-only — a fresh clone has none until `make backup`).
 
 Its own pins live in `backend/tests/unit/test_v18_smoke_script.py`: static (no write verbs, no `jq`
 dependency, `set -u`, no docker, no traps), a dry run that is executed and must make zero network
-calls, behaviour against a curl shim (missing key fails by name; a raw 500 is never green), and a
-live run that skips with a reason when nothing answers.
+calls, behaviour against a curl shim (missing key fails by name; a raw 500 is never green; the codes
+check reports a count and never a value — even on a malformed body; the bridge skips by name when
+unset and fails on `status != ok`, a 5xx, or a scheme-less URL), and a live run that skips with a
+reason when nothing answers.
 
 ### Data export & wipe
 

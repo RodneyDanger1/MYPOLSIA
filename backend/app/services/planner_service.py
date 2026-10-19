@@ -665,7 +665,7 @@ async def status(db: AsyncSession) -> dict[str, Any]:
     )
     return {
         "confirmed": confirmed or None,
-        "last_proposed_at": last_proposed.isoformat() if last_proposed is not None else None,
+        "last_proposed_at": last_proposed,
     }
 
 

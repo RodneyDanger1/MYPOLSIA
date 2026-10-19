@@ -174,6 +174,89 @@ export function parseCalls(data: unknown): PhoneCall[] {
   });
 }
 
+/* ── the CODES surface (wave V19, frozen route: GET /phone/codes) ────────────────────────── */
+
+/** The route's own default row cap (1..50 on the wire). The panel states this number. */
+export const CODES_LIMIT = 10;
+
+/** One verification code row — `GET /phone/codes` → `data.codes[]`, field for field. `when` is
+ *  `str|null` on the wire (`filetime_to_local` returns None for a 0/absent store timestamp), so a
+ *  null is a real value and renders as the app-wide "time unknown" — never an invented instant.
+ *  `snippet` is the message text the code was found in; the panel deliberately NEVER renders it
+ *  (it contains the code in clear text and would defeat the mask). */
+export type PhoneCode = {
+  when: string | null;
+  from: string;
+  code: string;
+  snippet: string;
+};
+
+/** `parseCodes`'s result: the rows that passed validation, plus how many malformed rows were
+ *  DROPPED. Dropping is counted so the panel can say it out loud instead of silently shrinking. */
+export type PhoneCodeList = {
+  codes: PhoneCode[];
+  dropped: number;
+};
+
+/** Validates one code row. Returns null (drop) instead of throwing: the codes route serves a LIST,
+ *  and one corrupt row must not hide the codes that are real. Every field is checked by type —
+ *  a numeric `code` is never coerced into a string. */
+function parseCodeRow(row: unknown): PhoneCode | null {
+  if (!isRecord(row)) return null;
+  const { when, from, code, snippet } = row;
+  if (when !== null && typeof when !== "string") return null;
+  if (typeof from !== "string") return null;
+  if (typeof code !== "string" || code.trim() === "") return null;
+  if (typeof snippet !== "string") return null;
+  return { when: when as string | null, from, code, snippet };
+}
+
+/** Validates `data` of `GET /phone/codes`. The `codes` ARRAY is required (a body without one is
+ *  refused by name — that is a contract change, not a row problem); individual malformed rows are
+ *  dropped and counted. */
+export function parseCodes(data: unknown): PhoneCodeList {
+  if (!isRecord(data)) fail("codes", "an object body");
+  const { codes } = data as Record<string, unknown>;
+  if (!Array.isArray(codes)) fail("codes", "a codes array");
+  const parsed: PhoneCode[] = [];
+  let dropped = 0;
+  for (const row of codes) {
+    const code = parseCodeRow(row);
+    if (code === null) dropped += 1;
+    else parsed.push(code);
+  }
+  return { codes: parsed, dropped };
+}
+
+/** THE REAL codes read — the panel's ONLY fetch path (fetch-on-click; nothing auto-reads). Same
+ *  `api.get` + envelope pattern as every other phone read, so the key header, timeout and error
+ *  taxonomy are the shared ones. `withinHours` absent/null = the route's own "no window". */
+export async function fetchCodes(
+  limit: number,
+  withinHours?: number | null,
+): Promise<PhoneCodeList> {
+  const path =
+    withinHours === undefined || withinHours === null
+      ? `/phone/codes?limit=${limit}`
+      : `/phone/codes?limit=${limit}&within_hours=${withinHours}`;
+  const payload = await api.get<unknown>(path);
+  return parseCodes(unwrapEnvelope("codes", payload));
+}
+
+/** The masked form of a code: a FIXED three-dot run plus its last two characters (`•••93`).
+ *  Fixed width on purpose — a mask that tracks the code's length leaks the length. A code of two
+ *  characters or fewer reveals NOTHING (the whole mask stays dots). Empty in, empty out. */
+export function maskCode(code: string): string {
+  if (code.trim() === "") return "";
+  if (code.length <= 2) return "•••";
+  return `•••${code.slice(-2)}`;
+}
+
+/** The store's `when`, or the app-wide honest placeholder when it carries no time. */
+export function codeWhenText(when: string | null): string {
+  return when === null || when.trim() === "" ? "time unknown" : when;
+}
+
 /* ── the SEND contract (wave V17, frozen) ────────────────────────────────────────────────── */
 
 /** The composer cap the server enforces too (`BODY_MAX` in `phone_send_service.py`). */
@@ -292,13 +375,16 @@ export const MEDIA_CAP = 50;
  *  tab — the store's own `size_bytes` is what this compares, never an estimate. */
 export const MEDIA_PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
 
-/** One media part — `GET /phone/media?thread_id=N` → `data.parts[]`, field for field. `when` is the
- *  store's own timestamp string and renders VERBATIM (this client has no clock authority). */
+/** One media part — `GET /phone/media?thread_id=N` → `data.parts[]`, field for field. `when` is
+ *  `str|null` on the wire — the service's `filetime_to_local` answers None for a 0/absent store
+ *  timestamp (V19 item 2: the parser used to refuse that legal value and the whole list read as a
+ *  failure). A null renders as the app-wide "time unknown"; a non-empty string renders VERBATIM
+ *  (this client has no clock authority). */
 export type PhoneMediaPart = {
   part_id: number;
   content_type: string;
   size_bytes: number;
-  when: string;
+  when: string | null;
   thread_id: number;
 };
 
@@ -321,13 +407,13 @@ export function parseMediaList(data: unknown): PhoneMediaList {
     if (typeof row.part_id !== "number") fail("media", "a numeric part_id");
     if (typeof row.content_type !== "string") fail("media", "a string content_type");
     if (typeof row.size_bytes !== "number") fail("media", "a numeric size_bytes");
-    if (typeof row.when !== "string") fail("media", "a string when");
+    if (row.when !== null && typeof row.when !== "string") fail("media", "a string-or-null when");
     if (typeof row.thread_id !== "number") fail("media", "a numeric thread_id");
     return {
       part_id: row.part_id,
       content_type: row.content_type,
       size_bytes: row.size_bytes,
-      when: row.when,
+      when: row.when as string | null,
       thread_id: row.thread_id,
     };
   });
@@ -345,9 +431,11 @@ export function mediaSizeText(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The store's `when`, or the stated placeholder when it carries no time — never an invented one. */
-export function mediaWhenText(when: string): string {
-  return when.trim() === "" ? "time unknown" : when;
+/** The store's `when`, or the stated placeholder when it carries no time — never an invented one.
+ *  `null` is a legal wire value (V19 item 2) and gets the same honest placeholder as an empty
+ *  string; this function is the only place the media surface turns a timestamp into words. */
+export function mediaWhenText(when: string | null): string {
+  return when === null || when.trim() === "" ? "time unknown" : when;
 }
 
 /** Does this part render as an inline image? */

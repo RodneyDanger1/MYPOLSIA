@@ -27,8 +27,12 @@ import type { Invoice, InvoiceCreate } from "@/lib/api";
  *   - a refused action (E_CONFIG / E_SANDBOX_BLOCKED / E_RATE_LIMITED / E_INTEGRATION /
  *     E_VALIDATION / E_NOT_FOUND) renders `ApiError.display` — code + message + how_to_fix —
  *     and the row keeps the SERVER's last state (never an optimistic flip);
- *   - Send is offered on every row and the backend is the arbiter: an illegal transition comes
- *     back as its named E_VALIDATION refusal rather than a client-side guess at the matrix;
+ *   - Send is offered only on a DRAFT row and Void only from draft/sent/overdue — the client-side
+ *     mirror of `LEGAL_TRANSITIONS` (`backend/app/services/invoice_service.py:77-83`); paid and
+ *     void are terminal. A row whose status is NOT a word the matrix knows keeps both buttons
+ *     ENABLED: the client must not invent a refusal it cannot know, so the backend stays the
+ *     arbiter there. Every disabled button carries its reason as visible row text (never only a
+ *     tooltip), and a refusal the server returns is still rendered as `ApiError.display`;
  *   - an action's answer (each route returns the `InvoiceResponse`) replaces the row it names —
  *     no follow-up read is invented for data the action already returned;
  *   - loading / failed-read / empty are three disjoint states, each stated in its own words.
@@ -40,6 +44,24 @@ const INVOICE_LIMIT = 100;
 /** The frozen status vocabulary (`app/models/invoice.InvoiceStatus`) — the filter passes the word
  *  through to the server, which refuses an illegal one by name. */
 const STATUS_FILTERS = ["draft", "sent", "paid", "void", "overdue"] as const;
+
+/** The backend's transition matrix, mirrored (`invoice_service.LEGAL_TRANSITIONS`):
+ *  draft -> {sent, void}, sent -> {paid, overdue, void}, overdue -> {paid, void}; paid/void are
+ *  terminal. These sets gate the CONTROLS only — the server is still the arbiter of every call. */
+const SENDABLE: ReadonlySet<string> = new Set(["draft"]);
+const VOIDABLE: ReadonlySet<string> = new Set(["draft", "sent", "overdue"]);
+/** The words this client knows. A status outside them is not a refusal the client can predict. */
+const KNOWN_STATUSES: ReadonlySet<string> = new Set(STATUS_FILTERS);
+
+/** Why Send is closed on this row — the backend's own rule, in the UI's words. */
+function sendClosedReason(status: string): string {
+  return `only a draft invoice can be sent — this row is ${status} (the dunning ladder owns follow-ups on a sent invoice)`;
+}
+
+/** Why Send and Void are both closed: nothing leaves a terminal state. */
+function terminalReason(status: string): string {
+  return `send and void are closed: ${status} is a terminal state — the server has no legal transition out of it`;
+}
 
 /** The bill-to display name, safely off the free-form `bill_to` JSON (null -> em dash). */
 function billToName(row: Invoice): string {
@@ -170,7 +192,14 @@ export default function InvoicesPage() {
       {!loading && error === null && rows !== null && rows.length > 0 ? (
         <Card title="All invoices" data-testid="invoices-list">
           <div className="divide-y divide-line">
-            {rows.map((row) => (
+            {rows.map((row) => {
+              // The client-side mirror of the server's matrix. `!knownStatus` keeps an unknown
+              // word OUT of the guess: both controls stay live and the backend decides.
+              const knownStatus = KNOWN_STATUSES.has(row.status);
+              const canSend = !knownStatus || SENDABLE.has(row.status);
+              const canVoid = !knownStatus || VOIDABLE.has(row.status);
+              const terminal = knownStatus && !canVoid;
+              return (
               <div key={row.id} data-testid={`invoice-row-${row.id}`} className="space-y-1 py-2">
                 <div className="flex flex-wrap items-baseline gap-3">
                   <span className="font-bold text-ink" data-testid="invoice-number">
@@ -202,7 +231,12 @@ export default function InvoicesPage() {
                   <p className="text-xs text-ink-muted">Late fee: {row.late_fee_note}</p>
                 ) : null}
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => void send(row)} disabled={busy !== null}>
+                  <Button
+                    size="sm"
+                    onClick={() => void send(row)}
+                    disabled={busy !== null || !canSend}
+                    title={canSend ? undefined : terminal ? terminalReason(row.status) : sendClosedReason(row.status)}
+                  >
                     Send
                   </Button>
                   {voidingId === row.id ? (
@@ -211,7 +245,8 @@ export default function InvoicesPage() {
                         size="sm"
                         data-testid={`invoice-void-confirm-${row.id}`}
                         onClick={() => void voidInvoice(row)}
-                        disabled={busy !== null}
+                        disabled={busy !== null || !canVoid}
+                        title={canVoid ? undefined : terminalReason(row.status)}
                       >
                         Confirm void
                       </Button>
@@ -226,12 +261,31 @@ export default function InvoicesPage() {
                         setVoidingId(row.id);
                         setRowError(null);
                       }}
-                      disabled={busy !== null}
+                      disabled={busy !== null || !canVoid}
+                      title={canVoid ? undefined : terminalReason(row.status)}
                     >
                       Void
                     </Button>
                   )}
                 </div>
+                {/* The reason is VISIBLE row text, not only a tooltip: a disabled control with no
+                    stated cause is the same lie as an enabled one that always refuses. */}
+                {!canSend && !terminal ? (
+                  <p
+                    className="ui-label text-ink-muted"
+                    data-testid={`invoice-send-reason-${row.id}`}
+                  >
+                    {sendClosedReason(row.status)}
+                  </p>
+                ) : null}
+                {terminal ? (
+                  <p
+                    className="ui-label text-ink-muted"
+                    data-testid={`invoice-terminal-reason-${row.id}`}
+                  >
+                    {terminalReason(row.status)}
+                  </p>
+                ) : null}
                 {rowError !== null && rowError.id === row.id ? (
                   // The refusal, by name: ApiError.display — the row keeps the SERVER's last state.
                   <p
@@ -243,7 +297,8 @@ export default function InvoicesPage() {
                   </p>
                 ) : null}
               </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       ) : null}

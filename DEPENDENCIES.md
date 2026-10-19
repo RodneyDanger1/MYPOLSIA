@@ -45,7 +45,8 @@ TCP port **80** free on localhost — nginx publishes `127.0.0.1:80` (loopback o
 | SendGrid | outreach email sending | [sendgrid.com](https://sendgrid.com) |
 | Google Ads API | ads management agent | [developers.google.com/google-ads](https://developers.google.com/google-ads/api/docs/get-started/introduction) |
 | Meta Marketing API | ads management agent | [developers.facebook.com/docs/marketing-apis](https://developers.facebook.com/docs/marketing-apis) |
-| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) is **live since V16** — proven against the real store 2026-10-15 (`PHONELINK-MCP-TEST.md`). The optional send driver additionally needs Google Messages web paired in a browser | built into Windows 10/11 |
+| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) is **live since V16** — proven against the real store 2026-10-15 (`PHONELINK-MCP-TEST.md`). Since V19 `/phone` also carries the explicit **verification-codes panel** (click-to-fetch, masked by default) and the optional **send bridge** (`scripts/phone_send_bridge.py`) below. The send driver additionally needs Google Messages web paired in a browser | built into Windows 10/11 |
+| **Phone send bridge** (V19, optional) | lets a **containerized** backend send SMS through the host's paired Google Messages browser; the host-run API keeps working without it, and the bridge stays OFF until `PHONE_SEND_BRIDGE_URL` is set | `scripts/phone_send_bridge.py` (stdlib only — no install): `export PHONE_SEND_BRIDGE_TOKEN=<≥24 chars>`, `python scripts/phone_send_bridge.py --host 127.0.0.1 --port 9227`, health `curl -s http://127.0.0.1:9227/health` → `{"status":"ok","paired":true,…}`. Binding a docker-reachable interface is an explicit security decision — token + firewall are then mandatory (USAGE §5.2) |
 
 ## 5) First run (after §1–§2)
 
@@ -74,9 +75,12 @@ make smoke                        # the full GET-only acceptance (needs $API_KEY
 ```
 
 `make smoke` is the one-command gate: health, security headers, the 401/200 key gate, capabilities,
-phone summary + media, `/docs` vs `SANDBOX_MODE`, the proxy `Server` header, and the backup
-artifacts — one named PASS/FAIL line each, exit 0 only when all pass. `make smoke-dry` prints the
-plan without making a request. It never writes and never starts/stops a service.
+phone summary + media + the key-only **codes** surface (row count only — values are never printed),
+`/docs` vs `SANDBOX_MODE`, the proxy `Server` header, the optional **send bridge**
+(`GET $PHONE_SEND_BRIDGE_URL/health` when exported; unset = a named SKIP because the bridge is OFF by
+default), and the backup artifacts — one named PASS/FAIL line each, exit 0 only when all pass.
+`make smoke-dry` prints the plan without making a request. It never writes and never starts/stops a
+service.
 
 ## 7) Troubleshooting quick table
 
@@ -94,6 +98,9 @@ plan without making a request. It never writes and never starts/stops a service.
 | `make restore-drill` exits 2 with `docker is not available on PATH` | Docker Desktop not running / CLI not on PATH | start Docker Desktop; verify `docker ps` works in the same shell |
 | `make smoke` reports `FAIL auth-200: no key in $API_KEY` | the key is read from the **environment** only (never `.env`) | `export API_KEY=…` in the same shell, then re-run; `make smoke-dry` shows whether the key is present |
 | `make smoke` reports `FAIL server-header: Server: nginx/x.y.z` | nginx advertises its version (`server_tokens` defaults to `on`) | add `server_tokens off;` at `http{}` scope in `nginx/nginx.conf`, then `docker compose exec nginx nginx -s reload` |
+| `make smoke` reports `SKIP send-bridge: PHONE_SEND_BRIDGE_URL is not set` | the send bridge is OFF — the default; the host-run API uses the direct subprocess path | nothing to fix; export the URL + token only when you deliberately run the bridge (USAGE §5.2) |
+| `make smoke` reports `FAIL send-bridge: ... no response` | the bridge is not running, is bound to another interface, or the URL/port is wrong | start it on the host with `PHONE_SEND_BRIDGE_TOKEN` exported, then `curl -s http://127.0.0.1:9227/health` before re-running smoke |
+| `POST /api/v1/phone/send` returns `E_CONFIG` | `PHONE_SEND_BRIDGE_URL` is set but `PHONE_SEND_BRIDGE_TOKEN` is missing on the backend | set the same token in `.env`, restart the backend container; the token must never go on a command line |
 
 ## 8) CI parity (what GitHub Actions installs)
 

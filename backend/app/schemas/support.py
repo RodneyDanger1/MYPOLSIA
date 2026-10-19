@@ -1,11 +1,9 @@
 """Wire shapes for /api/v1/support/inbox (R17 — the owner's inbox ingest surface)."""
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class SupportInboxItemCreate(BaseModel):
@@ -21,7 +19,7 @@ class SupportInboxItemCreate(BaseModel):
     from_address: str
     subject: str
     body: str
-    received_at: datetime | None = None
+    received_at: UtcDatetime | None = None
 
 
 class SupportInboxItemResponse(ORMModel):
@@ -31,6 +29,6 @@ class SupportInboxItemResponse(ORMModel):
     subject: str
     body: str
     status: str
-    received_at: datetime | None = None
+    received_at: UtcDatetime | None = None
     task_id: int | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None

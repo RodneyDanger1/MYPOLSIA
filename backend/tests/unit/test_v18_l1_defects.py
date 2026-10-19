@@ -308,4 +308,9 @@ def test_ads_helpers_are_reachable_from_production_paths():
     with open(BACKEND + "app/api/v1/ads.py", encoding="utf-8") as handle:
         route = handle.read()
     assert "from app.services.ads_service import list_campaigns" in route
-    assert "list_metrics" not in route, "if this changes, update the DEBT note in the receipt"
+    # V19/L2 deliberate re-pin: the DEBT this assertion recorded is DECIDED — `list_metrics`
+    # is now wired into the ads read surface (`GET /ads/campaigns/{id}/metrics`), so it is a
+    # production consumer path rather than dead surface.  The pin now asserts the wiring, which
+    # is the stronger statement (a future un-wiring fails here).
+    assert "list_metrics" in route, "the V19 decision (wire it) was reverted without a new decision"
+    assert "/campaigns/{campaign_id}/metrics" in route

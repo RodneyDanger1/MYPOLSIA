@@ -13,7 +13,10 @@ Money on the wire: floats in, converted at this boundary through the finance mod
 (`Decimal(str(x))` — the exact-decimal rule of A-T18) before the service sees them; `null` stays
 `null` (unmeasured — never coerced to 0).  NON-FINITE floats (`NaN` / `±Infinity`) are refused at
 the wire (`allow_inf_nan=False`, S4-F1 wave v14) — they used to be persisted, 500 the create
-response, and then poison every `GET /invoices` read.
+response, and then poison every `GET /invoices` read.  V19/L2 extends the same rule to the
+FREE-FORM JSON columns (`bill_to`/`line_items`): a NaN/Infinity inside them is refused 422 on
+write, and a row that already carries one is refused `E_DB` on read instead of being served as
+`null` ("unmeasured").
 """
 from __future__ import annotations
 
@@ -23,11 +26,12 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_DB, PolsiaError
+from app.schemas.company import non_finite_paths
 from app.schemas.invoice import InvoiceResponse
 from app.services import invoice_service
 from app.services.finance_service import money
@@ -56,6 +60,26 @@ class InvoiceCreateRequest(BaseModel):
     total: float | None = Field(default=None, allow_inf_nan=False)
     payment_link: str | None = None
 
+    @model_validator(mode="after")
+    def _no_non_finite_numbers_in_free_form_json(self) -> InvoiceCreateRequest:
+        """`bill_to`/`line_items` are FREE-FORM JSON — the S4-F1 rule must be applied by hand.
+
+        V19/L2 measured at 257e20c: `POST /invoices {"bill_to": {"x": NaN}}` answered **201**
+        and stored the non-standard token; the read then served `{"x": null}` — pydantic
+        serializes non-finite floats as null, so corruption came back as "not measured", the
+        exact laundering L3-02b closed for `company_config`'s JSON columns.  The typed money
+        fields above already refuse NaN; these two never passed a typed field, so nothing
+        looked at their inner numbers.  Refuse at the WRITE boundary (422, field named).
+        """
+        for field in ("bill_to", "line_items"):
+            paths = non_finite_paths(getattr(self, field, None), field)
+            if paths:
+                raise ValueError(
+                    f"{', '.join(paths)} carries NaN/Infinity — not valid JSON and not a "
+                    "measurement; send finite numbers (or null for unmeasured)"
+                )
+        return self
+
 
 class InvoiceSendRequest(BaseModel):
     """`POST /invoices/{id}/send` — the optional cover note rendered above the invoice."""
@@ -71,6 +95,9 @@ class InvoiceVoidRequest(BaseModel):
 
 #: The money columns whose stored value must be FINITE before the row may be rendered.
 _MONEY_COLUMNS: tuple[str, ...] = ("subtotal", "tax", "total")
+#: The FREE-FORM JSON columns whose inner numbers must be FINITE before the row may be rendered
+#: (V19/L2 — see `_invoice_response`'s second refusal).
+_JSON_COLUMNS: tuple[str, ...] = ("bill_to", "line_items")
 
 
 def _is_finite_money(value: Any) -> bool:
@@ -106,6 +133,28 @@ def _invoice_response(row: Any) -> InvoiceResponse:
                 "damage, not a measurement"
             ),
             context={"invoice_id": row.id, "number": row.number, "columns": bad},
+        )
+    # V19/L2: the FREE-FORM JSON columns are the same class.  The write boundary now refuses
+    # NaN/Infinity (`InvoiceCreateRequest._no_non_finite_numbers_in_free_form_json`), but a
+    # pre-fix write, an import or a hand-edited row can still carry one — and pydantic would
+    # serve it as `null`, i.e. "not measured" with no reason (the L3-02b laundering).  Refuse
+    # the row BY NAME instead; the list stays a coded 503, never a 200 whose nulls lie.
+    bad_json = {
+        name: paths
+        for name in _JSON_COLUMNS
+        if (paths := non_finite_paths(getattr(row, name, None), name))
+    }
+    if bad_json:
+        raise PolsiaError(
+            E_DB,
+            f"invoice {row.number} (id {row.id}) carries non-finite numbers in "
+            f"{', '.join(bad_json)} — refusing to render it",
+            how_to_fix=(
+                "fix or delete this invoice row; a NaN/Infinity inside bill_to/line_items is "
+                "import/corruption damage, not a measurement"
+            ),
+            context={"invoice_id": row.id, "number": row.number, "columns": list(bad_json),
+                     "paths": bad_json},
         )
     return InvoiceResponse.model_validate(row)
 

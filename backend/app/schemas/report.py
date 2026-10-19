@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, field_validator
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class ActivityEventResponse(ORMModel):
@@ -15,7 +15,7 @@ class ActivityEventResponse(ORMModel):
     summary: str
     detail: dict[str, Any] | None = None
     level: str = "info"
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
     @field_validator("level", mode="before")
     @classmethod
@@ -41,8 +41,8 @@ class DailyReportResponse(ORMModel):
     tasks_failed: int = 0
     metrics_snapshot: dict[str, Any] | None = None
     insights: list[str] | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UtcDatetime | None = None
+    updated_at: UtcDatetime | None = None
     # V9 B2: the cash/tax block is COMPOSED by the daily-report route from live finance reads
     # (report_service.build_cash_block) — it is not a `daily_reports` column, so the ORM row
     # leaves it at this default and the route fills it in.  None = not attached (no report).

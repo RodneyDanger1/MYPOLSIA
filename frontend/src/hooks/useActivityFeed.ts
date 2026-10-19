@@ -75,7 +75,14 @@ function displaySocketUrl(): string {
   return `${wsBase()}/ws/activity`;
 }
 
+/** The feed's error sentence for any thrown value. A refusal keeps its NAMED `display` (code +
+ *  message + how_to_fix) — the V17 L4-02 contract the rest of the dashboard already follows: a
+ *  403 from the snapshot read must not degrade to a code-less sentence. Any other error keeps its
+ *  own message, exactly as before. Read structurally (no `instanceof ApiError`) so suite mocks
+ *  that replace `@/lib/api` with `{api}` cannot make this throw. */
 function message(e: unknown): string {
+  const display = (e as { display?: unknown } | null)?.display;
+  if (typeof display === "string" && display !== "") return display;
   return e instanceof Error ? e.message : String(e);
 }
 

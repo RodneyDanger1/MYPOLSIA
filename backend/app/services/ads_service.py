@@ -23,13 +23,14 @@ NOT added to `__all__`: that list is the pinned four-name reader/writer surface
 the worker dispatch imports the writer by name — the same arrangement as
 `task_service._as_column_decimal`, which is imported by name from `celery_app.tasks.agent_tasks`.
 
-Consumer audit (V18/L1, closing V17/L3-08): `create_campaign` is NOT a dead helper — it is the
-writer `record_ads_run` calls, and `record_ads_run` is imported by the queue worker
-(`celery_app/tasks/agent_tasks.py`).  `get_campaign` serves `list_metrics`' existence check, and
-`list_metrics` is exercised by the R33 persistence e2e as the production read path.  `list_metrics`
-is the only helper with no MODULE-EXTERNAL production importer (`api/v1/ads.py` reads
-`list_campaigns` only) -> recorded as DEBT, not deleted: "no importer outside this module" is not
-the same as "unreferenced", and removing a read the audit trail uses is a product decision.
+Consumer audit (V18/L1, closing V17/L3-08; DECIDED in V19/L2): `create_campaign` is NOT a dead
+helper — it is the writer `record_ads_run` calls, and `record_ads_run` is imported by the queue
+worker (`celery_app/tasks/agent_tasks.py`).  `get_campaign` serves `list_metrics`' existence
+check.  `list_metrics` had no MODULE-EXTERNAL production importer (`api/v1/ads.py` read only
+`list_campaigns`) while `record_ads_run` wrote real `ad_metrics` rows from every completed ads
+run — the stored measurement had no product read.  V19/L2 DECIDED BY EVIDENCE: it is WIRED, not
+deleted — `GET /api/v1/ads/campaigns/{campaign_id}/metrics` is that consumer
+(`api/v1/ads.py::ads_campaign_metrics`).  The R33 persistence e2e reads the same helper.
 """
 from __future__ import annotations
 

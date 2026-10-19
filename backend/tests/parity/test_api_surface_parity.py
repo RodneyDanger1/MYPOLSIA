@@ -44,6 +44,9 @@ from app.main import create_app
 EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/", ("GET",)),                                           # include_in_schema=False, still served
     ("/api/v1/ads/campaigns", ("GET",)),
+    # wave V19 (L2): the ads metrics reader was WIRED by evidence (the list_metrics DEBT card) as a
+    # real per-campaign route — documented by app/api/v1/ads.py + its unit suite.
+    ("/api/v1/ads/campaigns/{campaign_id}/metrics", ("GET",)),
     ("/api/v1/agents/status", ("GET",)),
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
     ("/api/v1/approvals", ("POST",)),                            # T02/D1: the owner's approval-token mint

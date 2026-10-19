@@ -117,6 +117,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # link in a compliant footer must work for a recipient with no owner key. NEW pin with the route.
     ("GET", "/api/v1/outreach/unsubscribe"),
     ("GET", "/api/v1/ads/campaigns"),
+    # wave V19 (L2): the per-campaign metrics reader (the former list_metrics DEBT, wired by
+    # evidence) — documented by app/api/v1/ads.py and its unit suite.
+    ("GET", "/api/v1/ads/campaigns/{campaign_id}/metrics"),
     # wave U5 (P4/B8): the usage-ledger read + export — documented by app/api/v1/runs.py and
     # tests/unit/test_u5_runs.py, routes verified live in app.routes as [GET] on these paths.
     # OLD surface had no runs route; NEW pins added deliberately with the routes (count 37 -> 39).

@@ -317,9 +317,13 @@ describe("InvoicesPage — send / void (POST /invoices/{id}/send|void)", () => {
   });
 
   it("renders a void refusal by name — the row keeps its status", async () => {
-    answerWith({ "/invoices?limit=100": [invoice({ id: 10, number: "INV-2026-010", status: "paid" })] });
+    // V19/L4-D1 re-pin: a `paid` row can no longer reach this path — the client now mirrors
+    // LEGAL_TRANSITIONS and disables Void on terminal rows (pinned in v19-fe-contract.test.tsx).
+    // The refusal still has to render for a row the matrix permits voiding, so the fixture is a
+    // `sent` invoice whose row was deleted server-side between the read and the click.
+    answerWith({ "/invoices?limit=100": [invoice({ id: 10, number: "INV-2026-010", status: "sent" })] });
     mockPost.mockRejectedValue(
-      new ApiError(400, "illegal invoice transition paid -> void for invoice INV-2026-010", "E_VALIDATION", "fix the field"),
+      new ApiError(404, "invoice 10 was not found", "E_NOT_FOUND", "refresh the list"),
     );
     render(<InvoicesPage />);
     const row = await screen.findByTestId("invoice-row-10");
@@ -328,11 +332,9 @@ describe("InvoicesPage — send / void (POST /invoices/{id}/send|void)", () => {
     fireEvent.click(screen.getByTestId("invoice-void-confirm-10"));
 
     const error = await screen.findByTestId("invoice-action-error-10");
-    expect(error).toHaveTextContent(
-      "E_VALIDATION: illegal invoice transition paid -> void for invoice INV-2026-010 — fix the field",
-    );
+    expect(error).toHaveTextContent("E_NOT_FOUND: invoice 10 was not found — refresh the list");
     expect(within(screen.getByTestId("invoice-row-10")).getByTestId("invoice-status")).toHaveTextContent(
-      "paid",
+      "sent",
     );
   });
 });

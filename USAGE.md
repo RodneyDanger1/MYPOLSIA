@@ -270,7 +270,7 @@ export/wipe: see §4.15. Full detail: README "Volumes & Backup".
 
 ---
 
-## 5. Phone in Polsia — **live (V16)**
+## 5. Phone in Polsia — **live (V16)**; codes panel + host send bridge (**V19**)
 
 Status: **live since V16** — proven against the real Phone Link store on 2026-10-15
 (`wave-v16/v-final/live-drill2.txt`: P1 `store_status='ok'`, unread 57, threads 10 · P4 codes
@@ -286,7 +286,7 @@ path:
 - **Routes** (key-auth, `{ok,data}` envelope): `GET /api/v1/phone/summary` · `…/messages?limit&
   thread_id` · `…/calls?limit&missed_only` · `…/media?thread_id` (**attachment list**, cap 50 with an
   honest `truncated`) · `…/media/{part_id}` (**binary stream** — real Content-Type + download filename
-  `phone-part-<id>.<ext>`) · `…/codes?within_hours` (**key-only + audit-logged** —
+  `phone-part-<id>.<ext>`) · `…/codes?limit(1..50)&within_hours` (**key-only + audit-logged** —
   it exists for auth flows) · `…/export` (streaming zip: messages.json, calls.csv, contacts.json).
 - **Visibility:** a ≤5-minute tick publishes "SMS received: …" / "Missed call: …" into the activity
   feed (dedupe by kind+id — a re-run publishes nothing twice); dashboard **Phone** card + `/phone`
@@ -305,6 +305,59 @@ path:
   The final send is owner-gated: launch the automation Chrome (dedicated profile,
   `--remote-debugging-port=9223`), confirm `python scripts/phone_send_driver.py --check` says
   `paired:true`, set `SANDBOX_MODE=false`, then `POST /api/v1/phone/send`.
+
+### 5.1 Verification codes panel (V19)
+
+`GET /api/v1/phone/codes` had a real store and no consumer. `/phone` now carries a **Verification
+codes** section below the console — closed by default, and **nothing is fetched until you click
+"Read verification codes"** (no auto-fetch, no polling, no background request).
+
+- Pick a window — **1 h / 6 h / 24 h / all** — and the panel asks the route once with a small
+  `limit`; the row count is shown ("3 codes within 6 h"), and an empty window says so instead of
+  inventing rows.
+- Each row shows `when`, `from`, and the code **masked to its last two digits by default**
+  (`•••482`). **Reveal** shows one row's full code until you blur it or collapse the row
+  (`aria-pressed` reflects the state); **Copy** puts the full code on the clipboard and re-masks
+  immediately.
+- Codes live in component state only: they are **never** written to `localStorage`/
+  `sessionStorage`, never logged to the console, never sent to analytics, and are cleared on
+  refetch and unmount.
+- Every fetch writes exactly **one** `activity_log` row — `Phone verification codes read: N row(s)
+  within H h` with `{count, within_hours, limit}` in `detail`. The code values are never written to
+  the audit row; that is the point of the route being key-only.
+- If the store is not mounted, the page's `E_PHONE_UNAVAILABLE` block wins (named 503), and a 422
+  names the offending query parameter inline.
+
+### 5.2 Send bridge — sending from the Docker stack (V19)
+
+V17's send path needs the host's loopback CDP port, which a container cannot reach. V19 adds an
+optional **host companion bridge** (`scripts/phone_send_bridge.py`) that wraps the same
+`phone_send_driver.py`; the backend uses it only when `PHONE_SEND_BRIDGE_URL` is set. **Default is
+OFF** — with the URL unset the direct subprocess path is unchanged (host-run API keeps working).
+
+The owner flow is three commands on the **host** (the machine running the paired Chrome), plus the
+normal send:
+
+```bash
+export PHONE_SEND_BRIDGE_TOKEN=<at least 24 characters>   # env only — never argv
+python scripts/phone_send_bridge.py --host 127.0.0.1 --port 9227   # loopback is the default bind
+curl -s http://127.0.0.1:9227/health                      # {"status":"ok","paired":true,...}
+# then, in .env: PHONE_SEND_BRIDGE_URL=http://host.docker.internal:9227 and the same token
+docker compose up -d backend                              # the backend now routes /phone/send via the bridge
+```
+
+For the Docker stack the bridge must be reachable from the container, so start it with
+`--host 0.0.0.0` (or a specific interface) — **that is an explicit security decision**: anything
+that can reach that port can attempt sends. The token (≥24 chars, checked in constant time) and a
+host firewall rule are then **mandatory**, and the token must never be put on a command line
+(process lists) or logged. Refusals mirror the service taxonomy: missing/bad token → `401 E_AUTH`,
+no token configured on the backend → `E_CONFIG`, bridge down → `E_PHONE_UNAVAILABLE` naming the
+URL, unpaired driver → `E_PHONE_SEND_UNPAIRED`. `GET /health` reports `paired` so you can tell
+"bridge up but no browser" from "bridge down" before sending.
+
+`make smoke` covers the bridge honestly: if `PHONE_SEND_BRIDGE_URL` is exported it requires
+`GET <url>/health` to answer `200 {status:"ok"}`; if it is unset the check is a **named SKIP**
+(bridge OFF — the default), never a silent pass.
 
 ## 6. Capabilities — agents see their real toolbox (**live, V16**)
 
@@ -350,10 +403,13 @@ make smoke-dry                                       # print the plan; makes no 
 
 `make smoke` (→ `scripts/smoke.sh`) prints one `PASS <name>: <detail>` / `FAIL <name>: <detail>` line
 per check and exits **0** only when every check passed, **1** when one failed, **2** on a usage
-refusal. It checks health, the three security headers, the key gate both ways (401 `E_AUTH`, then a
-200 envelope), the sorted capabilities manifest, the phone summary + media surface (real store or a
-**named** refusal — a raw 500 is a FAIL), `/docs` against `SANDBOX_MODE`, the proxy's `Server` header,
-and the backup artifacts. Under `make`, a failed check surfaces as make's own exit 2; the script's
+refusal. It runs **12 checks**: health, the three security headers, the key gate both ways (401
+`E_AUTH`, then a 200 envelope), the sorted capabilities manifest, the phone summary + media surface
+(real store or a **named** refusal — a raw 500 is a FAIL), the key-only **codes** surface (a row
+COUNT, never a code value — even a failure withholds the body), `/docs` against `SANDBOX_MODE`, the
+proxy's `Server` header, the optional **send bridge** (`GET <PHONE_SEND_BRIDGE_URL>/health` must be
+`{status:"ok"}` when the URL is exported; unset is a **named SKIP** — bridge OFF, the default), and
+the backup artifacts. Under `make`, a failed check surfaces as make's own exit 2; the script's
 codes are 0/1/2. The base is `http://127.0.0.1` by default (`SMOKE_ARGS="--base …"` to
 change it); because nginx sends `/docs` to the Next app, pass
 `SMOKE_ARGS="--api-base http://127.0.0.1:8000"` when the API is host-run to check the API's own

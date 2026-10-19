@@ -7,10 +7,10 @@ draft|sent|paid|void|overdue.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class InvoiceResponse(ORMModel):
@@ -26,6 +26,6 @@ class InvoiceResponse(ORMModel):
     total: float | None = None
     status: str
     payment_link: str | None = None
-    paid_at: datetime | None = None
+    paid_at: UtcDatetime | None = None
     late_fee_note: str | None = None
     line_items: list[dict[str, Any]] | None = None

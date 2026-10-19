@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
 from app.core import events
-from app.core.timeutil import day_window, today_in
+from app.core.timeutil import day_window, iso_utc, today_in
 from app.models.task import AgentRun
 from app.services import capability_manifest
 from app.services.query_helpers import fetch_rows
@@ -141,11 +141,7 @@ async def _agent_quality_rows(db: AsyncSession) -> list[dict[str, Any]]:
                 "agent_type": agent_type,
                 "runs_7d": int(entry["runs_7d"]),
                 "success_rate": (int(entry["completed"]) / terminal if terminal else None),
-                "last_failure_at": (
-                    entry["last_failure_at"].isoformat()
-                    if entry["last_failure_at"] is not None
-                    else None
-                ),
+                "last_failure_at": iso_utc(entry["last_failure_at"]),
                 "cost_per_completed_task": (
                     float(entry["cost_sum"]) / int(entry["completed"])
                     if entry["cost_measured"] and int(entry["completed"])

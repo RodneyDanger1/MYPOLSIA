@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.common import TimestampedORM
+from app.schemas.common import TimestampedORM, UtcDatetime
 
 
 class TaskCreate(BaseModel):
@@ -34,7 +34,7 @@ class TaskResponse(TimestampedORM):
     priority: int | None = None
     status: str | None = None
     source: str | None = None
-    scheduled_date: datetime | None = None
+    scheduled_date: UtcDatetime | None = None
     result_summary: str | None = None
     error_message: str | None = None
 
@@ -59,7 +59,7 @@ class TaskResponse(TimestampedORM):
     # Filled at EVERY construction site (all four live in `app/api/v1/tasks.py` — recon:
     # `grep -rn "TaskResponse" backend/app`): a field defined here but left unpopulated at a site
     # with runs behind it is the defined-but-never-called defect class this wave exists to kill.
-    completed_at: datetime | None = None
+    completed_at: UtcDatetime | None = None
     cost_usd: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
@@ -87,7 +87,7 @@ class TaskStatusUpdate(BaseModel):
 
 class AgentStatusResponse(BaseModel):
     agent_type: str
-    last_run_at: datetime | None = None
+    last_run_at: UtcDatetime | None = None
     last_run_status: str | None = None
     tasks_today: int = 0
     tasks_total: int = 0
@@ -131,7 +131,7 @@ class NotificationItem(BaseModel):
     kind: NotificationKind
     title: str
     task_id: int
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class NotificationsResponse(BaseModel):

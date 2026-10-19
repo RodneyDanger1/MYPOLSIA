@@ -81,7 +81,11 @@ NO_INTENT_SHAPE = {
 
 
 def _sign(body: bytes, *, secret: str = SECRET, ts: int | None = None) -> str:
-    stamp = NOW if ts is None else ts
+    # Stamp at CALL time, never the module-import constant: pytest imports every test module at
+    # collection and this test runs minutes later inside a full suite — a module-level NOW aged
+    # past Stripe's 300 s tolerance and the app answered 400 "Timestamp outside the tolerance
+    # zone" (the V15->V19 flake: standalone green, long gates red; verified 2026-10-19 02:38Z).
+    stamp = int(time.time()) if ts is None else ts
     digest = hmac.new(
         secret.encode("utf-8"), f"{stamp}.".encode() + body, hashlib.sha256
     ).hexdigest()

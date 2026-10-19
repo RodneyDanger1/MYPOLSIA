@@ -43,8 +43,10 @@ CHECK_NAMES = (
     "capabilities",
     "phone-summary",
     "phone-media",
+    "phone-codes",
     "docs",
     "server-header",
+    "send-bridge",
     "backups",
 )
 
@@ -55,6 +57,12 @@ CURL_SHIM = """#!/bin/sh
 echo "$*" >> "$CURL_CALL_LOG"
 out=""; hdr=""; url=""; key=""
 docs_code=${CURL_DOCS_CODE:-404}
+codes_body=${CURL_CODES_BODY:-}
+[ -n "$codes_body" ] || codes_body='{"ok":true,"data":{"codes":[]}}'
+codes_code=${CURL_CODES_CODE:-200}
+bridge_body=${CURL_BRIDGE_BODY:-}
+[ -n "$bridge_body" ] || bridge_body='{"status":"ok"}'
+bridge_code=${CURL_BRIDGE_CODE:-200}
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2 ;;
@@ -92,8 +100,12 @@ case "$url" in
   */api/v1/phone/summary)
     write_body '{"ok":true,"data":{"store_status":"ok","unread_total":0,"threads":[]}}'
     echo 200 ;;
+  */api/v1/phone/codes*)
+    write_body "$codes_body"; echo "$codes_code" ;;
   */docs)
     write_body '{"detail":"Not Found"}'; echo "$docs_code" ;;
+  */health)
+    write_body "$bridge_body"; echo "$bridge_code" ;;
   *)
     write_hdr; write_body ''; echo 200 ;;
 esac
@@ -130,6 +142,11 @@ def _run(
         **os.environ,
         "PATH": path,
         "CURL_CALL_LOG": call_log.as_posix(),
+        # V19: isolate the two new surfaces.  The bridge is OFF unless a test says otherwise (a
+        # developer's own exported URL must never change what this suite proves), and the codes
+        # shim answers an empty-but-valid payload.
+        "PHONE_SEND_BRIDGE_URL": "",
+        "PHONE_SEND_BRIDGE_TOKEN": "",
         **(env_extra or {}),
     }
     proc = subprocess.run(
@@ -371,3 +388,216 @@ def test_live_run_reports_named_checks_when_the_stack_is_up() -> None:
     assert proc.returncode in (0, 1), "only the documented 0/1 verdicts are allowed"
     if proc.returncode == 1:
         assert "FAIL " in out, "a nonzero live run must name what failed"
+    # V19 surfaces must answer with a NAMED line (PASS / named refusal / named SKIP) — never silence.
+    assert re.search(r"^(PASS|FAIL|SKIP) phone-codes:", out, re.MULTILINE), out
+    assert re.search(r"^(PASS|FAIL|SKIP) send-bridge:", out, re.MULTILINE), out
+
+
+# ── V19: phone codes — count reported, values never echoed ─────────────────────────────────
+
+#: A realistic row.  The numeric code and the sender must never reach stdout: the check reports a
+#: COUNT.  `snippet` carries the code too ("Your code is …"), so it must not be echoed either.
+CODE_VALUE = "482913"
+CODES_BODY = (
+    '{"ok":true,"data":{"codes":[{"when":"2026-10-18 09:00:00","from":"+15550001111",'
+    '"code":"482913","snippet":"Your code is 482913"}]}}'
+)
+
+
+def test_phone_codes_reports_a_count_and_never_prints_a_value(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    proc, calls = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={"API_KEY": "a-real-key-value", "CURL_CODES_BODY": CODES_BODY},
+    )
+
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "PASS phone-codes:" in out
+    assert "codes=1" in out, "the check must report how many rows it saw"
+    for forbidden in (CODE_VALUE, "+15550001111", "Your code is"):
+        assert forbidden not in out, f"the codes check echoed a stored value: {forbidden!r}"
+    assert "/api/v1/phone/codes?limit=1" in calls.read_text(encoding="utf-8")
+
+
+def test_phone_codes_failure_messages_never_dump_the_body(tmp_path: Path) -> None:
+    """A malformed codes body may still contain a real code; the FAIL line must withhold it."""
+    root = _root_with_env(tmp_path, "false")
+    proc, _ = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={
+            "API_KEY": "a-real-key-value",
+            "CURL_CODES_BODY": '{"ok":true,"data":{"wrong":[{"code":"482913"}]}}',
+        },
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "FAIL phone-codes:" in proc.stdout
+    assert CODE_VALUE not in proc.stdout, "even a FAIL line must withhold a stored code value"
+
+
+def test_phone_codes_accepts_a_named_refusal_and_rejects_a_raw_500(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    base_env = {"API_KEY": "a-real-key-value"}
+
+    refused, _ = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={
+            **base_env,
+            "CURL_CODES_CODE": "503",
+            "CURL_CODES_BODY": '{"ok":false,"error":{"code":"E_PHONE_UNAVAILABLE","message":"store missing"}}',
+        },
+    )
+    assert refused.returncode == 0, refused.stdout + refused.stderr
+    assert "PASS phone-codes:" in refused.stdout
+    assert "E_PHONE_UNAVAILABLE" in refused.stdout
+
+    broken, _ = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={**base_env, "CURL_CODES_CODE": "500", "CURL_CODES_BODY": '{"detail":"boom"}'},
+    )
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert "FAIL phone-codes:" in broken.stdout
+    assert "raw 500" in broken.stdout
+
+
+def test_static_pins_that_a_code_value_is_never_interpolated() -> None:
+    body = SCRIPT.read_text(encoding="utf-8")
+    assert 'get("code")' not in body, "the script must never pull a row's code value into a detail string"
+    assert '["code"]' not in body, "no subscript may read a code value"
+    assert 'short "$WORK/codes.json"' not in body, (
+        "a codes failure must withhold the body — it may contain the very values the route protects"
+    )
+    assert "codes=" in body, "the codes check reports a count"
+
+
+# ── V19: send bridge — default OFF, named SKIP, honest FAIL ─────────────────────────────────
+
+BRIDGE_URL = "http://127.0.0.1:9227"
+BRIDGE_TOKEN = "0123456789abcdef0123456789abcdef"  # 32 chars: the documented minimum is 24
+
+
+def test_send_bridge_skips_with_a_reason_when_the_url_is_unset(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    proc, calls = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={
+            "API_KEY": "a-real-key-value",
+            "PHONE_SEND_BRIDGE_URL": "",
+            "PHONE_SEND_BRIDGE_TOKEN": "",
+        },
+    )
+
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "SKIP send-bridge:" in out, "an unset bridge must be a NAMED skip, never a silent pass"
+    assert "PHONE_SEND_BRIDGE_URL" in out and ("OFF" in out or "not set" in out)
+    log = calls.read_text(encoding="utf-8")
+    assert all("/api/v1/health" in line for line in log.splitlines() if "/health" in line), (
+        "no bridge /health call may be made when the URL is unset"
+    )
+
+
+def test_send_bridge_requires_health_status_ok(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    env = {
+        "API_KEY": "a-real-key-value",
+        "PHONE_SEND_BRIDGE_URL": BRIDGE_URL,
+        "PHONE_SEND_BRIDGE_TOKEN": BRIDGE_TOKEN,
+    }
+
+    healthy, calls = _run(
+        tmp_path, "--base", "http://127.0.0.1:80", "--root", root.as_posix(), env_extra=env
+    )
+    assert healthy.returncode == 0, healthy.stdout + healthy.stderr
+    assert "PASS send-bridge:" in healthy.stdout
+    assert "status=ok" in healthy.stdout
+    assert BRIDGE_URL + "/health" in calls.read_text(encoding="utf-8")
+    assert BRIDGE_TOKEN not in healthy.stdout + healthy.stderr, "the bridge token must never be printed"
+
+    degraded, _ = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={**env, "CURL_BRIDGE_BODY": '{"status":"degraded"}'},
+    )
+    assert degraded.returncode == 1, degraded.stdout + degraded.stderr
+    assert "FAIL send-bridge:" in degraded.stdout
+    assert "status=degraded" in degraded.stdout
+
+    unreachable, _ = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={**env, "CURL_BRIDGE_CODE": "503", "CURL_BRIDGE_BODY": '{"detail":"down"}'},
+    )
+    assert unreachable.returncode == 1, unreachable.stdout + unreachable.stderr
+    assert "FAIL send-bridge:" in unreachable.stdout
+    assert "503" in unreachable.stdout
+
+
+def test_send_bridge_rejects_a_malformed_url_without_calling_it(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    proc, calls = _run(
+        tmp_path,
+        "--base",
+        "http://127.0.0.1:80",
+        "--root",
+        root.as_posix(),
+        env_extra={
+            "API_KEY": "a-real-key-value",
+            "PHONE_SEND_BRIDGE_URL": "127.0.0.1:9227",
+            "PHONE_SEND_BRIDGE_TOKEN": BRIDGE_TOKEN,
+        },
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "FAIL send-bridge:" in proc.stdout
+    assert "http://" in proc.stdout
+    assert "127.0.0.1:9227/health" not in calls.read_text(encoding="utf-8")
+
+
+def test_dry_run_states_the_bridge_presence_without_printing_the_url(tmp_path: Path) -> None:
+    root = _root_with_env(tmp_path, "false")
+    proc, calls = _run(
+        tmp_path,
+        "--dry-run",
+        "--root",
+        root.as_posix(),
+        env_extra={
+            "PHONE_SEND_BRIDGE_URL": "http://127.0.0.1:9227/private-route-marker",
+            "PHONE_SEND_BRIDGE_TOKEN": BRIDGE_TOKEN,
+        },
+    )
+
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "send-bridge" in out and "phone-codes" in out
+    assert "private-route-marker" not in out, "the bridge URL may carry a secret path — presence only"
+    assert BRIDGE_TOKEN not in out
+    assert calls.read_text(encoding="utf-8") == ""
+

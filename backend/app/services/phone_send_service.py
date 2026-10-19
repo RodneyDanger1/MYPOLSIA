@@ -45,6 +45,9 @@ import os
 import re
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +56,8 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.core.errors import (
+    E_AUTH,
+    E_CONFIG,
     E_PHONE_UNAVAILABLE,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
@@ -89,6 +94,233 @@ SEND_STATUS_BY_CODE: dict[str, int] = {E_PHONE_SEND_UNPAIRED: 409}
 #: Codes the driver may refuse with. Anything else it prints is re-mapped to E_PHONE_UNAVAILABLE —
 #: an unknown code must never become a new wire contract by accident.
 DRIVER_CODES = frozenset({E_PHONE_SEND_UNPAIRED, E_PHONE_UNAVAILABLE, E_VALIDATION})
+
+# ── host companion bridge transport (wave V19) ──────────────────────────────────────────────
+#
+# The Docker stack cannot reach the host's Chrome DevTools port, so an operator can run
+# `scripts/phone_send_bridge.py` on the host and point this service at it.  The bridge is a
+# TRANSPORT, not a policy bypass: the sandbox gate and validation above still run first, and the
+# bridge applies its own token gate on the host side.
+#
+# Direct mode (both variables unset) is the shipped default and stays byte-identical: no URL means
+# the `_run_driver` path below is the only code that can run.
+BRIDGE_URL_ENV = "PHONE_SEND_BRIDGE_URL"
+PHONE_SEND_BRIDGE_TOKEN_ENV = "PHONE_SEND_BRIDGE_TOKEN"
+BRIDGE_TOKEN_MIN_CHARS = 24
+#: Client patience for one bridged send.  The bridge itself refuses at 90 s at the latest, so the
+#: client must outwait it rather than abandon a request the host may still finish.
+BRIDGE_TIMEOUT_S = 90.0
+BRIDGE_MAX_REPLY_BYTES = 64 * 1024
+#: Refusal codes the bridge may answer with.  Anything else is a protocol fault, not a new code.
+BRIDGE_CODES = frozenset({E_AUTH, E_CONFIG, *DRIVER_CODES})
+_BRIDGE_HINTS = {
+    E_AUTH: (
+        "set PHONE_SEND_BRIDGE_TOKEN in the backend environment to the exact token the host "
+        "bridge was started with"
+    ),
+    E_CONFIG: (
+        f"set both {BRIDGE_URL_ENV} and {PHONE_SEND_BRIDGE_TOKEN_ENV} (>= "
+        f"{BRIDGE_TOKEN_MIN_CHARS} chars), or unset {BRIDGE_URL_ENV} to use the direct driver"
+    ),
+}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A bridge redirect is never part of the protocol; refuse it instead of following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+#: A dedicated opener with proxies DISABLED: the bridge is a direct host endpoint, and an
+#: HTTP_PROXY inherited by the container must not become a man-in-the-middle for a token-bearing
+#: request.  Redirects are refused by design.
+_BRIDGE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _NoRedirect()
+)
+
+
+def bridge_url() -> str:
+    """`PHONE_SEND_BRIDGE_URL` (empty = direct-subprocess mode)."""
+    return os.environ.get(BRIDGE_URL_ENV, "").strip()
+
+
+def _bridge_endpoint(url: str) -> str:
+    return url.rstrip("/") + "/send"
+
+
+def _decode_bridge_reply(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PolsiaError(
+            E_PHONE_UNAVAILABLE,
+            f"the phone send bridge answered something that is not JSON "
+            f"({type(exc).__name__}: {exc})",
+            how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PolsiaError(
+            E_PHONE_UNAVAILABLE,
+            "the phone send bridge answered a non-object JSON payload",
+            how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+        )
+    return payload
+
+
+def _post_bridge(
+    endpoint: str, token: str, payload: dict[str, Any], timeout: float
+) -> tuple[int, dict[str, Any]]:
+    """POST one send to the bridge (blocking; the caller moves it off the event loop)."""
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Bridge-Token": token,
+        },
+    )
+    try:
+        with _BRIDGE_OPENER.open(request, timeout=timeout) as response:
+            return response.status, _decode_bridge_reply(response.read(BRIDGE_MAX_REPLY_BYTES))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, _decode_bridge_reply(exc.read(BRIDGE_MAX_REPLY_BYTES))
+        finally:
+            exc.close()
+
+
+def _bridge_timeout(url: str, timeout: float) -> PolsiaError:
+    return PolsiaError(
+        E_PHONE_UNAVAILABLE,
+        f"the phone send bridge at {url} timed out after {timeout:g}s — nothing is claimed "
+        "as sent",
+        how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+        context={"bridge_url": url, "timeout_s": timeout},
+    )
+
+
+def _bridge_unreachable(url: str, exc: BaseException) -> PolsiaError:
+    return PolsiaError(
+        E_PHONE_UNAVAILABLE,
+        f"the phone send bridge at {url} is unreachable ({type(exc).__name__}: {exc}) — start "
+        "scripts/phone_send_bridge.py on the host, then retry",
+        how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+        context={"bridge_url": url},
+    )
+
+
+def _map_bridge_reply(status: int, payload: dict[str, Any], url: str) -> SendResult:
+    """Turn the bridge's answer into the SAME typed result/refusal the direct path produces."""
+    if status == 200 and payload.get("status") == "sent":
+        sent_at = payload.get("sent_at")
+        to_masked = payload.get("to_masked")
+        driver_name = payload.get("driver")
+        if driver_name != DRIVER_NAME:
+            raise PolsiaError(
+                E_PHONE_UNAVAILABLE,
+                f"the phone send bridge result came from an unrecognised driver ({driver_name!r})",
+                how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+                context={"bridge_url": url, "driver": driver_name},
+            )
+        if not isinstance(sent_at, str) or not sent_at.strip():
+            raise PolsiaError(
+                E_PHONE_UNAVAILABLE,
+                "the phone send bridge did not report a send time — no send is claimed",
+                how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+                context={"bridge_url": url},
+            )
+        if not isinstance(to_masked, str) or not to_masked.strip():
+            raise PolsiaError(
+                E_PHONE_UNAVAILABLE,
+                "the phone send bridge did not report a masked recipient — no send is claimed",
+                how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+                context={"bridge_url": url},
+            )
+        return SendResult(sent_at=sent_at, to_masked=to_masked.strip(), driver=DRIVER_NAME)
+
+    code = payload.get("code")
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        message = f"the phone send bridge refused the send (HTTP {status})"
+    if not isinstance(code, str) or code not in BRIDGE_CODES:
+        if status == 401:  # a token gate that did not name itself still means E_AUTH
+            code = E_AUTH
+        else:
+            raise PolsiaError(
+                E_PHONE_UNAVAILABLE,
+                f"the phone send bridge at {url} answered HTTP {status} without a recognised "
+                "refusal",
+                how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
+                context={"bridge_url": url, "bridge_status": status},
+            )
+    hint = payload.get("how_to_fix")
+    how_to_fix = hint if isinstance(hint, str) and hint.strip() else (
+        _BRIDGE_HINTS.get(code) or _HINTS.get(code) or ERROR_HINTS.get(code, "")
+    )
+    if code == E_AUTH:
+        raise PolsiaError(
+            E_AUTH,
+            f"the phone send bridge at {url} rejected the bridge token: {message}",
+            how_to_fix=how_to_fix,
+            context={"bridge_url": url, "bridge_status": status},
+        )
+    raise PolsiaError(
+        code,
+        f"the phone send bridge at {url} refused the send: {message}",
+        how_to_fix=how_to_fix,
+        context={"bridge_url": url, "bridge_status": status},
+    )
+
+
+async def _send_via_bridge(target: str, body: str, url: str, timeout: float) -> SendResult:
+    """Validate the bridge configuration AT CALL TIME, then POST and map the answer."""
+    token = os.environ.get(PHONE_SEND_BRIDGE_TOKEN_ENV, "").strip()
+    if not token:
+        raise PolsiaError(
+            E_CONFIG,
+            f"{BRIDGE_URL_ENV} is set ({url}) but {PHONE_SEND_BRIDGE_TOKEN_ENV} is empty — the "
+            "bridge transport will not POST a send without its token",
+            how_to_fix=_BRIDGE_HINTS[E_CONFIG],
+            context={"bridge_url": url, "env": PHONE_SEND_BRIDGE_TOKEN_ENV},
+        )
+    if len(token) < BRIDGE_TOKEN_MIN_CHARS:
+        raise PolsiaError(
+            E_CONFIG,
+            f"{PHONE_SEND_BRIDGE_TOKEN_ENV} is {len(token)} characters; the bridge requires at "
+            f"least {BRIDGE_TOKEN_MIN_CHARS}",
+            how_to_fix=_BRIDGE_HINTS[E_CONFIG],
+            context={"bridge_url": url, "env": PHONE_SEND_BRIDGE_TOKEN_ENV},
+        )
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise PolsiaError(
+            E_CONFIG,
+            f"{BRIDGE_URL_ENV} {url!r} is not an http(s) URL with a host — the bridge transport "
+            "refuses to guess",
+            how_to_fix=_BRIDGE_HINTS[E_CONFIG],
+            context={"bridge_url": url},
+        )
+
+    endpoint = _bridge_endpoint(url)
+    try:
+        status, payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                _post_bridge, endpoint, token, {"to": target, "body": body}, timeout
+            ),
+            timeout=timeout,
+        )
+    except TimeoutError as exc:
+        raise _bridge_timeout(url, timeout) from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise _bridge_timeout(url, timeout) from exc
+        raise _bridge_unreachable(url, exc.reason or exc) from exc
+    except OSError as exc:
+        raise _bridge_unreachable(url, exc) from exc
+    return _map_bridge_reply(status, payload, url)
 
 _HINTS = {
     E_PHONE_SEND_UNPAIRED: (
@@ -403,6 +635,13 @@ async def send(
     target = validate_target(raw_to)
     body = validate_body(raw_body)
 
+    bridged = bridge_url()
+    if bridged:
+        # The bridge is a TRANSPORT, never a policy bypass: sandbox + validation already ran.
+        return await _send_via_bridge(
+            target, body, bridged, BRIDGE_TIMEOUT_S if timeout is None else timeout
+        )
+
     driver = driver_executable()
     if not driver.is_file():
         raise PolsiaError(
@@ -461,12 +700,16 @@ def http_refusal(exc: PolsiaError) -> HTTPException:
 
 __all__ = [
     "BODY_MAX",
+    "BRIDGE_TIMEOUT_S",
+    "BRIDGE_URL_ENV",
     "DRIVER_NAME",
     "DRIVER_PATH",
     "DriverRun",
     "E_PHONE_SEND_UNPAIRED",
+    "PHONE_SEND_BRIDGE_TOKEN_ENV",
     "SEND_STATUS_BY_CODE",
     "SendResult",
+    "bridge_url",
     "driver_argv",
     "driver_executable",
     "http_refusal",

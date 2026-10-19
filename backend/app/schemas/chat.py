@@ -10,10 +10,11 @@ contract; nothing here is invented.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from app.schemas.common import UtcDatetime
 
 
 class ChatRequest(BaseModel):
@@ -85,7 +86,7 @@ class ChatHistoryItem(BaseModel):
 
     role: str
     content: str
-    created_at: datetime | None
+    created_at: UtcDatetime | None
     task_id: int | None
 
 

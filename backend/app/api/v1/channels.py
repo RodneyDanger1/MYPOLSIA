@@ -38,8 +38,6 @@ AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router 
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.policy_firewall import RateCaps
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.database import utcnow
+from app.schemas.common import UtcDatetime
 from app.services.channel_service import channel_sends_snapshot
 
 router = APIRouter(prefix="/channels", tags=["channels"], dependencies=[Depends(verify_api_key)])
@@ -63,7 +62,7 @@ class ChannelCapEntry(BaseModel):
 
 class ChannelCapsResponse(BaseModel):
     channels: list[ChannelCapEntry]
-    generated_at: datetime
+    generated_at: UtcDatetime
 
 
 def policy_channels(caps: RateCaps) -> list[str]:

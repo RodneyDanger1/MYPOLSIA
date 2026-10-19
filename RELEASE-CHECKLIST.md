@@ -123,6 +123,27 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       Evidence: `wave-v18/l5-smoke-release/raw/live-smoke.txt`; pins
       `backend/tests/unit/test_v18_smoke_script.py` (14 tests: 13 shim/static + 1 live).
       **Re-run `make smoke` at settle**, after the backend image is rebuilt with the V18 media route.
+- [x] **One-command acceptance, V19 surfaces (`make smoke`)** — re-run 2026-10-18 against the live
+      stack (GET/HEAD only): **10 PASS, 2 named SKIP, 0 FAIL — exit 0**. Both V18 FAILs are closed on
+      the running stack: `phone-media` returns `parts=17 truncated=False thread=7`, and
+      `server-header` reads `Server: nginx` (masked). New: `phone-codes` → `200 codes=1 shape=True
+      (values never printed)`; `send-bridge` → **named SKIP** (`PHONE_SEND_BRIDGE_URL` unset — bridge
+      OFF, the default). The `docs` SKIP is the nginx↔Next `/docs` routing, unchanged.
+      Evidence: `wave-v19/l5-smoke-docs/raw/live-smoke.txt` (dry run:
+      `wave-v19/l5-smoke-docs/raw/dry-run.txt`); pins
+      `backend/tests/unit/test_v18_smoke_script.py` (22 tests: 21 shim/static + 1 live).
+- [ ] **Verification-codes panel (V19, parent live-check)** — on `/phone`, open the Codes section:
+      idle makes **no** request; one click → exactly one `GET /api/v1/phone/codes?...`; rows are
+      masked to the last two digits; **Reveal** shows one row (`aria-pressed`); **Copy** copies the
+      full code and re-masks; no localStorage/sessionStorage/console value; every fetch writes
+      **one** activity row (count + window, values absent). Evidence: browser network tab + feed.
+- [ ] **Send bridge (V19, parent live-check; never send an SMS here)** — with
+      `PHONE_SEND_BRIDGE_TOKEN` exported (≥24 chars) start `python scripts/phone_send_bridge.py
+      --host 127.0.0.1 --port 9227`; `GET /health` → `{status:"ok",paired:…}`; a bad/missing token on
+      `POST /send` → `401 E_AUTH`; with `PHONE_SEND_BRIDGE_URL` exported, `make smoke` PASSes
+      `send-bridge`; unset → **named SKIP**. The real send stays owner-gated (USAGE §5.2). The
+      fail path is already proven with the URL pointed at a dead loopback port: exit 1, one named
+      `FAIL send-bridge: … no response` (`wave-v19/l5-smoke-docs/raw/live-bridge-fail.txt`).
 
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,
@@ -157,7 +178,8 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
 - [ ] Rollback point recorded: the previous commit = the rollback base; backups exist in `backups/`.
 - [ ] Repo description/topics updated if the wave changed what the repo is.
 - [x] NEXTSTEPS.md updated: items crossed off with their evidence; new in-flight items listed
-      (§3b — the V17 block: restore drill executed, checklist status, docs truth pass).
+      (§3d — the V19 block: smoke + docs landed, L1–L4 named in flight at this lane's write; §4
+      carries refreshed).
 
 **Not ready if:** any gate has failures not named as pre-existing, any drill shows a fabricated
 state (empty-as-error, 0-as-null, success-on-refusal), any doc claims a feature the frozen tree

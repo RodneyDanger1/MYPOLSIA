@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 #: The FREE-FORM JSON columns of `company_config`.  They carry caller/model data (an idea's
 #: price band, goals, KPIs, checklist state) and their inner numbers are NOT typed by pydantic,
@@ -115,8 +114,8 @@ class CompanyConfigResponse(ORMModel):
     confirmed_idea: dict[str, Any] | None = None
     checklist_state: dict[str, Any] = {}
     dispatch_paused: bool = False
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UtcDatetime | None = None
+    updated_at: UtcDatetime | None = None
 
 
 class CompanyConfigUpdate(BaseModel):
@@ -204,7 +203,13 @@ class CompanyConfigUpdate(BaseModel):
             return None
         try:
             ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
+        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+            # OSError is the LONG-KEY case, and it is caller input: `ZoneInfo("x" * 300)`
+            # reaches the tzdata filesystem and raises `OSError: [Errno 36] File name too
+            # long` (POSIX) / `[Errno 22] Invalid argument` (Windows).  Before V19 that
+            # escaped the validator and `PUT /config` answered an UNCODED 500 text/plain —
+            # the same class as the `ZoneInfoNotFoundError`/`ValueError` cases already
+            # handled here.  A name no filesystem can hold is not a zone.
             raise ValueError(f"{value!r} is not a known IANA timezone") from exc
         return value
 

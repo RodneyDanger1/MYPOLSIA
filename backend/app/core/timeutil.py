@@ -40,9 +40,13 @@ def company_tz(tz_name: str | None = None) -> ZoneInfo:
     name = tz_name or settings.company_timezone or "UTC"
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
         # ZoneInfoNotFoundError (a KeyError subclass): the name is not in the tz database.
         # ValueError: the name is not a normalized relative path ("/etc/localtime", "../x").
+        # OSError: the name is too long for the filesystem (ENAMETOOLONG on POSIX, EINVAL on
+        # Windows) — a raw-SQL/import row can carry it even though the write boundary refuses
+        # it now (`schemas.company._known_zone`).  All three are the SAME named refusal: a
+        # malformed zone is E_CONFIG, never an uncoded 500 at request time.
         # malformed = named refusal (A-T4/R13); unset = documented UTC default
         raise PolsiaError(
             E_CONFIG,
@@ -57,6 +61,21 @@ def company_tz(tz_name: str | None = None) -> ZoneInfo:
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def iso_utc(value: datetime | None) -> str | None:
+    """One instant, one spelling: ISO-8601 UTC with a `Z` suffix (`None` stays `None`).
+
+    Naive input is read as UTC — the clock SQLite stores for a `DateTime(timezone=True)`
+    column — and aware input is converted.  Response SCHEMAS use the `UtcDatetime` annotated
+    type (`app/schemas/common.py`) which has the same rule; this helper exists for the few
+    JSON surfaces that build plain dicts / CSV cells by hand (ops agent-quality, runs CSV),
+    so those cannot drift back to a bare `.isoformat()`.
+    """
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return aware.isoformat().replace("+00:00", "Z")
 
 
 def today_utc() -> date:

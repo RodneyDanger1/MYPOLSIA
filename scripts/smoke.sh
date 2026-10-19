@@ -5,8 +5,10 @@
 # the same acceptance as a single command: it proves the stack answers, that the key gate really
 # refuses and really admits, that the capability manifest is the registry-derived sorted set, that
 # the phone surface is honest (real store, or a NAMED refusal — never a raw 500, never invented
-# rows), that docs visibility matches `SANDBOX_MODE`, that the proxy does not disclose its version,
-# and that backups exist.  It never writes: every request is GET or HEAD.
+# rows), that the key-only codes surface answers a COUNT without ever echoing a code, that the
+# optional host send bridge is either healthy or named OFF, that docs visibility matches
+# `SANDBOX_MODE`, that the proxy does not disclose its version, and that backups exist.  It never
+# writes: every request is GET or HEAD.
 #
 # USAGE
 #   scripts/smoke.sh                                  # base http://127.0.0.1, key from $API_KEY
@@ -22,6 +24,9 @@
 #
 # ENV (never printed; never read from .env)
 #   API_KEY (or the --key-from-env name)   the owner API key the protected checks present
+#   PHONE_SEND_BRIDGE_URL                  optional host send bridge (e.g. http://127.0.0.1:9227);
+#                                          unset = bridge OFF (the default) -> the check is a NAMED SKIP
+#   PHONE_SEND_BRIDGE_TOKEN                bridge token (>=24 chars); presence is reported, never the value
 #   POLSIA_ROOT                            repo root for .env + backups/ (default: script's parent)
 #   TMPDIR                                 temp dir for response bodies
 #
@@ -137,6 +142,12 @@ case "$KEY_VAR" in
 esac
 eval "KEY=\${$KEY_VAR:-}"
 
+# The optional host send bridge (V19).  UNSET means the bridge is OFF — the default, and the
+# direct subprocess path is in use.  The URL/token are read from the environment only and never
+# printed; an unset bridge is a NAMED SKIP, never a silent pass.
+BRIDGE_URL=${PHONE_SEND_BRIDGE_URL:-}
+BRIDGE_TOKEN=${PHONE_SEND_BRIDGE_TOKEN:-}
+
 if [ -z "$ROOT" ]; then
     SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
     ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -166,9 +177,11 @@ print_plan() {
     printf '  %-2s %-15s %-5s %s\n' 5 capabilities GET "$BASE/api/v1/ops/capabilities -> agents>0, sorted"
     printf '  %-2s %-15s %-5s %s\n' 6 phone-summary GET "$BASE/api/v1/phone/summary -> store_status=ok or named 503"
     printf '  %-2s %-15s %-5s %s\n' 7 phone-media GET "$BASE/api/v1/phone/media?thread_id=<first summary thread> -> parts[] or named refusal"
-    printf '  %-2s %-15s %-5s %s\n' 8 docs GET "${API_BASE:-$BASE}/docs -> matches SANDBOX_MODE in $ROOT/.env"
-    printf '  %-2s %-15s %-5s %s\n' 9 server-header GET "$BASE/ -> Server absent or version-masked"
-    printf '  %-2s %-15s %-5s %s\n' 10 backups LOCAL "$ROOT/backups/polsia-*.sql + 4 volume archives (warn-only)"
+    printf '  %-2s %-15s %-5s %s\n' 8 phone-codes GET "$BASE/api/v1/phone/codes?limit=1 -> codes[N] (count only; values never printed)"
+    printf '  %-2s %-15s %-5s %s\n' 9 docs GET "${API_BASE:-$BASE}/docs -> matches SANDBOX_MODE in $ROOT/.env"
+    printf '  %-2s %-15s %-5s %s\n' 10 server-header GET "$BASE/ -> Server absent or version-masked"
+    printf '  %-2s %-15s %-5s %s\n' 11 send-bridge GET "<\$PHONE_SEND_BRIDGE_URL>/health -> 200 {status:ok}; unset = named SKIP"
+    printf '  %-2s %-15s %-5s %s\n' 12 backups LOCAL "$ROOT/backups/polsia-*.sql + 4 volume archives (warn-only)"
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -181,8 +194,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
     else
         printf 'key: $%s is absent — the protected checks will FAIL and say so\n' "$KEY_VAR"
     fi
+    if [ -n "$BRIDGE_URL" ]; then
+        printf 'bridge: $PHONE_SEND_BRIDGE_URL is set (%s; health is checked at run time, value never printed)\n' \
+            "$([ -n "$BRIDGE_TOKEN" ] && echo 'token present' || echo 'token ABSENT — /send will refuse by name')"
+    else
+        printf 'bridge: $PHONE_SEND_BRIDGE_URL is not set — send-bridge will SKIP (bridge OFF, the default)\n'
+    fi
     print_plan
-    printf 'DRY RUN complete: 10 checks planned, 0 requests made.\n'
+    printf 'DRY RUN complete: 12 checks planned, 0 requests made.\n'
     exit 0
 fi
 
@@ -231,9 +250,12 @@ json_get() {
 import json, sys
 try:
     d = json.load(sys.stdin)
-    v = eval(sys.argv[1], {"__builtins__": {}},
-             {"d": d, "len": len, "sorted": sorted, "str": str, "int": int,
-              "list": list, "isinstance": isinstance, "bool": bool})
+    ns = {"__builtins__": {}, "d": d, "len": len, "sorted": sorted, "str": str, "int": int,
+          "list": list, "isinstance": isinstance, "bool": bool, "all": all, "any": any,
+          "dict": dict}
+    # ONE namespace for globals AND locals: a generator expression resolves its free names from
+    # globals, so a separate locals mapping made `isinstance` invisible inside `all(...)`.
+    v = eval(sys.argv[1], ns)
 except Exception:
     print("__ERR__")
 else:
@@ -415,7 +437,46 @@ else
     esac
 fi
 
-# ── 8. docs visibility matches SANDBOX_MODE ─────────────────────────────────────────────────
+# ── 8. phone codes: key-only, count reported, values NEVER printed ──────────────────────────
+if [ -z "$KEY" ]; then
+    skip phone-codes "no key in \$$KEY_VAR — the codes route is key-only (auth-200 already names the missing key)"
+else
+    code=$(get_code "$BASE/api/v1/phone/codes?limit=1" "$WORK/codes.json" -H "X-API-Key: $KEY")
+    case "$code" in
+        200)
+            if [ -n "$PY" ]; then
+                detail=$(json_get "$WORK/codes.json" '(lambda x: "codes=%d shape=%s" % (len(x) if isinstance(x, list) else -1, str(isinstance(x, list) and all(isinstance(r, dict) and "when" in r and "code" in r for r in x))))((d.get("data") or {}).get("codes"))')
+                case "$detail" in
+                    __ERR__*) fail phone-codes "200 but no data.codes[] — body withheld (it may contain code values)" ;;
+                    *"shape=False"*) fail phone-codes "$detail (a code row must carry when+code; values never printed)" ;;
+                    *) pass phone-codes "GET /phone/codes?limit=1 -> 200 $detail (values never printed)" ;;
+                esac
+            elif has '"codes"' "$WORK/codes.json"; then
+                pass phone-codes "200 data.codes[] present (grep-based; values never printed)"
+            else
+                fail phone-codes "200 but no data.codes[] — body withheld (it may contain code values)"
+            fi
+            ;;
+        401)
+            if has '"E_AUTH"' "$WORK/codes.json"; then
+                pass phone-codes "401 E_AUTH (named refusal — the supplied key was rejected; auth-200 names it)"
+            else
+                fail phone-codes "401 without E_AUTH — body withheld (it may contain code values)"
+            fi
+            ;;
+        503)
+            if has '"E_PHONE_UNAVAILABLE"' "$WORK/codes.json"; then
+                pass phone-codes "503 E_PHONE_UNAVAILABLE (named refusal — store not mounted)"
+            else
+                fail phone-codes "503 without a named code — body withheld (it may contain code values)"
+            fi
+            ;;
+        500) fail phone-codes "raw 500 — codes must refuse by name (body withheld)" ;;
+        *) fail phone-codes "expected 200 or a named refusal, got ${code:-000} (body withheld)" ;;
+    esac
+fi
+
+# ── 9. docs visibility matches SANDBOX_MODE ─────────────────────────────────────────────────
 SANDBOX=""
 if [ -f "$ROOT/.env" ]; then
     SANDBOX=$(grep -E '^[[:space:]]*SANDBOX_MODE=' "$ROOT/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r' | tr -d '"' | tr 'A-Z' 'a-z')
@@ -452,7 +513,7 @@ else
     fi
 fi
 
-# ── 9. the proxy must not disclose its version ─────────────────────────────────────────────
+# ── 10. the proxy must not disclose its version ─────────────────────────────────────────────
 code=$(head_code "$BASE/" "$WORK/server.hdr")
 server=$(hdr_value "$WORK/server.hdr" 'Server')
 if [ "${code:-000}" = 000 ]; then
@@ -473,7 +534,47 @@ else
     esac
 fi
 
-# ── 10. backup artifacts (warn-only: a fresh clone has none until `make backup`) ───────────
+# ── 11. send bridge (optional; default OFF): healthy when configured, named OFF otherwise ───
+if [ -z "$BRIDGE_URL" ]; then
+    skip send-bridge "PHONE_SEND_BRIDGE_URL is not set — the send bridge is OFF (the default); sends use the direct subprocess path"
+else
+    BRIDGE_URL=${BRIDGE_URL%/}
+    case "$BRIDGE_URL" in
+        http://*|https://*) BRIDGE_SCHEME_OK=1 ;;
+        *) BRIDGE_SCHEME_OK=0 ;;
+    esac
+    if [ "$BRIDGE_SCHEME_OK" -eq 0 ]; then
+        fail send-bridge "PHONE_SEND_BRIDGE_URL must start with http:// or https:// (the value is not printed)"
+    else
+        code=$(get_code "$BRIDGE_URL/health" "$WORK/bridge.json")
+        tok=absent
+        [ -n "$BRIDGE_TOKEN" ] && tok=present
+        case "${code:-000}" in
+            000)
+                fail send-bridge "GET <PHONE_SEND_BRIDGE_URL>/health -> no response (curl: $(short "$WORK/curl.err"))"
+                ;;
+            200)
+                if [ -n "$PY" ]; then
+                    status=$(json_get "$WORK/bridge.json" 'd.get("status","")')
+                elif grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "$WORK/bridge.json" 2>/dev/null; then
+                    status=ok
+                else
+                    status=""
+                fi
+                case "$status" in
+                    ok) pass send-bridge "GET <PHONE_SEND_BRIDGE_URL>/health -> 200 status=ok token=$tok" ;;
+                    __ERR__*) fail send-bridge "200 but unparseable body: $(short "$WORK/bridge.json")" ;;
+                    *) fail send-bridge "200 but status=${status:-?} (expected ok) token=$tok" ;;
+                esac
+                ;;
+            *)
+                fail send-bridge "GET <PHONE_SEND_BRIDGE_URL>/health -> ${code:-000}: $(short "$WORK/bridge.json")"
+                ;;
+        esac
+    fi
+fi
+
+# ── 12. backup artifacts (warn-only: a fresh clone has none until `make backup`) ───────────
 sql_count=$(ls -1 "$ROOT"/backups/polsia-*.sql 2>/dev/null | wc -l | tr -d ' ')
 missing=""
 for vol in backend_data chroma_data celery_beat_data redis_data; do

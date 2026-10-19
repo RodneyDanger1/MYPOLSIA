@@ -8,12 +8,11 @@ The frozen row (`app.models.schedule.TaskSchedule`): `cadence` one of once|daily
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 Cadence = Literal["once", "daily", "weekdays", "weekly"]
 
@@ -50,9 +49,9 @@ class ScheduleResponse(ORMModel):
     hour: int
     weekday: int | None = None
     enabled: bool
-    next_run_at: datetime | None = None
-    last_run_at: datetime | None = None
-    created_at: datetime | None = None
+    next_run_at: UtcDatetime | None = None
+    last_run_at: UtcDatetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class ScheduleListResponse(BaseModel):

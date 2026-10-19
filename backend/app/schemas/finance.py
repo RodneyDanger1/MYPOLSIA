@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 from pydantic import BaseModel
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, UtcDatetime
 
 
 class AiBurnRateView(BaseModel):
@@ -111,7 +111,7 @@ class RevenueSnapshotResponse(ORMModel):
     new_today: int | None = None
     total_revenue_month_cents: int | None = None
     stripe_balance_cents: int | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class ExpenseRecordResponse(ORMModel):
@@ -123,7 +123,7 @@ class ExpenseRecordResponse(ORMModel):
     description: str | None = None
     date: date
     external_ref: str | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
 
 
 class StripeEventResponse(ORMModel):
@@ -134,7 +134,7 @@ class StripeEventResponse(ORMModel):
     amount_cents: int | None = None
     currency: str | None = None
     status: str | None = None
-    processed_at: datetime | None = None
+    processed_at: UtcDatetime | None = None
 
 
 class StripeWebhookResponse(BaseModel):

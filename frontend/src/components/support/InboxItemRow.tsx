@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
 import { Chip, cn } from "@/components/ui";
 
@@ -14,8 +16,9 @@ import type { SupportInboxItem } from "./types";
  *   * both timestamps null → `relativeTime` says "date unknown" (never "Invalid Date");
  *   * `task_id` null → no task link is drawn, and the row says the item is not attached yet.
  *
- * The task link is a plain `<a>` to `/tasks/{id}` — the [id] route renders the same detail the
- * board's sheet does.
+ * The task link goes through `next/link` — this row lives inside the app shell, so an internal
+ * navigation must not reload the whole document (V19 L4-D3). The [id] route renders the same
+ * detail the board's sheet does.
  */
 export function InboxItemRow({ item }: { item: SupportInboxItem }) {
   return (
@@ -54,9 +57,9 @@ export function InboxItemRow({ item }: { item: SupportInboxItem }) {
           provider id: {item.provider_message_id}
         </span>
         {item.task_id !== null ? (
-          <a href={`/tasks/${item.task_id}`} className="link ui-label ml-auto">
+          <Link href={`/tasks/${item.task_id}`} className="link ui-label ml-auto">
             Open task #{item.task_id}
-          </a>
+          </Link>
         ) : (
           <span className="ui-label ml-auto text-ink-muted">
             not attached to a task{item.status === "dispatched" ? " — the mark says dispatched but no task id was recorded" : " yet"}

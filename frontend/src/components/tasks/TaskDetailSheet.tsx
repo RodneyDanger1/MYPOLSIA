@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef } from "react";
+import Link from "next/link";
 
 import { Button } from "@/components/ui";
 
@@ -25,8 +26,9 @@ export const SCRIM = "rgba(0, 0, 0, 0.55)";
  * Wave V11 unit 2: the sheet's BODY (every field, action and notice) moved to
  * `TaskDetailContent` so the new `/tasks/[id]` route renders the identical detail — this file
  * keeps only the shell (scrim, dialog, focus, header). The header gains an `Open full page`
- * anchor (plain `<a>`, not next/link: the sheet renders in any context and the modal needs a
- * full navigation, not client-side routing subtleties).
+ * link. It is `next/link` (V19 L4-D3): the destination is the app's own task route, so the
+ * navigation is client-side like every other internal link; the sheet unmounts with the /tasks
+ * page on the route change, exactly as a full load did. External links stay plain `<a>`.
  */
 export function TaskDetailSheet({
   task,
@@ -75,9 +77,9 @@ export function TaskDetailSheet({
             <span aria-hidden>‹</span> All tasks
           </button>
           {/* The per-task route (V11): the same detail, addressable. */}
-          <a href={`/tasks/${task.id}`} className="ui-label text-link hover:underline">
+          <Link href={`/tasks/${task.id}`} className="ui-label text-link hover:underline">
             Open full page
-          </a>
+          </Link>
           <Button
             ref={closeButtonRef}
             size="sm"
