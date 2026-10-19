@@ -236,9 +236,31 @@ if [ "$ready" -ne 1 ]; then
 fi
 log "postgres ready"
 
-log "command: docker exec $NAME createdb -U $PGUSER polsia"
-if ! docker exec "$NAME" createdb -U "$PGUSER" polsia >"$WORK/createdb.log" 2>&1; then
-    log "ERROR: createdb failed:"
+# V24b: `createdb` retries — the official postgres entrypoint runs a TEMPORARY init server while
+# it creates the cluster, then stops it and starts the real one.  `pg_isready` answers during that
+# window, so a single `createdb` can land in the gap: measured on GitHub's runner 2026-10-19, the
+# container logged "postgres ready", and ONE SECOND LATER createdb failed with
+#   connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory
+# (the same drill passed locally, which is exactly what a race looks like).  Retry the transient
+# failure with a bound; an existing database is success (idempotent re-entry), anything else after
+# 30 s is a real refusal.
+log "command: docker exec $NAME createdb -U $PGUSER polsia (retrying transient init-server gaps)"
+createdb_ok=0
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+    attempt=$((attempt + 1))
+    if docker exec "$NAME" createdb -U "$PGUSER" polsia >"$WORK/createdb.log" 2>&1; then
+        createdb_ok=1
+        break
+    fi
+    if grep -q "already exists" "$WORK/createdb.log" 2>/dev/null; then
+        createdb_ok=1
+        break
+    fi
+    sleep 1
+done
+if [ "$createdb_ok" -ne 1 ]; then
+    log "ERROR: createdb failed after ${attempt} attempts:"
     sed -n '1,20p' "$WORK/createdb.log"
     log "RESULT: FAIL (createdb)"
     exit 1
