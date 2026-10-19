@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Locator } from "@playwright/test";
 import { API_BASE, PREFIX } from "./_helpers";
 
 /**
@@ -67,8 +67,16 @@ test.describe("Invoices (wire)", () => {
       console.log("[invoices-spec] send:", send.status(), JSON.stringify(refusal));
       expect(send.status()).toBeGreaterThanOrEqual(400);
       expect(refusal.ok).toBe(false);
-      expect(refusal.error.code).toBe("E_CONFIG");
-      expect(refusal.error.message).toMatch(/sender identity/i);
+      // The send's FIRST gate depends on environment truth, and both outcomes are named refusals:
+      // with SANDBOX_MODE on (the owner's live stack), the sandbox refuses before anything else; with
+      // it off (CI's seed), the unset sender identity refuses. Never a success, never an unnamed
+      // failure — which gate fires first is the environment's business, so both are accepted by name.
+      expect(["E_SANDBOX_BLOCKED", "E_CONFIG"]).toContain(refusal.error.code);
+      if (refusal.error.code === "E_SANDBOX_BLOCKED") {
+        expect(refusal.error.message).toMatch(/sandbox/i);
+      } else {
+        expect(refusal.error.message).toMatch(/sender identity/i);
+      }
 
       // The refusal left the row a labelled draft.
       const after = await request.get(`${API_BASE}/api/v1/invoices/${draft.id}`);
@@ -86,5 +94,61 @@ test.describe("Invoices (wire)", () => {
       console.log("[invoices-spec] void:", JSON.stringify(voidBody));
       expect(voidBody.status).toBe("void");
     }
+  });
+});
+
+/**
+ * V20/L3 — the V19 FE contract debt, pinned in the browser: a TERMINAL invoice row (paid/void)
+ * keeps Send and Void DISABLED and states the reason as visible row text — never a bare disabled
+ * control, never an optimistic action.
+ *
+ * Reads only: the page performs its own `GET /invoices`; this spec issues no create/send/void. It
+ * derives the terminal row from the LIVE list (the lab seeds five void rows) and, if the list
+ * carries none, SKIPS BY NAME instead of inventing a row — the disabled-with-reason contract needs
+ * a real terminal row to be meaningful.
+ */
+test.describe("Invoices (UI contract)", () => {
+  test("terminal rows disable Send and Void and state why", async ({ page }) => {
+    await page.goto("/invoices");
+    await expect(
+      page
+        .getByTestId("invoices-list")
+        .or(page.getByTestId("invoices-empty"))
+        .or(page.getByTestId("invoices-read-error")),
+    ).toBeVisible();
+
+    const rows = page.locator('[data-testid^="invoice-row-"]');
+    const total = await rows.count();
+    let terminal: Locator | null = null;
+    let terminalStatus = "";
+    for (let i = 0; i < total; i += 1) {
+      const row = rows.nth(i);
+      const status = (await row.getByTestId("invoice-status").innerText()).trim().toLowerCase();
+      if (status === "paid" || status === "void") {
+        terminal = row;
+        terminalStatus = status;
+        break;
+      }
+    }
+    test.skip(
+      terminal === null,
+      `no terminal (paid/void) invoice row in the live list (${total} rows) — ` +
+        "the disabled-with-reason contract needs a real terminal row",
+    );
+
+    const row = terminal as Locator;
+    await expect(row.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+    await expect(row.getByRole("button", { name: "Void", exact: true })).toBeDisabled();
+
+    // The reason is VISIBLE row text, not only a tooltip.
+    const reason = row.locator('[data-testid^="invoice-terminal-reason-"]');
+    await expect(reason).toBeVisible();
+    await expect(reason).toContainText("send and void are closed");
+    await expect(reason).toContainText(`${terminalStatus} is a terminal state`);
+
+    // …and the row still shows the server's own status, untouched by the controls.
+    expect((await row.getByTestId("invoice-status").innerText()).trim().toLowerCase()).toBe(
+      terminalStatus,
+    );
   });
 });

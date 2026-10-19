@@ -18,6 +18,9 @@ BACKEND-AUDIT.md lines 582-597, P4 — Usage ledger read + export (B8)):
     :98-117 writes them) and unmeasured stays `null`. Export: `GET /api/v1/runs/export?format=csv|json`
     streaming the same rows (row count must equal the filtered `total` — B8's declared-total rule;
     return `total` in the list response's headers or a wrapper object).
+    V20/L1 (card L2-08): `status` is validated against `ck_agent_runs_status`'s vocabulary in the
+    shared filter builder, so an unknown value is the named `E_VALIDATION` 422 the sibling list
+    routes answer — on the list AND on the export (they share `_filters_from`), never a `200 []`.
 
 Wave-U5 frozen interfaces (WAVE-PLAN.md:56-57): runs router: `app/api/v1/runs.py`, object `router`,
 APIRouter(dependencies=[verify_api_key]); paths GET /runs and GET /runs/export (P2 includes it).
@@ -89,6 +92,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictInstant
+from app.api.v1.status_filters import RUN_STATUSES, require_status
 from app.core.errors import E_VALIDATION, PolsiaError
 from app.core.timeutil import iso_utc
 from app.schemas.common import UtcDatetime
@@ -161,7 +165,15 @@ def _filters_from(
     from_instant: datetime | None,
     to_instant: datetime | None,
 ) -> RunFilters:
-    """Build the frozen filter set (both routes share it — one filter builder, one truth)."""
+    """Build the frozen filter set (both routes share it — one filter builder, one truth).
+
+    V20/L1 (card L2-08): an unknown `status` is refused BY NAME here, before any query runs, so
+    the list and its export answer the same `E_VALIDATION` 422 `tasks`/`invoices`/`support` do —
+    at 8fa2b38 both answered `200 []`/`200 {"items": [], "total": 0}` for a typo, which is
+    indistinguishable from "no runs".  The value set is `ck_agent_runs_status`'s own vocabulary
+    (`status_filters.RUN_STATUSES`), i.e. the values the writers can actually store.
+    """
+    require_status(status, RUN_STATUSES, what="run")
     return RunFilters(
         task_id=task_id,
         agent_type=agent_type,

@@ -88,6 +88,28 @@ def test_the_block_states_none_for_an_empty_registry_allowlist(monkeypatch):
     assert "none" in doctrine
 
 
+def test_the_phone_tool_rides_the_block_exactly_where_the_allowlist_grants_it(monkeypatch):
+    """V20/L2 — the owner's phone is advertised with the registry's OWN description.
+
+    The capability block is DERIVED from `AGENT_CAPABILITIES` + `TOOL_SPECS`, so this is also
+    the proof that granting `phone_read` to two agents changed their prompt truth without a
+    second hand-copy anywhere: the two holders name it (description included), and an agent
+    outside the allowlist never does.  The orchestrator also carries the fleet map, which names
+    every agent's tools — that is why it is checked only as a holder here.
+    """
+    for agent_type in ("orchestrator", "customer_support"):
+        doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)
+        assert "phone_read" in doctrine, f"{agent_type} holds phone_read — it must be named"
+        assert _spec_description("phone_read") in doctrine, (
+            "the registry's own description of phone_read must ride the block"
+        )
+    for agent_type in ("social_media", "business_planning", "finance", "competitor_research"):
+        doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)
+        assert "phone_read" not in doctrine, (
+            f"{agent_type} cannot call phone_read — it must not be named"
+        )
+
+
 def test_the_block_names_the_channels_of_every_agent(monkeypatch):
     for agent_type, cap in pf.AGENT_CAPABILITIES.items():
         doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)

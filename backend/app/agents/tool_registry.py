@@ -1,9 +1,10 @@
-"""Tool registry (V12/W-B) — the REAL tools agents may call, and WHO may call them.
+"""Tool registry (V12/W-B; phone_read added V20/L2) — the REAL tools agents may call, and WHO
+may call them.
 
 The frozen interface the runtime (W-A) codes against:
 
-  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, exactly three frozen names:
-    `web_fetch`, `macro_snapshot`, `pricing_catalog`;
+  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, exactly four frozen names:
+    `web_fetch`, `macro_snapshot`, `pricing_catalog`, `phone_read`;
   * `def execute_tool(name, arguments, *, agent_type) -> str` — SYNC; returns the tool-result
     text (a JSON object). Unknown / denied / failed = a NAMED refusal payload (`E_*`), never a
     throw — the orchestrating loop must be able to finish honestly from any reply.
@@ -21,9 +22,15 @@ Honesty rules (repo-wide, enforced here):
     an error and never a fabricated value.
   * `pricing_catalog` reads the EXISTING `pricing_service` catalog (the shipped dated 50-row
     JSON) and carries its computed staleness provenance.
+  * `phone_read` (V20/L2) reads the owner's Phone Link store through the EXISTING read-only
+    `phone_link_service` (`summary()` + `messages()`): newest threads always, one thread's
+    messages when `thread_id` is given. There is NO codes surface — the shape has no `codes`
+    field, the `phone_link_service.codes()` reader is never called, and a message body that
+    looks like a verification code is withheld behind a named marker (the same rule
+    `celery_app/tasks/phone_activity.py::_detail_for` applies to the agent-visible feed).
   * `web_search` does NOT ship — there is no search provider in this build (V12 plan, frozen);
     the name is not advertised to any agent and `execute_tool("web_search", ...)` refuses by
-    name. Anything else beyond these three is out of scope by the same plan.
+    name. Anything else beyond these four is out of scope by the same plan.
 
 WHO may call WHAT is the policy firewall's decision: the agent→tool allowlist lives on
 `policy_firewall.AgentCapability.agent_tools` (V12/W-B) and `execute_tool` consults
@@ -37,6 +44,7 @@ import ipaddress
 import json
 import re
 import socket
+import sqlite3
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -50,7 +58,13 @@ from app.agents.policy_firewall import (
     kill_grade_from_env,
 )
 from app.agents.side_effects import named_refusal
-from app.core.errors import E_INTEGRATION, E_POLICY_DENIED, E_VALIDATION, PolsiaError
+from app.core.errors import (
+    E_INTEGRATION,
+    E_PHONE_UNAVAILABLE,
+    E_POLICY_DENIED,
+    E_VALIDATION,
+    PolsiaError,
+)
 
 #: Mirror of integrations.py: the lazy-import install hint (httpx is pinned in requirements.txt).
 _HTTPX_HINT = "pip install httpx==0.28.1 (already pinned in requirements.txt)"
@@ -65,6 +79,20 @@ WEB_FETCH_MAX_REDIRECTS = 5         # hops followed by hand; every hop re-passes
 
 #: Total serialized result cap for the catalog-bearing tools (context-budget safety).
 _TOOL_RESULT_CHAR_CAP = 60000
+
+#: `phone_read` bounds (V20/L2).  Read at CALL time so tests (and an operator) can monkeypatch
+#: them.  `limit` caps MESSAGES only; the thread window is fixed at the newest 10.
+PHONE_READ_LIMIT_DEFAULT = 5
+PHONE_READ_LIMIT_MAX = 10
+PHONE_READ_THREADS_MAX = 10
+#: SQLite's id space is signed 64-bit; an id beyond it is malformed input, not a clamp case.
+_SQLITE_INT_MAX = 2**63 - 1
+#: What a code-shaped message body is replaced WITH — a NAMED withholding, never a silent edit.
+#: House precedent: `celery_app/tasks/phone_activity.py::_detail_for` refuses to copy a
+#: code-bearing body into the dashboard/agent-visible activity feed for the same reason.
+PHONE_CODE_WITHHELD = (
+    "[message body withheld: it looks like a verification code — codes are not available to tools]"
+)
 
 _CHARSET_RE = re.compile(r"charset=([\w.\-]+)", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
@@ -85,6 +113,11 @@ TOOL_GUIDANCE: dict[str, str] = {
     "pricing_catalog": (
         "read the dated market-rate pricing catalog (50 rows, NOT live pricing) before pricing "
         "a service or sanity-checking a quote — it carries catalog_as_of/staleness_days/stale."
+    ),
+    "phone_read": (
+        "read the owner's phone threads — and one thread's newest messages when you pass "
+        "thread_id — when the task needs real phone context; codes are NEVER available to "
+        "tools, and a message body that looks like a verification code is withheld."
     ),
 }
 
@@ -142,6 +175,39 @@ TOOL_SPECS: list[dict] = [
             ),
             "parameters": {"type": "object", "properties": {}, "required": [],
                            "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_read",
+            "description": (
+                "Read the owner's phone (Phone Link store) as a JSON object: the newest "
+                "threads, and one thread's newest messages when thread_id is given. Read-only. "
+                "Verification codes are NOT available to tools: the result has no codes field, "
+                "and a message body that looks like a verification code is withheld."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {
+                        "type": "integer",
+                        "description": (
+                            "A conversation's thread_id from the threads list; when given, "
+                            "that thread's newest messages are returned."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Max messages to return for thread_id (default 5, hard cap 10). "
+                            "Ignored when thread_id is omitted."
+                        ),
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
         },
     },
 ]
@@ -535,13 +601,171 @@ def _run_pricing_catalog(*, agent_type: str, arguments: dict) -> dict:  # noqa: 
     }}
 
 
+# ---------------------------------------------------------------------------
+# phone_read — the owner's phone, read-only, codes structurally absent
+# ---------------------------------------------------------------------------
+
+def _phone_tool_text(text: str) -> str:
+    """The store's body — or the NAMED withholding when it looks like a verification code.
+
+    `phone_link_service` masks numbers where it masks them; this function is the TOOL-side
+    equivalent for codes: `PHONE_CODE_WITHHELD` replaces a code-shaped body, mirroring
+    `celery_app/tasks/phone_activity.py::_detail_for` (the activity feed is agent-visible and
+    refuses to carry a 2FA body).  `phone_link_service.codes()` itself is NEVER called here —
+    there is no codes field in the result shape at all (absent by construction), and this
+    withholding is what keeps a code VALUE from riding a raw message body out of the tool.
+    The `CODE_RE` is the service's own measured pattern, so the tool and the feed agree.
+    """
+    from app.services import phone_link_service
+
+    if phone_link_service.CODE_RE.search(text or ""):
+        return PHONE_CODE_WITHHELD
+    return text
+
+
+def _phone_argument_int(
+    arguments: dict, key: str, *, agent_type: str, minimum: int, maximum: int | None = None,
+    default: int | None = None,
+) -> tuple[int | None, dict | None]:
+    """`(value, None)` for a valid integer argument, `(None, refusal)` otherwise.
+
+    Bounds semantics follow `web_fetch.max_chars`'s house rule: a value ABOVE the cap is
+    CLAMPED (the cap is the floor on cost), a value BELOW the minimum is a NAMED refusal (the
+    caller's input is malformed).  A bool is refused by name — `True` is not a thread id.
+    """
+    raw = arguments.get(key, default)
+    if raw is None:  # absent, or a JSON null — both mean "use the default"
+        return default, None
+    if isinstance(raw, bool):
+        return None, named_refusal(
+            E_VALIDATION, f"phone_read: {key!r} must be an integer (got {raw!r})",
+            how_to_fix=f"pass {key} as an integer", tool="phone_read", agent=agent_type)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, named_refusal(
+            E_VALIDATION, f"phone_read: {key!r} must be an integer (got {raw!r})",
+            how_to_fix=f"pass {key} as an integer", tool="phone_read", agent=agent_type)
+    if value < minimum:
+        return None, named_refusal(
+            E_VALIDATION,
+            f"phone_read: {key!r} must be >= {minimum} (got {value})",
+            how_to_fix=f"pass {key} as an integer >= {minimum}", tool="phone_read",
+            agent=agent_type)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value, None
+
+
+def _run_phone_read(*, agent_type: str, arguments: dict) -> dict:
+    """Read the owner's phone through the EXISTING `phone_link_service` (READ-ONLY; sync).
+
+    Frozen V20 interface: newest `threads` always (≤10), one thread's `messages` only when
+    `thread_id` is given (limit 1..10, default 5), and an honest `truncated`/`note` pair when a
+    window was cut.  An absent/half-mounted/drifted/corrupt store is the service's own named
+    `E_PHONE_UNAVAILABLE` passed through — never an empty fabricated inbox.
+    """
+    from app.services import phone_link_service
+
+    limit, refusal = _phone_argument_int(
+        arguments, "limit", agent_type=agent_type, minimum=1,
+        maximum=PHONE_READ_LIMIT_MAX, default=PHONE_READ_LIMIT_DEFAULT)
+    if refusal is not None:
+        return refusal
+    assert limit is not None  # default is always present, so a missing value cannot be None
+    thread_id, refusal = _phone_argument_int(
+        arguments, "thread_id", agent_type=agent_type, minimum=1)
+    if refusal is not None:
+        return refusal
+    if thread_id is not None and thread_id > _SQLITE_INT_MAX:
+        # SQLite ids are signed 64-bit; an out-of-range id would raise OverflowError deep in the
+        # driver.  Refuse it by name at the boundary instead (never clamp — that reads a
+        # DIFFERENT thread than the caller named).
+        return named_refusal(
+            E_VALIDATION,
+            f"phone_read: 'thread_id' is outside SQLite's signed 64-bit id range (got {thread_id})",
+            how_to_fix="pass a thread_id taken from the threads list",
+            tool="phone_read", agent=agent_type)
+
+    try:
+        # +1 on both reads: ONE extra row is what proves a cut honestly (the service caps at
+        # its own MESSAGE_LIMIT_MAX; our tool caps much lower).
+        summary = phone_link_service.summary(thread_limit=PHONE_READ_THREADS_MAX + 1)
+        rows = (
+            phone_link_service.messages(limit=limit + 1, thread_id=thread_id)
+            if thread_id is not None
+            else None
+        )
+    except PolsiaError as exc:  # the service's own named refusal, passed through verbatim
+        return named_refusal(
+            exc.code, exc.message, how_to_fix=exc.how_to_fix, store=exc.context,
+            tool="phone_read", agent=agent_type)
+    except (sqlite3.Error, ValueError) as exc:
+        # `phone_link_service` refuses an absent/half-mounted/drifted store by name; two faults
+        # still escape it: a file that fails MID-READ (a partially corrupt store, sqlite3.Error)
+        # and an unrepresentable FILETIME (`filetime_to_local` raises ValueError BY DESIGN).
+        # Both mean the same thing to a caller — the store cannot be trusted right now — so the
+        # honest answer is the SAME named code, never a crash and never an empty inbox.
+        return named_refusal(
+            E_PHONE_UNAVAILABLE,
+            f"phone_read: the Phone Link store could not be read ({type(exc).__name__}: {exc})",
+            tool="phone_read", agent=agent_type)
+
+    threads_raw = list(summary["threads"])
+    threads_truncated = len(threads_raw) > PHONE_READ_THREADS_MAX
+    notes: list[str] = []
+    if threads_truncated:
+        notes.append(
+            f"showing the newest {PHONE_READ_THREADS_MAX} threads; older threads exist "
+            f"(thread cap {PHONE_READ_THREADS_MAX})")
+
+    result: dict[str, Any] = {
+        "store_status": summary["store_status"],
+        "threads": [
+            {
+                "thread_id": int(thread["thread_id"]),
+                "who": thread["with"],
+                "last_when": thread["last_when"],
+                "unread": int(thread["unread"]),
+            }
+            for thread in threads_raw[:PHONE_READ_THREADS_MAX]
+        ],
+    }
+
+    messages_truncated = False
+    if rows is not None:
+        messages_truncated = len(rows) > limit
+        result["messages"] = [
+            {
+                "when": message["when"],
+                "dir": message["dir"],
+                "who": message["who"],
+                "text": _phone_tool_text(message["text"]),
+            }
+            for message in rows[:limit]
+        ]
+        if messages_truncated:
+            notes.append(
+                f"showing the newest {limit} message(s) of thread {thread_id}; older messages "
+                f"exist (message cap {PHONE_READ_LIMIT_MAX})")
+
+    result["truncated"] = threads_truncated or messages_truncated
+    result["note"] = " | ".join(notes)
+    return {"ok": True, "tool": "phone_read", "result": result}
+
+
 _RUNNERS = {
     "web_fetch": _run_web_fetch,
     "macro_snapshot": _run_macro_snapshot,
     "pricing_catalog": _run_pricing_catalog,
+    "phone_read": _run_phone_read,
 }
 
 __all__ = [
+    "PHONE_CODE_WITHHELD",
+    "PHONE_READ_LIMIT_DEFAULT",
+    "PHONE_READ_LIMIT_MAX",
+    "PHONE_READ_THREADS_MAX",
     "TOOL_GUIDANCE",
     "TOOL_SPECS",
     "execute_tool",

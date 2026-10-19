@@ -18,10 +18,11 @@ supplies them.  The row is committed by `get_db` on success, like every other wr
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.core.errors import E_NOT_FOUND, ERROR_HINTS
 from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskResponse, TaskStatusUpdate
@@ -71,15 +72,29 @@ async def _task_responses(db: AsyncSession, tasks: list[Task]) -> list[TaskRespo
 
 @router.get("", response_model=list[TaskResponse])
 async def list_tasks_endpoint(
+    response: Response,
     status_filter: str | None = Query(default=None, alias="status"),
     agent_type: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[TaskResponse]:
+    """The task list, newest first.
+
+    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    without LIMIT/OFFSET) so a full page is distinguishable from a truncated one.  The body stays
+    a bare array — every existing client parses it as one.
+    """
     with refusal_guard():
         tasks = await list_tasks(db, status=status_filter, agent_type=agent_type, limit=limit, offset=offset)
         responses = await _task_responses(db, tasks)
+        conditions = []
+        if status_filter is not None:
+            conditions.append(Task.status == status_filter)
+        if agent_type is not None:
+            conditions.append(Task.agent_type == agent_type)
+        total = await declared_total(db, Task, conditions, what="tasks total")
+    response.headers[TOTAL_HEADER] = str(total)
     return responses
 
 

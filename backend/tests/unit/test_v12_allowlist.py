@@ -12,10 +12,12 @@ from app.agents import tool_registry
 from app.agents.base_agent import BasePolsiaAgent
 from app.agents.policy_firewall import ActionClass, ActionRequest, Decision, decide
 
-FROZEN = {"web_fetch", "macro_snapshot", "pricing_catalog"}
-READ_MACRO_AGENTS = ("business_planning", "finance", "orchestrator", "company_planner")
-NO_TOOL_AGENTS = ("social_media", "email_outreach", "customer_support", "ads_management",
-                  "code_generation")
+#: V20/L2: `phone_read` joined the registry (read-only, codes structurally absent), so the frozen
+#: vocabulary is four names. The V12 seam deliberately goes red when a tool joins — this is that
+#: re-pin, with the wave recorded.
+FROZEN = {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
+READ_MACRO_AGENTS = ("business_planning", "finance", "company_planner")
+NO_TOOL_AGENTS = ("social_media", "email_outreach", "ads_management", "code_generation")
 
 
 def _probe(agent_type: str) -> BasePolsiaAgent:
@@ -33,6 +35,11 @@ def test_the_frozen_agent_tool_mapping_is_wired():
     assert tool_registry.tools_for("competitor_research") == ("web_fetch",)
     for agent_type in READ_MACRO_AGENTS:
         assert tool_registry.tools_for(agent_type) == ("macro_snapshot", "pricing_catalog")
+    # V20/L2: the orchestrator already held owner-data reads, so `phone_read` joins its toolbox.
+    assert tool_registry.tools_for("orchestrator") == (
+        "macro_snapshot", "pricing_catalog", "phone_read")
+    # V20/L2: customer_support's only toolbox entry is the read-only phone tool.
+    assert tool_registry.tools_for("customer_support") == ("phone_read",)
     for agent_type in NO_TOOL_AGENTS:
         assert tool_registry.tools_for(agent_type) == (), agent_type
     assert tool_registry.tools_for("no_such_agent") == ()

@@ -25,7 +25,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | Surface | Route | What you do there |
 |---|---|---|
 | **Dashboard** | `/dashboard` | Morning plan + Daily Report, live Activity feed, chat rail, Auto Mode, send-caps counter; widgets show/hide/reorder |
-| **Agents** | `/agents` | Fleet status; run a single agent on demand |
+| **Agents** | `/agents` | Fleet status; run a single agent on demand; **per-agent toolbox (V20)** — each card's `TOOLS · N` expander lists the tools that agent can actually use (names + the registry's own descriptions, from `GET /api/v1/ops/capabilities`); honest "No tools are granted to this agent." for an empty list, and `TOOLS — UNAVAILABLE` + Retry when the read fails (never "no tools"). Needs the V20 frontend rebuild |
 | **Tasks** | `/tasks` | The work queue — filter, open a task (deep-links `/tasks/{id}`), run or approve parked rows |
 | **Planner** | `/planner` | Propose/confirm the business plan (sourced claims verified) |
 | **Schedules** | `/schedules` | Recurring task prompts (15-minute cadence, company-local, DST-safe) |
@@ -38,7 +38,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
-| **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser — see USAGE §5.1–5.2; see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser. **Agents (V20):** the firewalled read-only `phone_read` tool — newest threads + optional per-thread messages, **codes never** (code-shaped bodies withheld), granted to `orchestrator` + `customer_support` only; the running image shows the new grant after the V20 rebuild (USAGE §5.3). See USAGE §5.1–5.3; [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 
 ## How to use it
@@ -180,12 +180,16 @@ Fill in the relevant sections of `.env` to activate each integration:
 Things this repository declares or advertises that are **not** yet true, recorded here instead of being
 quietly relaxed. Each one names its measurement.
 
-- **Backend coverage is 87.5%** (4,984 of 5,693 statements; `pytest tests/unit tests/parity tests/redteam
-  --cov=app` with the `sysmon` core pinned in `pyproject.toml` — the truthful tracer for async route
-  lines, measured by R26/R27/R28; it was 51.48% at the first measurement and 73.0% before the R17–R32
-  hardening waves). This **meets the `fail_under = 75` this project originally declared**; the gate is
-  now a **ratchet at the measured floor (87)**: it fails the moment coverage drops below what was
-  measured and moves up as the suite grows.
+- **Backend coverage: 87.5% at the V19 base; V20's mid-wave measurement is 86.66% — the floor is 87
+  and stays there.** The base measurement (4,984 of 5,693 statements; `pytest tests/unit tests/parity
+  tests/redteam --cov=app` with the `sysmon` core pinned in `pyproject.toml` — the truthful tracer for
+  async route lines, measured by R26/R27/R28; it was 51.48% at the first measurement and 73.0% before
+  the R17–R32 hardening waves) **meets the `fail_under = 75` this project originally declared**; the
+  gate is now a **ratchet at the measured floor (87)**, so it only moves up. V20 lane L3 measured
+  **86.66%** (11,631 statements, 1,551 missed; `wave-v20/l3-proof-depth/RECEIPT.md`) — mid-wave, on an
+  unfrozen tree — and therefore **did not earn** a ratchet move: `backend/pyproject.toml` is unchanged
+  (`fail_under = 87`, sha256 `98777917…486ffe`). The parent re-measures on the frozen tree; if the
+  settled tree lands below 87.0, targeted tests are required before commit, not a lowered floor.
 - **The advertised capability that had no producer wired in is now closed (with one named residual).**
   The `ad_campaigns`/`ad_metrics` writers had no callers — an honest 0-with-no-data situation, tracked
   as work, not presented as a working feature. R33 wired them: a completed `ads_management` run
@@ -491,6 +495,19 @@ calls, behaviour against a curl shim (missing key fails by name; a raw 500 is ne
 check reports a count and never a value — even on a malformed body; the bridge skips by name when
 unset and fails on `status != ok`, a 5xx, or a scheme-less URL), and a live run that skips with a
 reason when nothing answers.
+
+V20 adds **two acceptance surfaces that are not smoke checks**, because neither is a GET on the public
+stack: the `phone_read` agent tool must be exercised **only through the firewalled `execute_tool` path**
+(an agent without the allowlist entry refused by name `POLSIA-E114`; the result must carry no code
+field; an absent store must answer `E_PHONE_UNAVAILABLE`, never an empty list), and the **Agents-page
+toolbox** must be read visually against `GET /api/v1/ops/capabilities` after the frontend rebuild
+(honest empty for a tool-less agent). Both are parent live-checks in
+[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) §5. At this write the `phone_read` lane's receipt is
+**complete** and **one firewalled call already ran against the real store** (counts only); what remains
+is the rebuilt-image check (`GET /ops/capabilities` lists the two holders) and an agent-bound call. The
+toolbox lane's receipt is complete (10/10 pins, `tsc` exit 0) but its **live visual is unrun** — the
+served frontend is still the V19 build. Neither surface is claimed live-proven until the settle
+rebuild.
 
 ### Data export & wipe
 

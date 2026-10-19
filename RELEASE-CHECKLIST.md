@@ -33,10 +33,22 @@ python -m pytest tests/unit tests/redteam tests/parity -q   # → 0 failed / 0 e
       (4,984 of 5,693) with `core = "sysmon"` in `[tool.coverage.run]`. The config is the single
       truth; the V18 release-ops lane verified it is coherent (no stale "75" target — that number is
       only named as the project's *original* declared target, now met) and did **not** run the gate.
-      The full run stays parent/verifier-owned. Evidence: `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
+      **V20 lane L3 measured 86.66% (11,631 statements, 1,551 missed) mid-wave on an unfrozen tree and
+      did NOT earn a ratchet move — `fail_under = 87` is byte-identical (`backend/pyproject.toml`
+      sha256 `987779171769c37ca1e25fa388ba211ee2a1cfc52b9c9bbeb046fbffaa486ffe`, `cmp` silent vs
+      `pre/pyproject.toml.pre`). The parent re-measures on the frozen tree; a settled number below 87.0
+      requires targeted tests, not a lowered floor.** The full run stays parent/verifier-owned.
+      Evidence: `wave-v20/l3-proof-depth/raw/coverage-run.log`; base artifact
+      `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
 - Executed locally in V17 (L5): `ruff check tests/unit/test_v17_restore_script.py` → "All checks
   passed!" (`wave-v17/l5-release-ops/out/checklist-2-5-gates.txt`). `mypy app/`, the full pytest run
   and the coverage ratchet are **UNRUN in this lane** — the verifier runs them once for the wave.
+- **V20 known settlement item (must clear before the full suite is green):** L2's receipt hands the
+  parent four V12-era pin files outside its territory — `test_v12_registry.py`,
+  `test_v12_allowlist.py`, `test_v12_seam_end_to_end.py`, `test_v12_tool_loop_registry.py` — which fail
+  by design (**9 failed / 95** in `wave-v20/l2-agent-phone-tool/raw/NEIGHBORS-v12.*`); the exact
+  re-pins are in `wave-v20/l2-agent-phone-tool/REQUESTS-v12-pins.md`. The lane's own files are
+  **68/68 green**. A "0 failed" claim in §2 is false until those re-pins land.
 
 ## 3. Static gates (frontend)
 ```bash
@@ -144,6 +156,39 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       `send-bridge`; unset → **named SKIP**. The real send stays owner-gated (USAGE §5.2). The
       fail path is already proven with the URL pointed at a dead loopback port: exit 1, one named
       `FAIL send-bridge: … no response` (`wave-v19/l5-smoke-docs/raw/live-bridge-fail.txt`).
+- [ ] **`phone_read` through the firewalled path (V20, parent live-check; inside a run, not over HTTP)** —
+      after the L2 lane lands and its receipt exists, rebuild the backend image and drive the tool
+      **only** through `execute_tool`: `python -c "from app.agents.tool_registry import execute_tool;
+      print(execute_tool('phone_read', {}, agent_type='AGENT_TYPE_FROM_L2_RECEIPT'))"` inside the
+      backend container. Required: `{ok:true, tool:"phone_read", result:{store_status, threads[]}}`;
+      **no code field anywhere in the payload**; a thread-scoped call returns capped
+      `messages[]`; an agent the receipt does NOT grant gets the firewall refusal
+      (`POLSIA-E114`, "tool 'phone_read' not in allowlist"); with `PHONE_LINK_DB_DIR` pointed at a
+      missing path the answer is the named `E_PHONE_UNAVAILABLE` payload, never an empty thread list.
+      L2's receipt is **complete** (RED 29/29 → GREEN 68/68 on its four files; one real-store firewalled
+      call: `ok=true`, `store_status=ok`, `thread_count=10`, `unread_total=10`, `truncated=true`), so the
+      tool-path half is proven at ASGI + live-probe level. What remains **after the settle rebuild** is
+      this checklist's wire-level pass: `GET /ops/capabilities` must list `phone_read` on exactly
+      `orchestrator` + `customer_support` (the running image is the base build), plus the four
+      `execute_tool` legs above on the rebuilt stack. `REQUESTS-v12-pins.md` (four V12-era pin files,
+      9 failed / 95) must be applied at settle first.
+- [ ] **Agents-page toolbox (V20, parent live-check; visual)** — L4's receipt is **complete**
+      (`wave-v20/l4-agents-toolbox/RECEIPT.md`: RED 8/8 → 10/10 pins, neighbours 98/98, `tsc` exit 0),
+      but the served frontend is still the V19 build. Rebuild the frontend image, then: open `/agents`,
+      expand a card's `TOOLS · N`, and confirm the listed names + descriptions match
+      `GET /api/v1/ops/capabilities` for that `agent_type`. Required: collapsed by default (no tool
+      markup until expanded); a `tools: []` agent says **“No tools are granted to this agent.”**; an
+      absent/unreadable row says “The capability map has no readable entry for this agent.”; a failed
+      capabilities read shows **`TOOLS — UNAVAILABLE`** + the shared error sentence + a working Retry
+      (never “no tools”); Escape collapses and returns focus. Visual **UNRUN** at this write.
+- [ ] **V20 e2e specs against the rebuilt FE (parent live-check)** — after the FE rebuild:
+      `cd e2e && npx playwright test v20-codes-panel.spec.ts invoices.spec.ts --reporter=list` against
+      `http://127.0.0.1` → expect **7/7** (5 codes-panel + 2 invoices). Both files enumerate today
+      (`--list` exit 0, 7 tests / 2 files) but have **never run green**: the served build predates the
+      V19 panel (codes **4 failed / 1 passed**; invoices **1 failed**; chunk markers `phone-codes: 0`).
+      Also re-check the served chunk contains `phone-codes` + `within_hours` (read-only curl).
+      Evidence: `wave-v20/l3-proof-depth/raw/02-codes-vs-stale-live.txt`,
+      `raw/03-invoices-terminal-vs-stale-live.txt`, `raw/00-served-build-check.txt`.
 
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,
@@ -178,8 +223,9 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
 - [ ] Rollback point recorded: the previous commit = the rollback base; backups exist in `backups/`.
 - [ ] Repo description/topics updated if the wave changed what the repo is.
 - [x] NEXTSTEPS.md updated: items crossed off with their evidence; new in-flight items listed
-      (§3d — the V19 block: smoke + docs landed, L1–L4 named in flight at this lane's write; §4
-      carries refreshed).
+      (§3e — the V20 block: **all five lanes SETTLED** with complete receipts, verifier PASSed every
+      one; the V12 pin family re-pinned by the parent post-audit; the stale E7 bullet in §4 replaced
+      with the V17-L1 closed statement; §4's V19 API cards closed in V20).
 
 **Not ready if:** any gate has failures not named as pre-existing, any drill shows a fabricated
 state (empty-as-error, 0-as-null, success-on-refusal), any doc claims a feature the frozen tree

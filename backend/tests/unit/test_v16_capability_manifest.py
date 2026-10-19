@@ -70,9 +70,29 @@ def test_registry_tools_are_every_spec_sorted_by_name():
 
 
 def test_empty_allowlist_renders_an_empty_list_never_a_default_set():
-    for agent_type in ("social_media", "email_outreach", "customer_support", "ads_management",
-                       "code_generation"):
+    for agent_type in ("social_media", "email_outreach", "ads_management", "code_generation"):
         assert capability_manifest.tool_entries_for(agent_type) == [], agent_type
+
+
+def test_the_phone_tool_is_visible_exactly_where_the_allowlist_grants_it():
+    """V20/L2 — the owner's phone rides the same derivation as every other registry tool.
+
+    `phone_read` must appear in the manifest for the two agents the policy firewall grants it
+    to, with the registry's OWN description, and in NO other agent's row; the registry catalog
+    carries it too. (The literal drift rows below are the byte-level pin.)
+    """
+    holders = {
+        agent_type: [tool["name"] for tool in capability_manifest.tool_entries_for(agent_type)]
+        for agent_type in pf.AGENT_CAPABILITIES
+    }
+    with_phone = {agent for agent, names in holders.items() if "phone_read" in names}
+    assert with_phone == {"orchestrator", "customer_support"}
+    assert holders["orchestrator"] == ["macro_snapshot", "pricing_catalog", "phone_read"]
+    assert holders["customer_support"] == ["phone_read"]
+    registry_names = [tool["name"] for tool in capability_manifest.registry_tool_entries()]
+    assert "phone_read" in registry_names
+    phone_entry = capability_manifest.tool_entries_for("customer_support")[0]
+    assert phone_entry["description"] == _spec_description("phone_read")
 
 
 def test_unknown_agent_gets_no_fabricated_capability():
@@ -98,8 +118,16 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
 # Same discipline as tests/parity/test_api_surface_parity.py's EXPECTED_ROUTES: adding,
 # renaming or removing a registry tool / allowlist entry / action class / channel is a
 # deliberate act, and the commit that changes it updates these rows in the same commit.
+#
+# WAVE V20 (L2, frozen `phone_read`): one tool joined the registry and two allowlists —
+#   * PINNED_REGISTRY_TOOLS gains `phone_read` (4 tools, sorted);
+#   * `orchestrator` gains it after macro/pricing (the owner: "agents/orchestrator can
+#     see/use the phone"); `customer_support` gains it as its ONLY registry tool (it already
+#     reads the owner's inbound correspondence).  Every other agent's row is UNCHANGED.
+# The rows below are the deliberate re-pin for that change; no action class or channel moved.
 
-PINNED_REGISTRY_TOOLS: tuple[str, ...] = ("macro_snapshot", "pricing_catalog", "web_fetch")
+PINNED_REGISTRY_TOOLS: tuple[str, ...] = (
+    "macro_snapshot", "phone_read", "pricing_catalog", "web_fetch")
 
 PINNED_AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "ads_management": (),
@@ -107,10 +135,10 @@ PINNED_AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "code_generation": (),
     "company_planner": ("macro_snapshot", "pricing_catalog"),
     "competitor_research": ("web_fetch",),
-    "customer_support": (),
+    "customer_support": ("phone_read",),
     "email_outreach": (),
     "finance": ("macro_snapshot", "pricing_catalog"),
-    "orchestrator": ("macro_snapshot", "pricing_catalog"),
+    "orchestrator": ("macro_snapshot", "pricing_catalog", "phone_read"),
     "social_media": (),
 }
 

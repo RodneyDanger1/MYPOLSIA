@@ -34,7 +34,8 @@ from app.agents.base_agent import BasePolsiaAgent
 #: Clearly fake, ASCII-only (httpx encodes header values as ASCII) — house pattern.
 SAFE_TEST_KEY = "sk-f1-seam-test-key"
 
-FROZEN_TOOL_NAMES = {"web_fetch", "macro_snapshot", "pricing_catalog"}
+#: V20/L2: `phone_read` joined the registry — the frozen wire vocabulary is four names.
+FROZEN_TOOL_NAMES = {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
 
 
 def _agent(agent_type: str) -> BasePolsiaAgent:
@@ -214,11 +215,12 @@ def test_case_a_over_requested_tool_is_refused_by_the_real_registry(monkeypatch)
 
 # ── Case B: agent with NONE — the pre-loop contract, byte-identical ───────────────────────────
 
-@pytest.mark.parametrize("agent_type", ["customer_support", "no_such_agent"])
+@pytest.mark.parametrize("agent_type", ["email_outreach", "no_such_agent"])
 def test_case_b_agent_without_registry_tools_sends_no_tools_field(monkeypatch, agent_type):
-    """`customer_support`: mapped, `agent_tools=()`; `no_such_agent`: an empty mapping must never
-    default to tools. Both: no `tools` on the wire, no `tools_used` in the envelope, exactly one
-    provider call — no key beyond the pre-loop body."""
+    """`email_outreach`: mapped, `agent_tools=()` (V20/L2 moved customer_support onto
+    `phone_read`, so the canonical no-tools agent is email_outreach); `no_such_agent`: an empty
+    mapping must never default to tools. Both: no `tools` on the wire, no `tools_used` in the
+    envelope, exactly one provider call — no key beyond the pre-loop body."""
     wire, seen = _wire(monkeypatch, lambda n, body: _completion(json.dumps({"summary": "plain"})))
 
     raw = _agent(agent_type)._real_call("plain work")
@@ -246,10 +248,18 @@ def test_case_c_doctrine_names_only_callable_registry_tools(monkeypatch):
     assert "- Tools available to you: macro_snapshot, pricing_catalog." in finance
     assert "web_fetch" not in finance          # not callable for finance -> must not be named
 
+    # V20/L2: customer_support now holds exactly the read-only phone tool; its doctrine names
+    # that tool and must never name a tool it cannot call.
     support = _agent("customer_support").layers_for({"title": "t"}, {})["tool_doctrine"].text
-    assert "none for this agent" in support
+    assert "phone_read" in support
+    assert "macro_snapshot" not in support and "pricing_catalog" not in support
+    assert "web_fetch" not in support
+
+    # A genuinely tool-less agent keeps the honest no-tools text.
+    empty = _agent("email_outreach").layers_for({"title": "t"}, {})["tool_doctrine"].text
+    assert "none for this agent" in empty
     for name in FROZEN_TOOL_NAMES:
-        assert name not in support
+        assert name not in empty
 
 
 # ── Hostile pass: the activation reader fails CLOSED on hostile/absent shapes ─────────────────

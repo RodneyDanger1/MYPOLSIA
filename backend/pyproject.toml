@@ -55,5 +55,5 @@ core = "sysmon"
 # (3,441 of 4,714 — 72.9953%, floored to 72). 2026-10-13: the R17–R32 hardening waves grew it to
 # 87.5461% (4,984 of 5,693; `pytest tests/unit tests/parity tests/redteam --cov=app`, the sysmon
 # core pinned above) — the originally-declared 75% target is now MET; the floor moves to 87.
-fail_under = 87
+fail_under = 88  # V20 settle: measured 92.07% on the settled tree (CI's exact command) — raised 87→88
 show_missing = true

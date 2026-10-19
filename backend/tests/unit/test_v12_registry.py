@@ -95,7 +95,8 @@ def _fetch(server: str, path: str, *, agent_type: str = "competitor_research", *
 
 def test_specs_are_openai_function_schemas_with_the_frozen_names():
     names = [spec["function"]["name"] for spec in tool_registry.TOOL_SPECS]
-    assert set(names) == {"web_fetch", "macro_snapshot", "pricing_catalog"}
+    # V20/L2: `phone_read` joined the frozen registry vocabulary (read-only, codes absent).
+    assert set(names) == {"web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"}
     for spec in tool_registry.TOOL_SPECS:
         assert spec["type"] == "function"
         function = spec["function"]

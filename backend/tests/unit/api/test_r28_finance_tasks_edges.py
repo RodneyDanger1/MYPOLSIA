@@ -681,12 +681,24 @@ async def test_dashboard_summary_row_none_is_a_fault_not_a_default(
     api_client, auth_headers, monkeypatch
 ):
     """The aggregate always yields exactly one row, so `None` here is a real fault; the route must
-    raise, never answer a plausible all-zero dashboard.  (The double replaces only the statement
-    read; a test-only seam, no production path is mocked.)"""
+    refuse, never answer a plausible all-zero dashboard.  (The double replaces only the statement
+    read; a test-only seam, no production path is mocked.)
+
+    DELIBERATE RE-PIN (V20/L1, card L2-09): this test used to expect a bare `RuntimeError` — i.e.
+    an UNCODED 500 on the wire, which is exactly the defect the card names.  The route now answers
+    the sibling `E_DB` refusal (`run_service.count_runs`'s pattern): 503, the named envelope and
+    the machine-readable code header.  The invariant this test exists for — "a fault is never an
+    all-zero dashboard" — is unchanged and asserted harder (no body fields at all).
+    """
 
     async def _no_row(db, stmt, *, what):
         return None
 
     monkeypatch.setattr("app.api.v1.dashboard.fetch_one", _no_row)
-    with pytest.raises(RuntimeError, match="dashboard summary statement returned no row"):
-        await api_client.get("/api/v1/dashboard/summary", headers=auth_headers)
+    resp = await api_client.get("/api/v1/dashboard/summary", headers=auth_headers)
+    assert resp.status_code == 503, resp.text[:300]
+    body = resp.json()
+    assert body["ok"] is False and body["error"]["code"] == E_DB
+    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert "dashboard summary statement returned no row" in body["error"]["message"]
+    assert "tasks_today_total" not in body, "a fault must never look like an all-zero dashboard"

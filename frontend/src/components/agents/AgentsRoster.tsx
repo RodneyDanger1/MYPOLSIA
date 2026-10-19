@@ -6,6 +6,8 @@ import { agentLabel, relativeTime } from "@/components/dashboard/format";
 import { useAgentStatus } from "@/hooks/useAgentStatus";
 import { statusChipClass } from "@/components/tasks/status";
 import type { AgentStatus } from "@/lib/api";
+import { AgentTools } from "./AgentTools";
+import { useAgentToolbox, type AgentToolboxRead } from "./useAgentToolbox";
 
 /**
  * Per-agent helper copy. Not API data — honest as long as it describes the REAL registry, and
@@ -30,9 +32,11 @@ export const AGENT_DESCRIPTIONS: Record<string, string> = {
  * with exactly the nine registry rows even on an empty DB — so the only "missing list" case is a
  * FAILED poll, rendered as the named failure and never as an empty "no agents" claim.
  *
- * The hook lives here (not in the page) on purpose: the page remounts this component (via `key`)
+ * The hooks live here (not in the page) on purpose: the page remounts this component (via `key`)
  * after a successful trigger, which is how the Q-20 "no refetch after a trigger" fix is
- * delivered without a second poller or a change to the shared hook.
+ * delivered without a second poller or a change to the shared status hook. The toolbox read
+ * (`useAgentToolbox`) rides the same mount: ONE `GET /ops/capabilities` feeds every row's
+ * expandable Tools section, never one request per agent.
  */
 export function AgentsRoster({
   pending,
@@ -49,6 +53,9 @@ export function AgentsRoster({
   onRunConfirm: (agentType: string) => void;
 }) {
   const { statuses, loading, error } = useAgentStatus();
+  // ONE capabilities read for the whole roster (not one per row); the helper copy above is not
+  // the source of the toolbox — the runtime registry is.
+  const toolbox = useAgentToolbox();
 
   if (loading) {
     return (
@@ -82,6 +89,7 @@ export function AgentsRoster({
         <AgentRow
           key={status.agent_type}
           status={status}
+          toolbox={toolbox}
           pending={pending[status.agent_type] === true}
           confirming={confirmAgent === status.agent_type}
           disabledByOther={confirmAgent !== null && confirmAgent !== status.agent_type}
@@ -96,6 +104,7 @@ export function AgentsRoster({
 
 function AgentRow({
   status,
+  toolbox,
   pending,
   confirming,
   disabledByOther,
@@ -104,6 +113,7 @@ function AgentRow({
   onRunConfirm,
 }: {
   status: AgentStatus;
+  toolbox: AgentToolboxRead;
   pending: boolean;
   confirming: boolean;
   disabledByOther: boolean;
@@ -176,6 +186,8 @@ function AgentRow({
           </div>
         </div>
       ) : null}
+
+      <AgentTools agentType={status.agent_type} toolbox={toolbox} />
     </article>
   );
 }

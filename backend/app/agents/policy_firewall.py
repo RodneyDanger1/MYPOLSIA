@@ -138,7 +138,11 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
         # `denied_tools=("*",)` denies every CLI tool; the registry namespace below is separate
         # (frozen V12 mapping: the orchestrator reasons over macro + pricing facts).
-        agent_tools=("macro_snapshot", "pricing_catalog"),
+        # V20/L2 — the owner asked that "agents/orchestrator can see/use the phone": the
+        # orchestrator holds the READ action class and plans from the owner's real situation,
+        # so the read-only `phone_read` joins its registry toolbox.  Codes are NEVER reachable
+        # through it (`tool_registry`: no codes field exists; code-shaped bodies are withheld).
+        agent_tools=("macro_snapshot", "pricing_catalog", "phone_read"),
     ),
     "business_planning": AgentCapability(
         allowed_tools=("Read",), denied_tools=("Bash", "Edit", "Write", "WebFetch", "mcp__*"),
@@ -196,6 +200,13 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE,
                                   ActionClass.EXTERNAL_REVERSIBLE}),
         channels=("email",),
+        # V20/L2 — this agent's whole job is reading the owner's inbound correspondence (its
+        # `email` channel is the owner's support inbox), so it holds the same owner-data READ
+        # class the orchestrator does and gets the read-only `phone_read`.  Every other
+        # tool-less agent stays tool-less: the market/macro readers and the outbound senders do
+        # not read the owner's private correspondence, so least privilege keeps them empty.
+        # Codes are NEVER reachable through the tool (see `tool_registry.PHONE_CODE_WITHHELD`).
+        agent_tools=("phone_read",),
     ),
     "ads_management": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),

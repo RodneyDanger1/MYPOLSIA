@@ -57,3 +57,16 @@ class DashboardSummaryResponse(BaseModel):
     active_agents: list[str] = []
     kpis: dict[str, Any] = {}
     last_report_date: date | None = None
+
+
+class ReportsListResponse(BaseModel):
+    """`GET /dashboard/reports` — the documents overlay's page + the TABLE's count (V8/C5).
+
+    V20/L1 (card L2-06): this wrapper used to be an untyped `dict[str, Any]`; the field order is
+    the dict's own build order, and each item is the same `DailyReportResponse` the old route
+    dumped into it, so the served bytes do not move.  `total` is the honest table count — the
+    route refuses `E_DB` rather than fabricate a 0 when the count read returns no row (L2-09).
+    """
+
+    items: list[DailyReportResponse]
+    total: int

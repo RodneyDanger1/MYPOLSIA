@@ -44,36 +44,42 @@ from app.config import settings
 from app.core import events
 from app.core.timeutil import day_window, iso_utc, today_in
 from app.models.task import AgentRun
+from app.schemas.ops import (
+    AgentQualityResponse,
+    CapabilityManifestResponse,
+    EventPublishStatsResponse,
+    SandboxStateResponse,
+)
 from app.services import capability_manifest
 from app.services.query_helpers import fetch_rows
 
 router = APIRouter(prefix="/ops", tags=["ops"], dependencies=[Depends(verify_api_key)])
 
 
-@router.get("/events/stats")
-async def read_event_publish_stats() -> dict[str, Any]:
+@router.get("/events/stats", response_model=EventPublishStatsResponse)
+async def read_event_publish_stats() -> EventPublishStatsResponse:
     """failures / skipped_while_open / breaker_open / cooldown_seconds / last_error."""
-    return events.publish_stats()
+    return EventPublishStatsResponse.model_validate(events.publish_stats())
 
 
-@router.post("/events/reset")
-async def reset_event_publish_breaker() -> dict[str, Any]:
+@router.post("/events/reset", response_model=EventPublishStatsResponse)
+async def reset_event_publish_breaker() -> EventPublishStatsResponse:
     """Clear the breaker and its counters after an incident; returns the fresh (clean) stats."""
     events.reset_publish_breaker()
-    return events.publish_stats()
+    return EventPublishStatsResponse.model_validate(events.publish_stats())
 
 
 # ── GET /ops/sandbox (V11 unit 2) ─────────────────────────────────────────────────────────────
 
 
-@router.get("/sandbox")
-async def read_sandbox_state() -> dict[str, Any]:
+@router.get("/sandbox", response_model=SandboxStateResponse)
+async def read_sandbox_state() -> SandboxStateResponse:
     """Whether external actions are sandboxed (`settings.SANDBOX_MODE`).
 
     Read-only BY DESIGN: flipping the flag stays a deliberate `.env` + restart action — but the
     product must be able to SAY sandbox is on instead of silently drafting everything.
     """
-    return {"sandbox_mode": bool(settings.sandbox_mode)}
+    return SandboxStateResponse(sandbox_mode=bool(settings.sandbox_mode))
 
 
 # ── GET /ops/agent-quality (V9 B2, S1 #8/#9) ──────────────────────────────────────────────────
@@ -152,19 +158,19 @@ async def _agent_quality_rows(db: AsyncSession) -> list[dict[str, Any]]:
     return rows
 
 
-@router.get("/agent-quality")
-async def agent_quality(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+@router.get("/agent-quality", response_model=AgentQualityResponse)
+async def agent_quality(db: AsyncSession = Depends(get_db)) -> AgentQualityResponse:
     """`{agents: [{agent_type, runs_7d, success_rate, last_failure_at, cost_per_completed_task}]}`."""
     with refusal_guard():
         rows = await _agent_quality_rows(db)
-    return {"agents": rows}
+    return AgentQualityResponse(agents=rows)
 
 
 # ── GET /ops/capabilities (V16/E6, frozen interface H-C1) ─────────────────────────────────────
 
 
-@router.get("/capabilities")
-async def read_capabilities() -> dict[str, Any]:
+@router.get("/capabilities", response_model=CapabilityManifestResponse)
+async def read_capabilities() -> CapabilityManifestResponse:
     """Every agent's REAL capabilities + the registry tool catalog, derived at request time.
 
     H-C1 (V16): `{agents: [{agent_type, tools: [{name, description}], action_classes, channels}],
@@ -172,6 +178,13 @@ async def read_capabilities() -> dict[str, Any]:
     and `tool_registry` through `app.services.capability_manifest` (never hand-copied). A registry
     inconsistency (an allowlist naming a tool no spec ships) raises the service's named `E_CONFIG`
     refusal through `refusal_guard` instead of fabricating a capability.
+
+    V20/L1 (card L2-06): the payload is declared (`CapabilityManifestResponse`) instead of
+    `dict[str, Any]`, so the frozen H-C1 shape is in OpenAPI. The service dict is validated —
+    never rebuilt — so the served bytes are unchanged (pinned byte-for-byte in
+    `tests/unit/test_v20_api_typing.py`).
     """
     with refusal_guard():
-        return capability_manifest.capability_manifest()
+        return CapabilityManifestResponse.model_validate(
+            capability_manifest.capability_manifest()
+        )

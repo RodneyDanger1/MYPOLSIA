@@ -18,6 +18,7 @@ import json
 from decimal import Decimal
 
 import pytest_asyncio
+from fastapi import Response
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -144,8 +145,11 @@ async def test_the_route_function_returns_validated_models_when_called_directly(
     from app.schemas.social import AdCampaignResponse
 
     await _add(async_db_session, "google_ads", "direct")
+    # V20/L1: the route now also declares the honest total on `X-Polsia-Total`, so the FastAPI
+    # injection it receives in production (`response: Response`) is supplied here too; the return
+    # contract this test pins — validated models, in order — is unchanged.
     out = await ads_campaigns(
-        platform=None, status_filter=None, limit=50, db=async_db_session
+        response=Response(), platform=None, status_filter=None, limit=50, db=async_db_session
     )
     assert [type(row) for row in out] == [AdCampaignResponse]
     assert out[0].name == "direct"
@@ -164,24 +168,39 @@ async def test_platform_and_status_filters_are_applied(api_client, async_db_sess
     both = await api_client.get(
         URL, headers=HEADERS, params={"platform": "google_ads", "status": "active"})
     assert [r["name"] for r in both.json()] == ["ga-active"]
+    # DELIBERATE RE-PIN (V20/L1, card L2-08): an unknown `status` is caller input, not a filter
+    # that happens to match nothing.  The 200-[] contract this test used to pin made a typo and an
+    # empty table indistinguishable; every status-filtered /api/v1 read now answers the same named
+    # 422 (`ck_ad_campaigns_status`'s vocabulary in the message + context).  No client sends an
+    # unknown value: `components/ads/query.ts` omits the param for null/"" and
+    # `components/ads/CampaignFilters.tsx:28` offers exactly the four CHECK values.
     unknown = await api_client.get(URL, headers=HEADERS, params={"status": "womble"})
-    assert unknown.status_code == 200 and unknown.json() == [], (
-        "an unknown status is 'no rows', not a lie: the read succeeded"
-    )
+    assert unknown.status_code == 422, unknown.text[:300]
+    assert unknown.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert unknown.json()["error"]["context"]["status"] == "womble"
 
 
-async def test_blank_filter_values_are_literal_values_not_omitted_filters(
+async def test_blank_filter_values_are_refused_by_name_not_treated_as_no_filter(
     api_client, async_db_session
 ) -> None:
-    """Pinned semantics, deliberately not "fixed" here: `?status=` arrives as `""`, not `None`,
-    so it filters for the empty string and answers `[]`.  `app/api/v1/social.py:16-17` and
-    `app/api/v1/outreach.py:16` have the identical shape — a house-wide normalisation decision, not
-    an ads-only edit (receipt: REQUIRED-FOLLOW-UP).  The shipped /ads page sends no parameters."""
+    """DELIBERATE RE-PIN (V20/L1, card L2-08) — this test used to pin `?status=` -> `200 []`.
+
+    `?status=` arrives as `""`, not `None`, and `""` is not a status: the house-wide decision the
+    old docstring called a REQUIRED-FOLLOW-UP is now made, so a blank value is the SAME named 422
+    as any other unknown one instead of a quiet empty page.  It is still NOT normalised to "no
+    filter" (the half the old pin was protecting): the answer is a refusal, never a full list.
+    No shipped client sends it — the ads query builder omits a null/blank filter entirely, and the
+    invoices/support pages build their path from `""` -> param omitted.
+    """
     await _add(async_db_session, "google_ads", "ga")
-    resp = await api_client.get(URL, headers=HEADERS, params={"status": "", "platform": ""})
-    assert resp.status_code == 200 and resp.json() == []
-    whitespace = await api_client.get(URL, headers=HEADERS, params={"status": "  "})
-    assert whitespace.status_code == 200 and whitespace.json() == []
+    for blank in ("", "  "):
+        resp = await api_client.get(URL, headers=HEADERS, params={"status": blank, "platform": ""})
+        assert resp.status_code == 422, f"{blank!r} -> {resp.status_code}"
+        assert resp.json()["error"]["code"] == "E_VALIDATION"
+    # `platform` is a free-form value (no vocabulary), so a blank platform is still a literal
+    # equality filter — unchanged by this lane.
+    platform_only = await api_client.get(URL, headers=HEADERS, params={"platform": ""})
+    assert platform_only.status_code == 200 and platform_only.json() == []
 
 
 async def test_limit_boundaries_and_their_422s(api_client, async_db_session) -> None:

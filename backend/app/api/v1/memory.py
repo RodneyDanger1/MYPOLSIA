@@ -13,10 +13,12 @@ caller can verify which document was removed.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.totals import TOTAL_HEADER, declared_total
+from app.models.memory import MemoryEntry
 from app.schemas.memory import MemoryCreate, MemoryEntryResponse, MemoryItem
 from app.services.memory_service import delete_memory, list_memories, search_memory, store_memory
 
@@ -25,6 +27,7 @@ router = APIRouter(prefix="/memory", tags=["memory"], dependencies=[Depends(veri
 
 @router.get("", response_model=list[MemoryItem])
 async def read_memory(
+    response: Response,
     q: str | None = Query(default=None),
     category: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200),
@@ -37,9 +40,21 @@ async def read_memory(
     if q is not None:
         with refusal_guard():
             hits = await search_memory(db, q, n_results=limit, category=category)
+        # No total header on a semantic search: the hit list is the index's answer set, not a
+        # table page, and a "match count" would have to come from a similarity threshold the
+        # product does not define (an invented number is worse than no declaration).
         return [MemoryItem.model_validate(hit) for hit in hits]
     with refusal_guard():
         entries = await list_memories(db, category=category, limit=limit)
+        # V20/L1 (card L2-07): the FULL filtered count of the LIST read (same WHERE, no LIMIT),
+        # so a full page is distinguishable from a truncated one.  Body stays a bare array.
+        total = await declared_total(
+            db,
+            MemoryEntry,
+            [] if category is None else [MemoryEntry.category == category],
+            what="memory total",
+        )
+    response.headers[TOTAL_HEADER] = str(total)
     return [MemoryItem.model_validate(entry, from_attributes=True) for entry in entries]
 
 

@@ -85,3 +85,34 @@ async def test_finance_tools_carry_the_registry_descriptions(api_client, auth_he
         {"name": "pricing_catalog", "description": _spec_description("pricing_catalog")},
     ]
     assert finance["channels"] == ["stripe"]
+
+
+@pytest.mark.asyncio
+async def test_phone_read_is_listed_exactly_where_the_allowlist_says(api_client, auth_headers):
+    """V20/L2 DRIFT PIN — the H-C1 payload gains ONE tool, deliberately.
+
+    Wave V20 added the read-only `phone_read` registry tool and granted it to exactly two
+    agents (the orchestrator — the owner: "agents/orchestrator can see/use the phone" — and
+    customer_support, which already reads the owner's inbound correspondence).  This row is the
+    wire-level re-pin: the two holders name it with the registry's OWN description, no other
+    agent does, and `registry_tools` still lists every tool sorted by name.  A future allowlist
+    or spec change fails here until this payload expectation is re-pinned on purpose.
+    """
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    rows = {row["agent_type"]: row for row in data["agents"]}
+    holders = {
+        agent_type for agent_type, row in rows.items()
+        if "phone_read" in [tool["name"] for tool in row["tools"]]
+    }
+    assert holders == {"orchestrator", "customer_support"}
+    assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
+        "macro_snapshot", "pricing_catalog", "phone_read"]
+    assert [tool["name"] for tool in rows["customer_support"]["tools"]] == ["phone_read"]
+    assert rows["customer_support"]["tools"][0]["description"] == _spec_description("phone_read")
+
+    registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}
+    assert registry_tools["phone_read"] == _spec_description("phone_read")
+    assert list(registry_tools) == sorted(registry_tools), "registry_tools stays sorted by name"

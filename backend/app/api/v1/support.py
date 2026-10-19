@@ -18,10 +18,12 @@ message is ever the outcome (see `support_inbox_service.submit_item`).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.totals import TOTAL_HEADER, declared_total
+from app.models.support import SupportInboxItem
 from app.schemas.support import SupportInboxItemCreate, SupportInboxItemResponse
 from app.services.support_inbox_service import list_items, submit_item
 
@@ -47,12 +49,25 @@ async def submit_inbox_item(
 
 @router.get("/inbox", response_model=list[SupportInboxItemResponse])
 async def read_inbox(
+    response: Response,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[SupportInboxItemResponse]:
-    """The stored items, newest first. `?status=pending|dispatched` filters; unknown → 422."""
+    """The stored items, newest first. `?status=pending|dispatched` filters; unknown → 422.
+
+    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    without LIMIT/OFFSET) so a full page is distinguishable from a truncated one.  The body stays
+    a bare array.
+    """
     with refusal_guard():
         items = await list_items(db, status=status_filter, limit=limit, offset=offset)
+        total = await declared_total(
+            db,
+            SupportInboxItem,
+            [] if status_filter is None else [SupportInboxItem.status == status_filter],
+            what="support inbox total",
+        )
+    response.headers[TOTAL_HEADER] = str(total)
     return [SupportInboxItemResponse.model_validate(item) for item in items]

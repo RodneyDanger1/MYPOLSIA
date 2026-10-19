@@ -91,10 +91,12 @@ from app.api.v1.dashboard import _summary_statement
 from app.config import settings
 from app.core.errors import (
     E_CONFIG,
+    E_DB,
     E_POLICY_DENIED,
     E_REDIS,
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
+    ERROR_HINTS,
     PolsiaError,
 )
 from app.models.chat import ChatMessage
@@ -453,7 +455,16 @@ async def _build_answer(db: AsyncSession, classification: Classification) -> tup
     if rule == "dashboard":
         row = await fetch_one(db, _summary_statement(db), what="dashboard summary")
         if row is None:  # the aggregate always yields exactly one row; None is a real fault
-            raise RuntimeError("dashboard summary statement returned no row")
+            # V20/L1 (card L2-09): a bare `RuntimeError` here was an UNCODED 500 in the chat
+            # reply path.  The aggregate breaking its one-row contract is a database fault, so it
+            # is refused BY NAME — the `run_service.count_runs` sibling pattern — and the chat
+            # route's `refusal_guard` turns it into the same envelope every other route serves.
+            raise PolsiaError(
+                E_DB,
+                "dashboard summary statement returned no row",
+                how_to_fix=ERROR_HINTS[E_DB],
+                context={"query": "dashboard summary", "surface": "chat dashboard answer"},
+            )
         return _render_dashboard(row), "dashboard summary"
     raise RuntimeError(f"chat classifier produced unknown answer rule {rule!r}")  # unreachable
 

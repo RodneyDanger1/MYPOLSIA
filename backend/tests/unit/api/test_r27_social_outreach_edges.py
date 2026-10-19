@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1.outreach import outreach_prospects
@@ -97,7 +97,12 @@ async def test_social_posts_filters_through_query_params(api_client, auth_header
     assert [row["content"] for row in both.json()] == ["l-pub"]
 
     missing = await api_client.get("/api/v1/social/posts?status=archived", headers=auth_headers)
-    assert missing.status_code == 200 and missing.json() == []
+    # DELIBERATE RE-PIN (V20/L1, card L2-08): `?status=` now validates against
+    # `ck_social_posts_status`'s vocabulary, so an unknown word is the named 422 every sibling
+    # status read answers instead of a `200 []` that reads like "no posts".
+    assert missing.status_code == 422, missing.text[:300]
+    assert missing.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert missing.json()["error"]["context"]["status"] == "archived"
 
 
 async def test_social_posts_wire_shape_and_order(api_client, auth_headers, async_db_session):
@@ -242,7 +247,10 @@ async def test_social_posts_route_body_direct_call(async_db_session):
 
 
 async def test_outreach_prospects_route_body_direct_call(async_db_session):
-    assert await outreach_prospects(status_filter=None, limit=100, db=async_db_session) == []
+    # V20/L1: the route declares the honest total on `X-Polsia-Total`, so the `Response` FastAPI
+    # injects in production is supplied here; the return contract (validated models) is unchanged.
+    assert await outreach_prospects(response=Response(), status_filter=None, limit=100,
+                                    db=async_db_session) == []
 
     async_db_session.add_all([
         Prospect(email="direct0@example.com", status="new", created_at=NOW),
@@ -251,11 +259,13 @@ async def test_outreach_prospects_route_body_direct_call(async_db_session):
     ])
     await async_db_session.flush()
 
-    rows = await outreach_prospects(status_filter=None, limit=100, db=async_db_session)
+    rows = await outreach_prospects(response=Response(), status_filter=None, limit=100,
+                                    db=async_db_session)
     assert [r.email for r in rows] == ["direct0@example.com", "direct1@example.com"]
     assert all(type(r).__name__ == "ProspectResponse" for r in rows)
 
-    filtered = await outreach_prospects(status_filter="contacted", limit=100, db=async_db_session)
+    filtered = await outreach_prospects(response=Response(), status_filter="contacted", limit=100,
+                                        db=async_db_session)
     assert [r.email for r in filtered] == ["direct1@example.com"]
 
 
@@ -271,7 +281,7 @@ async def test_route_body_direct_call_translates_E_DB_through_refusal_guard(
 
     for route, kwargs in (
         (social_posts, {"status_filter": None, "platform": None, "limit": 50}),
-        (outreach_prospects, {"status_filter": None, "limit": 100}),
+        (outreach_prospects, {"response": Response(), "status_filter": None, "limit": 100}),
     ):
         with pytest.raises(HTTPException) as excinfo:
             await route(db=async_db_session, **kwargs)

@@ -19,11 +19,14 @@ surface, and the recipient already knows their own address.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.status_filters import PROSPECT_STATUSES, require_status
+from app.api.v1.totals import TOTAL_HEADER, declared_total
+from app.models.outreach import Prospect
 from app.schemas.social import ProspectResponse
 from app.services.email_compliance import verify_unsubscribe_token
 from app.services.outreach_service import list_prospects, unsubscribe_prospect
@@ -44,12 +47,28 @@ OPT_OUT_PAGE = (
     dependencies=[Depends(verify_api_key)],
 )
 async def outreach_prospects(
+    response: Response,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProspectResponse]:
+    """The prospect list, newest first.
+
+    V20/L1 (cards L2-08 + L2-07): an unknown `status` is the named `E_VALIDATION` 422 every
+    sibling status-filtered read answers (it was `200 []` at 8fa2b38), and the full match count
+    rides `X-Polsia-Total` so a full page is distinguishable from a truncated one.  The body
+    stays a bare array — every existing client parses it as one.
+    """
     with refusal_guard():
+        require_status(status_filter, PROSPECT_STATUSES, what="prospect")
         prospects = await list_prospects(db, status=status_filter, limit=limit)
+        total = await declared_total(
+            db,
+            Prospect,
+            [] if status_filter is None else [Prospect.status == status_filter],
+            what="prospects total",
+        )
+    response.headers[TOTAL_HEADER] = str(total)
     return [ProspectResponse.model_validate(prospect) for prospect in prospects]
 
 

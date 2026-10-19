@@ -117,11 +117,15 @@ def test_the_real_agents_invocation_is_the_signal_this_loop_reads():
 
 
 def test_a_no_tool_agent_stays_byte_identical_through_the_real_producer():
-    """customer_support has an empty allowlist -> no `tools` field, no extra envelope keys."""
+    """email_outreach has an empty allowlist -> no `tools` field, no extra envelope keys.
+
+    (V20/L2 moved customer_support onto `phone_read`, so the canonical no-tools agent is a
+    genuinely tool-less one: email_outreach.)
+    """
     from app.agents.crew_factory import get_agent_class
 
-    agent = get_agent_class("customer_support")()
-    assert tool_registry.tools_for("customer_support") == ()
+    agent = get_agent_class("email_outreach")()
+    assert tool_registry.tools_for("email_outreach") == ()
     inv = agent._build_invocation("do the thing", json_schema=SUMMARY_SCHEMA,
                                   runtime_tools=())
 
@@ -145,7 +149,7 @@ def test_real_registry_specs_are_what_ride_the_request():
     assert envelope["tools_used"] == []
     assert server.requests[0]["body"]["tools"] == tool_registry.TOOL_SPECS
     assert {spec["function"]["name"] for spec in tool_registry.TOOL_SPECS} == {
-        "web_fetch", "macro_snapshot", "pricing_catalog"
+        "web_fetch", "macro_snapshot", "pricing_catalog", "phone_read"  # phone_read: V20/L2
     }
 
 

@@ -6,24 +6,27 @@ see `site_package_service`.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.schemas.site import SitePackageResponse
 from app.services.site_package_service import build_package_archive, build_site_package
 
 router = APIRouter(prefix="/site", tags=["site"], dependencies=[Depends(verify_api_key)])
 
 
-@router.post("/package")
-async def package_site(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """`{package_dir, files, slug}` — the written package's paths, never a hosting promise."""
+@router.post("/package", response_model=SitePackageResponse)
+async def package_site(db: AsyncSession = Depends(get_db)) -> SitePackageResponse:
+    """`{package_dir, files, slug}` — the written package's paths, never a hosting promise.
+
+    V20/L1 (card L2-06): the response is the declared `SitePackageResponse` instead of
+    `dict[str, Any]`; the service dict is validated in place, same key order, same bytes.
+    """
     with refusal_guard():
         result = await build_site_package(db)
-    return result
+    return SitePackageResponse.model_validate(result)
 
 
 @router.get("/package/download")

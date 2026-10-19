@@ -270,7 +270,7 @@ export/wipe: see §4.15. Full detail: README "Volumes & Backup".
 
 ---
 
-## 5. Phone in Polsia — **live (V16)**; codes panel + host send bridge (**V19**)
+## 5. Phone in Polsia — **live (V16)**; codes panel + host send bridge (**V19**); agent `phone_read` (**V20, settled**)
 
 Status: **live since V16** — proven against the real Phone Link store on 2026-10-15
 (`wave-v16/v-final/live-drill2.txt`: P1 `store_status='ok'`, unread 57, threads 10 · P4 codes
@@ -359,6 +359,50 @@ URL, unpaired driver → `E_PHONE_SEND_UNPAIRED`. `GET /health` reports `paired`
 `GET <url>/health` to answer `200 {status:"ok"}`; if it is unset the check is a **named SKIP**
 (bridge OFF — the default), never a silent pass.
 
+### 5.3 Agents can read the phone — the `phone_read` tool (V20)
+
+**Status: SETTLED ✅ (V20 lane L2; `wave-v20/l2-agent-phone-tool/RECEIPT.md`).** One firewalled call has
+been executed against the **real configured Phone Link store** (`ok=true`, `store_status=ok`,
+`thread_count=10`, `unread_total=10`, `truncated=true`; only counts were printed — bodies and names stay
+private). The compose image still serves the base build, so `GET /ops/capabilities` shows the tool's
+grants only after the settle rebuild; the ASGI-level pin already proves the payload.
+
+`phone_read` is the fourth registry tool, beside `web_fetch` / `macro_snapshot` / `pricing_catalog`:
+a granted agent can read the same Phone Link store `/phone` reads, during a run. Arguments
+`{"thread_id"?: int, "limit"?: int}` — `limit` defaults to **5**, is clamped to a hard cap of **10**
+(above it is clamped, the house `web_fetch.max_chars` rule), and anything below 1 / non-integer / bool
+is a named `E_VALIDATION`. Result:
+
+```json
+{"ok": true, "tool": "phone_read", "result": {
+  "store_status": "ok",
+  "threads": [{"thread_id": 11, "who": "…", "last_when": "…", "unread": 2}],
+  "messages": [{"when": "…", "dir": "out", "who": "…", "text": "…"}],
+  "truncated": false, "note": ""}}
+```
+
+- **Threads always**: newest ≤10; `truncated` + a `note` name the exact cut when the store has more
+  (e.g. “showing the newest 10 threads; older threads exist (thread cap 10)”). **Messages only when a
+  `thread_id` is given** — absent from the result otherwise, capped by `limit`. An unknown-but-valid
+  thread answers an honest `messages: []` (the store WAS read), not a refusal.
+- **Codes are never available through this tool.** The result has no `code`/`codes` key at any depth,
+  and `phone_link_service.codes()` is never called (trip-wired in the tests). Stronger than “no
+  field”: a message body that looks like a verification code is replaced with a named marker —
+  `[message body withheld: it looks like a verification code — codes are not available to tools]` —
+  the same rule the agent-visible activity feed already applies. Codes stay behind the key-only,
+  audit-logged owner route and the click-to-fetch panel (§5.1).
+- **Allowlisted per agent, enforced at call time.** Only **`orchestrator`** and **`customer_support`**
+  hold the grant (both already read owner data: the planner plans from the owner's real situation;
+  support's job is the owner's inbound correspondence). The other eight agents are refused by name
+  (`E_POLICY_DENIED`, `policy_code=POLSIA-E114`, message naming tool + agent) — pinned for all eight,
+  and the Capabilities map (§6) derives the same two holders. Every call rides `execute_tool`, which
+  consults `AgentCapability.agent_tools` on every call.
+- **No store, no fabrication.** With the store absent or corrupt, the tool returns the named
+  `E_PHONE_UNAVAILABLE` payload (service message + `how_to_fix`) — never an empty thread list.
+- **Proof**: RED **29/29 failed** before product code → GREEN **68/68** across the four files the lane
+  owns (neighbours 80/0), ruff/mypy clean. Deferred, stated: four V12-era pin files outside L2's
+  territory fail by design until the parent re-pins them (`REQUESTS-v12-pins.md`).
+
 ## 6. Capabilities — agents see their real toolbox (**live, V16**)
 
 Status: **live since V16** (frozen interface H-C1; real-store drill P6 `agents=10 registry_tools=3
@@ -371,6 +415,11 @@ the full cross-agent map. `GET /api/v1/ops/capabilities` serves the same shape f
 (registry change → parity pin fails). A read-only **Capabilities** page (`/capabilities` — the 16th nav route since V17; also linked
 from Settings) renders it honestly (empty registry → honest empty;
 never fabricated rows).
+
+Tool *calls* obey the same map, not just the page: `execute_tool` asks the firewall on **every** call,
+so an agent can only call what its `agent_tools` allowlist grants. The V20 `phone_read` tool (§5.3 —
+settled; granted to `orchestrator` + `customer_support` only) is the current example, which is why its
+per-agent grant is the honest answer to "which agents can read the phone".
 
 ---
 
@@ -424,7 +473,11 @@ The gate is the **ratchet** in `backend/pyproject.toml`: `[tool.coverage.report]
 measured at 87.5461% (4,984 of 5,693 statements) with the `sysmon` core pinned in
 `[tool.coverage.run]`. Coverage is only enforced when `--cov` is passed, so the command above (or
 CI's coverage step) is the gate; the full measured run also includes `tests/parity tests/redteam`.
-The floor only moves up.
+The floor only moves up. **V20 measurement (lane L3, `wave-v20/l3-proof-depth/RECEIPT.md`): 86.66%
+(11,631 statements, 1,551 missed)** — mid-wave, on an unfrozen tree — so the ratchet was **not raised**:
+`backend/pyproject.toml` is byte-identical (`fail_under = 87`, sha256 `98777917…486ffe`). The parent
+re-measures on the frozen tree; if that lands below 87.0, add targeted tests before commit — never
+lower the floor.
 
 ## 8. Where to learn more
 

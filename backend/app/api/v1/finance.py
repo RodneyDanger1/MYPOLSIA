@@ -63,6 +63,7 @@ from app.schemas.finance import (
     StripeEventResponse,
     StripeWebhookResponse,
 )
+from app.schemas.planning import FinancePlanningResponse
 from app.services import pricing_service
 from app.services.company_service import get_company
 from app.services.finance_service import (
@@ -675,8 +676,22 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
     }
 
 
-@router.get("/planning", dependencies=[Depends(verify_api_key)])
-async def finance_planning(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """The planning view: burn line items, capacity, margin template, guardrails, tax notes."""
+@router.get(
+    "/planning",
+    response_model=FinancePlanningResponse,
+    # V20/L1: the payload is assembled from dicts; `exclude_unset` keeps an ABSENT optional key
+    # absent (`burn_line_items[].reason`, the F24 provenance `reason`). A `null` we never wrote
+    # would both change the wire and read as "unmeasured" where the fact simply does not apply.
+    response_model_exclude_unset=True,
+    dependencies=[Depends(verify_api_key)],
+)
+async def finance_planning(db: AsyncSession = Depends(get_db)) -> FinancePlanningResponse:
+    """The planning view: burn line items, capacity, margin template, guardrails, tax notes.
+
+    V20/L1 (card L2-06): `dict[str, Any]` -> the declared `FinancePlanningResponse`, so the
+    v14 S3-05 reason contract is visible in OpenAPI. The service dict is VALIDATED in place — not
+    rebuilt — and the field order matches the dict's build order, so the bytes do not move.
+    """
     with refusal_guard():
-        return await build_planning_view(db)
+        payload = await build_planning_view(db)
+    return FinancePlanningResponse.model_validate(payload)

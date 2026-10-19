@@ -17,23 +17,26 @@ shifting the window (receipt: `## UNVERIFIED` #3 and REQUESTS #5).
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import case, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictDate
+from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.config import settings
+from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.company import CompanyConfig
-from app.models.report import DailyReport
+from app.models.report import ActivityLog, DailyReport
 from app.models.task import Task
 from app.schemas.report import (
     ActivityEventResponse,
     DailyReportResponse,
     DashboardSummaryResponse,
+    ReportsListResponse,
 )
 from app.services.activity_service import get_recent_activity
 from app.services.query_helpers import agent_rollup_expr, fetch_one, fetch_scalars
@@ -91,7 +94,15 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
     with refusal_guard():
         row = await fetch_one(db, _summary_statement(db), what="dashboard summary")
     if row is None:  # the aggregate always yields exactly one row; None here is a real fault
-        raise RuntimeError("dashboard summary statement returned no row")
+        # V20/L1 (card L2-09): this was a bare `RuntimeError` — an UNCODED 500 for a driver that
+        # broke its own `SELECT ... aggregate` contract.  Refuse BY NAME, the sibling pattern
+        # `run_service.count_runs` already uses (E_DB, 503, how_to_fix, the query named).
+        raise PolsiaError(
+            E_DB,
+            "dashboard summary statement returned no row",
+            how_to_fix=ERROR_HINTS[E_DB],
+            context={"query": "dashboard summary"},
+        )
 
     configured_tz = settings.company_timezone or "UTC"
     if row.company_timezone and row.company_timezone != configured_tz:
@@ -116,6 +127,7 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
 
 @router.get("/activity", response_model=list[ActivityEventResponse])
 async def dashboard_activity(
+    response: Response,
     limit: int = Query(default=50, ge=1, le=500),
     before: int | None = Query(
         default=None,
@@ -124,8 +136,22 @@ async def dashboard_activity(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> list[ActivityEventResponse]:
+    """The activity feed (most-recent first) + the honest count that satisfies the cursor.
+
+    V20/L1 (card L2-07): the cursor feed serves `limit` and no total, so a full page could not be
+    told from the end of the feed.  `X-Polsia-Total` now declares how many rows match the SAME
+    predicate the page used (`id < before` when a cursor is supplied) — a cursor feed's honest
+    total is "rows at or below this point", not the whole table.
+    """
     with refusal_guard():
         entries = await get_recent_activity(db, limit=limit, before_id=before)
+        total = await declared_total(
+            db,
+            ActivityLog,
+            [] if before is None else [ActivityLog.id < before],
+            what="activity total",
+        )
+    response.headers[TOTAL_HEADER] = str(total)
     return [ActivityEventResponse.model_validate(entry) for entry in entries]
 
 
@@ -149,17 +175,22 @@ async def dashboard_daily_report(
     return response
 
 
-@router.get("/reports")
+@router.get("/reports", response_model=ReportsListResponse)
 async def dashboard_reports_list(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> ReportsListResponse:
     """V8/C5 — the documents REPORTS list: `daily_reports` rows, newest first, `{items,total}`.
 
     No new table and no cached shape: the rows are the truth.  `total` is the TABLE's count
     (not the page's), so the frontend documents overlay (V8b) can page honestly.  Same refusal
     discipline as the sibling route: a driver failure is a named `E_DB`, never a bare 500.
+
+    V20/L1 (cards L2-06 + L2-09): the response is the declared `ReportsListResponse` instead of
+    `dict[str, Any]` (so OpenAPI carries the shape), and an ABSENT count row is now the named
+    `E_DB` refusal instead of `total: 0` — a fabricated measurement is the one thing the
+    null-honesty rule forbids (the runs ledger's `count_runs` refuses the same state).
     """
     with refusal_guard():
         rows = await fetch_scalars(
@@ -170,12 +201,8 @@ async def dashboard_reports_list(
             .offset(offset),
             what="daily reports list",
         )
-        total_row = await fetch_one(
-            db,
-            select(func.count()).select_from(DailyReport),
-            what="daily reports total",
-        )
-    return {
-        "items": [DailyReportResponse.model_validate(row).model_dump(mode="json") for row in rows],
-        "total": int(total_row[0]) if total_row is not None else 0,
-    }
+        total = await declared_total(db, DailyReport, [], what="daily reports total")
+    return ReportsListResponse(
+        items=[DailyReportResponse.model_validate(row) for row in rows],
+        total=total,
+    )

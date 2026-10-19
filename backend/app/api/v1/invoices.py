@@ -25,12 +25,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query, status
+from fastapi import APIRouter, Depends, Path, Query, Response, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.core.errors import E_DB, PolsiaError
+from app.models.invoice import Invoice, InvoiceStatus
 from app.schemas.company import non_finite_paths
 from app.schemas.invoice import InvoiceResponse
 from app.services import invoice_service
@@ -182,12 +184,27 @@ async def create_invoice(
 
 @router.get("", response_model=list[InvoiceResponse])
 async def list_invoices(
+    response: Response,
     status_value: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> list[InvoiceResponse]:
+    """The invoice list, newest first.
+
+    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    without LIMIT) so a full page is distinguishable from a truncated one.  The body stays a bare
+    array — every existing client parses it as one.  `status` is validated by the service
+    (`invoice_service._coerce_status`), unchanged.
+    """
     with refusal_guard():
         rows = await invoice_service.list_invoices(db, status=status_value, limit=limit)
+        total = await declared_total(
+            db,
+            Invoice,
+            [] if status_value is None else [Invoice.status == InvoiceStatus(status_value)],
+            what="invoices total",
+        )
+    response.headers[TOTAL_HEADER] = str(total)
     return [_invoice_response(row) for row in rows]
 
 
