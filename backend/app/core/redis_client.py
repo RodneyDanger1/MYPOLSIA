@@ -78,8 +78,10 @@ def get_redis_subscriber() -> aioredis.Redis:
 async def close_redis() -> None:
     global _client, _subscriber
     if _client is not None:
-        await _client.aclose()
+        # types-redis 4.6 stubs lag redis-py 5's async `aclose` (the documented close API);
+        # CI's mypy 1.13 sees the stub gap, local 2.x does not — keep the real call, pin the ignore.
+        await _client.aclose()  # type: ignore[attr-defined]  # stubs lag redis-py 5
         _client = None
     if _subscriber is not None:
-        await _subscriber.aclose()
+        await _subscriber.aclose()  # type: ignore[attr-defined]  # stubs lag redis-py 5
         _subscriber = None

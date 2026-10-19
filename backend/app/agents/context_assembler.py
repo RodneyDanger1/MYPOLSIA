@@ -275,16 +275,18 @@ def screen_prompt(text: str) -> list[str]:
 
 @dataclass
 class MemoryItem:
-    #: The provider's id as a string, or None when the provider has none.  A list position is
-    #: never an identity (F-09 / R7): the old enumerate-index fallback fabricated one, and a
-    #: tiebreak on a positional string let two identical queries disagree on order.
-    memory_id: str | None = field(default=None, kw_only=True)
     title: str
     content: str
     similarity: float            # 0..1 from the vector store (1 - distance) or FTS rank
     age_days: float
     tags: tuple[str, ...] = ()
     pinned: bool = False
+    #: The provider's id as a string, or None when the provider has none.  A list position is
+    #: never an identity (F-09 / R7): the old enumerate-index fallback fabricated one, and a
+    #: tiebreak on a positional string let two identical queries disagree on order.
+    #: Declared LAST and kw_only: mypy 1.13 (CI's pin) still enforces the dataclass ordering rule
+    #: on kw_only fields, and every constructor in this tree passes keywords — V21 settle.
+    memory_id: str | None = field(default=None, kw_only=True)
 
 
 def memory_identity(item: dict[str, Any]) -> str | None:
