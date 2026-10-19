@@ -15,7 +15,6 @@ Both fixes follow the codebase's standing rule: unreadable/mis-shaped data is "n
 """
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import select, text
 
 HEADERS = {"X-API-Key": "test-key"}
