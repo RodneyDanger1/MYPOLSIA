@@ -88,6 +88,10 @@ function TasksLoading() {
 function TasksPageContent() {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The server's declared full count from the board read's `X-Polsia-Total` (same response as
+   *  the rows). null = the response carried no readable header; the cap line then says only what
+   *  the rows prove, never an invented total. */
+  const [boardTotal, setBoardTotal] = useState<number | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
@@ -103,8 +107,18 @@ function TasksPageContent() {
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    // A new board read resets the total: a stale count must never label fresh rows.
+    setBoardTotal(null);
     api
-      .get<TaskRow[]>(`/tasks?limit=${TASKS_BOARD_LIMIT}`)
+      .get<TaskRow[]>(`/tasks?limit=${TASKS_BOARD_LIMIT}`, {
+        onHeaders: (headers) => {
+          if (cancelled) return;
+          const raw = headers.get("X-Polsia-Total");
+          if (raw === null) return;
+          const parsed = Number(raw.trim());
+          if (Number.isSafeInteger(parsed) && parsed >= 0) setBoardTotal(parsed);
+        },
+      })
       .then((data) => {
         if (!cancelled) setRows(data);
       })
@@ -255,8 +269,9 @@ function TasksPageContent() {
           <>
             {rows.length === TASKS_BOARD_LIMIT ? (
               <p className="ui-label text-ink-muted">
-                Showing the first {TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may
-                exist
+                {boardTotal !== null && boardTotal > rows.length
+                  ? `Showing the first ${TASKS_BOARD_LIMIT} of ${boardTotal} tasks`
+                  : `Showing the first ${TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may exist`}
               </p>
             ) : null}
             <TaskBoard rows={rows} onOpen={(task) => setOpenId(task.id)} />

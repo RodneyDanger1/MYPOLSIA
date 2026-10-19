@@ -215,14 +215,20 @@ fail-closed.
 ### 4.11 Ads (`/ads`) and Finance (`/finance`) + Invoices (`/invoices`)
 - **Ads:** campaign surface; the 6-hourly ads↔Stripe sync, and completed ads runs persist their own
   campaigns/metrics (deduped: campaign by provider id with a `(platform, name)` fallback, metric by
-  `(campaign_id, date)`). One named residual: `roas` reads 0 until the run schema carries
-  `revenue_usd` (README "Known gaps").
+  `(campaign_id, date)`). **Metrics (V22):** each campaign has a collapsible **Metrics** expander —
+  opening it issues one `GET /ads/campaigns/{id}/metrics?limit=90` and renders the real 90-day rows
+  (null → `—`, measured 0 → a real zero); collapsed issues no request. One named residual: `roas`
+  reads 0 until the run schema carries `revenue_usd` (README "Known gaps").
 - **Finance:** the seven KPI cards from `GET /finance/summary` plus revenue / expenses / invoices
   lists — a field that was never measured prints **null, never a fabricated 0**. Finance runs read
   real revenue facts (30-day window) and attach them; failed payments get their own leg.
 - **Invoices:** create → send → (paid / overdue / void). Send renders + delivers through the
   firewall — in sandbox it refuses with `E_SANDBOX_BLOCKED`, and a row flips to `sent` **only on a
-  confirmed provider delivery** (never optimistically). The dunning ladder self-gates hourly on the
+  confirmed provider delivery** (never optimistically). **Line items (V22):** the create form accepts
+  an optional itemised breakdown (repeating description / qty / unit price; a blank row is omitted, a
+  touched row is validated before POST), and every row shows a read-only `Items (N)` expander. Lists
+  that the API caps now state the declared total from `X-Polsia-Total` (invoices, outreach, support,
+  tasks, ads) instead of presenting the page as the whole table. The dunning ladder self-gates hourly on the
   company-local hour; each step fires at most once (activity-row ledger), so late/re-delivered ticks
   are harmless. Email gate: an invoice email is approval-gated when the amount asked reaches the
   threshold; plain reminders stay ungated. **Stripe webhook** (`POST /api/v1/finance/stripe/webhook`)
@@ -234,6 +240,14 @@ The agent-runs ledger (filters + `GET /runs/export?format=csv`, whose `X-Polsia-
 full filtered count by contract), plus the **OpsPanel**: agent-quality reads, the activity publish
 breaker stats, and a reset. Process boundary, stated not hidden: the breaker counters are
 per-process — the panel reports the API process; the worker reports its own every 15 minutes.
+
+**Run detail (V22).** Every ledger row's `RUN` column links to `/runs/{id}`, which reads
+`GET /api/v1/runs/{id}`: the stored counters (`num_turns`, `is_error` — `null` means not recorded,
+never 0/false) and the run's **tool activity**. `tools_used` is now persisted on `agent_runs`
+(migration `0010`); the panel renders one chip per tool with a count when the list was recorded,
+**"No tools were called in this run."** when the recorded list is empty, and **"Tool activity: not
+recorded for this run."** for legacy/mock/absent rows. A missing id is the named 404; a non-numeric
+id is refused before any request.
 
 ### 4.13 Maintenance (automatic, `/usage` + Activity show the results)
 Every 5 min: task-lease sweep (a dead worker's claim requeues), stranded-pending reconciler
@@ -403,6 +417,18 @@ is a named `E_VALIDATION`. Result:
   owns (neighbours 80/0), ruff/mypy clean. Deferred, stated: four V12-era pin files outside L2's
   territory fail by design until the parent re-pins them (`REQUESTS-v12-pins.md`).
 
+### 5.4 Reading a conversation on `/phone` (V22)
+
+Every thread row carries an **Open conversation** action. It mounts the in-page conversation panel,
+which fetches **only on selection** — `GET /api/v1/phone/messages?limit=100&thread_id=N` — and renders
+the store's newest-first rows (`when / dir / who / text`). The panel states its window: “Showing the
+newest N messages — one window of up to 100”. States are distinct and honest: a loading skeleton;
+**“No messages in this thread.”** for a real empty read; a named refusal inline (code + fix hint) with
+a working Retry; `E_PHONE_UNAVAILABLE` keeps the page's store-unavailable block. `← All threads`
+closes the panel and drops its rows. No storage, no console, no fabricated rows; the store's legal
+`when: null` renders “time unknown”. The page's separate recent-messages read on mount is unchanged
+and is not thread-scoped.
+
 ## 6. Capabilities — agents see their real toolbox (**live, V16**)
 
 Status: **live since V16** (frozen interface H-C1; real-store drill P6 `agents=10 registry_tools=3
@@ -473,13 +499,14 @@ python -m pytest tests/unit -q --cov=app        # the coverage gate (CI runs thi
 ```
 
 The gate is the **ratchet** in `backend/pyproject.toml`: `[tool.coverage.report] fail_under = 90`,
-measured at **92.08%** on the V21 tree (11,678 statements, 925 missed; CI's exact command) with the
+measured at **92.10%** on the V22 tree (11,711 statements, 925 missed; CI's exact command) with the
 `sysmon` core pinned in `[tool.coverage.run]` (87.5461% / 4,984 of 5,693 is the V19-base figure the
 floor first moved up from). Coverage is only enforced when `--cov` is passed, so the command above (or
 CI's coverage step) is the gate; the full measured run also includes `tests/parity tests/redteam`.
 The floor only moves up. **V20's mid-wave 86.66% did not earn a move; the V20 settle 92.07% raised
-87 → 88, and V21 lane L3's 92.08% raised 88 → 90.** If a future settled tree lands below 90.0, add
-targeted tests before commit — never lower the floor.
+87 → 88; V21 lane L3's 92.08% raised 88 → 90; V22 lane L4's 92.10% was below the 92.3 bar, so the
+floor stays 90.** If a future settled tree lands below 90.0, add targeted tests before commit — never
+lower the floor.
 
 ### 7.2 API docs — the Swagger UI (`/apidocs`, V21)
 

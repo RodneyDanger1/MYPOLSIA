@@ -26,6 +26,10 @@ export type InvoiceListRead = {
   rows: Invoice[] | null;
   error: string | null;
   loading: boolean;
+  /** The server's FULL filtered count from THIS read's `X-Polsia-Total` (the same response as the
+   *  rows). `null` when the response carried no readable header — the page then discloses only the
+   *  cap it can see, never an invented count. Reset on every (re)read. */
+  total: number | null;
   /** Exposed so an action's server answer can replace the row it names. The list endpoints and
    *  the create/send/void routes all answer `InvoiceResponse`, so the action answer IS the row —
    *  no follow-up read is invented for data the action already returned. */
@@ -39,13 +43,23 @@ export type InvoiceListRead = {
 export function useInvoiceList(path: string): InvoiceListRead {
   const [rows, setRows] = useState<Invoice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setRows(null);
     setError(null);
+    setTotal(null);
     api
-      .get<unknown>(path)
+      .get<unknown>(path, {
+        onHeaders: (headers) => {
+          if (cancelled) return;
+          const raw = headers.get("X-Polsia-Total");
+          if (raw === null) return;
+          const parsed = Number(raw.trim());
+          if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);
+        },
+      })
       .then((body) => {
         if (cancelled) return;
         if (!Array.isArray(body)) {
@@ -62,5 +76,5 @@ export function useInvoiceList(path: string): InvoiceListRead {
     };
   }, [path]);
 
-  return { rows, error, loading: rows === null && error === null, setRows };
+  return { rows, error, loading: rows === null && error === null, total, setRows };
 }

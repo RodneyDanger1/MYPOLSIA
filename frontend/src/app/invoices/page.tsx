@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
-import { usdText } from "@/components/finance/format";
+import { countText, usdText } from "@/components/finance/format";
 import { InvoiceCreateForm } from "@/components/invoices/InvoiceCreateForm";
 import { errorText, useInvoiceList } from "@/components/invoices/useInvoices";
 import { Button, Card, Chip } from "@/components/ui";
@@ -70,6 +70,47 @@ function billToName(row: Invoice): string {
   return typeof name === "string" && name.trim() !== "" ? name : NOT_MEASURED;
 }
 
+/** One free-form line item, in the item's own fields: description, quantity and amount when the
+ *  object carries them; a NAMED absence when it carries none (never `undefined`, never a `NaN`
+ *  price, never a blank row that reads as an item with no content). Booleans, arrays and non-string
+ *  descriptions are not display claims. */
+function lineItemText(item: unknown, index: number): string {
+  const fallback = `Item ${index + 1} — no description, quantity or amount recorded`;
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return fallback;
+  const record = item as Record<string, unknown>;
+  const description =
+    typeof record.description === "string" && record.description.trim() !== ""
+      ? record.description
+      : null;
+  const qtyRaw = record.quantity ?? record.qty;
+  const qty = typeof qtyRaw === "number" && Number.isFinite(qtyRaw) ? countText(qtyRaw) : null;
+  const amountRaw = record.amount ?? record.unit_price ?? record.price ?? record.total;
+  const amount =
+    typeof amountRaw === "number" && Number.isFinite(amountRaw) ? usdText(amountRaw) : null;
+  if (description === null && qty === null && amount === null) return fallback;
+  return [description ?? `Item ${index + 1}`, qty !== null ? `qty ${qty}` : null, amount]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}
+
+/** The row's read-only itemisation. The list read already carries `line_items` (the SAME schema
+ *  the create/get routes serve), so this opens locally and issues no request. `null` and `[]` are
+ *  "nothing was recorded" and draw no expander — an empty shell would imply items exist. */
+function InvoiceLineItems({ row }: { row: Invoice }) {
+  const items = Array.isArray(row.line_items) ? row.line_items : [];
+  if (items.length === 0) return null;
+  return (
+    <details data-testid={`invoice-items-${row.id}`} className="text-xs text-ink-muted">
+      <summary className="ui-label cursor-pointer text-link">Items ({items.length})</summary>
+      <ul className="mt-1 space-y-1" data-testid={`invoice-items-list-${row.id}`}>
+        {items.map((item, index) => (
+          <li key={index}>{lineItemText(item, index)}</li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export default function InvoicesPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const path =
@@ -77,7 +118,7 @@ export default function InvoicesPage() {
       ? `/invoices?limit=${INVOICE_LIMIT}`
       : `/invoices?limit=${INVOICE_LIMIT}&status=${encodeURIComponent(statusFilter)}`;
 
-  const { rows, error, loading, setRows } = useInvoiceList(path);
+  const { rows, error, loading, total, setRows } = useInvoiceList(path);
   const [busy, setBusy] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ id: number; text: string } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -189,6 +230,16 @@ export default function InvoicesPage() {
         </p>
       ) : null}
 
+      {/* W1 GAP-1a: the list is capped at INVOICE_LIMIT; when the response declared a larger
+          total, say both numbers. Before this, 101+ invoices presented the first 100 as the whole
+          table with no marker at all. */}
+      {!loading && error === null && rows !== null && total !== null && total > rows.length ? (
+        <p className="ui-label text-ink-muted" data-testid="invoices-truncation">
+          Showing the first {rows.length} of {total} invoices — the API caps this read at{" "}
+          {INVOICE_LIMIT} per request.
+        </p>
+      ) : null}
+
       {!loading && error === null && rows !== null && rows.length > 0 ? (
         <Card title="All invoices" data-testid="invoices-list">
           <div className="divide-y divide-line">
@@ -230,6 +281,7 @@ export default function InvoicesPage() {
                 {row.late_fee_note !== null && row.late_fee_note !== "" ? (
                   <p className="text-xs text-ink-muted">Late fee: {row.late_fee_note}</p>
                 ) : null}
+                <InvoiceLineItems row={row} />
                 <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"

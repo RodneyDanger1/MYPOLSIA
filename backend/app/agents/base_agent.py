@@ -82,6 +82,7 @@ RUN_META_KEYS = (
                            # "token_estimate"` + `pricing_version` — never a provider bill.
     "cost_estimate_usd",   # usage_json only (the CLI's own estimate, cumulative per session)
     "usage_json",          # agent_runs.usage_json   (usage + modelUsage + envelope facts)
+    "tools_used",          # agent_runs.tools_used   (V22/L1; list[str], capped at 50) + usage_json audit
     "num_turns",           # usage_json only
     "model",               # usage_json only (joined modelUsage, or the measured served model)
     "is_error",            # usage_json only

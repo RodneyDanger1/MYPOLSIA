@@ -57,6 +57,11 @@ export type NotificationsState =
  *  source, mirroring `ActivityFeed`'s `polsia.dashboard.feed.lastSeenAt`. */
 const LAST_SEEN_KEY = "polsia.topbar.notifications.lastSeenAt";
 
+/** The route serves at most this many items in the 48-hour window (`NOTIFICATIONS_LIMIT = 20`,
+ *  `backend/app/api/v1/notifications.py`). A served count AT the cap is "up to N", never a
+ *  claimed window total — the route sends no total (W2 D6). */
+const SERVED_CAP = 20;
+
 function readLastSeenAt(): number | null {
   if (typeof window === "undefined") return null;
   try {
@@ -280,7 +285,7 @@ export function NotificationsBell() {
         : null;
   const ariaLabel =
     state.status === "ready" && count !== null && count > 0
-      ? `Notifications, ${count} in the last 48 hours`
+      ? `Notifications, ${count >= SERVED_CAP ? `up to ${count}` : count} in the last 48 hours`
       : state.status === "error"
         ? "Notifications, unavailable"
         : "Notifications";

@@ -162,6 +162,12 @@ class AgentRun(Base):
     tokens_input: Mapped[int | None] = mapped_column(Integer)
     tokens_output: Mapped[int | None] = mapped_column(Integer)
     usage_json: Mapped[dict[str, Any] | None] = mapped_column(json_type())
+    # V22/L1 (migration 0010): the runtime's tool evidence, the fact V21 proved was produced and
+    # then dropped.  A portable JSON array of tool NAMES (never fetched content / arguments),
+    # NULLABLE with NO default on purpose: NULL = never recorded (legacy rows, tool-less runs),
+    # while [] = recorded and the model called none — a measured zero.  The writer bounds it
+    # (`app.agents.accounting.bounded_tools_used`: 50 entries, honest truncation marker).
+    tools_used: Mapped[list[str] | None] = mapped_column(json_type())
     # lane 06 §3.6 (migration 0002): the execution number of a retried task, so runs of
     # attempt 1 and attempt 3 are distinguishable.  Written by
     # `task_service.create_agent_run(..., attempt=<tasks.attempts>)` — the claim

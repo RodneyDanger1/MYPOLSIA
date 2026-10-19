@@ -62,13 +62,10 @@ async def read_memory(
 async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db)) -> MemoryEntryResponse:
     """Store one memory entry (sqlite row + ChromaDB document).
 
-    INTENDED STATUS (tracker S3-03, wave v13 wiring sweep; annotated wave v14): the route is
-    API-only at this HEAD. The Memory page (`frontend/src/app/memory/page.tsx`) reads
-    `GET /memory` and offers no add control, so the only callers are tests/e2e
-    (`tests/unit/api/test_memory.py`, `e2e/memory.spec.ts`). Whether the product gains an
-    "Add memory" control — which would also make the service's named `E_STORAGE` refusal reachable
-    from the UI — is an OPEN product decision, not an oversight to patch silently; do not delete
-    the route on the strength of its unreferenced state.
+    The Memory page has offered an "Add memory" control since V14 (`frontend/src/app/memory/page.tsx`
+    → `POST /memory`), so this route is product-reachable and its named `E_STORAGE` refusal renders
+    inline. (A stale V13/V14 note here once called it API-only; corrected in the V22 honesty sweep,
+    W2/D7.)
     """
     with refusal_guard():
         entry = await store_memory(
@@ -93,11 +90,10 @@ async def remove_memory(memory_id: int, db: AsyncSession = Depends(get_db)) -> M
     it carries the `chroma_id` that was deleted, so the caller can check the exact
     document rather than trusting an empty response.
 
-    INTENDED STATUS (tracker S3-03, wave v13 wiring sweep; annotated wave v14): API-only at this
-    HEAD — the Memory page offers no per-row "Forget" control, so the only callers are tests/e2e
-    (`tests/unit/api/test_memory_delete.py`, `e2e/memory.spec.ts`). The named `E_NOT_FOUND` refusal
-    is unreachable from the product until that control lands (or the owner decides the route stays
-    API-only). Do not read the absence of UI callers as a defect to delete.
+    INTENDED STATUS (tracker S3-03, wave v13 wiring sweep; corrected in the V22 honesty sweep,
+    W2/D7): the Memory page has offered a per-row "Forget" control since V14
+    (`frontend/src/app/memory/page.tsx` → `DELETE /memory/{id}`), so the named `E_NOT_FOUND`
+    refusal is product-reachable. The earlier "API-only at this HEAD" note was stale.
     """
     with refusal_guard():
         entry = await delete_memory(db, memory_id)

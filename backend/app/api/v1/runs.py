@@ -76,24 +76,28 @@ runs".  A count/rows mismatch refuses the same way, naming both numbers.
 AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router carries
 (`channels.py:52`, `notifications.py:82-84`).
 
-DETAIL — `GET /api/v1/runs/{run_id}` (V21/L2): ONE run, the frozen row plus the two accounting
-facts the record truly stores.
+DETAIL — `GET /api/v1/runs/{run_id}` (V21/L2; the `tools_used` gap closed by V22/L1): ONE run —
+the frozen row plus the accounting facts the record truly stores.
 
-  WHAT IS STORED, AND WHAT IS NOT (proven static + executable before this route existed):
+  WHAT IS STORED, AND THEREFORE SERVED:
     * `num_turns` and `is_error` ARE stored: `base_agent.usage_metadata` -> `RunUsage.as_dict` ->
       `agent_tasks._apply_run_usage` writes them into `agent_runs.usage_json`.  Served as
       `int | null` / `bool | null`; `null` = not recorded (legacy row), never 0 / false.
-    * `tools_used` is NOT stored.  The DeepSeek runtime puts it on the invocation envelope
-      (`deepseek_runtime.py:1225`), but the persistence boundary drops it: `accounting.RunUsage`
-      has no such field, `usage_from_envelope` never reads `env["tools_used"]`,
-      `base_agent.RUN_META_KEYS` omits it, and `_apply_run_usage` records only `usage_json` +
-      those keys.  `agent_runs` has no such column.  So this route does NOT serve a `tools_used`
-      field: `[]` would be the MEASURED ZERO "tools were available, none ran", a different fact
-      from "never recorded".  The finding is also in the lane receipt; if a future writer stores
-      it, the field is added HERE on purpose (never silently fabricated).
+    * `tools_used` IS stored since V22/L1.  The DeepSeek runtime puts the tool names on its
+      invocation envelope (`deepseek_runtime.py:1225`); `accounting.usage_from_envelope` reads it,
+      `_apply_run_usage` writes the `agent_runs.tools_used` column (migration 0010), and this route
+      serves it as `string[] | null` — with the three states intact:
+          null  = NEVER RECORDED (legacy row, mock mode, or a run with no tools at all),
+          []    = RECORDED AND NONE (tools were available, the model called none),
+          [...] = the recorded names, bounded by `accounting.bounded_tools_used` (50 entries; an
+                  overflowing list ends in an honest truncation marker, not a fake tool name).
+      Serving `[]` for `null` would turn "never recorded" into the measured zero "no tool ran" — a
+      different fact, and exactly the lie V21 refused to tell.
+    * The list/export row set is UNCHANGED: `tools_used` is detail-only, so the ledger feed does
+      not grow a field (B8's frozen list contract).
   * A missing run is the named 404 `E_NOT_FOUND` envelope (the `tasks.py:130-140` shape), never an
     empty 200 body.
-  * A malformed at-rest `usage_json` reads as null counters and the row still serves (the U5
+  * A malformed at-rest `usage_json`/`tools_used` reads as null and the row still serves (the U5
     per-row junk rule).
 """
 from __future__ import annotations
@@ -172,15 +176,17 @@ class RunsResponse(BaseModel):
 
 
 class RunDetail(RunRow):
-    """ONE run: the frozen row + the only envelope facts the record stores.
+    """ONE run: the frozen row + the stored counters + the persisted tool list.
 
-    `tools_used` is deliberately absent — see the module docstring's DETAIL section.  Both
-    counters are `null` when the row has no stored `usage_json` (a legacy/pre-accounting row):
-    null means "not recorded", never 0 turns and never a fabricated `is_error=False`.
+    `tools_used` (V22/L1) keeps the three states on the wire: `null` = never recorded, `[]` =
+    recorded and no tool ran, a list = the recorded names.  `num_turns`/`is_error` are `null` when
+    the row has no stored `usage_json` (a legacy/pre-accounting row): null means "not recorded",
+    never 0 turns and never a fabricated `is_error=False`.
     """
 
     num_turns: int | None
     is_error: bool | None
+    tools_used: list[str] | None
 
 
 #: The CSV header, DERIVED from the row model so it cannot drift from the wire contract.
@@ -251,6 +257,7 @@ def _detail_model(row: RunDetailData) -> RunDetail:
         **_row_model(row).model_dump(),
         num_turns=row.num_turns,
         is_error=row.is_error,
+        tools_used=row.tools_used,
     )
 
 

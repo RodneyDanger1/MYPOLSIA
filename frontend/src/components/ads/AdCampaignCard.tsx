@@ -4,6 +4,8 @@ import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { textOrDash, usdText } from "@/components/finance/format";
 import { Card, Chip, type ChipVariant, cn } from "@/components/ui";
 
+import { CampaignMetrics } from "./CampaignMetrics";
+
 /**
  * One campaign row of `GET /ads/campaigns` (`AdCampaignResponse`, `app/schemas/social.py:47-64`)
  * and its card renderer, on the U1 design language.
@@ -22,10 +24,11 @@ import { Card, Chip, type ChipVariant, cn } from "@/components/ui";
  *    printed `$3.25 spent` above a raw-float `$12.5/day budget`.
  *  - `created_at` null renders "date unknown" (the app-wide placeholder), never "Invalid Date".
  *
- * Deliberately presentational and hook-free (usable from a client tree or a server component), and
- * deliberately action-free: no write route exists for campaigns in this backend (route inventory:
- * `GET /ads/campaigns` only, `backend/app/api/v1/ads.py`), so no edit/pause/delete control is drawn
- * for it (refused by omission, the outreach/social precedent).
+ * Deliberately presentational apart from the ONE metrics expander below: no write route exists for
+ * campaigns in this backend (route inventory: `GET /ads/campaigns` + the per-campaign metrics read,
+ * `backend/app/api/v1/ads.py`), so no edit/pause/delete control is drawn for it (refused by
+ * omission, the outreach/social precedent). The expander reads `GET /ads/campaigns/{id}/metrics`
+ * when opened — the stored-measurement seam V22/L3 closed; it writes nothing.
  */
 export type AdCampaign = {
   id: number;
@@ -149,6 +152,8 @@ export function AdCampaignCard({ campaign }: { campaign: AdCampaign }) {
           <span className="ui-label text-ink-muted">ID {campaign.external_id}</span>
         ) : null}
       </div>
+
+      <CampaignMetrics campaignId={campaign.id} campaignName={textOrDash(campaign.name)} />
     </Card>
   );
 }

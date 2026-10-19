@@ -14,6 +14,7 @@ import {
   SEND_BODY_MAX,
   isSendBlocked,
   isPhoneUnavailable,
+  messageWhenText,
   parseCalls,
   parseMessages,
   parseRefusalBody,
@@ -26,10 +27,12 @@ import {
   sentClock,
   type PhoneMessage,
   type PhoneSendResult,
+  type PhoneThreadRow,
 } from "./phoneApi";
 import { PhoneUnavailable } from "./PhoneStates";
 import { PhoneCodesPanel } from "./PhoneCodesPanel";
 import { PhoneMediaSection } from "./PhoneMedia";
+import { PhoneThreadView } from "./PhoneThreadView";
 import { usePhoneRead } from "./usePhoneRead";
 
 /**
@@ -37,6 +40,9 @@ import { usePhoneRead } from "./usePhoneRead";
  *
  *   GET /api/v1/phone/summary                          -> threads index + the page's gate state
  *   GET /api/v1/phone/messages?limit&thread_id         -> recent window, or one thread's window
+ *                                                        (V22: the thread LIST's "Open conversation"
+ *                                                        selection mounts the in-page panel, which is
+ *                                                        the click-only reader — see PhoneThreadView)
  *   GET /api/v1/phone/calls?limit&missed_only          -> calls list, filterable
  *   GET /api/v1/phone/media?thread_id=N                -> per-thread media grid (V18)
  *   GET /api/v1/phone/media/{part_id}                  -> one streamed part (viewer/download)
@@ -112,6 +118,11 @@ export function PhoneConsole() {
   );
 
   const [query, setQuery] = useState("");
+
+  /** The in-page CONVERSATION (V22): the one thread the owner selected from the list. `null` is
+   *  the list view. Nothing thread-scoped is read until a click sets this — the panel owns the
+   *  read and unmounts (dropping every row) when the owner goes back. */
+  const [openThread, setOpenThread] = useState<PhoneThreadRow | null>(null);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -375,28 +386,48 @@ export function PhoneConsole() {
           </section>
 
           <section aria-label="Phone threads" className="space-y-2">
-            <SectionHeader kicker="THREADS" title="Threads" />
-            {summaryRead.data.threads.length === 0 ? (
-              <p data-testid="phone-threads-empty" className="ui-label text-ink-muted">
-                No threads in the phone store.
-              </p>
+            {openThread === null ? (
+              <>
+                <SectionHeader kicker="THREADS" title="Threads" />
+                {summaryRead.data.threads.length === 0 ? (
+                  <p data-testid="phone-threads-empty" className="ui-label text-ink-muted">
+                    No threads in the phone store.
+                  </p>
+                ) : (
+                  <ul data-testid="phone-threads" className="space-y-1">
+                    {summaryRead.data.threads.map((thread) => (
+                      <li key={thread.thread_id} data-testid="phone-thread-row" className="text-sm">
+                        <Link href={`/phone?thread=${thread.thread_id}`} className="link font-bold">
+                          {thread.with}
+                        </Link>
+                        {thread.unread > 0 ? (
+                          <span className="ui-label ml-1 text-ink-muted">{thread.unread} unread</span>
+                        ) : null}
+                        <span className="ui-label ml-2 text-ink-muted">
+                          {thread.last_when ?? "time unknown"}
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="phone-thread-open"
+                          aria-label={`Open conversation with ${thread.with}`}
+                          onClick={() => setOpenThread(thread)}
+                          className="link ui-label ml-2"
+                        >
+                          Open conversation
+                        </button>
+                        <span className="block truncate text-ink-muted">{thread.last_text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             ) : (
-              <ul data-testid="phone-threads" className="space-y-1">
-                {summaryRead.data.threads.map((thread) => (
-                  <li key={thread.thread_id} data-testid="phone-thread-row" className="text-sm">
-                    <Link href={`/phone?thread=${thread.thread_id}`} className="link font-bold">
-                      {thread.with}
-                    </Link>
-                    {thread.unread > 0 ? (
-                      <span className="ui-label ml-1 text-ink-muted">{thread.unread} unread</span>
-                    ) : null}
-                    <span className="ui-label ml-2 text-ink-muted">
-                      {thread.last_when ?? "time unknown"}
-                    </span>
-                    <span className="block truncate text-ink-muted">{thread.last_text}</span>
-                  </li>
-                ))}
-              </ul>
+              <PhoneThreadView
+                key={openThread.thread_id}
+                threadId={openThread.thread_id}
+                threadName={openThread.with}
+                onClose={() => setOpenThread(null)}
+              />
             )}
           </section>
 
@@ -466,7 +497,7 @@ export function PhoneConsole() {
                     data-testid="phone-message-row"
                     className="text-sm"
                   >
-                    <span className="ui-label text-ink-muted">{message.when}</span>
+                    <span className="ui-label text-ink-muted">{messageWhenText(message.when)}</span>
                     <span className="ui-label ml-2 text-ink-muted">{message.dir}</span>
                     <span className="ml-2 font-bold text-ink">{message.who}</span>
                     {threadId === null ? (

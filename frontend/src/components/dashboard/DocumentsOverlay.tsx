@@ -6,6 +6,7 @@ import type { KeyboardEvent } from "react";
 import { Button, Tabs, type TabItem } from "@/components/ui";
 import { api } from "@/lib/api";
 
+import { absoluteStamp } from "./format";
 import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
@@ -231,6 +232,15 @@ function ReportRows({ items, tab }: { items: ReportRow[]; tab: DocTab }) {
                   failed
                 </span>
               </div>
+              {/* W2 D3: each row is a SNAPSHOT; the stamp is the server's write time, so a
+                  morning count can never read as the day's final total. A span (not a <p>) keeps
+                  the "null plan renders no paragraph" contract intact. */}
+              <span
+                className="ui-label mt-0.5 block text-ink-muted"
+                data-testid={`report-updated-${row.id}`}
+              >
+                Updated {absoluteStamp(row.updated_at)}
+              </span>
               {/* A null morning_plan renders NOTHING — no filler line, no dash, no zero. */}
               {row.morning_plan ? (
                 <p className="mt-1 line-clamp-1 text-sm text-ink-muted">{row.morning_plan}</p>

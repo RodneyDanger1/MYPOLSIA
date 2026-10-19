@@ -6,17 +6,22 @@ import type { RunDetailRow } from "@/components/runs/useRunDetail";
 import { Card, Chip } from "@/components/ui";
 
 /**
- * One run's detail body: the stored ledger row + the honest tool-activity panel.
+ * One run's detail body: the stored ledger row + the REAL tool-activity panel.
  *
- * THE TOOL PANEL IS THE POINT OF THIS PAGE (V21/L2).  The run record stores no `tools_used` —
- * the runtime reports the list on its envelope and the persistence boundary drops it — so the
- * panel says "not recorded" and shows the two counters that ARE stored (`num_turns`, `is_error`).
- * It renders NO chip, because a chip needs a stored tool name and a stored count; there is
- * nothing here to count.  `[]` would have been the measured zero "tools were available, none
- * ran" — a different fact from "never recorded", and a lie this page refuses to tell.
+ * THE TOOL PANEL (V22/L1) renders the three states the backend now serves, and never merges them:
+ *
+ *   * `tools_used === null`  — NEVER RECORDED (legacy row, mock mode, tool-less run).  The honest
+ *     "not recorded" sentence, with NO chip: a chip needs a stored tool name.
+ *   * `tools_used === []`    — RECORDED AND NONE: "No tools were called in this run."  A measured
+ *     zero, not a missing value.
+ *   * names                  — one chip per tool with its COUNT (`×N`) from the stored list.  An
+ *     entry that is the writer's truncation marker (leading `…`) is a NOTE, never a tool chip.
  *
  * Every nullable value uses the app's shared formatters: null -> em dash, never 0 / false.
  */
+
+/** The writer's truncation marker starts with an ellipsis (`accounting.TOOLS_USED_TRUNCATION`). */
+const TRUNCATION_PREFIX = "…";
 
 /** The ledger's money shape: 4dp, so a measured sub-cent cost never collapses into `$0.00`. */
 function costText(value: number | null): string {
@@ -39,6 +44,19 @@ function errorFlagText(value: boolean | null): string {
   return value ? "error envelope seen" : "no error envelope";
 }
 
+function isTruncationMarker(name: string): boolean {
+  return name.trimStart().startsWith(TRUNCATION_PREFIX);
+}
+
+/** Tool names in first-seen order with their occurrence count (the stored list is the truth). */
+export function toolCounts(names: string[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count }));
+}
+
 function Field({ label, value, testId }: { label: string; value: ReactNode; testId?: string }) {
   return (
     <div className="min-w-0">
@@ -46,6 +64,31 @@ function Field({ label, value, testId }: { label: string; value: ReactNode; test
       <dd className="truncate text-sm text-ink" data-testid={testId}>
         {value}
       </dd>
+    </div>
+  );
+}
+
+/** The chip row for a recorded, non-empty tool list (names + counts + truncation note). */
+function ToolChips({ names }: { names: string[] }) {
+  const tools = toolCounts(names.filter((name) => !isTruncationMarker(name)));
+  const markers = names.filter(isTruncationMarker);
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-testid="run-tool-chips">
+      {tools.map(({ name, count }) => (
+        <span key={name} data-testid={`run-tool-chip-${name}`} data-tool={name}>
+          <Chip variant="soft" data-testid="run-tool-chip">
+            <span>{name}</span>
+            <span className="ml-2 text-ink-muted" aria-label="call count">
+              ×{count}
+            </span>
+          </Chip>
+        </span>
+      ))}
+      {markers.length > 0 ? (
+        <p className="text-sm text-ink-muted" data-testid="run-tools-truncated">
+          Tool list capped: {markers.join("; ")}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -92,16 +135,26 @@ export function RunDetail({ run }: { run: RunDetailRow }) {
 
       <Card title="Tool activity" data-testid="run-tool-activity">
         <div className="space-y-3">
-          <p className="text-sm text-ink" data-testid="run-tools-not-recorded">
-            <span className="ui-label mr-2 text-ink-muted">TOOLS</span>
-            Tool activity: not recorded for this run.
-          </p>
-          <p className="text-sm text-ink-muted">
-            The runtime reports <code>tools_used</code> on its invocation envelope, but this build
-            does not persist that list on the run record. No per-tool count is shown because there
-            is no stored tool list to count; absence here means &ldquo;not recorded&rdquo;, never
-            &ldquo;no tools ran&rdquo;.
-          </p>
+          {run.tools_used === null ? (
+            <>
+              <p className="text-sm text-ink" data-testid="run-tools-not-recorded">
+                <span className="ui-label mr-2 text-ink-muted">TOOLS</span>
+                Tool activity: not recorded for this run.
+              </p>
+              <p className="text-sm text-ink-muted">
+                This run&rsquo;s record carries no stored tool list — no chip is shown, because a
+                chip needs a recorded tool name and a count. Absence here means &ldquo;not
+                recorded&rdquo;, never &ldquo;no tools ran&rdquo;.
+              </p>
+            </>
+          ) : run.tools_used.length === 0 ? (
+            <p className="text-sm text-ink" data-testid="run-tools-none">
+              <span className="ui-label mr-2 text-ink-muted">TOOLS</span>
+              No tools were called in this run.
+            </p>
+          ) : (
+            <ToolChips names={run.tools_used} />
+          )}
 
           <dl className="grid grid-cols-2 gap-4 md:grid-cols-3">
             <Field
@@ -115,11 +168,6 @@ export function RunDetail({ run }: { run: RunDetailRow }) {
               testId="run-error-flag"
             />
           </dl>
-
-          <p className="text-sm text-ink-muted" data-testid="run-tools-available-note">
-            Per-tool chips become available only when a future writer persists the envelope&rsquo;s
-            tool list; this page will not invent one in the meantime.
-          </p>
         </div>
       </Card>
     </div>

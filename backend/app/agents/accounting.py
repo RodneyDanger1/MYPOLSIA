@@ -31,6 +31,51 @@ from typing import Any
 from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
 
 # ---------------------------------------------------------------------------
+# Tool evidence (V22/L1)
+# ---------------------------------------------------------------------------
+
+#: How many entries one run record's `tools_used` list may carry.  The envelope is
+#: provider-controlled, so the persistence boundary bounds it even though the DeepSeek runtime
+#: already caps its own list (32 unique names): a future/foreign producer must not be able to
+#: inflate a ledger row.  A list that OVERFLOWS keeps its first `TOOLS_USED_MAX - 1` names and
+#: spends the last slot on `TOOLS_USED_TRUNCATION`, so "capped" is auditable and never silent.
+TOOLS_USED_MAX = 50
+
+#: The final entry of a capped list.  It is deliberately NOT a plausible tool name: the leading
+#: ellipsis and the "more; capped at" wording exist so a consumer renders it as a NOTE, not as a
+#: tool that was called.
+TOOLS_USED_TRUNCATION = "… (+{omitted} more; capped at {limit})"
+
+
+def bounded_tools_used(value: Any) -> list[str] | None:
+    """One `tools_used` value as the list the ledger stores, or None.
+
+    THE THREE STATES this lane exists to keep distinct:
+
+      * `None` — NOT RECORDED: the key was absent/null, or the shape is junk (a string, a
+        mapping, a list with no string entries).  Never coerced into `[]`.
+      * `[]`   — RECORDED AND NONE: tools were available and the model called none (a measured
+        zero, exactly like `tokens_used == 0`).
+      * list   — the recorded names, order preserved, at most `TOOLS_USED_MAX` entries.  An
+        overflowing list keeps the first `TOOLS_USED_MAX - 1` names and appends the truncation
+        marker as its last entry.
+
+    Non-string entries are DROPPED, never stringified: `7` is not a tool name, and inventing
+    `"7"` would present junk as a recorded fact.  A list whose entries are ALL junk is not a
+    measurement at all -> None.
+    """
+    if not isinstance(value, list):
+        return None
+    names = [item for item in value if isinstance(item, str) and item]
+    if not names:
+        return [] if not value else None
+    if len(names) <= TOOLS_USED_MAX:
+        return names
+    kept = names[: TOOLS_USED_MAX - 1]
+    return [*kept, TOOLS_USED_TRUNCATION.format(omitted=len(names) - len(kept), limit=TOOLS_USED_MAX)]
+
+
+# ---------------------------------------------------------------------------
 # Envelope -> usage record
 # ---------------------------------------------------------------------------
 
@@ -58,6 +103,11 @@ class RunUsage:
     pricing_version: str = ""
     duration_ms: int | None = None
     num_turns: int | None = None
+    #: V22/L1 — the runtime's tool evidence, names only.  `None` = the envelope carried no
+    #: `tools_used` key (never recorded); `[]` = tools were available and none ran (measured
+    #: zero); a list = the names, already bounded by `bounded_tools_used`.  The distinction is
+    #: the whole point of the column: `[]` must never stand for "unknown".
+    tools_used: list[str] | None = None
     is_error: bool = False
     subtype: str = ""
     session_id: str = ""
@@ -82,8 +132,12 @@ class RunUsage:
         Unmeasured values pass through as None so `_apply_run_usage` leaves those columns NULL;
         `cost_estimate_usd` is None when `total_cost_usd` was never reported (never `round(None)`,
         never `0.0`).
+
+        V22/L1: `tools_used` is included ONLY when the envelope actually carried it.  A tool-less
+        envelope must not grow a `tools_used: None` key — that key would make "never recorded"
+        look like a recorded value, and `_apply_run_usage` reads presence to decide the column.
         """
-        return {
+        payload: dict[str, Any] = {
             "cli_session_id": self.session_id,
             "tokens_input": self.input_tokens,
             "tokens_output": self.output_tokens,
@@ -116,6 +170,9 @@ class RunUsage:
                 "subtype": self.subtype,
             },
         }
+        if self.tools_used is not None:
+            payload["tools_used"] = list(self.tools_used)
+        return payload
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -169,6 +226,10 @@ def usage_from_envelope(env: dict) -> RunUsage:
 
     L3-04: the DeepSeek envelope's `cost_estimate_usd` (token-derived, distinct from
     `total_cost_usd`) is read into its own field and its source is stamped.
+
+    V22/L1: the DeepSeek envelope's `tools_used` is read through `bounded_tools_used` — present
+    but empty stays `[]` (a measured zero), absent stays None (never recorded), and a junk shape
+    stays None rather than being coerced.
     """
     usage = env.get("usage") or {}
     model_usage = env.get("modelUsage") or env.get("model_usage") or {}
@@ -196,6 +257,7 @@ def usage_from_envelope(env: dict) -> RunUsage:
         pricing_version=str(env.get("pricing_version") or ""),
         duration_ms=_int_or_none(env.get("duration_ms")),
         num_turns=_int_or_none(env.get("num_turns")),
+        tools_used=bounded_tools_used(env.get("tools_used")),
         is_error=bool(env.get("is_error")),
         subtype=str(env.get("subtype") or ""),
         session_id=str(env.get("session_id") or ""),
@@ -375,11 +437,14 @@ def unit_economics(spend_by_agent: dict[str, float], completed_by_agent: dict[st
 
 
 __all__ = [
+    "TOOLS_USED_MAX",
+    "TOOLS_USED_TRUNCATION",
     "BudgetPolicy",
     "BudgetSnapshot",
     "BudgetStop",
     "RunUsage",
     "authorize",
+    "bounded_tools_used",
     "budget_policy_from_settings",
     "burn_rate",
     "cli_budget_flag",

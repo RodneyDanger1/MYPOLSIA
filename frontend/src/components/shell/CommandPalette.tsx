@@ -44,10 +44,18 @@ import { api } from "@/lib/api";
 // overlay value in this app; a local constant here exactly as it is there, no new colour.
 const SCRIM = "rgba(0, 0, 0, 0.55)";
 
-/** The three lazy reads, pinned to the shipped list endpoints. */
-const TASKS_READ = "/tasks?limit=50";
-const RUNS_READ = "/runs?limit=50";
-const REPORTS_READ = "/dashboard/reports?limit=20";
+/** The three lazy reads, pinned to the shipped list endpoints. The limits are named once so the
+ *  scope line below cannot drift from the requests it describes. */
+const TASKS_LIMIT = 50;
+const RUNS_LIMIT = 50;
+const REPORTS_LIMIT = 20;
+const TASKS_READ = `/tasks?limit=${TASKS_LIMIT}`;
+const RUNS_READ = `/runs?limit=${RUNS_LIMIT}`;
+const REPORTS_READ = `/dashboard/reports?limit=${REPORTS_LIMIT}`;
+
+/** W2 D5: the palette searches a WINDOW, not the whole ledger. Stated beside the listbox so a
+ *  "No matches." for an older record reads as "not in this window", not "does not exist". */
+const READ_SCOPE = `Searches the newest ${TASKS_LIMIT} tasks, ${RUNS_LIMIT} runs and ${REPORTS_LIMIT} reports.`;
 
 /** Rendered rows per section before the honest "…and N more" line — never a silent cut. */
 const SECTION_CAP = 8;
@@ -460,6 +468,13 @@ export function CommandPalette() {
               ))
           )}
         </div>
+
+        <p
+          className="border-t border-line px-3 py-1.5 text-xs text-ink-muted"
+          data-testid="palette-read-scope"
+        >
+          {READ_SCOPE}
+        </p>
       </div>
     </div>
   );

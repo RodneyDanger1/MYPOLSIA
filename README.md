@@ -32,13 +32,13 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Social** | `/social` | Post drafting/publishing + mention replies (really threaded) |
 | **Outreach** | `/outreach` | Prospects + compliance-gated cold email with follow-up sweep |
 | **Support** | `/support` | The inbox mirror; draft/send replies through the one compliance bridge |
-| **Ads** | `/ads` | Campaigns + metrics (ads↔Stripe sync every 6 h) |
+| **Ads** | `/ads` | Campaigns + **per-campaign metrics expander** (V22): opening a campaign issues one `GET /ads/campaigns/{id}/metrics` and renders the real rows (null → `—`, measured 0 → a real zero); collapsed issues no request. Ads↔Stripe sync every 6 h. The count line reads the server's declared total ("N of M campaigns") |
 | **Finance** | `/finance` | Revenue/expenses/invoices KPIs (`null` when never measured) |
-| **Invoices** | `/invoices` | Create → send → void, with the dunning ladder and amount-gated emails |
-| **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
+| **Invoices** | `/invoices` | Create → send → void, with the dunning ladder and amount-gated emails. V22: an optional **line-item editor** on create (blank row omitted; a touched row must name its description and carry numeric qty/price — refused before POST), a read-only `Items (N)` breakdown on each row, and an honest truncation marker from the server's declared total |
+| **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads). Since V21's settle every ledger row links to `/runs/{id}`; V22 adds the run's **real tool activity** — one chip per tool with a count when `tools_used` was recorded, "No tools were called in this run." for a recorded empty list, and "Tool activity: not recorded for this run." for legacy/missing rows (never a fabricated chip or zero) — beside the stored `num_turns`/`is_error` |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
-| **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser. **Agents (V20):** the firewalled read-only `phone_read` tool — newest threads + optional per-thread messages, **codes never** (code-shaped bodies withheld), granted to `orchestrator` + `customer_support` only; the running image shows the new grant after the V20 rebuild (USAGE §5.3). See USAGE §5.1–5.3; [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser. **Thread view (V22):** any thread row's **Open conversation** opens an in-page panel (`GET /phone/messages?limit=100&thread_id=N`, fetched only on selection) with loading / empty / named-refusal / store-unavailable states and `← All threads` to return. **Agents (V20):** the firewalled read-only `phone_read` tool — newest threads + optional per-thread messages, **codes never** (code-shaped bodies withheld), granted to `orchestrator` + `customer_support` only; the running image shows the new grant after the V20 rebuild (USAGE §5.3). See USAGE §5.1–5.4; [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 | **API docs** | `/apidocs` | *V21* — the API's own **Swagger UI**, proxied by nginx to FastAPI's `/docs` (`/docs` itself stays with the Next app, which has no such page in this tree, so it answers 404). The schema is at `/openapi.json`. Explore/probe any route by hand: each protected operation shows an `X-API-Key` header field — use **Try it out**, paste the owner key, **Execute** (this app declares the key as a header parameter, not a security scheme, so there is no Authorize button). Auto-hidden (404) when `SANDBOX_MODE=false`. Needs the V21 nginx reload; `make smoke`'s `api-docs` check proves both URLs (USAGE §7.2) |
 
@@ -181,7 +181,7 @@ Fill in the relevant sections of `.env` to activate each integration:
 Things this repository declares or advertises that are **not** yet true, recorded here instead of being
 quietly relaxed. Each one names its measurement.
 
-- **Backend coverage: 92.08% on the V21 tree — the floor is 90 and only moves up.** The
+- **Backend coverage: 92.10% on the V22 tree — the floor is 90 and only moves up.** The
   historical base measurement (4,984 of 5,693 statements; `pytest tests/unit tests/parity
   tests/redteam --cov=app` with the `sysmon` core pinned in `pyproject.toml` — the truthful tracer for
   async route lines, measured by R26/R27/R28; it was 51.48% at the first measurement and 73.0% before
@@ -189,8 +189,10 @@ quietly relaxed. Each one names its measurement.
   gate is a **ratchet at the measured floor (90)**, so it only moves up. V20 lane L3 measured
   **86.66%** mid-wave on an unfrozen tree (not a move); the V20 settle run measured **92.07%** and
   raised the floor **87 → 88**. V21 lane L3 then measured **92.08%** (11,678 statements, 925 missed;
-  CI's exact command) and raised it **88 → 90** (`backend/pyproject.toml:58` — the single truth). If a
-  future settled tree lands below 90.0, targeted tests are required before commit, not a lowered floor.
+  CI's exact command) and raised it **88 → 90** (`backend/pyproject.toml:58` — the single truth). V22
+  lane L4 measured **92.10%** on the V22 tree (11,711 statements, 925 missed) — below the 92.3 bar, so
+  the floor **stays 90**. If a future settled tree lands below 90.0, targeted tests are required
+  before commit, not a lowered floor.
 - **The advertised capability that had no producer wired in is now closed (with one named residual).**
   The `ad_campaigns`/`ad_metrics` writers had no callers — an honest 0-with-no-data situation, tracked
   as work, not presented as a working feature. R33 wired them: a completed `ads_management` run

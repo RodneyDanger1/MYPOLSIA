@@ -808,4 +808,14 @@ async def list_history(db: AsyncSession, limit: int = 50) -> ChatHistoryResponse
         ChatHistoryItem(role=row.role, content=row.content, created_at=row.created_at, task_id=row.task_id)
         for row in reversed(rows)
     ]
-    return ChatHistoryResponse(items=items, total=int(total or 0))
+    if total is None:
+        # Contract mirror of `run_service.count_runs` (V22 honesty sweep, W2/D9): `SELECT count(*)`
+        # always yields one row, so a None means the driver broke its own contract — refuse by name
+        # rather than serving a fabricated 0.
+        raise PolsiaError(
+            E_DB,
+            "chat message count query returned no row",
+            how_to_fix=ERROR_HINTS[E_DB],
+            context={"query": "chat history total"},
+        )
+    return ChatHistoryResponse(items=items, total=int(total))

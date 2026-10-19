@@ -114,6 +114,15 @@ this file's own `test_create_all_ddl_sha256_is_frozen`):
 `002b7d24591799231e289879b863ef071b3986629646186fb52eb1551bea310e` ->
 `f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106` (S1-04, wave v14: the
 fabricated `invoices.tax` default 0 — python AND server — removed; see migration 0009).
+
+RE-PINNED DELIBERATELY (V22/L1, 2026-10-19): `agent_runs.tools_used` — the DeepSeek envelope's
+tool evidence (the V21 finding: produced but never persisted) — is now a real column, added by
+`backend/alembic/versions/0010_agent_run_tools_used.py`.  JSON (JSONB on PostgreSQL), NULLABLE
+with NO default: NULL = never recorded, `[]` = recorded and no tool ran.  Appended after
+`usage_json` (the ORM/migration column order).  One column row added; no other row changed.  Old
+canonical sha256 `f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106` ->
+`c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -132,7 +141,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "f44986f65f98ce3c82632d39456f248ca55162566fc32924f28ee98fda913106"
+DDL_SHA256 = "c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -217,6 +226,8 @@ FROZEN_COLUMNS = {
         ('tokens_input', 'INTEGER', True, '', '', '', False),
         ('tokens_output', 'INTEGER', True, '', '', '', False),
         ('usage_json', 'JSON', True, '', '', '', False),
+        # V22/L1 (migration 0010): the runtime's tool evidence — JSON, NULLABLE, no default.
+        ('tools_used', 'JSON', True, '', '', '', False),
         # PHASE-3 L2-03: the retry ledger's execution number, mapped onto the 0002 column
         ('attempt', 'INTEGER', True, '', '', 'ux_agent_runs_task_attempt', False),
     ),

@@ -465,10 +465,12 @@ describe("Ads — filters re-issue the real query params (each control proven)",
     render(<AdsPage />);
     await screen.findByTestId("ads-count");
 
-    // The COMPLETE button inventory: Refresh + the platform filter chips (observed values only).
-    // Platform chip -> `platform=…`, status select -> `status=…`, Refresh -> the same path; all
-    // proven above. Anything else would be a control with no real query behind it.
+    // The COMPLETE button inventory: Refresh + the platform filter chips (observed values only) +
+    // one real metrics expander per campaign row. Platform chip -> `platform=…`, status select ->
+    // `status=…`, Refresh -> the same path; the expander -> `/ads/campaigns/{id}/metrics` only when
+    // opened (proven by `v22-wiring-ads-metrics.test.tsx`). Anything else would be a control with
+    // no real query behind it.
     const labels = screen.getAllByRole("button").map((button) => button.textContent);
-    expect(labels).toEqual(["Refresh", "All platforms", "meta", "google"]);
+    expect(labels).toEqual(["Refresh", "All platforms", "meta", "google", "Metrics", "Metrics"]);
   });
 });

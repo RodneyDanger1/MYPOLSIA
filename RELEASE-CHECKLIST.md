@@ -29,13 +29,15 @@ python -m pytest tests/unit tests/redteam tests/parity -q   # → 0 failed / 0 e
 - [ ] Full backend suite green with the expected tally (junit xml attached to the wave receipt);
       skipped count named (testcontainers tests skip without Docker — integration runs in CI).
 - [ ] Coverage gate holds: `cd backend && python -m pytest tests/unit -q --cov=app` ≥ the ratchet in
-      `backend/pyproject.toml` — `[tool.coverage.report] fail_under = 90`, measured at **92.08%** on
-      the V21 tree (`11,678` statements / `925` missed, CI's exact command with `--cov-report=term-missing`)
+      `backend/pyproject.toml` — `[tool.coverage.report] fail_under = 90`, measured at **92.10%** on
+      the V22 tree (`11,711` statements / `925` missed, CI's exact command with `--cov-report=term-missing`)
       with `core = "sysmon"` in `[tool.coverage.run]`. The config is the single truth; 87.5461%
       (4,984 of 5,693) is the V19-base history. **V20 lane L3's mid-wave 86.66% did not earn a move;
       the V20 settle 92.07% raised 87 → 88; V21 lane L3 measured 92.08% (exit 0) and raised 88 → 90
-      (`backend/pyproject.toml:58`).** The full run stays parent/verifier-owned. If the settled number
+      (`backend/pyproject.toml:58`); V22 lane L4 measured 92.10% — below the 92.3 bar, so the floor
+      stays 90.** The full run stays parent/verifier-owned. If the settled number
       lands below 90.0, targeted tests are required — never a lowered floor. Evidence:
+      `wave-v22/l4-proof/raw/coverage-ci-exact.txt`,
       `wave-v21/l3-proof-depth2/raw/coverage-ci-exact.txt`, `wave-v20/l3-proof-depth/raw/coverage-run.log`;
       base artifact `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
 - Executed locally in V17 (L5): `ruff check tests/unit/test_v17_restore_script.py` → "All checks
@@ -222,6 +224,37 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       v21-not-found.spec.ts --reporter=list` → all green (5 codes-panel + 5 toolbox + 1 not-found).
       The toolbox spec is already green against the served V20 build (L3 receipt); the 404 spec is
       RED until the rebuild because the served bundle predates `not-found.tsx`.
+
+- [ ] **V22 — tools_used persistence (parent live-check; migration + visual)** — apply the new
+      migration to the running database (`make migrate`; revision `0010_agent_run_tools_used`), rebuild
+      the backend + frontend images, then open `/usage` and follow a ledger row's `RUN` link. Required
+      three states: recorded tools → one chip per tool with `×count`; recorded empty list → “No tools
+      were called in this run.”; legacy/absent → “Tool activity: not recorded for this run.” (no chip).
+      A fabricated `[]` for a legacy row, a chip for a null row, or a missing column is the defect this
+      check looks for. Evidence: `wave-v22/l1-tools-persist/RECEIPT.md`.
+- [ ] **V22 — phone conversation view (parent live-check; visual)** — after the FE rebuild, open
+      `/phone` and click **Open conversation** on a thread row. Required: exactly one
+      `GET /api/v1/phone/messages?limit=100&thread_id=<id>` on selection (none on mount), rows in the
+      store's newest-first order, the “Showing the newest N … one window of up to 100” note, an honest
+      empty state, a named refusal + Retry, and `← All threads` returning to the list with the rows
+      dropped. Evidence: `wave-v22/l2-phone-thread/RECEIPT.md`.
+- [ ] **V22 — wiring fixes (parent live-check; read-only)** — after the FE rebuild: `/invoices` create
+      form shows the line-item editor and each row's `Items (N)` expander; `/ads` count reads
+      “N of M campaigns” and a campaign's Metrics expander issues one read only when opened; `/tasks`,
+      `/outreach`, `/support` truncation lines state the declared total; the CommandPalette shows its
+      “Searches the newest 50 tasks, 50 runs and 20 reports.” scope line; the bell says “up to 20” at
+      the cap; the Daily Report shows `Updated <stamp>`. Evidence:
+      `wave-v22/l3-wiring-fix/RECEIPT.md`.
+- [ ] **V22 — e2e sweep (parent live-check; after the rebuild)** —
+      `cd e2e && npx playwright test v22-run-chips.spec.ts v22-phone-thread.spec.ts --reporter=list`
+      (plus the V20/V21 specs) against `http://127.0.0.1`. The specs stub the run-detail and phone
+      reads; the module-level gate (jest/tsc) is L6's.
+- [ ] **V22 — commit content (parent)** — the wave commit must include L3's 17 modified/new product
+      files and 6 new FE test files (listed in `wave-v22/l3-wiring-fix/RECEIPT.md` §Skipped). After
+      the commit, `git show HEAD:frontend/src/components/ads/AdCampaignCard.tsx | grep -c CampaignMetrics`
+      ≥ 1, `… app/invoices/page.tsx | grep -c line_items` ≥ 1, and
+      `… frontend/src/lib/api.ts | grep -c onHeaders` ≥ 1 must all pass; otherwise the ads-metrics
+      route and the totals fixes regress.
 
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,

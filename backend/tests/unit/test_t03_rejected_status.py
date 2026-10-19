@@ -104,18 +104,22 @@ def _revision_graph() -> dict[str, str | None]:
 
 
 def test_the_migration_chain_is_linear_with_a_single_head():
-    """0009 is the ONE head; walking down visits every revision exactly once, in order."""
+    """0010 is the ONE head; walking down visits every revision exactly once, in order.
+
+    V22: the head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) — a deliberate
+    re-pin of the head literal; the linearity law itself is unchanged.
+    """
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0009"], f"expected a single head (0009), found {heads}"
+    assert heads == ["0010"], f"expected a single head (0010), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0009"
+    cursor: str | None = "0010"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0009", "0008", "0007", "0006", "0005", "0004", "0003", "0002", "0001"
+        "0010", "0009", "0008", "0007", "0006", "0005", "0004", "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
 
@@ -304,7 +308,9 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # `0009_drop_invoices_tax_server_default.py` (deliberate old -> new: "0008" ->
         # "0009", wave v14 S1-04); the 0005/0006 legs below are unchanged and still assert
         # THIS revision's own moves.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0009"
+        # V22: the chain head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) —
+        # a deliberate re-pin of the head literal; the 0005/0006 legs below are unchanged.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

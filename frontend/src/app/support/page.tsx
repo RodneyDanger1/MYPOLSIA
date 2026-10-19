@@ -29,6 +29,9 @@ function errorText(e: unknown): string {
 export default function SupportPage() {
   const [items, setItems] = useState<SupportInboxItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The server's full filtered count from THIS read's `X-Polsia-Total` (same response as the
+   *  rows). null = no readable header; the count then states only the page length + cap. */
+  const [total, setTotal] = useState<number | null>(null);
   const [filter, setFilter] = useState<"" | SupportInboxStatus>("");
   const [reloadCount, setReloadCount] = useState(0);
 
@@ -38,12 +41,21 @@ export default function SupportPage() {
     // honest way to say "the list you are looking at is being replaced" (outreach-page rule).
     setItems(null);
     setError(null);
+    setTotal(null);
     const path =
       filter === ""
         ? `/support/inbox?limit=${LIST_LIMIT}`
         : `/support/inbox?status=${filter}&limit=${LIST_LIMIT}`;
     api
-      .get<SupportInboxItem[]>(path)
+      .get<SupportInboxItem[]>(path, {
+        onHeaders: (headers) => {
+          if (cancelled) return;
+          const raw = headers.get("X-Polsia-Total");
+          if (raw === null) return;
+          const parsed = Number(raw.trim());
+          if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);
+        },
+      })
       .then((rows) => {
         if (!cancelled) setItems(rows);
       })
@@ -82,11 +94,16 @@ export default function SupportPage() {
 
       <InboxComposer onFiled={refresh} />
 
-      {/* A count of what THIS read measured — never a claimed total (Q-12). */}
+      {/* A count of what THIS read measured — never a claimed total (Q-12). When the response
+          declared the full filtered count, both numbers are stated ("50 of 137"); when it did
+          not, a full page still discloses its cap. */}
       {items !== null ? (
         <p className="ui-label text-ink-muted" data-testid="support-count">
-          {items.length} {items.length === 1 ? "message" : "messages"}
-          {truncated ? ` · showing the first ${LIST_LIMIT}` : ""}
+          {total !== null && total > items.length
+            ? `${items.length} of ${total} messages`
+            : `${items.length} ${items.length === 1 ? "message" : "messages"}${
+                truncated ? ` · showing the first ${LIST_LIMIT}` : ""
+              }`}
         </p>
       ) : null}
 

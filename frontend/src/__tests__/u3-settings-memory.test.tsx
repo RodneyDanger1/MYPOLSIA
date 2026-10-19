@@ -716,7 +716,7 @@ describe("memory — honest three states + hostile payloads", () => {
     expect(await screen.findByText("plan 1")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing the first 20 matches — the API reports no total, so more may exist.",
+        "Showing the first 20 matches — this semantic search serves no total, so more may exist.",
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("date unknown").length).toBe(20);

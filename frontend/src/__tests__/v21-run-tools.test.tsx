@@ -59,6 +59,8 @@ function runDetail(overrides: Partial<RunDetailRow> = {}): RunDetailRow {
     pricing_version: "2026-10-01",
     num_turns: 3,
     is_error: false,
+    // V22: the run record now carries the tool list; `null` = never recorded.
+    tools_used: null,
     ...overrides,
   };
 }
@@ -113,14 +115,15 @@ it("renders a legacy row's null counters as unmeasured, never 0 or false", async
 });
 
 // ---------------------------------------------------------------------------------------------
-// hostile: an off-contract tools_used array must NOT become chips
+// hostile: an off-contract tools_used SHAPE must NOT become chips (V22: the array shape is now
+// on-contract and renders real chips — see v22-run-chips.test.tsx; a non-array is still not a list)
 // ---------------------------------------------------------------------------------------------
 
-it("ignores an off-contract tools_used array: no chip without a stored tool list", async () => {
+it("ignores an off-contract tools_used shape: no chip without a recorded array", async () => {
   mockGet.mockResolvedValueOnce({
     ...runDetail(),
     // A body from a different contract. The page must not launder it into "tools were used".
-    tools_used: ["web_fetch", "pricing_catalog"],
+    tools_used: "web_fetch, pricing_catalog",
   } as unknown as RunDetailRow);
 
   render(<RunDetailPage params={{ id: "5" }} />);

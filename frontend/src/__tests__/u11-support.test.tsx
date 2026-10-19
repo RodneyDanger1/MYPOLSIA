@@ -81,7 +81,10 @@ describe("support inbox read", () => {
 
     expect(screen.getByTestId("support-loading")).toBeInTheDocument();
     expect(screen.getByTestId("support-loading")).toHaveAttribute("aria-busy", "true");
-    expect(mockGet).toHaveBeenCalledWith("/support/inbox?limit=50");
+    expect(mockGet).toHaveBeenCalledWith(
+      "/support/inbox?limit=50",
+      expect.objectContaining({ onHeaders: expect.any(Function) }),
+    );
 
     d.resolve([item({ id: 7, from_address: "ana@shop.example", subject: "Refund question" })]);
 
@@ -131,11 +134,19 @@ describe("support inbox read", () => {
 
     await user.selectOptions(filter, "dispatched");
     await waitFor(() =>
-      expect(mockGet).toHaveBeenLastCalledWith("/support/inbox?status=dispatched&limit=50"),
+      expect(mockGet).toHaveBeenLastCalledWith(
+        "/support/inbox?status=dispatched&limit=50",
+        expect.objectContaining({ onHeaders: expect.any(Function) }),
+      ),
     );
 
     await user.selectOptions(filter, "");
-    await waitFor(() => expect(mockGet).toHaveBeenLastCalledWith("/support/inbox?limit=50"));
+    await waitFor(() =>
+      expect(mockGet).toHaveBeenLastCalledWith(
+        "/support/inbox?limit=50",
+        expect.objectContaining({ onHeaders: expect.any(Function) }),
+      ),
+    );
   });
 
   it("renders the schema's nullables honestly (null received_at / created_at / task_id) and links a dispatched item's task", async () => {

@@ -14,16 +14,16 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
 - **Wave V19 is CLOSED** — all five lanes landed and the riding verifier PASSed every one (its final
   confirming gate: 2578/0/0/13, matching the parent's independent run); CI all-green at `c2e1261`.
   Details and the three post-audit fixes are in §3d.
-- **Wave V20 is IN FLIGHT** — base `8fa2b38` (CI all-green at that base; backend **2578 passed / 0
-  failed / 0 errors / 13 skipped**, jest **762/762 ×2** — `wave-v20/V20-PLAN.md`). Five writers: API
-  typing (L1), the `phone_read` agent tool (L2), e2e depth + coverage ratchet (L3), the agents-page
-  toolbox (L4), docs settle (L5); the riding verifier (L6) owns the gate. Lane status is stated by
-  receipt in §3e — nothing in this wave is claimed landed without one.
-- **Wave V21 is IN FLIGHT** — base `e618342` (CI all-green at that base; backend **2694 passed / 0
-  failed / 0 errors / 13 skipped**, e2e **7/7**, smoke **12 checks**, `fail_under = 88` —
-  `wave-v21/V21-PLAN.md`). Six seats: gate hardening (L1), run transparency (L2), proof depth (L3),
-  UI completeness (L4), docs-and-smoke (L5), riding verifier (L6). Lane status by receipt in §3f;
-  nothing in this wave is claimed landed without one.
+- **Wave V20 is SETTLED** — base `8fa2b38`; all five lanes + verifier PASSed, with the V12 pin family
+  re-pinned by the parent post-audit (`wave-v20/`). Details in §3e.
+- **Wave V21 is SETTLED** — base `e618342` (at that base: backend **2694 passed / 0 failed / 0
+  errors / 13 skipped**, e2e **7/7**, smoke **12 checks**, `fail_under = 88` —
+  `wave-v21/V21-PLAN.md`). All five lanes + verifier PASSed (frozen-tree **2715/0/0/13**, coverage
+  **92.19%**); settlement items closed by the parent. Details in §3f.
+- **Wave V22 is IN FLIGHT** — base `4f6a834`. Eight seats: W1 wiring audit, W2 honesty audit, four
+  writers (tools persistence · phone thread view · wiring fixes · proof/coverage), docs/completeness
+  (L5), riding verifier (L6). Lane status by receipt in §3g; the wave is **not settled** until L6's
+  gate and the parent's rebuild/live checks land.
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
@@ -262,12 +262,13 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
   acceptance paragraph, `RELEASE-CHECKLIST.md` the V20 parent live-checks. `DEPENDENCIES.md` unchanged —
   V20 adds no new dependency (L2/L4 are in-app; L3 is test tooling already pinned).
 
-## 3f. WAVE V21 — IN FLIGHT (base `e618342`; receipts under `wave-v21/`)
+## 3f. WAVE V21 — SETTLED (base `e618342`; receipts under `wave-v21/`)
 
 L5 wrote this block while the wave was running and **re-read it at 08:39 CDT, after L3's receipt
 update** (all four writer receipts existed). Status is quoted from those receipts plus L5's own work.
-The wave is **not settled**: the verifier gate (L6) and the parent's rebuild/nginx reload are still
-open, and the settlement items at the end are named, not hidden.
+**Settled afterwards:** the verifier gate (L6) PASSed (frozen tree 2715/0/0/13, coverage 92.19%) and
+the parent closed the settlement items named at the end of this section — the block below is kept as
+the record of what each lane proved.
 
 - **Gate hardening (L1) — RECEIPT PRESENT, DONE ✅** (`wave-v21/l1-gate-hardening/RECEIPT.md`, 4/4 items
   + tests). mypy baseline **4 errors / 2 files** (`phone_send_service.py` ×3, `runs.py` ×1 — the last
@@ -343,14 +344,87 @@ open, and the settlement items at the end are named, not hidden.
    the parent mid-wave), the two parity pins (L2 — the tests mandate the update), the v15 nginx
    `add_header` count pin 3→6 (L1 — the docs CSP needs its own headers; exact count kept).
 
+## 3g. WAVE V22 — IN FLIGHT (base `4f6a834`; receipts under `wave-v22/`)
+
+L5 wrote this block at 09:55 CDT and updated it at **10:42 CDT, 2026-10-19**, after reading the
+receipts and matrices that now exist. Status is stated **by receipt existence**. **L6's frozen-tree
+gate has PASSED**; the wave remains **unsettled** until the parent's rebuild/live checks and the
+commit/CI are done.
+
+- **Wiring audit (W1) — DONE ✅** (`wave-v22/w1-wiring/WIRING-MATRIX.md`, 50 KB, final at 10:04).
+  77 backend surfaces enumerated twice (AST + live `/openapi.json`, **0 missing / 0 extra**; 76 HTTP +
+  1 WebSocket). Counts: **74 WIRED · 3 API-ONLY-BY-DESIGN · 0 UNWIRED** in the working tree
+  (**73 / 3 / 1** at base `4f6a834`); **0 GAP-DEADREAD**; 4/4 registry tools wired; Celery 15 wired +
+  2 API-only; ops/dev 1 wired + 4 API-only; **0 frontend calls point at a route the API does not
+  serve**. Open findings (W1 F3 numbering): GAP-1 `X-Polsia-Total` (4/5 closed by L3;
+  `/dashboard/activity` remains), GAP-2 invoice items (closed by L3, both display and entry),
+  GAP-3 the closures are uncommitted, GAP-4 three unimported components, GAP-5 worker counters
+  invisible (a feature, not a wire).
+- **Honesty audit (W2) — DONE ✅** (`wave-v22/w2-honesty/MOCK-AUDIT.md`, 46 KB, STATUS: COMPLETE).
+  **96 hits in 61 unique files** (L6's re-count of the raw artifact; W2's prose said 70); **95/96
+  individually triaged** (the exception is a comment line at `deepseek_runtime.py:201`), with **zero
+  product-path test doubles** (the only mock switch is the env-gated, CI-only `CLAUDE_CLI_MOCK`,
+  which labels its own output). **9 defects (2 HIGH / 3 MEDIUM / 4 LOW)**: D3–D6 were closed by L3 in
+  this wave; **D1, D2 (HIGH) and D7–D9 (LOW) remain** — all backend/seed, none owned by a V22 writer.
+  Three findings were fixed mid-audit by V22 writers (`/tasks` total, `/ads` total, run-detail
+  `tools_used`) and are recorded, not queued. §5 of the audit names three capabilities with no
+  owner-facing control (cycle-report email, KPI editor, human hourly rate).
+- **Tools persistence (L1) — DONE ✅** (`wave-v22/l1-tools-persist/RECEIPT.md`, 10:06). Additive
+  `agent_runs.tools_used` (migration `0010`, proven upgrade/downgrade on SQLite + offline PG SQL);
+  the DeepSeek envelope's list persists through `accounting.usage_from_envelope` →
+  `agent_tasks._apply_run_usage` (cap 50, named truncation marker); `GET /runs/{id}` serves
+  `string[] | null`; `/runs/[id]` renders the three states (chips / "no tools were called" /
+  "not recorded"). Proof: RED → GREEN **129** focused backend tests (11 new), FE **15/15**, `tsc`
+  0 bytes, mypy **162 files** clean. Residual: `tests/parity/*.py` header comments still narrate the
+  old V21 finding (comments only).
+- **Phone thread view (L2) — DONE ✅** (`wave-v22/l2-phone-thread/RECEIPT.md`, 09:53). New
+  `PhoneThreadView.tsx` behind the existing `GET /phone/messages` (fetch-on-select only, four honest
+  states, no storage/console); `parseMessages` now accepts the store's legal `when:null` — the real
+  contract gap. Proof: RED **12 failed / 2 passed** → GREEN **14/14**; regression **7 suites / 122
+  tests**; scoped `tsc` 0 bytes; one read-only live GET confirmed the payload shape. The served build
+  predates it — parent rebuild needed.
+- **Wiring fixes (L3) — DONE ✅** (`wave-v22/l3-wiring-fix/RECEIPT.md`, final 10:16). **13 rows
+  closed**: ads-metrics expander (the one UNWIRED route), invoice line-item display **and** entry,
+  `X-Polsia-Total` for invoices/outreach/support/tasks/ads, memory wording, and W2's D3–D6. Proof:
+  **15 suites / 209 tests** + **10 suites / 97 tests** green; `tsc` 0 bytes. Remaining in territory
+  (4): the commit itself, `/dashboard/activity` header, the dead-components retire decision, worker
+  counters. Out of territory (5): W2 D1, D2, D7, D8, D9 — backend.
+- **Proof + coverage (L4) — DONE ✅** (`wave-v22/l4-proof/RECEIPT.md`, 10:21). `e2e/v22-run-chips.spec.ts`
+  (5 tests) + `e2e/v22-phone-thread.spec.ts` (5 tests) authored against L1/L2's frozen testids; both
+  enumerate (**10 tests / 2 files**), `tsc` scoped 0 bytes. **RED on the served FE** (3 failed / 2
+  vacuous passes; 1 failed on the missing `phone-thread-open`) — the assertions bite, and the stubbed
+  envelopes are wire-valid. **Coverage 92.10%** (11,711 statements / 925 missed) is below the 92.3 bar,
+  so **`fail_under` stays 90** and `backend/pyproject.toml` is byte-identical. The green live run is
+  the parent's after the rebuild; the three pre-existing alembic head pins it hit were re-pinned to
+  `0010` by the parent (12/12 green).
+- **Docs + completeness (L5) — DONE at this write.** `COMPLETENESS.md` created at the repo root —
+  §3 (W1 counts + reconciled gaps), §4 (W2 verdict + 9 defects with owners), §5 (last settled gate
+  and V22 lane proofs), §6 (owner-gated), §7 (every remaining item with `file:line` + owner).
+  `NEXTSTEPS` §3g + §4a refreshed; README/USAGE/RELEASE-CHECKLIST updated only for surfaces whose
+  receipts exist.
+- **Verifier (L6) — DONE ✅, gate PASSED on the frozen tree** (`wave-v22/v-verify/VERIFY.md`).
+  Backend **2,726 tests / 0 failed / 0 errors / 13 skipped** (681 s, junit); scoped jest **23 suites /
+  318 tests**; `tsc` **0 bytes**; ruff clean; coverage **92.10% ≥ 90** (no ratchet). Verdicts: L1
+  PASS-WITH-NOTES, L2 PASS, L3 PASS-WITH-NOTES, L4 PASS, L5 PASS (after three claim corrections),
+  W1 PASS (77/77 rows + 21-row sample), W2 PASS-WITH-NOTES. Unsettled: the wave is uncommitted, the
+  served FE predates it (e2e specs RED by design), the W2 audit needs PII redaction, CI has not run.
+
+**Settlement owned by the parent after L6:** rebuild backend + frontend images, reload nginx, run the
+e2e sweep and `make smoke` on the rebuilt stack, then commit/push/CI. **The commit is not optional
+bookkeeping:** every lane's files are uncommitted — L3's 17 modified/new product files + 6 new FE test
+files (its receipt lists them), plus L1's column/migration/API/service/panel files and L2's
+`PhoneThreadView.tsx` + test — and without them the ads-metrics route and the totals fixes re-open.
+Until that happens the V22 tree is **unsettled** no matter how many lane receipts exist.
+
 ## 4. Open offers / owner decisions (nothing built unasked)
 
-### 4a. Debt-marker ledger — the V21 tree
+### 4a. Debt-marker ledger — the V22 tree
 
 Measured with the brief's own command
-`grep -rn -E "TODO|FIXME|XXX|HACK|DEBT" backend/app frontend/src` at **2026-10-19 08:19 CDT**
-(raw output banked at `wave-v21/l5-docs-smoke/raw/debt-grep.txt`). **No open, actionable marker
-remains in product source.** The remaining hits, each named and judged:
+`grep -rn -E "TODO|FIXME|XXX|HACK|DEBT" backend/app frontend/src` at **2026-10-19 10:22 CDT**
+(raw output banked at `wave-v22/l5-docs-completeness/raw/debt-grep.txt`; the working tree, including
+every V22 lane's uncommitted edit). **No open, actionable marker remains in product source.** The
+remaining hits, each named and judged:
 
 | # | file:line | text | verdict |
 |---|---|---|---|

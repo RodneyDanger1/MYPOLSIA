@@ -141,11 +141,26 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
     `tokens_output`, `tokens_used`, `cost_usd`, `cost_estimate_usd`, `usage_json`,
     `model`, …), with the CLI envelope's `usage.input_tokens`/`output_tokens` accepted as
     aliases.  A key the agent did not report stays NULL: nothing here is invented.
+
+    V22/L1: `tools_used` is the one key with its OWN column, and its presence is load-bearing —
+    the DeepSeek envelope only carries the key when tools were available at all, so an absent
+    key leaves `agent_runs.tools_used` NULL ("never recorded") and a present `[]` is written as
+    `[]` ("recorded; no tool ran").  The value is re-bounded here (the write boundary is not
+    allowed to trust a producer) into both the column and the `usage_json` audit copy.
     """
     if not isinstance(result, dict):
         return
 
     from app.agents.base_agent import RUN_META_KEYS
+
+    # V22/L1: read presence once; `bounded_tools_used` maps absent/junk -> None.
+    tools_used: list[str] | None = None
+    if "tools_used" in result:
+        from app.agents.accounting import bounded_tools_used
+
+        tools_used = bounded_tools_used(result.get("tools_used"))
+        if tools_used is not None:
+            run_row.tools_used = tools_used
 
     # Read each key ONCE into a local: `result.get("usage") if isinstance(result.get("usage"), dict)`
     # calls .get twice, so a non-deterministic mapping (a property, or a dict subclass) can pass the
@@ -189,8 +204,11 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
     if usage:
         recorded.setdefault("usage", usage)
     for key in RUN_META_KEYS:
-        if key != "usage_json" and key in result:
+        if key not in {"usage_json", "tools_used"} and key in result:
             recorded[key] = result[key]
+    if tools_used is not None:
+        # The BOUNDED value, never the raw provider list: the audit copy and the column agree.
+        recorded["tools_used"] = tools_used
     if recorded:
         run_row.usage_json = recorded
 

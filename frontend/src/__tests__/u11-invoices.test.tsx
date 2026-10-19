@@ -91,7 +91,10 @@ describe("InvoicesPage — the list (GET /invoices)", () => {
 
     const empty = await screen.findByTestId("invoices-empty");
     expect(empty).toHaveTextContent(/No invoices yet/);
-    expect(mockGet).toHaveBeenCalledWith("/invoices?limit=100");
+    expect(mockGet).toHaveBeenCalledWith(
+      "/invoices?limit=100",
+      expect.objectContaining({ onHeaders: expect.any(Function) }),
+    );
     expect(screen.queryByTestId("invoices-read-error")).toBeNull();
   });
 
@@ -186,7 +189,10 @@ describe("InvoicesPage — the list (GET /invoices)", () => {
     fireEvent.change(screen.getByLabelText("Status filter"), { target: { value: "draft" } });
 
     await waitFor(() =>
-      expect(mockGet).toHaveBeenCalledWith("/invoices?limit=100&status=draft"),
+      expect(mockGet).toHaveBeenCalledWith(
+        "/invoices?limit=100&status=draft",
+        expect.objectContaining({ onHeaders: expect.any(Function) }),
+      ),
     );
   });
 });

@@ -43,6 +43,9 @@ function errorText(e: unknown): string {
 export default function OutreachPage() {
   const [data, setData] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The server's full filtered count from THIS read's `X-Polsia-Total` (same response as the
+   *  rows). null = no readable header; the count then states only the page length + cap. */
+  const [total, setTotal] = useState<number | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
 
   useEffect(() => {
@@ -51,8 +54,17 @@ export default function OutreachPage() {
     // to say "the list you are looking at is being replaced" without faking progress.
     setData(null);
     setError(null);
+    setTotal(null);
     api
-      .get<Prospect[]>(`/outreach/prospects?limit=${LIST_LIMIT}`)
+      .get<Prospect[]>(`/outreach/prospects?limit=${LIST_LIMIT}`, {
+        onHeaders: (headers) => {
+          if (cancelled) return;
+          const raw = headers.get("X-Polsia-Total");
+          if (raw === null) return;
+          const parsed = Number(raw.trim());
+          if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);
+        },
+      })
       .then((rows) => {
         if (!cancelled) setData(rows);
       })
@@ -76,12 +88,16 @@ export default function OutreachPage() {
         </button>
       </div>
 
-      {/* Q-12: a count of what THIS read measured — never a claimed total. A full page also says
-          the read is capped, so the cap cannot masquerade as the list's end. */}
+      {/* Q-12 + W1 GAP-1c: a count of what THIS read measured — never a claimed total. When the
+          response declared the full filtered count, both numbers are stated ("100 of 137"); when
+          it did not, a full page still discloses its cap. */}
       {data !== null ? (
         <p className="ui-label text-ink-muted" data-testid="outreach-count">
-          {data.length} {data.length === 1 ? "prospect" : "prospects"}
-          {truncated ? ` · showing the first ${LIST_LIMIT}` : ""}
+          {total !== null && total > data.length
+            ? `${data.length} of ${total} prospects`
+            : `${data.length} ${data.length === 1 ? "prospect" : "prospects"}${
+                truncated ? ` · showing the first ${LIST_LIMIT}` : ""
+              }`}
         </p>
       ) : null}
 

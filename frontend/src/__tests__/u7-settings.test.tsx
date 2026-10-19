@@ -203,8 +203,12 @@ describe("u7 settings — emails tab (V7-T13)", () => {
       "false",
     );
 
-    // Requeued honesty: the helper must not promise an email that cannot fire yet.
-    expect(screen.getByText(/sends nothing yet/)).toBeInTheDocument();
+    // Requeued honesty (V22/L3, W2 D4): the requeued route SHIPPED — the helper states the real
+    // email and that it is its own toggle; the old "sends nothing yet" copy was false.
+    expect(
+      screen.getByText(/One email when a failed attempt is put back in the queue/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/sends nothing yet/)).toBeNull();
 
     fireEvent.change(email, { target: { value: "new-owner@example.com" } });
     fireEvent.click(screen.getByRole("switch", { name: "Notify on failed tasks" }));

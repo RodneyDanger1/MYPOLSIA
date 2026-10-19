@@ -424,7 +424,10 @@ describe("Outreach page — no phantom automations (GAP-NO-ENDPOINT, acceptance 
     expect(buttons).toHaveLength(1);
     expect(buttons[0]).toHaveTextContent("Refresh");
     expect(mockApiGet).toHaveBeenCalledTimes(1);
-    expect(mockApiGet).toHaveBeenCalledWith("/outreach/prospects?limit=100");
+    expect(mockApiGet).toHaveBeenCalledWith(
+      "/outreach/prospects?limit=100",
+      expect.objectContaining({ onHeaders: expect.any(Function) }),
+    );
   });
 });
 

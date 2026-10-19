@@ -53,9 +53,12 @@ export type PhoneSummary = {
 };
 
 /** One message row — H-P1 `messages[]`. `dir` is the store's own direction word ("in"/"out"/…),
- *  rendered as-is rather than translated. */
+ *  rendered as-is rather than translated. `when` is `str|null` on the wire: the service's
+ *  `filetime_to_local` answers None for a 0/absent store timestamp (V22, the same legal value the
+ *  V19 media fix taught), so a null is a real value and renders as the app-wide "time unknown" —
+ *  never an invented instant. A non-string, non-null `when` is still refused by name. */
 export type PhoneMessage = {
-  when: string;
+  when: string | null;
   dir: string;
   who: string;
   text: string;
@@ -128,26 +131,46 @@ export function parseSummary(data: unknown): PhoneSummary {
   };
 }
 
-/** Validates `data` of `GET /phone/messages` into the rows array (`data.messages`). */
+/** Validates `data` of `GET /phone/messages` into the rows array (`data.messages`). Every field is
+ *  checked by type — a numeric `when`/`thread_id` is never coerced into a row. `when: null` is a
+ *  LEGAL value (the store's "no timestamp to state") and is kept null, exactly like the media
+ *  surface; the renderer turns it into the app-wide "time unknown". */
 export function parseMessages(data: unknown): PhoneMessage[] {
   if (!isRecord(data)) fail("messages", "an object body");
   const { messages } = data as Record<string, unknown>;
   if (!Array.isArray(messages)) fail("messages", "a messages array");
   return messages.map((row): PhoneMessage => {
     if (!isRecord(row)) fail("messages", "object message rows");
-    if (typeof row.when !== "string") fail("messages", "a string when");
+    if (row.when !== null && typeof row.when !== "string") {
+      fail("messages", "a string-or-null when");
+    }
     if (typeof row.dir !== "string") fail("messages", "a string dir");
     if (typeof row.who !== "string") fail("messages", "a string who");
     if (typeof row.text !== "string") fail("messages", "a string text");
     if (typeof row.thread_id !== "number") fail("messages", "a numeric thread_id");
     return {
-      when: row.when,
+      when: row.when as string | null,
       dir: row.dir,
       who: row.who,
       text: row.text,
       thread_id: row.thread_id,
     };
   });
+}
+
+/** The store's message `when`, or the app-wide honest placeholder when it carries no time — never
+ *  an invented one, and never a blank cell. The ONE place a message timestamp becomes words. */
+export function messageWhenText(when: string | null): string {
+  return when === null || when.trim() === "" ? "time unknown" : when;
+}
+
+/** THE REAL thread read — the conversation panel's ONLY fetch path (fetch-on-select; nothing
+ *  auto-reads). Same `api.get` + envelope law as every other phone read, so the key header,
+ *  timeout and refusal taxonomy are the shared ones. The route answers newest first, exactly as
+ *  the store does; this client never re-sorts or trims beyond the requested window. */
+export async function fetchMessages(threadId: number, limit: number): Promise<PhoneMessage[]> {
+  const payload = await api.get<unknown>(`/phone/messages?limit=${limit}&thread_id=${threadId}`);
+  return parseMessages(unwrapEnvelope("messages", payload));
 }
 
 /** Validates `data` of `GET /phone/calls` into the rows array (`data.calls`). */

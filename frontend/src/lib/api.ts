@@ -108,6 +108,11 @@ export type ApiFetchOptions = RequestInit & {
   retries?: number;
   /** Whole-call budget override for idempotent reads (default READ_TOTAL_BUDGET_MS = 20 000 ms). */
   budgetMs?: number;
+  /** Called with the successful response's headers BEFORE the body is parsed. The declared-total
+   *  reads (`X-Polsia-Total` on `/tasks`, `/ads/campaigns`, …) need the header and the body from
+   *  ONE request; a separate probe could disagree with the rows it labels. Never called on a
+   *  failed response. */
+  onHeaders?: (headers: Headers) => void;
 };
 
 /** A retry is worth it only if the backoff plus a usable attempt window still fit the budget. */
@@ -118,7 +123,7 @@ function canRetry(attempt: number, maxRetries: number, deadline: number): boolea
 }
 
 async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, retries, budgetMs, ...init } = options;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, retries, budgetMs, onHeaders, ...init } = options;
   const method = (init.method ?? "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD";
   const maxRetries = retryable ? (retries ?? RETRY_ATTEMPTS) : 0;
@@ -217,6 +222,9 @@ async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise
       }
 
       if (res.status === 204) return undefined as T;
+      // The successful response's headers, before the body is consumed. A declared total read
+      // (X-Polsia-Total) must come from the SAME response as its rows, or the label can lie.
+      onHeaders?.(res.headers);
       return (await res.json()) as T;
     } catch (e) {
       if (e instanceof ApiError) throw e;

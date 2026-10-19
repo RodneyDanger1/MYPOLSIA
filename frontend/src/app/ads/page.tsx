@@ -25,11 +25,13 @@ import { useAdsRead } from "@/components/ads/useAdsRead";
  *              message), and the value rows are REPLACED, not drawn under the banner (Q-09's class)
  *   empty   -> printed ONLY when the read succeeded and really returned nothing
  *
- * Reads exactly ONE real endpoint — `GET /ads/campaigns` (the backend's only ads route,
- * `backend/app/api/v1/ads.py`) — with the explicit bounded `limit` this page's own rules pass
- * (Q-12: the API serves no total and no cursor, so a full page renders the truncation marker
- * instead of presenting the cap as the whole list; anything shorter renders no marker). Nothing is
- * polled (C7).
+ * Reads exactly ONE real endpoint — `GET /ads/campaigns` (the backend's only ads list route,
+ * `backend/app/api/v1/ads.py`) — with the explicit bounded `limit` this page's own rules pass.
+ * The route also declares its FULL filtered count in `X-Polsia-Total`; `useAdsRead` captures that
+ * header from the SAME response as the rows, so the count line prints the server's own total
+ * ("50 of 137 campaigns") instead of presenting the page length as the whole table. When the
+ * response carries no readable total, the page falls back to the page-length count plus the
+ * bounded-read disclosure — never an invented number. Nothing is polled (C7).
  *
  * The two filter controls are real: each one re-issues the read with the endpoint's own
  * `platform`/`status` query parameters (`components/ads/query.ts`) — proven by
@@ -48,13 +50,23 @@ import { useAdsRead } from "@/components/ads/useAdsRead";
  * family (`usdText`), so the audit's Q-13 split (`$3.25 spent` above a raw-float `$12.5/day
  * budget`) cannot come back.
  */
+/** The count line: the server's declared total when this read carried one and it exceeds the rows
+ *  shown ("50 of 137 campaigns"); otherwise exactly the page length that is on screen. A header
+ *  total BELOW the shown rows is a hostile/inconsistent answer — the visible rows win. */
+function declaredCountLine(shown: number, total: number | null): string {
+  if (total !== null && total > shown) {
+    return `${shown} of ${total} ${total === 1 ? "campaign" : "campaigns"}`;
+  }
+  return `${shown} ${shown === 1 ? "campaign" : "campaigns"}`;
+}
+
 export default function AdsPage() {
   const [platform, setPlatform] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   const path = useMemo(() => buildCampaignsPath({ platform, status }), [platform, status]);
-  const { data, error, loading } = useAdsRead<unknown>(path, reloadKey);
+  const { data, error, loading, total } = useAdsRead<unknown>(path, reloadKey);
 
   const rows = Array.isArray(data) ? (data as AdCampaign[]) : null;
   // A successful response whose body is not a list at all is a broken read, named as one.
@@ -88,7 +100,7 @@ export default function AdsPage() {
           <h1 className="text-3xl font-bold text-ink">Ad Campaigns</h1>
           {rows !== null ? (
             <p className="ui-label text-ink-muted" data-testid="ads-count">
-              {rows.length} {rows.length === 1 ? "campaign" : "campaigns"}
+              {declaredCountLine(rows.length, total)}
             </p>
           ) : null}
         </div>
@@ -133,12 +145,13 @@ export default function AdsPage() {
           {rows.map((campaign) => (
             <AdCampaignCard key={campaign.id} campaign={campaign} />
           ))}
-          {/* Q-12: the read is capped at CAMPAIGNS_LIMIT and the API serves no total, so a full
-              page says exactly that instead of presenting the cap as the whole list. */}
+          {/* Q-12: the read is capped at CAMPAIGNS_LIMIT; when the response declared a larger
+              total, the marker names both numbers so the cap cannot read as the whole table. */}
           {truncated ? (
             <p className="ui-label text-ink-muted" data-testid="ads-truncation">
-              Showing the first {CAMPAIGNS_LIMIT} — the API caps this read at {CAMPAIGNS_LIMIT} per
-              request.
+              {`Showing the first ${CAMPAIGNS_LIMIT}${
+                total !== null && total > CAMPAIGNS_LIMIT ? ` of ${total}` : ""
+              } — the API caps this read at ${CAMPAIGNS_LIMIT} per request.`}
             </p>
           ) : null}
         </div>

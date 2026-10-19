@@ -1,22 +1,16 @@
-"""V21 / L2 — run transparency: `GET /api/v1/runs/{id}` and the `tools_used` finding.
+"""V21 / L2 — run transparency: `GET /api/v1/runs/{id}` counters, and the `tools_used` history.
 
-THE FINDING THIS FILE PINS (proven before any product code was written):
+THE V21 FINDING (historical; closed by V22/L1): `tools_used` was PRODUCED by the DeepSeek runtime
+(`deepseek_runtime.py:1225`) but NEVER PERSISTED — no column, no `RunUsage` field, no
+`RUN_META_KEYS` entry.  V22/L1 added the column (migration 0010), the writer and the wire field;
+`tests/unit/test_v22_tools_persist.py` now owns the new contract (names / `[]` / `null`).
 
-  `tools_used` is PRODUCED by the DeepSeek runtime — `deepseek_runtime.py:1225` writes
-  `envelope["tools_used"]` for a tool-enabled run — but it is NEVER PERSISTED:
-
-    * `agent_runs` (app/models/task.py:AgentRun) has no `tools_used` column (no migration adds one);
-    * `accounting.RunUsage` (app/agents/accounting.py:37-66) has no such field and
-      `usage_from_envelope` (158-205) never reads `env["tools_used"]`;
-    * `RunUsage.as_dict` (79-118) writes usage/modelUsage/costs/num_turns/session/subtype only;
-    * `base_agent.RUN_META_KEYS` (69-94) — the documented result->column keys — omits it;
-    * the ONE writer, `agent_tasks._apply_run_usage` (136-195), records ONLY `result["usage_json"]`
-      plus RUN_META_KEYS, so the envelope's tool list is dropped at that boundary.
-
-  Therefore the detail route serves ONLY what the row truly stores: the frozen ledger fields plus
-  `num_turns` and `is_error` from `usage_json`.  `tools_used` is deliberately ABSENT rather than
-  served as `[]`: `[]` would read as the MEASURED ZERO "tools were available and none ran", which
-  is a different fact from "never recorded".  These tests fail if the route invents a tool array.
+THIS FILE still pins the V21 half that has not changed:
+  * the detail route serves ONLY what the row truly stores — the frozen ledger fields plus
+    `num_turns`, `is_error` (from `usage_json`) and `tools_used` (from its own column);
+  * a row with no stored tool list serves `tools_used: null` — never a fabricated `[]`, which
+    would be the MEASURED ZERO "tools were available and none ran";
+  * legacy / malformed / junk-type counters stay null, never coerced.
 
 Shape / behaviour pinned here:
   * auth — the shipped `verify_api_key` dependency (401, E_AUTH envelope), like every sibling;
@@ -49,8 +43,8 @@ ROW_KEYS = [
     "tokens_used", "cost_usd", "cost_source", "pricing_version",
 ]
 
-#: The detail adds exactly the two counters the record truly stores.
-DETAIL_EXTRA_KEYS = {"num_turns", "is_error"}
+#: The detail adds exactly the V21 counters plus the V22 tool list (the V21 finding is closed).
+DETAIL_EXTRA_KEYS = {"num_turns", "is_error", "tools_used"}
 
 DAY = datetime(2026, 10, 14)
 
@@ -141,12 +135,13 @@ async def test_stored_run_serves_the_row_plus_its_stored_counters(api_client, au
 
 
 @pytest.mark.asyncio
-async def test_tools_used_is_absent_because_the_record_never_stores_it(api_client, auth_headers, async_db_session):
-    """The core honesty pin: no tool array is fabricated for a stored run.
+async def test_legacy_row_serves_tools_used_null_never_fabricated(api_client, auth_headers, async_db_session):
+    """The core honesty pin, evolved by V22/L1: the field is served, and NULL means not recorded.
 
-    `[]` would be a MEASURED ZERO ("tools were on, none ran"); the record stores no tool evidence
-    at all, so the field must not exist.  If a future writer persists it, this test is the flag to
-    update the contract ON PURPOSE (not by accident).
+    V21 proved no writer persisted `tools_used`; V22 persists it.  For a row with no stored list
+    (every pre-V22 row) the wire value must be `null` — `[]` would be a MEASURED ZERO ("tools were
+    on, none ran"), a different fact.  An absent/undefined field would also be a contract lie now
+    that the field exists, so the key must be present with a null value.
     """
     db = async_db_session
     run = await _run(db, usage_json={"num_turns": 2, "is_error": False})
@@ -154,7 +149,8 @@ async def test_tools_used_is_absent_because_the_record_never_stores_it(api_clien
     resp = await api_client.get(DETAIL_PATH.format(run_id=run.id), headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert "tools_used" not in body
+    assert "tools_used" in body
+    assert body["tools_used"] is None
     assert body["num_turns"] == 2 and body["is_error"] is False
 
 

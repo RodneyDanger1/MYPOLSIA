@@ -176,10 +176,9 @@ class Settings(BaseSettings):
     tiktok_access_token: str = ""  # TikTok Content Posting API token (video.publish scope)
     youtube_access_token: str = ""  # YouTube Data API OAuth token (youtube.upload scope)
 
-    # V8-D1 handoff (C5's sending-domain concept): the domain outreach email would send FROM this
-    # domain once real sends exist — comment-level, kept for that wave. No code path reads it yet;
-    # an honest placeholder, not a wired setting.
-    outreach_sending_domain: str = ""
+    # (V22 honesty sweep, W2/D8: the never-read `outreach_sending_domain` placeholder was DELETED —
+    # a config field nothing reads is a defect, not a setting. `extra="ignore"` means an operator's
+    # leftover env var stays harmless.)
 
     # --- deepseek (the agent runtime's model provider) ---
     # Read through app.services.secret_store: a key entered in the dashboard is stored

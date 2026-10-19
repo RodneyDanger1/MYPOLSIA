@@ -16,6 +16,11 @@ import type { InvoiceCreate } from "@/lib/api";
  * the operator's stated terms and let the service substitute its default under a success notice.
  * `number`, `status` and the derived `due_date` are the SERVER's to assign; the form never
  * invents them.
+ *
+ * V22/L3 (W1 GAP-2): the form also owns the LINE-ITEM editor. `POST /invoices` accepts
+ * `line_items`, and before this the UI could not send any — an owner could only create lump-sum
+ * bills. A blank row is omitted; a touched row must name its description and carry numeric
+ * qty/price (validated here, before the POST, so nothing malformed is silently dropped).
  */
 export function InvoiceCreateForm({
   busy,
@@ -36,6 +41,12 @@ export function InvoiceCreateForm({
   const [tax, setTax] = useState("");
   const [total, setTotal] = useState("");
   const [paymentLink, setPaymentLink] = useState("");
+  /** W1 GAP-2: the itemisation editor — string drafts, one row per item. A completely blank row
+   *  is omitted; a partially filled row must name its description and carry numeric qty/price. */
+  const [itemDrafts, setItemDrafts] = useState<
+    Array<{ description: string; quantity: string; unitPrice: string }>
+  >([]);
+  const [itemError, setItemError] = useState<string | null>(null);
 
   // A created invoice is the server's row; the next create starts from clean inputs (net-days
   // stays — it is a standing operator preference, not part of the created invoice's identity).
@@ -47,6 +58,8 @@ export function InvoiceCreateForm({
       setTax("");
       setTotal("");
       setPaymentLink("");
+      setItemDrafts([]);
+      setItemError(null);
     }
   }, [created]);
 
@@ -60,6 +73,43 @@ export function InvoiceCreateForm({
 
   function submit() {
     const body: InvoiceCreate = {};
+    setItemError(null);
+
+    // W1 GAP-2: line items — a blank row is omitted; a touched row must be complete enough to be
+    // a real item (description + numeric qty/price). Validation happens BEFORE the POST, so a
+    // malformed item is refused by name instead of being silently dropped or stored as junk.
+    const lineItems: Record<string, unknown>[] = [];
+    for (let index = 0; index < itemDrafts.length; index += 1) {
+      const draft = itemDrafts[index];
+      const description = draft.description.trim();
+      const quantity = draft.quantity.trim();
+      const unitPrice = draft.unitPrice.trim();
+      if (description === "" && quantity === "" && unitPrice === "") continue;
+      if (description === "") {
+        setItemError(`Line item ${index + 1} needs a description — nothing was sent.`);
+        return;
+      }
+      const row: Record<string, unknown> = { description };
+      if (quantity !== "") {
+        const parsed = Number(quantity);
+        if (!Number.isFinite(parsed)) {
+          setItemError(`Line item ${index + 1} quantity must be a number — nothing was sent.`);
+          return;
+        }
+        row.quantity = parsed;
+      }
+      if (unitPrice !== "") {
+        const parsed = Number(unitPrice);
+        if (!Number.isFinite(parsed)) {
+          setItemError(`Line item ${index + 1} unit price must be a number — nothing was sent.`);
+          return;
+        }
+        row.unit_price = parsed;
+      }
+      lineItems.push(row);
+    }
+    if (lineItems.length > 0) body.line_items = lineItems;
+
     const billTo: Record<string, unknown> = {};
     if (name.trim() !== "") billTo["name"] = name.trim();
     if (email.trim() !== "") billTo["email"] = email.trim();
@@ -170,6 +220,95 @@ export function InvoiceCreateForm({
               onChange={(e) => setTotal(e.target.value)}
             />
           </div>
+        </div>
+
+        {/* W1 GAP-2: the itemisation editor. Rows are drafts; a blank row is omitted on submit,
+            and a malformed row is refused by name (never silently dropped). */}
+        <div className="border-t border-line pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="ui-label text-ink">Line items</p>
+              <p className="ui-label mt-1 text-ink-muted">
+                Optional — itemise the bill, or leave it empty for a lump sum.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() =>
+                setItemDrafts((current) => [
+                  ...current,
+                  { description: "", quantity: "", unitPrice: "" },
+                ])
+              }
+            >
+              Add line item
+            </Button>
+          </div>
+
+          {itemDrafts.length > 0 ? (
+            <ul className="mt-2 space-y-2">
+              {itemDrafts.map((draft, index) => (
+                <li key={index} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_80px_100px_auto]">
+                  <input
+                    aria-label={`Line item ${index + 1} description`}
+                    className="w-full border border-line bg-surface px-2 py-1 text-sm text-ink"
+                    placeholder="Description"
+                    value={draft.description}
+                    onChange={(e) =>
+                      setItemDrafts((current) =>
+                        current.map((row, i) =>
+                          i === index ? { ...row, description: e.target.value } : row,
+                        ),
+                      )
+                    }
+                  />
+                  <input
+                    aria-label={`Line item ${index + 1} quantity`}
+                    inputMode="numeric"
+                    className="w-full border border-line bg-surface px-2 py-1 text-sm text-ink"
+                    placeholder="Qty"
+                    value={draft.quantity}
+                    onChange={(e) =>
+                      setItemDrafts((current) =>
+                        current.map((row, i) =>
+                          i === index ? { ...row, quantity: e.target.value } : row,
+                        ),
+                      )
+                    }
+                  />
+                  <input
+                    aria-label={`Line item ${index + 1} unit price`}
+                    inputMode="decimal"
+                    className="w-full border border-line bg-surface px-2 py-1 text-sm text-ink"
+                    placeholder="Unit price"
+                    value={draft.unitPrice}
+                    onChange={(e) =>
+                      setItemDrafts((current) =>
+                        current.map((row, i) =>
+                          i === index ? { ...row, unitPrice: e.target.value } : row,
+                        ),
+                      )
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    aria-label={`Remove line item ${index + 1}`}
+                    onClick={() =>
+                      setItemDrafts((current) => current.filter((_, i) => i !== index))
+                    }
+                  >
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {itemError !== null ? (
+            <p role="alert" className="mt-1 text-sm text-alert" data-testid="invoice-items-error">
+              {itemError}
+            </p>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-3">

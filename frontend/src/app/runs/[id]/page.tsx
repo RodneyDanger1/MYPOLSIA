@@ -12,9 +12,10 @@ import { useRunDetail } from "@/components/runs/useRunDetail";
  * `/runs/[id]` — the addressable run detail (V21/L2).
  *
  * The read is the real `GET /api/v1/runs/{id}` (backend `app/api/v1/runs.py`): the frozen ledger
- * row + `num_turns` / `is_error`, the only envelope facts the record stores.  `tools_used` is
- * deliberately NOT part of that contract — the record does not store it — so this page renders
- * the honest "not recorded" panel instead of fabricated chips (see `RunDetail.tsx`).
+ * row, `num_turns` / `is_error`, and the persisted `tools_used` list (V22/L1, migration 0010).
+ * The page renders that list as real chips (tool + count); a row whose record has no tool list
+ * keeps the honest "not recorded" panel, and a recorded `[]` says no tools were called — see
+ * `RunDetail.tsx` for the three states.
  *
  * States follow the house idiom (`/tasks/[id]`, `/usage`): loading is a busy skeleton, the
  * failure is NAMED through the shared `ApiError` display via `ReadError`, and a `[id]` that is

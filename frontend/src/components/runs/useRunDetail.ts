@@ -7,18 +7,22 @@ import type { RunsRow } from "@/components/usage/useRuns";
 import { api } from "@/lib/api";
 
 /**
- * `/runs/[id]` — the live read of `GET /api/v1/runs/{id}` (backend `app/api/v1/runs.py`, V21/L2).
+ * `/runs/[id]` — the live read of `GET /api/v1/runs/{id}` (backend `app/api/v1/runs.py`, V21/L2;
+ * the tool list closed by V22/L1).
  *
- * THE SHAPE, and why it has no `tools_used`:
- *   The run record stores `num_turns` and `is_error` in `agent_runs.usage_json`; it does NOT store
- *   the runtime's `tools_used` envelope key (the persistence boundary drops it — see the lane
- *   receipt and `run_service.py`'s DETAIL section).  So `RunDetailRow` is the frozen ledger row +
- *   those two counters, and nothing tool-shaped.  A page-level chip list needs a stored tool list;
- *   inventing one from an off-contract body would present an unmeasured value as measured.
+ * THE SHAPE: the frozen ledger row + the stored `num_turns` / `is_error` counters + the persisted
+ * `tools_used` column (migration 0010).  `tools_used` has THREE wire states, read here without
+ * collapsing them:
  *
- *   A counter that is absent OR not the stored type renders as unmeasured (`null` -> the app's em
- *   dash): `"3"` is not the stored integer 3, and `"no"` is not the stored boolean false.  No
- *   coercion, no default `0`/`false` (the repo's null-vs-zero law).
+ *   * `null`  — never recorded (legacy row / a run with no tools).  An absent field is the SAME
+ *               fact, so it too reads as `null`.
+ *   * `[]`    — recorded and no tool ran (a measured zero).
+ *   * names   — the recorded tool names.
+ *
+ *   A value that is not an array is NOT a recorded list (`"web_search"` is not a tool); it reads
+ *   as `null`, never as `[]`.  A counter that is absent OR not the stored type renders as
+ *   unmeasured (`null` -> the app's em dash): `"3"` is not the stored integer 3, and `"no"` is not
+ *   the stored boolean false.  No coercion, no default `0`/`false` (the repo's null-vs-zero law).
  *
  * Reads go through the shared `api.get` + `errorText` (the `useFinanceRead` idiom) so the failure
  * vocabulary cannot fork.  A 2xx body that is not a run is a BROKEN READ and is named as one.
@@ -29,6 +33,8 @@ export type RunDetailRow = RunsRow & {
   num_turns: number | null;
   /** Stored `usage_json.is_error`; `null` = not recorded (never a fabricated `false`). */
   is_error: boolean | null;
+  /** Stored `agent_runs.tools_used` (V22); `null` = never recorded, `[]` = recorded and none ran. */
+  tools_used: string[] | null;
 };
 
 export type RunDetailRead = {
@@ -47,6 +53,21 @@ function asCount(value: unknown): number | null {
 /** A stored flag: a real boolean, or `null`. `"no"`/0/1 are not booleans. */
 function asFlag(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * A stored tool list: an ARRAY of names, or `null`.  The three states never collapse:
+ * a missing/non-array value is `null` (never recorded), an empty array stays `[]` (recorded and
+ * none ran), and non-string entries are dropped (a number is not a tool name).  An array with no
+ * real name left after junk is unmeasured -> `null`, the same rule the backend serves.
+ */
+function asToolsUsed(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const names = value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+  if (names.length > 0) return names;
+  return value.length === 0 ? [] : null;
 }
 
 export function useRunDetail(runId: number | null, reloadKey: number): RunDetailRead {
@@ -82,6 +103,7 @@ export function useRunDetail(runId: number | null, reloadKey: number): RunDetail
           ...(body as RunsRow),
           num_turns: asCount(record.num_turns),
           is_error: asFlag(record.is_error),
+          tools_used: asToolsUsed(record.tools_used),
         });
       })
       .catch((e: unknown) => {

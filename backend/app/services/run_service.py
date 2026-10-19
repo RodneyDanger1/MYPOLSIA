@@ -38,14 +38,14 @@ SEMANTICS (frozen by the P4 outline; the identical text documents `app/api/v1/ru
     stored: the read never re-derives a half-measured sum, and an unmeasured column stays null
     (the writers' F-10/R8 discipline is the one definition of that rule).
 
-DETAIL (V21/L2) — `get_run`/`GET /api/v1/runs/{id}`: the frozen row plus the two accounting facts
-the record ACTUALLY stores in `usage_json` — `num_turns` (int) and `is_error` (bool), read with the
-same per-row tolerance as the attribution strings.  `tools_used` is NOT among them and is
-deliberately absent from the wire: the DeepSeek runtime reports it in its invocation envelope
-(`agents/deepseek_runtime.py:1225`), but no writer persists it — `accounting.RunUsage` has no such
-field, `usage_from_envelope` never reads the key, `base_agent.RUN_META_KEYS` omits it, and
-`agent_tasks._apply_run_usage` records only `usage_json` + those keys.  Serving `[]` would turn
-"never recorded" into the measured zero "no tool ran", which is a different fact.
+DETAIL (V21/L2, V22/L1) — `get_run`/`GET /api/v1/runs/{id}`: the frozen row plus the accounting
+facts the record ACTUALLY stores — `num_turns` (int) and `is_error` (bool) from `usage_json`, and
+the run's persisted `tools_used` column (migration 0010; written by `agent_tasks._apply_run_usage`
+from the DeepSeek envelope's `tools_used`).  `tools_used` is served EXACTLY as recorded:
+`null` = never recorded (a legacy row or a tool-less run), `[]` = recorded and no tool ran,
+a list = the tool names.  Collapsing `null` into `[]` would turn "never recorded" into the
+measured zero "no tool ran" — a different fact this read refuses to tell.  The list/export row
+set is unchanged: `tools_used` is DETAIL-ONLY (B8's frozen contract is not widened).
 """
 from __future__ import annotations
 
@@ -101,15 +101,17 @@ class RunRowData:
 
 @dataclass(frozen=True)
 class RunDetailData(RunRowData):
-    """One ledger row PLUS the stored accounting counters — nothing else exists to serve.
+    """One ledger row PLUS the stored accounting counters and the persisted tool list.
 
     `num_turns`/`is_error` come from the row's `usage_json` (where `_apply_run_usage` records the
-    agent's `RUN_META_KEYS`).  `None` is "not recorded" — never 0, never False.  There is no
-    `tools_used`: see the module docstring's DETAIL section for the provenance chain.
+    agent's `RUN_META_KEYS`).  `tools_used` is the V22 column and keeps THREE states:
+    `None` = never recorded (legacy row / tool-less run), `[]` = recorded and none ran, a list =
+    the recorded names.  `None` is never 0 / False / [] — that distinction is the contract.
     """
 
     num_turns: int | None = None
     is_error: bool | None = None
+    tools_used: list[str] | None = None
 
 
 def _nonempty_str(value: Any) -> str | None:
@@ -171,6 +173,34 @@ def _usage_counters(raw: str | None) -> tuple[int | None, bool | None]:
     if payload is None:
         return None, None
     return _count_or_none(payload.get("num_turns")), _flag_or_none(payload.get("is_error"))
+
+
+def _tools_used_from_raw(raw: str | None) -> list[str] | None:
+    """One row's stored `tools_used` column as the list the wire serves, or None.
+
+    Read as TEXT and parsed per row for the SAME measured reason as `usage_json`: the ORM JSON
+    result processor raises WHILE FETCHING on one malformed at-rest value, which would refuse the
+    detail over one bad row.  Junk rules, never silent:
+
+      * NULL / unparseable / non-array -> None (never recorded);
+      * `[]` -> `[]` (recorded and no tool ran — a measured zero);
+      * a non-empty array keeps only its non-empty STRING entries (a number is not a tool name);
+        an array with no real name left is unmeasured -> None.
+
+    The writer already bounds the list at 50 entries; the read serves exactly what is stored.
+    """
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    names = [item for item in payload if isinstance(item, str) and item]
+    if names:
+        return names
+    return [] if not payload else None
 
 
 def _run_conditions(filters: RunFilters, target: object) -> list[ColumnElement[bool]]:
@@ -326,10 +356,10 @@ async def export_runs(db: AsyncSession, *, filters: RunFilters) -> tuple[list[Ru
 async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
     """ONE ledger row + its stored counters, or None when the id does not exist.
 
-    Same column list, same LEFT OUTER JOIN (a cycle run serves with a null title) and the same
-    TEXT-cast `usage_json` read as `fetch_run_rows` — one row shape, one junk rule.  `None` is the
-    route's 404; no empty stand-in row is ever returned.  Read failures raise `E_DB` through
-    `fetch_one` (the route's `refusal_guard` wraps it).
+    Same ledger column list, same LEFT OUTER JOIN (a cycle run serves with a null title) and the same
+    TEXT-cast JSON reads as `fetch_run_rows` (plus the detail-only `tools_used` column) — one row
+    shape, one junk rule.  `None` is the route's 404; no empty stand-in row is ever returned.  Read
+    failures raise `E_DB` through `fetch_one` (the route's `refusal_guard` wraps it).
     """
     stmt = (
         select(
@@ -347,7 +377,11 @@ async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
             AgentRun.tokens_output,
             AgentRun.tokens_used,
             AgentRun.cost_usd,
+            # TEXT-cast for the same measured reason as `fetch_run_rows` (one malformed at-rest
+            # value must not refuse the detail); parsed by `_usage_counters` below.
             cast(AgentRun.usage_json, Text),
+            # V22/L1 — TEXT-cast for the identical per-row junk rule (`_tools_used_from_raw`).
+            cast(AgentRun.tools_used, Text),
         )
         .select_from(AgentRun)
         .outerjoin(Task, Task.id == AgentRun.task_id)
@@ -356,8 +390,11 @@ async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
     row = await fetch_one(db, stmt, what="run")
     if row is None:
         return None
-    data = _row_to_data(row)
-    num_turns, is_error = _usage_counters(row[-1])
+    # `_row_to_data` unpacks the frozen 14 ledger values + the TEXT-cast usage_json (index 14);
+    # the detail-only tools_used cast follows at index 15.
+    data = _row_to_data(row[:15])
+    num_turns, is_error = _usage_counters(row[14])
+    tools_used = _tools_used_from_raw(row[15])
     return RunDetailData(
         id=data.id,
         task_id=data.task_id,
@@ -377,4 +414,5 @@ async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
         pricing_version=data.pricing_version,
         num_turns=num_turns,
         is_error=is_error,
+        tools_used=tools_used,
     )

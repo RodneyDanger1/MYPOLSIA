@@ -188,7 +188,12 @@ describe("5-02 — ?task=N deep link beyond the loaded board", () => {
     expect(within(dialog).getByRole("heading", { name: "fixture: board task" })).toBeInTheDocument();
     // ONE read only: the board's. A by-id fetch for an already-loaded row would be a second call.
     await waitFor(() => expect(mockApiGet).toHaveBeenCalledTimes(1));
-    expect(mockApiGet).toHaveBeenCalledWith("/tasks?limit=500");
+    // V22/L3: the board read now also captures `X-Polsia-Total` via the options object; the PATH
+    // is unchanged, and nothing else rides along.
+    expect(mockApiGet).toHaveBeenCalledWith(
+      "/tasks?limit=500",
+      expect.objectContaining({ onHeaders: expect.any(Function) }),
+    );
     // No context note: this row came from the board, and the sheet must not claim otherwise.
     expect(within(dialog).queryByTestId("task-context-note")).toBeNull();
   });

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui";
 import { api } from "@/lib/api";
 
-import { NOT_MEASURED } from "./format";
+import { NOT_MEASURED, absoluteStamp } from "./format";
 // V9/B5: the cash/tax block prints money, so it uses the ONE house money formatter the finance
 // surfaces share ($1,234.56 / em dash for null) rather than a private dialect.
 import { usdText } from "@/components/finance/format";
@@ -146,6 +146,12 @@ function ReportBody({ report }: { report: DailyReport }) {
           </div>
         ))}
       </dl>
+      {/* W2 D3: the counters are a SNAPSHOT (the daily cycle writes the report before the day's
+          work lands). Without its stamp, "Completed 0" said beside a dashboard counting 27 read as
+          the day's total. `updated_at` is the server's own write time, already on the wire. */}
+      <p className="ui-label mt-1 text-ink-muted" data-testid="daily-report-updated">
+        Updated {absoluteStamp(report.updated_at)}
+      </p>
       {summary ? (
         <>
           <h3 className="ui-label mt-3 text-ink-muted">

@@ -476,10 +476,14 @@ export default function MemoryPage() {
         ) : null}
 
         {results !== null && results.length === MEMORY_SEARCH_LIMIT ? (
-          // Q-12's idiom, memory-sized: a full page is disclosed, never presented as the whole list.
+          // Q-12's idiom, memory-sized: a full page is disclosed, never presented as the whole
+          // list. Precise wording (V22/L3, W1 GAP-1b): the SEMANTIC branch (`?q=`) serves no
+          // total by design (`backend/app/api/v1/memory.py:43-46` — a hit list is not a table
+          // page); only the unfiltered list branch emits X-Polsia-Total. Saying "the API reports
+          // no total" overstated that.
           <p className="ui-label text-ink-muted">
-            Showing the first {MEMORY_SEARCH_LIMIT} matches — the API reports no total, so more may
-            exist.
+            Showing the first {MEMORY_SEARCH_LIMIT} matches — this semantic search serves no
+            total, so more may exist.
           </p>
         ) : null}
 

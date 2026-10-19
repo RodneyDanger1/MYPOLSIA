@@ -6,10 +6,11 @@ import { Switch } from "@/components/ui";
  * Settings → Emails: the four owner-notification toggles (wave V7 / V7-T13).
  *
  * These bind the frozen `notify_on_*` columns the U5 notification funnel reads
- * (`notification_service._OUTCOME_ROUTES` routes completed / failed / awaiting_approval to one
- * email each, when the toggle is on AND an address is configured). The requeued toggle is a
- * RECORDED choice only: nothing routes requeued runs to email yet, and the helper below says so
- * rather than promising an email that cannot fire.
+ * (`notification_service._OUTCOME_ROUTES` routes completed / failed / awaiting_approval / requeued
+ * to one email each, when the toggle is on AND an address is configured). The requeued toggle is a
+ * REAL route: `_OUTCOME_ROUTES["requeued"]` reads `notify_on_run_requeued`, and a retried attempt
+ * is reported as `requeued` by `_notification_outcome` — the helper says exactly that, and that the
+ * requeued email is its own toggle (a requeued attempt never also fires the failed email).
  */
 
 export type NotifyKey =
@@ -38,7 +39,7 @@ export const NOTIFY_ROWS: readonly { key: NotifyKey; label: string; helper: stri
     key: "notify_on_run_requeued",
     label: "Notify on requeued runs",
     helper:
-      "Recorded choice only — sends nothing yet: nothing routes requeued runs to email until the notification wiring lands.",
+      "One email when a failed attempt is put back in the queue. Its own toggle — a requeued attempt never also fires the “failed” email.",
   },
 ];
 
