@@ -14,6 +14,54 @@ export type SiteCreated = {
   bytes: number;
 };
 
+/* ── Render deploy (wave V25, lane L3) ─────────────────────────────────────────────────────── */
+/** The persisted `last_deploy` record of `meta.json` (backend `DeployRecordResponse`).
+ *  `state` is the server's word: `submitted` (Render accepted the build, not live yet),
+ *  `deployed` (Render said live), `failed` (with `error`).  A hand-edited partial record is
+ *  possible, so `state` is an open string and every other field is nullable. */
+export type DeployRecord = {
+  at: string | null;
+  state: string;
+  status: string | null;
+  deploy_id: string | null;
+  url: string | null;
+  error: { code?: string; message?: string; outcome_unknown?: boolean } | null;
+};
+
+/** `GET /api/v1/sites/{slug}/deploy`.  `last_deploy: null` means NEVER DEPLOYED (the server
+ *  distinguishes that from "could not read", which is a failed request, not a null body). */
+export type DeployStateResponse = {
+  slug: string;
+  configured: boolean;
+  missing: string[];
+  service_id: string | null;
+  last_deploy: DeployRecord | null;
+};
+
+/** The exact HTTP call a deploy makes — the credential value is masked server-side (`Bearer …`). */
+export type DeployPlan = {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
+
+/** `POST /api/v1/sites/{slug}/deploy`.  `dry_run: true` is a preview that sent nothing;
+ *  otherwise `deploy_id` is the Render id that PROVES the submit, and `state` says whether
+ *  Render called it live yet. */
+export type DeployResponse = {
+  slug: string;
+  dry_run: boolean;
+  configured: boolean;
+  state: string;
+  status: string | null;
+  deploy_id: string | null;
+  url: string | null;
+  at: string | null;
+  message: string;
+  plan: DeployPlan;
+};
+
 /** What the create form collects. Blank boxes are omitted from the request body. */
 export type SiteDraft = {
   title: string;

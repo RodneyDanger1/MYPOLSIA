@@ -454,6 +454,9 @@ def create_app() -> FastAPI:
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(health.router)     # no auth
     api_v1.include_router(tasks.router)
+    # wave V25 (L1): the id-addressed attachment byte surface (`/api/v1/attachments/{id}`) —
+    # the sibling router of `tasks.router`; its `/tasks/{id}/attachments` routes ride above.
+    api_v1.include_router(tasks.attachments_router)
     api_v1.include_router(agents.router)
     api_v1.include_router(chat.router)       # wave V8 (C1): the owner <-> Polsia chat (message/confirm/history)
     api_v1.include_router(config.router)

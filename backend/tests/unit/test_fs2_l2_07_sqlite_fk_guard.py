@@ -109,7 +109,9 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
         # W1/T03+T19 -> U5 -> V8 -> V14 -> V22 -> V23 -> V24: the chain head moved 0006 -> ... ->
         # 0011 -> 0012 (`0012_perf_indexes.py`, V24 lane L6, index-only); this pin is a DELIBERATE
         # update (old -> new: "0011" -> "0012"), the guard legs below are unchanged.
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0012"
+        # V25 (L1+L4): the chain head moved 0012 -> 0014 (`0013_task_attachments.py`,
+        # `0014_ads_nullable_revenue.py`) — deliberate re-pin; the guard legs below are unchanged.
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0014"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1

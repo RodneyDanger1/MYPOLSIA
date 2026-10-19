@@ -136,7 +136,8 @@ async def test_v24_tools_are_listed_exactly_where_the_allowlist_says(api_client,
     rows = {row["agent_type"]: row for row in data["agents"]}
     assert [tool["name"] for tool in rows["competitor_research"]["tools"]] == [
         "web_fetch", "web_search"]
-    assert [tool["name"] for tool in rows["code_generation"]["tools"]] == [
+    # V25/L2: the workspace trio keeps its positions and the GitHub quartet follows it.
+    assert [tool["name"] for tool in rows["code_generation"]["tools"]][:3] == [
         "code_write", "code_read", "code_list"]
     assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
         "macro_snapshot", "pricing_catalog", "phone_read"]
@@ -145,4 +146,39 @@ async def test_v24_tools_are_listed_exactly_where_the_allowlist_says(api_client,
     for name in ("web_search", "code_write", "code_read", "code_list"):
         assert registry_tools[name] == _spec_description(name), name
     assert len(registry_tools) == len(tool_registry.TOOL_SPECS)
+    assert list(registry_tools) == sorted(registry_tools)
+
+
+@pytest.mark.asyncio
+async def test_v25_github_tools_are_listed_exactly_where_the_allowlist_says(
+        api_client, auth_headers):
+    """V25/L2 DRIFT PIN — the H-C1 payload gains FOUR tools on ONE agent row, deliberately.
+
+    Wave V25 shipped the source-control quartet (`github_repo`/`github_branch`/`github_commit`/
+    `github_pr`) to `code_generation` only — V25-PLAN row 2: "GitHub tools —
+    repo/branch/commit/PR behind the firewalled registry + secret store ... The code agent can
+    actually ship code; source history like Polsia".  This is the wire-level re-pin: the one
+    holder names them in use order with the registry's OWN descriptions, no other agent names
+    any of them, and the orchestrator's row is UNCHANGED (the V24 decision stands).  A future
+    spec/allowlist change fails here until this expectation is re-pinned on purpose.
+    """
+    resp = await api_client.get("/api/v1/ops/capabilities", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    rows = {row["agent_type"]: row for row in data["agents"]}
+    quartet = ["github_repo", "github_branch", "github_commit", "github_pr"]
+    assert [tool["name"] for tool in rows["code_generation"]["tools"]] == [
+        "code_write", "code_read", "code_list", *quartet]
+    assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
+        "macro_snapshot", "pricing_catalog", "phone_read"]
+    holders = {
+        agent_type for agent_type, row in rows.items()
+        if set(tool["name"] for tool in row["tools"]) & set(quartet)
+    }
+    assert holders == {"code_generation"}
+
+    registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}
+    for name in quartet:
+        assert registry_tools[name] == _spec_description(name), name
     assert list(registry_tools) == sorted(registry_tools)

@@ -32,23 +32,22 @@ def _wire_float(value: Any) -> float | None:
 def _metric_response(metric: AdMetric) -> AdMetricResponse:
     """One stored metric day with revenue/ROAS served on the measured-only rule.
 
-    `revenue_usd` is served when it is a real positive measurement.  The frozen DDL holds it
-    `NUMERIC(14,4) DEFAULT '0' NOT NULL` (alembic 0002:203-207 / 0003:71), so an unreported
-    revenue and a measured zero are the SAME stored value and no backfill may invent the
-    difference.  Until the column can carry NULL, a stored 0 is served as `null` (the honest
-    dash): the route will not print a `$0.00` it cannot certify, and it will never print the
-    generated column's `0` ROAS for a row whose revenue was never measured.
+    V25/L4: `revenue_usd` is NULLABLE with NO default (alembic 0014), so the stored value now
+    carries the distinction the wire needs: `None` = never measured, `0.0` = measured zero.  The
+    route serves exactly that — a `null` revenue is `null`, a measured `0` is `0.0`.  (Before
+    0014 the column defaulted an omitted value to `0`, and this route had to serve every stored
+    zero as `null`; that deviation is gone.)
 
-    `roas` is therefore computed HERE — only when BOTH revenue and spend are measured and spend
-    is a usable denominator — instead of echoing `ad_metrics.roas`, whose GENERATED expression
-    turns an absent numerator into `0`.
+    `roas` is computed HERE — only when revenue is measured AND spend is a usable denominator —
+    instead of echoing `ad_metrics.roas`.  Since 0014 that GENERATED column follows the same rule
+    (NULL unless both inputs are measured, and no ratio for a zero-spend day); the route still
+    computes from the served floats so the wire contract is one expression in one place.
     """
     revenue = _wire_float(metric.revenue_usd)
     spend = _wire_float(metric.spend_usd)
-    measured_revenue = revenue if revenue is not None and revenue > 0 else None
     roas = (
-        round(measured_revenue / spend, 6)
-        if measured_revenue is not None and spend is not None and spend > 0
+        round(revenue / spend, 6)
+        if revenue is not None and spend is not None and spend > 0
         else None
     )
     return AdMetricResponse(
@@ -59,7 +58,7 @@ def _metric_response(metric: AdMetric) -> AdMetricResponse:
         clicks=metric.clicks,
         conversions=metric.conversions,
         spend_usd=spend,
-        revenue_usd=measured_revenue,
+        revenue_usd=revenue,
         ctr=_wire_float(metric.ctr),
         cpc=_wire_float(metric.cpc),
         roas=roas,

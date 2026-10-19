@@ -6,9 +6,9 @@ survives validation, reaches the writer's money loop (`ads_service.record_ads_ru
 the `Numeric(14,4)` column — and `roas` (a GENERATED column) is computed by the engine from it.
 
 V24/L4 moved the field's default: absent revenue is `None` (never `0.0`), because the old zero
-default made every run that did not report revenue assert a `$0` measurement.  The persist leg is
-unchanged — the writer writes only what was reported, and the column's frozen NOT NULL DEFAULT
-stands for an unreported value.
+default made every run that did not report revenue assert a `$0` measurement.  V25/L4 completed
+the storage half: migration 0014 makes `ad_metrics.revenue_usd` nullable with no default, so the
+writer persists an explicit NULL for an unreported value (the pre-0014 column defaulted it to 0).
 
 RED leg (measured, receipt §RED): delete the `revenue_usd` field from `AdMetricRow` and
 `test_a_reported_revenue_round_trips` fails — Pydantic drops the unknown key, the writer never
@@ -87,8 +87,15 @@ async def test_a_reported_revenue_round_trips(async_db_session):
 
 
 @pytest.mark.asyncio
-async def test_an_unreported_revenue_keeps_the_column_default(async_db_session):
-    """Not reported is not zero-filled by the writer — the column's default stands."""
+async def test_an_unreported_revenue_is_stored_as_null(async_db_session):
+    """Not reported is ABSENCE — the writer persists an explicit NULL, never a zero.
+
+    V25/L4 re-pin (old -> new): this test used to assert `revenue_usd == Decimal("0")` and
+    `roas == Decimal("0")`, because the pre-0014 column was `NOT NULL DEFAULT 0` and the writer
+    omitted the key.  Migration 0014 makes the column nullable with no default and the writer
+    writes NULL, so the honest assertion is None/None — the exact distinction V24/L4 could only
+    document as a deviation.
+    """
     from app.models.ads import AdMetric
     from app.services.ads_service import record_ads_run
 
@@ -96,5 +103,5 @@ async def test_an_unreported_revenue_keeps_the_column_default(async_db_session):
     assert report["metrics_written"] == 1
 
     row = (await async_db_session.execute(select(AdMetric))).scalars().one()
-    assert row.revenue_usd == Decimal("0")
-    assert row.roas == Decimal("0")
+    assert row.revenue_usd is None
+    assert row.roas is None

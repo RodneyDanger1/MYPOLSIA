@@ -18,7 +18,7 @@ code (`E_DEEPSEEK_KEY`):
     timing measurement), identical envelope — and the status equals the documented canonical value,
     so a move back to the old 500 fails by name;
   * the tables are ONE OBJECT (`deps.STATUS_BY_CODE is errors.HTTP_STATUS_BY_CODE`), so a future
-    code cannot be added to one side only; the exact 22-row census is pinned as a literal, so
+    code cannot be added to one side only; the exact 23-row census is pinned as a literal, so
     changing it is a deliberate act that updates the pin;
   * two REAL shipped pairs beyond the synthetic matrix: `E_DB` on `/api/v1/social/posts` (a broken
     read inside the route vs a `get_db` that refuses before it) and `E_AUTH` from both real raise
@@ -68,6 +68,7 @@ from app.core.errors import (
     E_STORAGE,
     E_TASK_CLAIMED,
     E_TASK_NOT_RUNNABLE,
+    E_UPSTREAM,
     E_VALIDATION,
     ERROR_HINTS,
     PolsiaError,
@@ -100,6 +101,9 @@ CONTROLS = [
     E_RATE_LIMITED,
     E_CONFIG,
     E_REDIS,
+    # wave V25 (L2/L3): a provider answering wrongly is an upstream-gateway fault (502) on both
+    # paths; kept in the controls so the new row is proven on the wire, not only in the census.
+    E_UPSTREAM,
 ]
 
 #: `E_DEEPSEEK_KEY` is deliberately unmapped in BOTH tables (it refuses inside the agent runtime,
@@ -133,6 +137,9 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     E_AGENT_BAD_OUTPUT: 502,
     E_INTEGRATION: 502,
     E_PROMPT_TOO_LARGE: 413,
+    # wave V25 (L2/L3): the Render/GitHub adapters retell a provider 5xx/timeout/malformed 2xx as
+    # E_UPSTREAM — an upstream fault, 502, never a 4xx that blames the caller.
+    E_UPSTREAM: 502,
 }
 
 
@@ -224,7 +231,7 @@ def test_the_status_tables_are_one_object_not_two():
 
 
 def test_the_status_tables_agree_exactly_and_match_the_census():
-    """Equality both ways + the exact 22-row census: a code added to one side only fails here."""
+    """Equality both ways + the exact 23-row census: a code added to one side only fails here."""
     assert deps.STATUS_BY_CODE == errors.HTTP_STATUS_BY_CODE
     assert set(deps.STATUS_BY_CODE) == set(errors.HTTP_STATUS_BY_CODE)
     assert dict(errors.HTTP_STATUS_BY_CODE) == EXPECTED_STATUS_BY_CODE, (

@@ -48,7 +48,7 @@ from app.agents.context_assembler import (
 )
 from app.agents.policy_firewall import AGENT_CAPABILITIES, AgentCapability
 from app.config import settings
-from app.core.errors import E_AGENT_BAD_OUTPUT, ERROR_HINTS, PolsiaError
+from app.core.errors import E_AGENT_BAD_OUTPUT, E_CONFIG, ERROR_HINTS, PolsiaError
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,16 @@ TRUTHY = {"1", "true", "yes", "on", "t", "y"}
 #: degradation path the capability block must never take (a silently truncated capability map is
 #: the false-visibility class this wave exists to kill). The sum stays 25,800, so every other
 #: layer's ratio to the configured budget is unchanged.
-CONTEXT_LAYER_WEIGHTS: dict[str, int] = {**DEFAULT_BUDGETS, "tool_doctrine": 2000, "memories": 7200}
+#:
+#: V25/L2 — the same rule, one wave later: `code_generation` gained FOUR registry tools (the
+#: GitHub quartet), each advertised with the registry's own description, and its block outgrew
+#: the 2000 share (5,183 chars ≈ 1,295 tokens vs the ~930 the share allowed; the overflow was a
+#: hard truncation warning, pinned red by test_no_agent_truncates_its_capability_block).  The
+#: share moves 2000 -> 3000 and `memories` gives up exactly that 1000 (7200 -> 6200), so the sum
+#: is still 25,800 and no other layer's ratio moved.  Truncating the capability block instead
+#: would hide half the new tools from the agent's own prompt — the failure this constant exists
+#: to prevent.
+CONTEXT_LAYER_WEIGHTS: dict[str, int] = {**DEFAULT_BUDGETS, "tool_doctrine": 3000, "memories": 6200}
 
 #: The documented keys a finished run carries so the queue can write `agent_runs` columns.
 #: `agent_runs` (app/models/task.py:AgentRun) has exactly these accounting columns:
@@ -170,6 +179,38 @@ class BasePolsiaAgent(ABC):
         self.last_repair: str | None = None
         self.last_ladder: list[str] = []
         self._session_totals: dict[str, float] = {}
+        # V25/L1 — the RUN context published for the invoke seam.  `timed_run` (the one entry
+        # every dispatched run goes through) and `collect_structured` set these from the task;
+        # `_real_call` forwards them to `deepseek_runtime.invoke(task_title=, images=)`.
+        # Empty means "this run has no title/images" and changes nothing about the request.
+        self.task_title: str = ""
+        self.task_attachment_refs: list[dict[str, Any]] = []
+        self.task_images: list[dict[str, Any]] = []
+
+    def set_run_context(self, task: dict[str, Any] | None) -> None:
+        """Publish the run's task title and image attachments for the invoke seam (V25/L1).
+
+        Called from `timed_run` (every dispatched run) and `collect_structured` (direct callers)
+        so the title cannot be available on one path and missing on the other.  The image payloads
+        are built ONCE per distinct attachment set: `image_parts` reads the blobs (up to 8 MiB) and
+        a repair re-prompt must not re-read them just because `collect_structured` runs again.
+        A missing/unreadable blob raises its own named refusal from the service — the run fails
+        with that name rather than continuing as if no image had been attached.
+        """
+        data = task or {}
+        title = str(data.get("title") or "").strip()[:512]
+        raw_refs = data.get("attachments")
+        refs = [ref for ref in raw_refs if isinstance(ref, dict)] if isinstance(raw_refs, list) else []
+        if title == self.task_title and refs == self.task_attachment_refs:
+            return
+        images: list[dict[str, Any]] = []
+        if refs:
+            from app.services.task_attachment_service import image_parts
+
+            images = image_parts(refs)
+        self.task_title = title
+        self.task_attachment_refs = refs
+        self.task_images = images
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -454,6 +495,23 @@ class BasePolsiaAgent(ABC):
         # ladder, structured-output handling and accounting below are provider-agnostic.
         # Chosen ONCE per logical run: every retry of this run hits the same provider.
         runtime = deepseek_runtime if deepseek_runtime.available() else None
+        if runtime is None and self.task_images:
+            # The CLI path has no image channel in this build.  Sending the prompt without the
+            # attachments would let the model answer as if the operator had attached nothing —
+            # a silent loss of the run's input.  Refuse by name instead.
+            raise PolsiaError(
+                E_CONFIG,
+                (
+                    f"agent {self.agent_type}: this task has {len(self.task_images)} image "
+                    "attachment(s), but the DeepSeek runtime is not configured (no API key), so "
+                    "the Claude CLI path would run WITHOUT seeing them"
+                ),
+                how_to_fix=(
+                    "save a DeepSeek API key in Settings (the vision-capable flash model) so the "
+                    "run can read the images, or remove the images from the task"
+                ),
+                context={"runtime": "claude_cli", "attachments": len(self.task_images)},
+            )
         # V12/W-B — the invocation's `allowed_tools` is the ONE seam the DeepSeek tool loop
         # reads to decide whether this run may call tools, so a DeepSeek-bound invocation
         # carries the agent's REGISTRY allowlist (an empty list stays empty: the runtime sends
@@ -476,7 +534,13 @@ class BasePolsiaAgent(ABC):
 
         def dispatch() -> claude_cli.InvokeResult:
             if runtime is not None:
-                return runtime.invoke(inv)
+                # V25/L1: the run's context rides the SAME invoke seam, keyword-only and
+                # defaulted, so a title/image-less run calls the runtime exactly as before.
+                return runtime.invoke(
+                    inv,
+                    task_title=self.task_title or None,
+                    images=self.task_images or None,
+                )
             return claude_cli.invoke(inv, executable=self.cli_path)
 
         result, attempts = claude_cli.run_with_retries(dispatch, classify=self._retryable)
@@ -670,6 +734,7 @@ class BasePolsiaAgent(ABC):
         schema: type[BaseModel] | None = None,
     ) -> tuple[dict[str, Any], AssembledContext]:
         """Assemble the prompt, run the agent, return (validated payload, assembled context)."""
+        self.set_run_context(task)
         assembled = self.assemble_prompt(task, context, memories=memories, extra_context=extra_context)
         payload = self.call_claude_structured(
             assembled.volatile_suffix or self.build_prompt(task, context),
@@ -743,6 +808,7 @@ class BasePolsiaAgent(ABC):
     def timed_run(self, task: dict[str, Any] | None, context: dict[str, Any] | None) -> dict[str, Any]:
         """run() + a float `duration_secs` key. Handles sync OR async run()."""
         started = time.perf_counter()
+        self.set_run_context(task or {})
         result = self.run(task or {}, context or {})
         if inspect.isawaitable(result):
             result = _run_coroutine_sync(result)

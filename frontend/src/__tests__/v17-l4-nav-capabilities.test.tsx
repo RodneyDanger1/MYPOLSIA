@@ -12,6 +12,9 @@
  *
  * V24/L3 re-pin: the exact href list below moved 16 -> 17 when the Sites route was added (after
  * /ads); every /capabilities assertion above is untouched — Capabilities still sits before Settings.
+ *
+ * V25/L5 re-pin: the list moved 17 -> 18 when the Ops (God Mode) route was added before
+ * /capabilities; Capabilities is still before Settings.
  */
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
@@ -23,7 +26,7 @@ describe("nav table — the capabilities route (16th)", () => {
     expect(items[0].icon).toBeDefined();
   });
 
-  it("is the seventeen-route IA, /capabilities in the system cluster before Settings", () => {
+  it("is the eighteen-route IA, /capabilities in the system cluster before Settings", () => {
     expect(NAV_ITEMS.map((item) => item.href)).toEqual([
       "/dashboard",
       "/agents",
@@ -42,12 +45,15 @@ describe("nav table — the capabilities route (16th)", () => {
       "/invoices",
       "/usage",
       "/memory",
+      // V25/L5 moved this pin 17 -> 18 in the SAME edit that added the Ops route: the owner
+      // cockpit sits with Usage/Memory in the system cluster, and Settings stays the last item.
+      "/ops",
       // V17/L4 moved this pin 15 -> 16 in the SAME edit that added the Capabilities route: the
       // read-only capability map is a reference surface, so it sits with Usage/Memory in the
       // system cluster and Settings stays the last item.
       "/capabilities",
       "/settings",
     ]);
-    expect(NAV_ITEMS).toHaveLength(17);
+    expect(NAV_ITEMS).toHaveLength(18);
   });
 });

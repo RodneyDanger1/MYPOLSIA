@@ -5,6 +5,14 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui";
 import { api } from "@/lib/api";
 
+import { readErrorText } from "@/components/dashboard/states";
+
+import {
+  ATTACHMENT_ACCEPT,
+  ATTACHMENT_MAX_PER_TASK,
+  attachmentProblem,
+  uploadAttachment,
+} from "./attachments";
 import { SCRIM } from "./TaskDetailSheet";
 import { errorText } from "./status";
 import type { TaskRow } from "./types";
@@ -49,6 +57,9 @@ export const VALID_AGENT_TYPES = [
 
 type Notice = { tone: "status" | "alert"; text: string };
 
+/** V25/L1 — a file chosen before the task exists; `url` is its local preview object URL. */
+type PendingImage = { id: number; file: File; url: string };
+
 const INPUT_CLASS = "w-full border border-line-strong bg-surface px-3 py-2 text-sm text-ink";
 
 export function NewTaskDialog({
@@ -65,6 +76,7 @@ export function NewTaskDialog({
   const descriptionFieldId = useId();
   const priorityFieldId = useId();
   const priorityErrorId = useId();
+  const imagesFieldId = useId();
   const titleInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -74,6 +86,19 @@ export function NewTaskDialog({
   const [priority, setPriority] = useState("3");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** V25/L1: images picked BEFORE the task exists; uploaded right after the 201 returns its id. */
+  const [pending, setPending] = useState<PendingImage[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const nextPendingId = useRef(1);
+  const pendingRef = useRef<PendingImage[]>([]);
+  pendingRef.current = pending;
+
+  useEffect(() => {
+    // Object URLs are process resources: revoke whatever is still held on unmount.
+    return () => {
+      for (const item of pendingRef.current) URL.revokeObjectURL(item.url);
+    };
+  }, []);
 
   useEffect(() => {
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -89,6 +114,38 @@ export function NewTaskDialog({
   // priority (if typed at all) is an integer.
   const canSubmit = !busy && title.trim() !== "" && agentType !== "" && priorityValid;
 
+  const addFiles = (list: FileList | null) => {
+    setFileError(null);
+    const incoming = Array.from(list ?? []);
+    if (incoming.length === 0) return;
+    const accepted: PendingImage[] = [];
+    for (const file of incoming) {
+      if (pending.length + accepted.length >= ATTACHMENT_MAX_PER_TASK) {
+        setFileError(
+          `At most ${ATTACHMENT_MAX_PER_TASK} images per task — the extra file(s) were not added.`,
+        );
+        break;
+      }
+      const problem = attachmentProblem(file);
+      if (problem) {
+        // "No upload on unsupported type": the file never enters the pending list.
+        setFileError(problem);
+        continue;
+      }
+      accepted.push({ id: nextPendingId.current++, file, url: URL.createObjectURL(file) });
+    }
+    if (accepted.length > 0) setPending((prev) => [...prev, ...accepted]);
+  };
+
+  const removePending = (id: number) => {
+    setPending((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter((item) => item.id !== id);
+    });
+    setFileError(null);
+  };
+
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
@@ -100,10 +157,39 @@ export function NewTaskDialog({
         ...(description.trim() !== "" ? { description } : {}),
         ...(priorityTrimmed === "" ? {} : { priority: Number(priorityTrimmed) }),
       });
-      setNotice({
-        tone: "status",
-        text: `Task #${created.id} created — status "${created.status ?? "unknown"}" (the server's response). It waits in the queue until you run it (or an agent cycle claims it); creating it starts nothing by itself.`,
-      });
+      // V25/L1: the task must exist before an image can be attached to it. Upload AFTER the 201,
+      // sequentially, and report each failure by its own named refusal. A failed upload does NOT
+      // undo the created task — saying so is the honest report, not an exception that hides it.
+      const attempted = pending;
+      const failures: string[] = [];
+      let attached = 0;
+      for (const item of attempted) {
+        try {
+          await uploadAttachment(created.id, item.file);
+          attached += 1;
+        } catch (e) {
+          failures.push(`"${item.file.name}": ${readErrorText(e)}`);
+        }
+      }
+      for (const item of attempted) URL.revokeObjectURL(item.url);
+      setPending([]);
+      const waitCopy = "It waits in the queue until you run it (or an agent cycle claims it); creating it starts nothing by itself.";
+      if (failures.length === 0) {
+        setNotice({
+          tone: "status",
+          text:
+            attached > 0
+              ? `Task #${created.id} created with ${attached} image${attached === 1 ? "" : "s"} (${created.status ?? "unknown"}). ${waitCopy}`
+              : `Task #${created.id} created — status "${created.status ?? "unknown"}" (the server's response). ${waitCopy}`,
+        });
+      } else {
+        setNotice({
+          tone: "alert",
+          text:
+            `Task #${created.id} was created (status "${created.status ?? "unknown"}"), but ${failures.length} of ${attempted.length} image(s) were NOT attached — ${failures.join("; ")}. ` +
+            "Open the task to attach them again.",
+        });
+      }
       onCreated?.(created);
     } catch (e) {
       // Refused by name (E_AGENT_UNKNOWN / E_VALIDATION / E_DB …) — rendered as the server
@@ -214,6 +300,60 @@ export function NewTaskDialog({
                 placeholder="Context the agent needs. Left blank, it is stored as not stated."
                 className={INPUT_CLASS}
               />
+            </div>
+
+            <div>
+              <label htmlFor={imagesFieldId} className="ui-label text-ink-muted">
+                Images (optional — PNG, JPEG or WebP; max 5 MB each, {ATTACHMENT_MAX_PER_TASK} per task)
+              </label>
+              <input
+                id={imagesFieldId}
+                type="file"
+                accept={ATTACHMENT_ACCEPT}
+                multiple
+                aria-label="Attach images to the new task"
+                disabled={busy || pending.length >= ATTACHMENT_MAX_PER_TASK}
+                onChange={(e) => {
+                  addFiles(e.target.files);
+                  // Clear so choosing the SAME file again re-fires change.
+                  e.target.value = "";
+                }}
+                className="w-full border border-line-strong bg-surface px-3 py-2 text-sm text-ink"
+              />
+              <p className="mt-1 text-xs text-ink-muted">
+                The images are attached right after the task is created; a refused image is
+                reported by name and the task itself is not rolled back.
+              </p>
+              {pending.length > 0 ? (
+                <ul aria-label="Images to attach" className="mt-2 space-y-2">
+                  {pending.map((item) => (
+                    <li key={item.id} className="flex items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={item.url}
+                        alt={item.file.name}
+                        className="h-10 w-10 border border-line object-cover"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm text-ink" title={item.file.name}>
+                        {item.file.name}
+                      </span>
+                      <Button
+                        size="sm"
+                        aria-label={`Remove ${item.file.name} from the new task`}
+                        disabled={busy}
+                        onClick={() => removePending(item.id)}
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {fileError ? (
+                <p role="alert" className="mt-1 text-xs text-alert">
+                  {fileError}
+                </p>
+              ) : null}
             </div>
 
             <div>

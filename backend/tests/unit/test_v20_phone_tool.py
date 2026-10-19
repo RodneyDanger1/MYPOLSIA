@@ -339,7 +339,10 @@ def test_an_unknown_tool_still_names_the_known_set():
     message = payload["error"]["message"]
     # V20/L2: phone_read is in the known set.  V24/L2: so are web_search and the code trio —
     # the refusal's "known set" is the LIVE registry, never a stale hand-copy.
-    for name in ("phone_read", "web_fetch", "web_search", "code_write", "code_read", "code_list"):
+    # V25/L2: the GitHub quartet joined the vocabulary; the phone pin itself is UNCHANGED
+    # (the same two owner-data readers hold `phone_read`, byte-identical).
+    for name in ("phone_read", "web_fetch", "web_search", "code_write", "code_read", "code_list",
+                 "github_repo", "github_branch", "github_commit", "github_pr"):
         assert name in message, name
 
 

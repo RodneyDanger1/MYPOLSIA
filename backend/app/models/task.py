@@ -127,6 +127,45 @@ class Task(Base):
         return f"<Task id={self.id} {self.agent_type} status={self.status}>"
 
 
+class TaskAttachment(Base):
+    """One image attached to a task (V25/L1) — the row a vision run reads.
+
+    THE BYTES NEVER LIVE IN THE DB.  `stored_name` is the server-generated file name
+    (`<uuid4>.<ext>`) under `<attachments_dir>/task-<id>/`; `filename` is the operator's own
+    name, kept for display only and never joined into a path (a user-supplied name must never
+    decide where a file is read from).  `sha256` is the digest of the stored bytes at upload
+    time; `mime` is the SNIFFED type (magic bytes, not the client's claim and not the
+    extension), so a `.png` that is really a GIF is refused before this row can exist.
+
+    `task_id` is `ON DELETE CASCADE`: an attachment is a property of its task, and a deleted
+    task must not leave an orphaned blob or a row pointing at nothing.  `ix_task_attachments_task_id`
+    serves both readers (`list_attachments`, the count that enforces the 4-per-task cap).
+
+    `created_at` is `server_default=now()` like every other timestamp in this schema: the
+    upload time is the database's clock, not a client's.
+    """
+
+    __tablename__ = "task_attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    mime: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_task_attachments_task_id", "task_id"),)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<TaskAttachment id={self.id} task={self.task_id} {self.mime} {self.size_bytes}B>"
+
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
 

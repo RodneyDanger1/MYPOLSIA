@@ -82,6 +82,7 @@ import getpass
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -600,15 +601,217 @@ async def verify_deepseek_key(candidate: str | None = None) -> dict[str, Any]:
     return {"ok": False, "detail": _scrub(detail, key)}
 
 
+# ---------------------------------------------------------------------------
+# The generic secret store (V25/L2) — the ONE read path other integrations get
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS: V25 grew a second credential (GitHub's `GITHUB_TOKEN`, and the deploy
+# adapter that follows it), and the frozen rule for this tree is that a credential has exactly
+# ONE resolver — the DeepSeek key already proved what a second path costs (two surfaces
+# disagreeing about which key is live).  `get_secret(name)` is that resolver for every
+# environment-style name: the SAME atomic file, the SAME temp-file + `os.replace` + fsync +
+# best-effort chmod/icacls hardening, the SAME precedence shape as the DeepSeek key
+# (stored value > process env > the matching Settings field, which is how a `backend/.env`
+# entry arrives — pydantic-settings loads the file without exporting it).
+#
+# IT IS A SEPARATE FILE on purpose: `data/deepseek_api_key.json` is documented as holding one
+# value and its CORRUPT-vs-EMPTY contract is pinned by its own tests; adding keys to it would
+# quietly widen that contract.  `data/secrets.json` is `{"NAME": "value"}` with the identical
+# hardening, and every reader goes through this module.
+#
+# NO CACHE, stated: a secret read costs one file read and happens once per tool call, so a
+# read-through implementation cannot serve a rotated value from a stale cache — the class of
+# bug `_FILE_CACHE` needed its identity dance to avoid.  Names are environment-style
+# (`^[A-Z][A-Z0-9_]{0,63}$`) so a caller can never address a path, a dotted key or a blank.
+SECRETS_FILE_ENV_VAR = "POLSIA_SECRETS_FILE"
+DEFAULT_SECRETS_FILE = "data/secrets.json"
+_SECRET_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def _anchored_default_secrets_file() -> Path:
+    """`<backend>/data/secrets.json`, anchored at this file (the `deepseek_key_file` rule)."""
+    return Path(__file__).resolve().parents[2] / DEFAULT_SECRETS_FILE
+
+
+def _resolve_secrets_file() -> Path:
+    """The active generic secret store: explicit `POLSIA_SECRETS_FILE` > repo-anchored default."""
+    raw = os.environ.get(SECRETS_FILE_ENV_VAR) or getattr(settings, "secrets_file", "")
+    if isinstance(raw, str) and raw.strip():
+        return Path(raw).expanduser()
+    return _anchored_default_secrets_file()
+
+
+def _checked_secret_name(name: Any) -> str:
+    """The environment-style name, or a NAMED `E_VALIDATION` — never a coerced string."""
+    text = name.strip() if isinstance(name, str) else ""
+    if not _SECRET_NAME_RE.match(text):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"secret name {name!r} is not a valid environment-style name "
+            "(expected ^[A-Z][A-Z0-9_]{0,63}$)",
+            how_to_fix="pass the credential's environment variable name, e.g. 'GITHUB_TOKEN'",
+            context={"name": str(name)[:80]},
+        )
+    return text
+
+
+def _read_secrets_document(path: Path) -> dict[str, Any]:
+    """The store's JSON object, or `{}` when the file is absent. Corrupt refuses `E_STORAGE`."""
+    try:
+        if not path.is_file():
+            return {}
+        raw_document = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not read the secret store file: {type(exc).__name__}: {exc}",
+            how_to_fix=_STORAGE_HINT,
+            context={"path": str(path)},
+        ) from exc
+    try:
+        document = json.loads(raw_document)
+    except ValueError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"the secret store file is not valid JSON: {type(exc).__name__}",
+            how_to_fix=f"delete the file and re-enter the secret ({path})",
+            context={"path": str(path)},
+        ) from exc
+    if not isinstance(document, dict):
+        raise PolsiaError(
+            E_STORAGE,
+            "the secret store file is not a JSON object "
+            f"(found {type(document).__name__})",
+            how_to_fix=f"delete the file and re-enter the secret ({path})",
+            context={"path": str(path)},
+        )
+    return document
+
+
+def _store_secrets_document(path: Path, document: dict[str, Any]) -> None:
+    """Publish `document` with the store's ONE durable write recipe (caller holds the lock)."""
+    payload = json.dumps(document)
+    temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(handle, payload.encode("utf-8"))
+            os.fsync(handle)          # durability before the atomic replace (M1)
+        finally:
+            os.close(handle)
+        os.replace(temp, path)
+        _best_effort_chmod(path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not store the secret: {type(exc).__name__}: {exc}",
+            how_to_fix=(
+                "make sure the data directory is writable "
+                f"({path.parent}) and try again"
+            ),
+            context={"path": str(path)},
+        ) from exc
+
+
+def get_secret(name: str) -> str | None:
+    """The value of `name`: stored > process environment > the matching Settings field.
+
+    `None` means "no usable value anywhere" — never a fabricated placeholder.  A stored value
+    that is not a string (the file was hand-edited into a bad shape) refuses `E_STORAGE`
+    rather than silently falling back to the environment and blaming the wrong credential.
+    """
+    key = _checked_secret_name(name)
+    document = _read_secrets_document(_resolve_secrets_file())
+    candidate = document.get(key)
+    if candidate is not None and not isinstance(candidate, str):
+        raise PolsiaError(
+            E_STORAGE,
+            f"the secret store carries a non-string value for {key} "
+            f"(found {type(candidate).__name__})",
+            how_to_fix="delete the entry or re-enter the secret",
+            context={"name": key},
+        )
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+    text = env_value.strip() if isinstance(env_value, str) else ""
+    return text or None
+
+
+def set_secret(name: str, value: str) -> None:
+    """Persist `value` under `name` in the generic store (blank is refused)."""
+    key = _checked_secret_name(name)
+    cleaned = value.strip() if isinstance(value, str) else ""
+    if not cleaned:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"the secret {key} must not be blank",
+            how_to_fix=f"pass the real value for {key} before saving",
+            context={"name": key},
+        )
+    path = _resolve_secrets_file()
+    with _WRITE_LOCK:
+        document = _read_secrets_document(path)
+        document[key] = cleaned
+        _store_secrets_document(path, document)
+    logger.info("stored secret %s (len=%d)", key, len(cleaned))
+
+
+def clear_secret(name: str) -> None:
+    """Remove `name` from the generic store (an env value may still configure it)."""
+    key = _checked_secret_name(name)
+    path = _resolve_secrets_file()
+    with _WRITE_LOCK:
+        document = _read_secrets_document(path)
+        if key not in document:
+            return
+        document.pop(key)
+        if document:
+            _store_secrets_document(path, document)
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise PolsiaError(
+                    E_STORAGE,
+                    f"could not remove the secret store file: {type(exc).__name__}: {exc}",
+                    how_to_fix=_STORAGE_HINT,
+                    context={"path": str(path)},
+                ) from exc
+    logger.info("cleared secret %s", key)
+
+
+def secret_status(name: str) -> dict[str, Any]:
+    """`{"configured", "source", "masked"}` for `name` — the same shape as the DeepSeek status."""
+    key = _checked_secret_name(name)
+    document = _read_secrets_document(_resolve_secrets_file())
+    stored = document.get(key)
+    if isinstance(stored, str) and stored.strip():
+        return {"configured": True, "source": _SOURCE_STORED, "masked": mask_secret(stored.strip())}
+    env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+    text = env_value.strip() if isinstance(env_value, str) else ""
+    if text:
+        return {"configured": True, "source": _SOURCE_ENV, "masked": mask_secret(text)}
+    return {"configured": False, "source": _SOURCE_NONE, "masked": "…"}
+
+
 __all__ = [
     "DEEPSEEK_ENV_VAR",
     "DEEPSEEK_MODELS_URL",
     "DEFAULT_KEY_FILE",
+    "DEFAULT_SECRETS_FILE",
     "KEY_FILE_ENV_VAR",
+    "SECRETS_FILE_ENV_VAR",
     "clear_deepseek_api_key",
+    "clear_secret",
     "deepseek_key_status",
     "get_deepseek_api_key",
+    "get_secret",
     "mask_secret",
+    "secret_status",
     "set_deepseek_api_key",
+    "set_secret",
     "verify_deepseek_key",
 ]

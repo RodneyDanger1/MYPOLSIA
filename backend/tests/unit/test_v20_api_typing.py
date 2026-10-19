@@ -92,6 +92,7 @@ TYPED_SURFACES = {
 #: asserts this set is EXACT, so a new untyped route fails and a stale exemption fails too.
 RESPONSE_MODEL_EXEMPTIONS = {
     # streams / archives / bytes / HTML: no JSON envelope exists to type.
+    "/api/v1/attachments/{attachment_id}": "raw image bytes streamed with the sniffed content-type (V25/L1)",
     "/api/v1/outreach/unsubscribe": "HTML confirmation page (a mail-client link)",
     "/api/v1/runs/export": "CSV/JSON stream; its count rides X-Polsia-Row-Count, verified pre-send",
     "/api/v1/data/export": "application/zip data-portability archive",

@@ -400,10 +400,10 @@ class AdMetricRow(BaseModel):
     # `None`.  `ge=0.0` still mirrors `ck_ad_metrics_nonneg` (PostgreSQL-only; the writer asserts
     # it for both engines).
     #
-    # The DDL cannot hold NULL for this column, so at rest an unreported revenue is the column's
-    # own default (0) exactly like a measured zero — the writer writes NOTHING for an absent value
-    # and `api/v1/ads.py` serves a stored 0 as `null` (unmeasured), because it cannot certify the
-    # zero was measured.  No backfill is performed on existing rows.
+    # V25/L4: the column can now CARRY that absence — `ad_metrics.revenue_usd` is nullable with no
+    # server default (alembic 0014), and the writer persists an explicit NULL for an unreported
+    # value.  So `None` here no longer has to be re-derived on the read side: the API serves NULL
+    # as `null` and a measured `0` as `0.0`, which are now different stored states.
     revenue_usd: float | None = Field(default=None, ge=0.0)
     ctr: float = Field(default=0.0, ge=0.0)
     cpc: float = Field(default=0.0, ge=0.0)

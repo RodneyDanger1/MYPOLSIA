@@ -74,6 +74,10 @@ const MENU_ROUTES = [
   "/invoices",
   "/usage",
   "/memory",
+  // V25/L5 moved this pin 17 -> 18 in the SAME edit that added the Ops (God Mode) route — the
+  // owner cockpit joins the system cluster before the read-only Capabilities map. The dropdown is
+  // generated from NAV_ITEMS, so the count here is a claim about the real table.
+  "/ops",
   // V17/L4 moved this pin 15 -> 16 in the SAME edit that added the Capabilities route (the
   // read-only capability map joins the system cluster; Settings stays last). The dropdown is
   // generated from NAV_ITEMS, so the count here is a claim about the real table.
@@ -135,7 +139,7 @@ describe("topbar control cluster", () => {
 });
 
 describe("MENU nav dropdown", () => {
-  it("is collapsed until pressed, then carries all seventeen routes", async () => {
+  it("is collapsed until pressed, then carries all eighteen routes", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
 
@@ -148,7 +152,7 @@ describe("MENU nav dropdown", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const nav = screen.getByRole("navigation", { name: "Main" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(17);
+    expect(links).toHaveLength(18);
     expect(links.map((link) => link.getAttribute("href"))).toEqual([...MENU_ROUTES]);
     for (const item of NAV_ITEMS) {
       expect(within(nav).getByRole("link", { name: new RegExp(item.label, "i") })).toBeInTheDocument();
@@ -214,10 +218,10 @@ describe("MENU nav dropdown", () => {
     expect(nav).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: /dashboard/i })).toHaveFocus();
 
-    // Seventeen items, so seventeen tabs leave the panel (the pin moved with the nav table).
-    // 15s budget: 18 sequential focus moves in jsdom measured over the default 5s on a loaded
+    // Eighteen items, so eighteen tabs leave the panel (the pin moved with the nav table).
+    // 15s budget: 19 sequential focus moves in jsdom measured over the default 5s on a loaded
     // machine (raw/green-frontend.txt), which is slowness, not a focus-management defect.
-    for (let i = 0; i < 17; i += 1) {
+    for (let i = 0; i < 18; i += 1) {
       await user.tab();
     }
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
@@ -442,7 +446,7 @@ describe("design tokens", () => {
 });
 
 describe("MenuNav standalone", () => {
-  it("renders the same seventeen routes as the shared nav table", async () => {
+  it("renders the same eighteen routes as the shared nav table", async () => {
     const user = userEvent.setup();
     render(<MenuNav />);
     await user.click(screen.getByTestId("nav-menu-trigger"));

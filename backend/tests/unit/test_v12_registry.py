@@ -10,6 +10,12 @@ V24/L2 re-pin (deliberate): the registry vocabulary grew from four names to eigh
 `web_search` (the DeepSeek Search API) and `code_write`/`code_read`/`code_list` (the run's
 text workspace) joined.  This file's set-equality pin is the tripwire that made the change
 deliberate; their own behaviour is pinned by test_v24_search_tool.py / test_v24_code_tools.py.
+
+V25/L2 re-pin (deliberate): the vocabulary grows from eight to TWELVE — the source-control
+quartet `github_repo` / `github_branch` / `github_commit` / `github_pr` joins (V25-PLAN row 2:
+"GitHub tools — repo/branch/commit/PR behind the firewalled registry + secret store ... The
+code agent can actually ship code; source history like Polsia").  Their behaviour is pinned by
+test_v25_github_tools.py; this pin only records that the registry's NAME SET changed on purpose.
 """
 from __future__ import annotations
 
@@ -102,8 +108,10 @@ def test_specs_are_openai_function_schemas_with_the_frozen_names():
     names = [spec["function"]["name"] for spec in tool_registry.TOOL_SPECS]
     # V20/L2: `phone_read` joined the frozen registry vocabulary (read-only, codes absent).
     # V24/L2: `web_search` + the three code tools joined it (8 names, deliberate re-pin).
+    # V25/L2: the GitHub quartet joined it (12 names, deliberate re-pin — see the docstring).
     assert set(names) == {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
-                          "phone_read", "code_write", "code_read", "code_list"}
+                          "phone_read", "code_write", "code_read", "code_list",
+                          "github_repo", "github_branch", "github_commit", "github_pr"}
     for spec in tool_registry.TOOL_SPECS:
         assert spec["type"] == "function"
         function = spec["function"]

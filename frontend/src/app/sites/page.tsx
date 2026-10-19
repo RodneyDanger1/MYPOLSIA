@@ -5,15 +5,61 @@ import { useCallback, useEffect, useState } from "react";
 import { SiteCreateForm } from "@/components/sites/SiteCreateForm";
 import { SiteList } from "@/components/sites/SiteList";
 import { SitePreview } from "@/components/sites/SitePreview";
+import type { DeployBoard } from "@/components/sites/SiteDeployControl";
 import {
   absoluteSiteUrl,
   describeError,
+  type DeployRecord,
+  type DeployResponse,
+  type DeployStateResponse,
   type SiteCreated,
   type SiteDraft,
   type SiteSummary,
 } from "@/components/sites/types";
 import { Card } from "@/components/ui";
 import { api } from "@/lib/api";
+
+/** A `last_deploy` record from the wire, narrowed field by field (the file is human-editable). */
+function asDeployRecord(value: unknown): DeployRecord | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const error = record.error;
+  return {
+    at: typeof record.at === "string" ? record.at : null,
+    state: typeof record.state === "string" && record.state ? record.state : "unknown",
+    status: typeof record.status === "string" ? record.status : null,
+    deploy_id: typeof record.deploy_id === "string" ? record.deploy_id : null,
+    url: typeof record.url === "string" ? record.url : null,
+    error:
+      error !== null && typeof error === "object" && !Array.isArray(error)
+        ? (error as DeployRecord["error"])
+        : null,
+  };
+}
+
+/** `GET /sites/{slug}/deploy` as a usable state, or null when the body is not one.
+ *  A non-object body is a BROKEN READ, never "never deployed" — the caller names it. */
+function asDeployState(value: unknown): DeployStateResponse | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.slug !== "string" || typeof record.configured !== "boolean") return null;
+  return {
+    slug: record.slug,
+    configured: record.configured,
+    missing: Array.isArray(record.missing)
+      ? record.missing.filter((item): item is string => typeof item === "string")
+      : [],
+    service_id: typeof record.service_id === "string" ? record.service_id : null,
+    last_deploy: asDeployRecord(record.last_deploy),
+  };
+}
+
+/** A copy of `record` without `key` — React state updates must never mutate the old object. */
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
 
 /**
  * Sites — build and host a real page from the company profile (wave V24, lane L3).
@@ -36,6 +82,13 @@ import { api } from "@/lib/api";
  *
  * Copy writes the ABSOLUTE url and says "copied" only after the clipboard promise resolved; when
  * the browser exposes no clipboard API the page says so instead of pretending.
+ *
+ * Wave V25 adds the deploy board: every row reads `GET /sites/{slug}/deploy` (a local read — the
+ * server never calls Render for it), shows its status badge, and the Deploy button asks for a DRY
+ * RUN first.  The preview is the exact call — credential masked — and only Confirm posts the live
+ * deploy (`{dry_run: false}`).  The badge then reports the Render deploy id; it never says
+ * "deployed" for a deploy Render has not acknowledged.  When the server answers
+ * `configured: false`, the row renders NO deploy button and names the missing variables.
  */
 export default function SitesPage() {
   const [rows, setRows] = useState<SiteSummary[] | null>(null);
@@ -49,6 +102,14 @@ export default function SitesPage() {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [copied, setCopied] = useState<{ slug: string; url: string } | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
+
+  // Wave V25 — the deploy board, one entry per slug (see `SiteDeployControl.DeployBoard`).
+  const [deployStates, setDeployStates] = useState<Record<string, DeployStateResponse>>({});
+  const [deployStateErrors, setDeployStateErrors] = useState<Record<string, string>>({});
+  const [deployBusy, setDeployBusy] = useState<string | null>(null);
+  const [deployBusyKind, setDeployBusyKind] = useState<"preview" | "deploy" | null>(null);
+  const [deployPreviews, setDeployPreviews] = useState<Record<string, DeployResponse>>({});
+  const [deployErrors, setDeployErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +140,102 @@ export default function SitesPage() {
   }, [reloadKey]);
 
   const reload = useCallback(() => setReloadKey((count) => count + 1), []);
+
+  /**
+   * One row's deploy state (`GET /sites/{slug}/deploy`).  A body that is not a deploy state is a
+   * BROKEN READ named in the row, never "Never deployed"; a failed read is named too.  The read is
+   * LOCAL on the server (no Render call), so it is safe to run for every row on load.
+   */
+  const readDeployState = useCallback(async (slug: string) => {
+    try {
+      const body = await api.get<unknown>(`/sites/${slug}/deploy`);
+      const parsed = asDeployState(body);
+      if (parsed === null) {
+        setDeployStates((prev) => withoutKey(prev, slug));
+        setDeployStateErrors((prev) => ({
+          ...prev,
+          [slug]: "the server returned no deploy state",
+        }));
+        return;
+      }
+      setDeployStates((prev) => ({ ...prev, [slug]: parsed }));
+      setDeployStateErrors((prev) => withoutKey(prev, slug));
+    } catch (error: unknown) {
+      setDeployStates((prev) => withoutKey(prev, slug));
+      setDeployStateErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (rows === null) return;
+    for (const row of rows) void readDeployState(row.slug);
+  }, [rows, readDeployState]);
+
+  /** Step 1: the DRY RUN. Sends nothing, writes nothing, returns the exact planned call. */
+  async function dryRunDeploy(slug: string) {
+    setDeployBusy(slug);
+    setDeployBusyKind("preview");
+    setDeployErrors((prev) => withoutKey(prev, slug));
+    setDeployPreviews((prev) => withoutKey(prev, slug));
+    try {
+      const result = await api.post<DeployResponse>(`/sites/${slug}/deploy`, { dry_run: true });
+      setDeployPreviews((prev) => ({ ...prev, [slug]: result }));
+    } catch (error: unknown) {
+      setDeployErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
+    } finally {
+      setDeployBusy(null);
+      setDeployBusyKind(null);
+    }
+  }
+
+  /** Step 2: the LIVE deploy, only after the operator saw the plan and confirmed it. */
+  async function confirmDeploy(slug: string) {
+    setDeployBusy(slug);
+    setDeployBusyKind("deploy");
+    setDeployErrors((prev) => withoutKey(prev, slug));
+    // The preview has served its purpose: drop it so the badge cannot keep claiming "Dry-run ok"
+    // while the live call is in flight or after it failed.
+    setDeployPreviews((prev) => withoutKey(prev, slug));
+    try {
+      const result = await api.post<DeployResponse>(`/sites/${slug}/deploy`, { dry_run: false });
+      setDeployPreviews((prev) => withoutKey(prev, slug));
+      if (!result.dry_run) {
+        setDeployStates((prev) => {
+          const current = prev[slug];
+          return {
+            ...prev,
+            [slug]: {
+              slug,
+              configured: result.configured,
+              missing: result.configured ? [] : (current?.missing ?? []),
+              service_id: current?.service_id ?? null,
+              last_deploy: asDeployRecord({
+                at: result.at,
+                state: result.state,
+                status: result.status,
+                deploy_id: result.deploy_id,
+                url: result.url,
+                error: null,
+              }),
+            },
+          };
+        });
+      }
+    } catch (error: unknown) {
+      setDeployErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
+      // The backend persisted a failed record before refusing: re-read it so the badge tells the
+      // truth instead of keeping a stale "never deployed".
+      await readDeployState(slug);
+    } finally {
+      setDeployBusy(null);
+      setDeployBusyKind(null);
+    }
+  }
+
+  function cancelDeployPreview(slug: string) {
+    setDeployPreviews((prev) => withoutKey(prev, slug));
+    setDeployErrors((prev) => withoutKey(prev, slug));
+  }
 
   async function create(draft: SiteDraft): Promise<boolean> {
     setBusy(true);
@@ -116,6 +273,22 @@ export default function SitesPage() {
       setCopyError("The browser refused the clipboard write — open the site and copy the address bar.");
     }
   }
+
+  const deployBoard: DeployBoard = {
+    states: deployStates,
+    stateErrors: deployStateErrors,
+    busySlug: deployBusy,
+    busyKind: deployBusyKind,
+    previews: deployPreviews,
+    errors: deployErrors,
+    onDryRun: (slug) => {
+      void dryRunDeploy(slug);
+    },
+    onDeploy: (slug) => {
+      void confirmDeploy(slug);
+    },
+    onCancel: cancelDeployPreview,
+  };
 
   const selected = rows?.find((row) => row.slug === selectedSlug) ?? null;
   const brokenBody = !loading && readError === null && rows === null;
@@ -188,6 +361,7 @@ export default function SitesPage() {
             selectedSlug={selectedSlug}
             onSelect={setSelectedSlug}
             onCopy={copy}
+            deploy={deployBoard}
           />
           {selected !== null ? <SitePreview site={selected} /> : null}
         </div>

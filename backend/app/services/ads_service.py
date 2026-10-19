@@ -34,16 +34,21 @@ deleted — `GET /api/v1/ads/campaigns/{campaign_id}/metrics` is that consumer
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.timeutil import dialect_name
 from app.models.ads import AdCampaign, AdMetric
-from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
+from app.services.query_helpers import db_refusal, fetch_rows, fetch_scalar, fetch_scalars
+
+logger = logging.getLogger(__name__)
 
 #: The value set `ck_ad_campaigns_status` enforces on PostgreSQL (alembic `0002:103-104`) and that
 #: SQLite cannot carry; `create_campaign` asserts it so the two engines behave identically.
@@ -120,8 +125,113 @@ async def get_campaign(db: AsyncSession, campaign_id: int) -> AdCampaign | None:
         raise db_refusal("ad campaign", exc) from exc
 
 
+def _metric_read_columns(db: AsyncSession) -> tuple:
+    """Every `ad_metrics` column, with the NUMERIC/INTEGER cells read as TEXT.
+
+    Why: SQLAlchemy's result processors raise INSIDE `db.execute()` when an at-rest value is not
+    the declared type — a stray text cell in `revenue_usd` produced
+    `TypeError: must be real number, not str` and turned `GET /ads/campaigns/{id}/metrics` into an
+    uncoded 500 (reproduced on the SQLite deployment path, where dynamic typing permits it;
+    PostgreSQL's typed columns refuse the write instead).  Reading each cell as Text lets the
+    per-row parser below treat ONE bad cell as "not measured" while the honest days still serve —
+    the same rule `report_service` applies to its JSON cells (V24/L6).
+
+    `date` is cast to Text ONLY on SQLite (where a raw writer can leave junk in the column).
+    PostgreSQL's DATE cannot hold junk, and casting it to text would render through `DateStyle`
+    (a non-ISO session setting would then be mis-read) — so the typed value is read there.
+    """
+    date_expr: Any = (
+        cast(AdMetric.date, Text).label("date_text")
+        if dialect_name(db) == "sqlite"
+        else AdMetric.date.label("date_text")
+    )
+    return (
+        AdMetric.id,
+        AdMetric.campaign_id,
+        date_expr,
+        cast(AdMetric.impressions, Text).label("impressions_text"),
+        cast(AdMetric.clicks, Text).label("clicks_text"),
+        cast(AdMetric.conversions, Text).label("conversions_text"),
+        cast(AdMetric.spend_usd, Text).label("spend_usd_text"),
+        cast(AdMetric.revenue_usd, Text).label("revenue_usd_text"),
+        cast(AdMetric.ctr, Text).label("ctr_text"),
+        cast(AdMetric.cpc, Text).label("cpc_text"),
+        cast(AdMetric.roas, Text).label("roas_text"),
+    )
+
+
+def _decimal_cell(raw: Any, *, what: str) -> Decimal | None:
+    """One money/ratio cell parsed from text; junk or non-finite is `None`, never a guess.
+
+    `Decimal("NaN")`/`Decimal("Infinity")` PARSE, so finiteness is checked explicitly: a NUMERIC
+    column that somehow holds one must not reach a JSON response or a ratio computation.
+    """
+    if raw is None:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        logger.warning("ad metrics: %s at rest is not numeric (%r); reading it as absent", what, raw)
+        return None
+    if not value.is_finite():
+        logger.warning("ad metrics: %s at rest is not finite (%r); reading it as absent", what, raw)
+        return None
+    return value
+
+
+def _int_cell(raw: Any, *, what: str) -> int | None:
+    """One count cell parsed from text; a non-integer is absent (never truncated/rounded)."""
+    if raw is None:
+        return None
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        logger.warning("ad metrics: %s at rest is not an integer (%r); reading it as absent", what, raw)
+        return None
+
+
+def _metric_from_row(row: Any) -> AdMetric | None:
+    """A DETACHED `AdMetric` from the text-cast row; `None` when the DATE itself is unreadable.
+
+    A per-day series cannot place a row whose day is not a date, and the wire schema has no
+    "unknown date" state — so the row is OMITTED with a WARNING naming its id rather than served
+    under a fabricated day (`date.min` would still be a fabricated day on screen).
+    """
+    values = row._mapping
+    raw_date = values["date_text"]
+    try:
+        day = raw_date if isinstance(raw_date, date) else date.fromisoformat(str(raw_date))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ad metrics: row id=%r has an unreadable date at rest (%r); omitting it from the "
+            "series rather than inventing a day",
+            values.get("id"), raw_date,
+        )
+        return None
+    return AdMetric(
+        id=values["id"],
+        campaign_id=values["campaign_id"],
+        date=day,
+        impressions=_int_cell(values["impressions_text"], what="impressions"),
+        clicks=_int_cell(values["clicks_text"], what="clicks"),
+        conversions=_int_cell(values["conversions_text"], what="conversions"),
+        spend_usd=_decimal_cell(values["spend_usd_text"], what="spend_usd"),
+        revenue_usd=_decimal_cell(values["revenue_usd_text"], what="revenue_usd"),
+        ctr=_decimal_cell(values["ctr_text"], what="ctr"),
+        cpc=_decimal_cell(values["cpc_text"], what="cpc"),
+        roas=_decimal_cell(values["roas_text"], what="roas"),
+    )
+
+
 async def list_metrics(db: AsyncSession, campaign_id: int, limit: int = 90) -> list[AdMetric]:
-    """Per-day metrics, newest first.  Unknown campaign ⇒ `E_NOT_FOUND`."""
+    """Per-day metrics, newest first.  Unknown campaign ⇒ `E_NOT_FOUND`.
+
+    V25/L4: the rows are read column-by-column with the numeric cells cast to TEXT and parsed
+    tolerantly (`_metric_from_row`).  A malformed AT-REST value — possible on the SQLite
+    deployment path, where a raw/ops writer can leave text in a NUMERIC column — reads as `None`
+    ("not measured") instead of raising a result-processor error that 500s the whole campaign
+    history.  The returned objects are DETACHED (read-only), like `report_service.get_daily_report`.
+    """
     if await get_campaign(db, campaign_id) is None:
         raise PolsiaError(
             E_NOT_FOUND,
@@ -129,14 +239,15 @@ async def list_metrics(db: AsyncSession, campaign_id: int, limit: int = 90) -> l
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
             context={"campaign_id": campaign_id},
         )
-    return await fetch_scalars(
+    rows = await fetch_rows(
         db,
-        select(AdMetric)
+        select(*_metric_read_columns(db))
         .where(AdMetric.campaign_id == campaign_id)
         .order_by(AdMetric.date.desc(), AdMetric.id.desc())
         .limit(limit),
         what="ad metrics",
     )
+    return [metric for row in rows if (metric := _metric_from_row(row)) is not None]
 
 
 # ── R33: the run-artifact writer (the worker's seam) ─────────────────────────
@@ -221,12 +332,12 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
     `task_service._as_column_decimal` (the A-T17 single boundary), imported lazily like
     `agent_tasks._apply_run_usage` does.
 
-    V24/L4 revenue truth: `revenue_usd` is written ONLY when the payload reports it.  An absent
-    (or `None`) revenue writes nothing — the frozen column is `NUMERIC(14,4) DEFAULT '0' NOT
-    NULL` (alembic 0002:203-207 / 0003:71), so "unreported" keeps the column's own default and
-    this writer never fabricates a `0` measurement; existing rows are not backfilled.  The read
-    side (`api/v1/ads.py::_metric_response`) serves that unmeasurable default as `null` and
-    computes ROAS only from a measured revenue/spend pair.
+    V24/L4 revenue truth, EXTENDED BY V25/L4: `revenue_usd` is written ONLY when the payload
+    reports it.  An absent (or `None`) revenue is persisted as an explicit NULL — the column is
+    nullable with no default since alembic 0014, so NULL means "not measured" and a reported 0
+    stays a measured 0.  Never omitting it (the pre-0014 shape defaulted an omitted value to 0)
+    is what keeps the two states apart.  The read side (`api/v1/ads.py::_metric_response`) serves
+    NULL as `null` and computes ROAS only from a measured revenue/spend pair.
 
     IDEMPOTENCY (the beat re-runs every 6h): campaigns dedupe on the provider's own id
     (`platform`+`external_id`; `(platform, name)` fallback when no id was reported) and existing
@@ -451,8 +562,13 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
             for field in ("spend_usd", "revenue_usd"):
                 value = item.get(field)
                 if value is None:
-                    # Not reported -> the column's own default (0).  "Not reported" must never
-                    # become a fabricated measurement, so nothing is written for it.
+                    if field == "revenue_usd":
+                        # V25/L4: the column is nullable with NO default (alembic 0014), so an
+                        # unreported revenue is persisted as an EXPLICIT NULL.  Writing it (rather
+                        # than omitting the key) is what keeps "not measured" from silently
+                        # becoming the column default again if a server default is ever re-added.
+                        money[field] = None
+                    # spend_usd keeps the pre-existing shape: omitted -> the column's own default.
                     continue
                 try:
                     converted = _as_column_decimal(value)

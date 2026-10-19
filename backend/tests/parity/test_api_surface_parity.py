@@ -160,6 +160,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # the `/sites` mount row).
     ("/api/v1/sites", ("GET",)),
     ("/api/v1/sites", ("POST",)),
+    # wave V25 (L3): the RENDER DEPLOY adapter — POST previews (dry run, the default) or submits a
+    # deploy, GET reads the site's stored deploy state.  NEW pins added deliberately WITH the
+    # routes: the census below moves 80 -> 82 api/v1 routes (total 83 -> 85).
+    ("/api/v1/sites/{slug}/deploy", ("GET",)),
+    ("/api/v1/sites/{slug}/deploy", ("POST",)),
     ("/api/v1/social/posts", ("GET",)),
     ("/api/v1/support/inbox", ("GET",)),                        # R17: the support inbox list (owner)
     ("/api/v1/support/inbox", ("POST",)),                       # R17: the support inbox submit (owner)
@@ -173,6 +178,14 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # row untouched). Documented by app/api/v1/tasks.py + tests/unit/test_v24_task_run.py.
     # OLD surface had no run route; NEW pin added deliberately with the route.
     ("/api/v1/tasks/{task_id}/run", ("POST",)),
+    # wave V25 (L1): the VISION INPUT surface — upload a task image (multipart, 201 metadata),
+    # list a task's images, serve one image's bytes, delete one image.  Documented by
+    # app/api/v1/tasks.py's IMAGE ATTACHMENTS block and tests/unit/test_v25_vision.py.  OLD
+    # surface had none of these routes; four NEW pins added deliberately WITH them.
+    ("/api/v1/tasks/{task_id}/attachments", ("GET",)),
+    ("/api/v1/tasks/{task_id}/attachments", ("POST",)),
+    ("/api/v1/attachments/{attachment_id}", ("DELETE",)),
+    ("/api/v1/attachments/{attachment_id}", ("GET",)),
     # wave V9 settle (V9-D3, parent): the planner / invoices / economics routers, wired by the
     # parent commit after their writers settled — each documented by its module + wave tests.
     ("/api/v1/economics/context", ("GET",)),

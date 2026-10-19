@@ -40,6 +40,13 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # refusal with the row untouched). Documented by app/api/v1/tasks.py's module docstring and
     # tests/unit/test_v24_task_run.py. OLD surface had no run route; NEW pin added deliberately.
     ("POST", "/api/v1/tasks/{task_id}/run"),
+    # wave V25 (L1): VISION INPUT — attach/list a task's images and address one image's bytes.
+    # Documented by app/api/v1/tasks.py's IMAGE ATTACHMENTS block + tests/unit/test_v25_vision.py;
+    # four NEW pins added deliberately WITH the routes (the surface did not exist before V25).
+    ("POST", "/api/v1/tasks/{task_id}/attachments"),
+    ("GET", "/api/v1/tasks/{task_id}/attachments"),
+    ("GET", "/api/v1/attachments/{attachment_id}"),
+    ("DELETE", "/api/v1/attachments/{attachment_id}"),
     ("GET", "/api/v1/agents/status"),
     ("POST", "/api/v1/agents/{agent_type}/trigger"),
     # T02/D1 (build/decisions/DECISIONS.md): the approvals channel's mint — owner-authenticated,
@@ -123,6 +130,12 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # OLD surface had no sites routes; NEW pins added deliberately with the routes.
     ("GET", "/api/v1/sites"),
     ("POST", "/api/v1/sites"),
+    # wave V25 (L3): the RENDER DEPLOY adapter — POST /sites/{slug}/deploy previews (dry run, the
+    # default) or submits, GET /sites/{slug}/deploy reads the stored deploy state.  Documented by
+    # app/api/v1/sites.py's module docstring + tests/unit/test_v25_deploy.py; NEW pins added
+    # deliberately WITH the routes (the surface did not exist before V25).
+    ("GET", "/api/v1/sites/{slug}/deploy"),
+    ("POST", "/api/v1/sites/{slug}/deploy"),
     ("GET", "/api/v1/social/posts"),
     ("GET", "/api/v1/outreach/prospects"),
     # wave V11 (W1): the public one-click opt-out route — unauthenticated by design, because the

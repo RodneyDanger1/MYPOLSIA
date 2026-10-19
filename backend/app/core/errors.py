@@ -60,6 +60,12 @@ E_INTEGRATION = "E_INTEGRATION"           # third-party integration failure
 #: named refusal, never a fabricated empty inbox.
 E_PHONE_UNAVAILABLE = "E_PHONE_UNAVAILABLE"
 
+#: A third-party API this app CALLS answered wrongly — 5xx, a timeout, a malformed 2xx — or could
+#: not be reached at all.  Distinct from `E_INTEGRATION` (a provider adapter's failure, 502) because
+#: the deploy/GitHub adapters (wave V25, L2/L3) must report the UPSTREAM's answer without dressing
+#: a transport problem as our own bug.  Still an upstream-gateway fault at the API boundary: 502.
+E_UPSTREAM = "E_UPSTREAM"
+
 
 class PolsiaError(Exception):
     """A failure that names itself and says how to fix it.
@@ -125,6 +131,7 @@ ERROR_HINTS: dict[str, str] = {
     E_TASK_NOT_RUNNABLE: "check tasks.status — only pending/queued rows can be claimed",
     E_INTEGRATION: "check the provider's credentials, quota and status page",
     E_PHONE_UNAVAILABLE: "mount the Phone Link store read-only (PHONE_LINK_DB_DIR; compose binds it to /phone-link:ro) and start the Phone Link app so it keeps syncing",
+    E_UPSTREAM: "check the provider's status page and retry; the request did reach the provider (or timed out trying), so nothing here is fixed by re-entering your own configuration",
 }
 
 # Which HTTP status a code means when it reaches the API boundary. Anything unlisted is a 500:
@@ -171,6 +178,9 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     # half-mounted / schema-drifted, the API cannot answer — 503, the same class as E_REDIS and
     # E_STORAGE ("this service cannot take the work right now"), never a 4xx that blames the caller.
     E_PHONE_UNAVAILABLE: 503,
+    # V25 (L2/L3): the provider answered wrongly (5xx/timeout/malformed 2xx) — a gateway fault,
+    # never a 4xx that would blame the caller for a deploy they correctly asked for.
+    E_UPSTREAM: 502,
 }
 
 

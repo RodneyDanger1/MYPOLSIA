@@ -392,6 +392,9 @@ def test_an_unknown_tool_still_names_the_full_known_set():
 
     assert payload["ok"] is False and payload["error"]["code"] == "E_VALIDATION"
     message = payload["error"]["message"]
+    # V25/L2: the GitHub quartet joined the registry's name set; the refusal still names the
+    # LIVE set (this is a registry-vocabulary pin, not a search pin).
     for name in ("web_fetch", "web_search", "macro_snapshot", "pricing_catalog", "phone_read",
-                 "code_write", "code_read", "code_list"):
+                 "code_write", "code_read", "code_list",
+                 "github_repo", "github_branch", "github_commit", "github_pr"):
         assert name in message

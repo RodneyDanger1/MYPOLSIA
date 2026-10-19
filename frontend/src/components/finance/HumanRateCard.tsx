@@ -53,6 +53,9 @@ export function HumanRateCard({ reloadKey }: { reloadKey: number }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<"save" | "clear" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** V25/L5: the card owns its read, so it owns its retry — a failed `/config` read no longer
+   *  waits for the page-level Refresh to come round. */
+  const [attempt, setAttempt] = useState(0);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -88,7 +91,7 @@ export function HumanRateCard({ reloadKey }: { reloadKey: number }) {
     return () => {
       cancelled = true;
     };
-  }, [reloadKey]);
+  }, [reloadKey, attempt]);
 
   const write = async (next: number | null, kind: "save" | "clear") => {
     setPending(kind);
@@ -138,9 +141,17 @@ export function HumanRateCard({ reloadKey }: { reloadKey: number }) {
       ) : null}
 
       {!loading && readError !== null ? (
-        <p className="text-sm text-alert" data-testid="human-rate-read-error">
-          Could not read the human hourly rate: {readError}
-        </p>
+        <div className="text-sm text-alert" data-testid="human-rate-read-error">
+          <p>Could not read the human hourly rate: {readError}</p>
+          <button
+            type="button"
+            className="link ui-label mt-1"
+            data-testid="human-rate-retry"
+            onClick={() => setAttempt((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </div>
       ) : null}
 
       {!loading && readError === null ? (

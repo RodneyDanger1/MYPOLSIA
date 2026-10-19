@@ -137,8 +137,11 @@ def test_unreported_revenue_leaves_the_not_null_default_it_never_fabricates(queu
     report = _write(queue_db, {"campaigns": [_campaign()], "metrics": [_metric()]})
     assert report["ok"] is True
     _, metrics = _read(queue_db)
-    assert metrics[0].revenue_usd == Decimal("0.0000"), "the column's default, written by nobody"
-    assert metrics[0].roas == Decimal("0.000000")
+    # wave V25 (L4): the column is NULLABLE now (migration 0014).  Unreported revenue is NULL —
+    # "not measured" — never the old NOT NULL DEFAULT 0 that fabricated a zero; a genuinely
+    # measured zero is still written as 0 by the writer (see test_v25_ads_nullable.py).
+    assert metrics[0].revenue_usd is None, "unreported revenue is NULL, never a fabricated zero"
+    assert metrics[0].roas is None, "ROAS is unmeasured when revenue/spend are unmeasured"
 
 
 # ── idempotency: the natural keys ────────────────────────────────────────────

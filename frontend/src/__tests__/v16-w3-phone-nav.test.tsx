@@ -16,6 +16,9 @@
  *
  * V24/L3 re-pin: the same list moved 16 -> 17 when the Sites route was added (after /ads). The
  * /phone assertions above are untouched.
+ *
+ * V25/L5 re-pin: the list moved 17 -> 18 when the Ops (God Mode) route was added before
+ * /capabilities. The /phone assertions above are untouched.
  */
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
@@ -27,7 +30,7 @@ describe("nav table — the phone route (15th)", () => {
     expect(items[0].icon).toBeDefined();
   });
 
-  it("is the frozen seventeen-route IA, /phone in the comms cluster after Support", () => {
+  it("is the frozen eighteen-route IA, /phone in the comms cluster after Support", () => {
     expect(NAV_ITEMS.map((item) => item.href)).toEqual([
       "/dashboard",
       "/agents",
@@ -44,6 +47,9 @@ describe("nav table — the phone route (15th)", () => {
       "/invoices",
       "/usage",
       "/memory",
+      // V25/L5 moved this list 17 -> 18 when the Ops route joined the system cluster; /phone is
+      // still in the comms cluster after Support.
+      "/ops",
       "/capabilities",
       "/settings",
     ]);

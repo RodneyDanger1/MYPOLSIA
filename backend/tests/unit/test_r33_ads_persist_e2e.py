@@ -139,8 +139,9 @@ def test_a_completed_ads_run_persists_its_campaigns_and_metrics(monkeypatch, que
     assert newest.ctr == Decimal("0.050000"), "2 / 40"
     assert newest.cpc == Decimal("1.250000"), "2.5000 / 2"
     assert oldest.spend_usd == Decimal("12.5000") and newest.spend_usd == Decimal("2.5000")
-    assert oldest.roas == Decimal("0.000000"), (
-        "revenue unreported -> the derived roas is the column's 0 (see the pin at the bottom)"
+    assert oldest.roas is None, (
+        "V25/L4: revenue unreported -> NULL at rest (migration 0014), so the generated roas is "
+        "NULL — the pre-0014 pin asserted the column's fabricated 0"
     )
 
 
@@ -264,8 +265,10 @@ def test_reported_revenue_survives_validation_and_drives_the_engine_computed_roa
     column (`models/ads.py`), so the engine computes it from that revenue — the value a model
     reports for `roas` remains a display figure the row does not store.
 
-    The second metric has NO `revenue_usd` key: not-reported stays the column's own default
-    (a measured 0 the writer never fabricates), which is the F-11 rule this pin keeps.
+    The second metric has NO `revenue_usd` key: V25/L4 / migration 0014 makes the column nullable
+    with no default, so not-reported is stored as NULL and its generated `roas` is NULL too.
+    (Old -> new: this pin used to assert `0`/`0` for that row — the exact 0-as-missing conflation
+    the nullable column removes.  A REPORTED 0 is now a different stored state and would read 0.)
     """
     from app.schemas.agent_outputs import AdMetricRow
 
@@ -287,8 +290,8 @@ def test_reported_revenue_survives_validation_and_drives_the_engine_computed_roa
 
     assert reported.revenue_usd == Decimal("30.0000"), "the reported revenue crosses to the column"
     assert reported.roas == Decimal("2.400000"), "the engine computes roas from 30 / 12.5"
-    assert unreported.revenue_usd == Decimal("0.0000"), "not reported -> the column default"
-    assert unreported.roas == Decimal("0.000000"), "no revenue input -> the engine's 0"
+    assert unreported.revenue_usd is None, "V25/L4: not reported -> NULL, not the old default 0"
+    assert unreported.roas is None, "no revenue input -> the generated roas is NULL"
 
     # …and the run's own report now carries the key the schema declares (it used to be dropped)
     stored_metric = _latest_run_output(queue_db)["metrics"][0]

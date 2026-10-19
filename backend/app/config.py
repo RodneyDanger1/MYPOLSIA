@@ -212,6 +212,25 @@ class Settings(BaseSettings):
     # absolute paths, `..` and symlink escapes — nothing outside this directory is reachable.
     code_workspace_dir: str = "data/workspace"
 
+    # --- task image attachments (wave V25, L1: vision input) ---
+    # Where an uploaded task image is stored: `<dir>/task-<id>/<uuid>.<ext>`.  Relative paths
+    # resolve against the backend working directory (backend/data/attachments locally,
+    # /app/data/attachments in the image — the same rule as `deepseek_key_file` and
+    # `code_workspace_dir`); an absolute path is used as given.  The directory is created on the
+    # first upload; a root that cannot be created/written is a NAMED E_CONFIG refusal, never a
+    # silently dropped image.  Caps live with the logic (`task_attachment_service`): PNG/JPEG/WebP,
+    # <= 5 MiB each, <= 4 per task, <= 8 MiB per task in total.
+    attachments_dir: str = "data/attachments"
+
+    # --- Render deploy adapter (wave V25, L3: site deploy) ---
+    # The owner's Render credential and the Render SERVICE a generated site deploys to.  Read by
+    # `services.deploy_service` (environment first — docker-compose `env_file:` exports the whole
+    # file into the container env — then these `.env`-backed fields).  Blank = unconfigured, which
+    # is the NAMED `E_CONFIG` refusal on deploy and an honest "not configured" badge in the UI;
+    # there is no fake/degraded deploy path.  Neither value is ever logged or returned in full.
+    render_api_key: str = ""
+    render_service_id: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -87,7 +87,8 @@ def test_the_v24_tools_are_visible_exactly_where_the_allowlist_grants_them():
         for agent_type in pf.AGENT_CAPABILITIES
     }
     assert holders["competitor_research"] == ["web_fetch", "web_search"]
-    assert holders["code_generation"] == ["code_write", "code_read", "code_list"]
+    # V25/L2: the trio keeps its positions and the GitHub quartet follows it (append-only).
+    assert holders["code_generation"][:3] == ["code_write", "code_read", "code_list"]
     assert {agent for agent, names in holders.items() if "web_search" in names} == {
         "competitor_research"}
     assert {agent for agent, names in holders.items()
@@ -97,6 +98,30 @@ def test_the_v24_tools_are_visible_exactly_where_the_allowlist_grants_them():
         assert name in registry_names
     entry = capability_manifest.tool_entries_for("competitor_research")[1]
     assert entry["description"] == _spec_description("web_search")
+
+
+def test_the_v25_github_tools_are_visible_exactly_where_the_allowlist_grants_them():
+    """V25/L2 — the source-control quartet rides the same derivation as every other tool.
+
+    All four appear in the manifest for `code_generation` ONLY, in the firewall's use order
+    (repo -> branch -> commit -> PR), each with the registry's OWN description; the registry
+    catalog carries all four.  (The literal drift rows above are the byte-level pin.)
+    """
+    holders = {
+        agent_type: [tool["name"] for tool in capability_manifest.tool_entries_for(agent_type)]
+        for agent_type in pf.AGENT_CAPABILITIES
+    }
+    quartet = ["github_repo", "github_branch", "github_commit", "github_pr"]
+    assert holders["code_generation"] == [
+        "code_write", "code_read", "code_list", *quartet]
+    assert {agent for agent, names in holders.items() if set(names) & set(quartet)} == {
+        "code_generation"}
+    registry_names = [tool["name"] for tool in capability_manifest.registry_tool_entries()]
+    for name in quartet:
+        assert name in registry_names
+        entry = next(tool for tool in capability_manifest.tool_entries_for("code_generation")
+                     if tool["name"] == name)
+        assert entry["description"] == _spec_description(name), name
 
 
 def test_the_phone_tool_is_visible_exactly_where_the_allowlist_grants_it():
@@ -161,15 +186,30 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
 #   * the ORCHESTRATOR row is deliberately UNCHANGED (no code_read/code_list): "a planner that
 #     can act is a planner that can be injected into acting" (its own module docstring).
 # No action class or channel moved anywhere in V24.
+#
+# WAVE V25 (L2, GitHub source control + per-run workspace): FOUR tools joined the registry and
+# ONE agent row moved again —
+#   * PINNED_REGISTRY_TOOLS gains `github_repo`, `github_branch`, `github_commit`, `github_pr`
+#     (12 tools, sorted).  Evidence: V25-PLAN "Remaining work" row 2 — "**GitHub tools** —
+#     repo/branch/commit/PR behind the firewalled registry + secret store ... The code agent can
+#     actually ship code; source history like Polsia".
+#   * `code_generation` gains the quartet AFTER the workspace trio (append-only): it is the one
+#     role that ships source, the one holder of the `github` channel, and the one CLI allowlist
+#     that already speaks git (while still denying `git push`).  Every other row is UNCHANGED.
+#   * the ORCHESTRATOR row stays unchanged again — a source-control writer would widen the
+#     planner into an actor, exactly the V24 decision.
+# No action class or channel moved anywhere in V25 either (the quartet rides the `github`
+# channel `code_generation` already had; the manifest action-class rows are byte-identical).
 
 PINNED_REGISTRY_TOOLS: tuple[str, ...] = (
-    "code_list", "code_read", "code_write", "macro_snapshot", "phone_read", "pricing_catalog",
-    "web_fetch", "web_search")
+    "code_list", "code_read", "code_write", "github_branch", "github_commit", "github_pr",
+    "github_repo", "macro_snapshot", "phone_read", "pricing_catalog", "web_fetch", "web_search")
 
 PINNED_AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "ads_management": (),
     "business_planning": ("macro_snapshot", "pricing_catalog"),
-    "code_generation": ("code_write", "code_read", "code_list"),
+    "code_generation": ("code_write", "code_read", "code_list",
+                        "github_repo", "github_branch", "github_commit", "github_pr"),
     "company_planner": ("macro_snapshot", "pricing_catalog"),
     "competitor_research": ("web_fetch", "web_search"),
     "customer_support": ("phone_read",),

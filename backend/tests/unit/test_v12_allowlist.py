@@ -11,6 +11,12 @@ the pages"), and `code_generation` — previously the tool-less "code" agent —
 `code_write`/`code_read`/`code_list` confined to `settings.code_workspace_dir`.  The
 `web_search does NOT ship` V12 pin is REVERSED here, by name, because the V24 plan freezes the
 provider interface; every other agent's allowlist is unchanged.
+
+V25/L2 re-pin (deliberate): the source-control quartet `github_repo`/`github_branch`/
+`github_commit`/`github_pr` joins the registry and is granted to `code_generation` ONLY — the
+V25-PLAN names the recipient ("GitHub tools — repo/branch/commit/PR ... The code agent can
+actually ship code; source history like Polsia"), and the evidence for least privilege is
+quoted on the firewall entry.  Append-only: every V12/V20/V24 grant keeps its position.
 """
 from __future__ import annotations
 
@@ -21,10 +27,12 @@ from app.agents.policy_firewall import ActionClass, ActionRequest, Decision, dec
 
 #: V20/L2: `phone_read` joined the registry (read-only, codes structurally absent).
 #: V24/L2: `web_search` + the three code tools joined — eight frozen names.
+#: V25/L2: the GitHub quartet joined — twelve frozen names (the source-control surface).
 #: The V12 seam deliberately goes red when a tool joins; this is that re-pin, with the wave
 #: recorded.
 FROZEN = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
-          "phone_read", "code_write", "code_read", "code_list"}
+          "phone_read", "code_write", "code_read", "code_list",
+          "github_repo", "github_branch", "github_commit", "github_pr"}
 READ_MACRO_AGENTS = ("business_planning", "finance", "company_planner")
 #: V24/L2: `code_generation` LEFT this list — it now owns the three code tools.
 NO_TOOL_AGENTS = ("social_media", "email_outreach", "ads_management")
@@ -50,8 +58,11 @@ def test_the_frozen_agent_tool_mapping_is_wired():
     assert tool_registry.tools_for("orchestrator") == (
         "macro_snapshot", "pricing_catalog", "phone_read")
     # V24/L2: the code agent finally has a filesystem surface (workspace-confined).
+    # V25/L2: and now the source-control surface — read -> branch -> commit -> PR, append-only
+    # after the workspace trio (evidence quoted on the firewall entry / in the lane RECEIPT).
     assert tool_registry.tools_for("code_generation") == (
-        "code_write", "code_read", "code_list")
+        "code_write", "code_read", "code_list",
+        "github_repo", "github_branch", "github_commit", "github_pr")
     # V20/L2: customer_support's only toolbox entry is the read-only phone tool.
     assert tool_registry.tools_for("customer_support") == ("phone_read",)
     for agent_type in NO_TOOL_AGENTS:
@@ -91,9 +102,30 @@ def test_code_generation_gains_the_workspace_tools_without_gaining_a_cli_shell()
     """V24/L2: the code agent's registry surface is the workspace (write/read/list); its CLI
     walls are UNCHANGED — no push, no remote, no rm, no curl/wget, no MCP."""
     cap = pf.AGENT_CAPABILITIES["code_generation"]
-    assert cap.agent_tools == ("code_write", "code_read", "code_list")
+    assert cap.agent_tools == ("code_write", "code_read", "code_list",
+                               "github_repo", "github_branch", "github_commit", "github_pr")
     assert "Bash(git push *)" in cap.denied_tools and "Bash(rm *)" in cap.denied_tools
     assert "mcp__*" in cap.denied_tools
+
+
+def test_v25_github_tools_ship_only_for_the_code_agent():
+    """V25/L2 least privilege: the four source-control tools belong to ONE agent.
+
+    Evidence (V25-PLAN row 2): "GitHub tools — repo/branch/commit/PR behind the firewalled
+    registry + secret store ... The code agent can actually ship code".  `code_generation` is
+    the only role that ships source, the only holder of the `github` channel, and the only
+    agent whose CLI allowlist already speaks git (while still denying `git push`).  Every other
+    agent is refused BY NAME at the registry, and the CLI walls are unchanged.
+    """
+    github_tools = {"github_repo", "github_branch", "github_commit", "github_pr"}
+    holders = {agent_type for agent_type, capability in pf.AGENT_CAPABILITIES.items()
+               if set(capability.agent_tools) & github_tools}
+    assert holders == {"code_generation"}
+    cap = pf.AGENT_CAPABILITIES["code_generation"]
+    assert "Bash(git push *)" in cap.denied_tools, "the CLI push wall is untouched by V25"
+    payload = tool_registry.execute_tool(
+        "github_repo", {"repo": "acme/widgets"}, agent_type="orchestrator")
+    assert '"E_POLICY_DENIED"' in payload
 
 
 # ── decide(): the (formerly dormant) tool leg ────────────────────────────────────────────────

@@ -9,7 +9,7 @@ F2  `app/models/ads.py` mapped `ctr/cpc/roas` as plain WRITABLE Floats while BOT
     (`cannot INSERT into generated column "ctr"`, R26 `raw/probe3-output.txt`) while the
     `create_all` unit fixture accepted it: the fixture hid a production failure.  Fixed: the three
     ratios are `Numeric(14, 6)` + `Computed(<the 0002 expression>)` (read-only), `revenue_usd` is
-    mapped `Numeric(14, 4) NOT NULL`.
+    mapped `Numeric(14, 4)`.
 F1  `AdCampaignResponse` (`app/schemas/social.py`) demanded `status`/`daily_budget_usd`/
     `total_spent_usd` that the frozen schema allows to be NULL (raw-SQL/ops writers are an accepted
     path — `e2e/ads.spec.ts`), so ONE legal NULL row turned `GET /api/v1/ads/campaigns` into a 500
@@ -134,12 +134,16 @@ def test_the_insert_statement_never_names_the_generated_columns() -> None:
 
     (An explicitly set value still reaches the INSERT — see the next test: the ENGINE is the
     enforcement point, exactly as 0002's comment measures.)
+
+    V25/L4: `revenue_usd` is ALSO absent from a bare insert now.  It is nullable with no default
+    (alembic 0014), so an omitted value is stored as NULL — the ORM must not fabricate a 0 by
+    naming the column with a default.
     """
     stmt = AdMetric.__table__.insert().values(campaign_id=1, date=date(2026, 1, 2))
     for dialect in (sqlite_dialect.dialect(), postgresql.dialect()):
         sql = str(stmt.compile(dialect=dialect))
         assert "ctr" not in sql and "cpc" not in sql and "roas" not in sql, sql
-        assert "revenue_usd" in sql, "the NOT NULL column must be supplied"
+        assert "revenue_usd" not in sql, "an omitted revenue is absence (NULL), not a fabricated 0"
 
 
 async def test_the_engine_refuses_an_explicit_write_to_a_generated_column(head_session) -> None:
@@ -205,16 +209,21 @@ async def test_generated_ratios_are_read_back_through_the_orm(head_session) -> N
     assert all(isinstance(v, Decimal) for v in (orm_row.ctr, orm_row.cpc, orm_row.roas))
 
 
-async def test_revenue_usd_is_not_null_with_the_ddl_default(head_session) -> None:
-    """`revenue_usd` is the real column: `NOT NULL` in the ORM as in the DDL, defaulting to 0
-    (never NULL), and an explicit Decimal round-trips exactly."""
-    assert AdMetric.__table__.c.revenue_usd.nullable is False
+async def test_revenue_usd_is_nullable_with_no_default_and_a_measurement_round_trips(head_session) -> None:
+    """`revenue_usd` is NULLABLE with NO default (alembic 0014), and a Decimal round-trips exactly.
+
+    V25/L4 re-pin (old -> new): this test used to assert `nullable is False` and a defaulted row
+    reading `Decimal("0.0000")` — the pre-0014 `NOT NULL DEFAULT 0` shape that made an unmeasured
+    day indistinguishable from a measured zero.  The new column carries absence as NULL; a
+    reported value is still exact.
+    """
+    assert AdMetric.__table__.c.revenue_usd.nullable is True
 
     await create_campaign(head_session, "google_ads", "r31-revenue")
     head_session.add(AdMetric(campaign_id=1, date=date(2026, 1, 6), impressions=4, clicks=1))
     await head_session.flush()
     defaulted = (await head_session.execute(select(AdMetric).where(AdMetric.id == 1))).scalar_one()
-    assert defaulted.revenue_usd == Decimal("0.0000"), "the column default, not NULL"
+    assert defaulted.revenue_usd is None, "no default: an unset revenue is absence"
 
     head_session.add(
         AdMetric(
@@ -241,7 +250,12 @@ async def test_the_unit_fixture_schema_now_carries_the_shipped_generated_columns
     insert the migrated schema rejects."""
     ddl = await _fixture_ddl(async_db_session)
     assert ddl.count("GENERATED ALWAYS AS") == 3
-    assert "revenue_usd NUMERIC(14, 4) DEFAULT '0' NOT NULL" in ddl
+    # V25/L4 (old -> new): the fixture used to spell the pre-0014
+    # `revenue_usd NUMERIC(14, 4) DEFAULT '0' NOT NULL`.  It must now match migration 0014's
+    # nullable, default-free column — else the fixture would hide the production shape again.
+    assert "revenue_usd NUMERIC(14, 4)" in ddl
+    assert "revenue_usd NUMERIC(14, 4) NOT NULL" not in ddl
+    assert "revenue_usd NUMERIC(14, 4) DEFAULT" not in ddl
 
 
 async def test_the_fixture_ddl_matches_the_migrated_ddl(async_db_session, head_db) -> None:

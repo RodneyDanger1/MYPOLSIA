@@ -13,6 +13,7 @@ import { fingerprintsFrom } from "./approval";
 import { recoveryFor } from "./recovery";
 import { costUsdText, tokenText } from "./runTruth";
 import { errorText, statusChipClass, statusLabel } from "./status";
+import { TaskAttachments } from "./TaskAttachments";
 import { TaskStatusControl } from "./TaskStatusControl";
 import type { AgentTriggerResponse, ApprovalIssueResponse, TaskRow } from "./types";
 
@@ -238,6 +239,12 @@ export function TaskDetailContent({
           </div>
         </section>
       ) : null}
+
+      {/* ── V25/L1: the task's images ───────────────────────────────────────────────────
+          Upload/remove/thumbnails. The server owns the caps and the magic-byte check; this
+          surface renders its named refusals verbatim (`readErrorText`). `onTaskQueued` is the
+          same refetch path the run/status controls use, so the board stays in step. */}
+      <TaskAttachments taskId={row.id} onChanged={onTaskQueued} />
 
       {row.result_summary ? (
         <section className="mt-3">

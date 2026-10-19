@@ -36,8 +36,11 @@ SAFE_TEST_KEY = "sk-f1-seam-test-key"
 
 #: V20/L2: `phone_read` joined the registry — the frozen wire vocabulary is four names.
 #: V24/L2: `web_search` + the three code tools joined — the frozen wire vocabulary is eight.
+#: V25/L2: the GitHub quartet joined — the frozen wire vocabulary is twelve (V25-PLAN row 2:
+#: "GitHub tools — repo/branch/commit/PR behind the firewalled registry + secret store").
 FROZEN_TOOL_NAMES = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
-                     "phone_read", "code_write", "code_read", "code_list"}
+                     "phone_read", "code_write", "code_read", "code_list",
+                     "github_repo", "github_branch", "github_commit", "github_pr"}
 
 
 def _agent(agent_type: str) -> BasePolsiaAgent:

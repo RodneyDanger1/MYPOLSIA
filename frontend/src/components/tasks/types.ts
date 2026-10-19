@@ -37,6 +37,21 @@ export type AgentTriggerResponse = {
 };
 
 /**
+ * `GET/POST /tasks/{task_id}/attachments` (V25/L1). Metadata only: the bytes live behind
+ * `GET /api/v1/attachments/{id}` and are fetched as a blob for the thumbnail (an `<img>` tag
+ * cannot send the owner key). `mime` is the SNIFFED type the server recorded at upload.
+ */
+export type TaskAttachment = {
+  id: number;
+  task_id: number;
+  filename: string;
+  mime: string;
+  size_bytes: number;
+  sha256: string;
+  created_at?: string | null;
+};
+
+/**
  * `POST /tasks/{task_id}/run` (V24/L1, backend tasks.py — 202). This is the verb that runs the
  * EXISTING row: it does not create a task. `status` is the literal `"dispatched"` (one message
  * accepted by the broker) — it is NOT the task's status, which only the worker's claim moves.

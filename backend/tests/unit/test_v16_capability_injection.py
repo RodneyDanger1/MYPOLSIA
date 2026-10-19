@@ -137,6 +137,28 @@ def test_the_v24_tools_ride_the_block_exactly_where_the_allowlist_grants_them(mo
         assert "code_write" not in doctrine, f"{agent_type} does not hold code_write"
 
 
+def test_the_v25_github_tools_ride_the_block_exactly_where_the_allowlist_grants_them(monkeypatch):
+    """V25/L2 — the source-control quartet is advertised with the registry's OWN descriptions
+    to the ONE agent that holds it, and to no other agent.
+
+    The block is DERIVED (`AGENT_CAPABILITIES` + `TOOL_SPECS`), so this is also the proof that
+    the V25 allowlist grew the prompt truth without a second hand-copy anywhere.  The commit
+    line must also state WHEN it is the right tool: source history, not scratch work (the local
+    workspace), and the dry-run default.
+    """
+    code = _doctrine("code_generation", deepseek=True, monkeypatch=monkeypatch)
+    for name in ("github_repo", "github_branch", "github_commit", "github_pr"):
+        assert name in code, f"code_generation holds {name} — it must be named"
+        assert _spec_description(name) in code
+    assert "dry_run" in code
+    assert "workspace" in code.lower(), "the local-vs-GitHub choice must be stated"
+
+    for agent_type in ("social_media", "business_planning", "finance", "email_outreach"):
+        doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)
+        for name in ("github_repo", "github_branch", "github_commit", "github_pr"):
+            assert name not in doctrine, f"{agent_type} does not hold {name}"
+
+
 def test_the_block_names_the_channels_of_every_agent(monkeypatch):
     for agent_type, cap in pf.AGENT_CAPABILITIES.items():
         doctrine = _doctrine(agent_type, deepseek=True, monkeypatch=monkeypatch)

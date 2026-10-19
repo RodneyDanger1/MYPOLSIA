@@ -139,6 +139,10 @@ export default function MemoryPage() {
   const [warming, setWarming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  /** V25/L5: the query the last failed search used — Retry re-runs THAT query, not whatever the
+   *  input happens to contain now (the failure named a specific read; the retry must be the same
+   *  read). */
+  const [failedQuery, setFailedQuery] = useState<string | null>(null);
 
   // ── V15/W1 (4-05(c)): add-form state — local drafts only; no request fires before Store. ──
   const [addOpen, setAddOpen] = useState(false);
@@ -168,14 +172,15 @@ export default function MemoryPage() {
     };
   }, []);
 
-  const search = async () => {
-    const q = query.trim();
+  const search = async (queryOverride?: string) => {
+    const q = (queryOverride ?? query).trim();
     if (!q) return; // an empty query is not a search — and must not clear what is on screen
     if (inFlight.current) return; // Enter shares the button's disabled guard (Q-11)
     inFlight.current = true;
     const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
+    setFailedQuery(null);
     setWarming(false);
     // The timer is the state machine's "slow, not failed" edge; it is cleared on every settle.
     const warmingTimer = setTimeout(() => {
@@ -198,6 +203,7 @@ export default function MemoryPage() {
     } catch (e: unknown) {
       if (!mounted.current || seq !== requestSeq.current) return;
       setError(errorText(e));
+      setFailedQuery(q);
       setResults(null);
     } finally {
       clearTimeout(warmingTimer);
@@ -430,6 +436,17 @@ export default function MemoryPage() {
           <div role="alert" className="border border-alert bg-surface p-3">
             <p className="ui-label text-alert">Search failed</p>
             <p className="mt-1 text-sm text-ink">{error}</p>
+            {/* V25/L5: a failed search is retryable in place — it re-runs the query that failed,
+                rather than making the operator retype it and hope. */}
+            <button
+              type="button"
+              className="link ui-label mt-2"
+              data-testid="memory-search-retry"
+              onClick={() => void search(failedQuery ?? undefined)}
+              disabled={loading}
+            >
+              Retry
+            </button>
           </div>
         ) : null}
 

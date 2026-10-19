@@ -18,7 +18,7 @@ from app.models.report import ActivityLog, DailyReport
 from app.models.schedule import TaskSchedule
 from app.models.social import SocialEngagement, SocialPost
 from app.models.support import SupportInboxItem
-from app.models.task import AgentRun, Task
+from app.models.task import AgentRun, Task, TaskAttachment
 from app.models.types import json_type, string_list_type
 
 __all__ = [
@@ -43,6 +43,7 @@ __all__ = [
     "StripeEvent",
     "SupportInboxItem",
     "Task",
+    "TaskAttachment",
     "TaskSchedule",
     "json_type",
     "string_list_type",

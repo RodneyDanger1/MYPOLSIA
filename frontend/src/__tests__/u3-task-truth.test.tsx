@@ -279,8 +279,19 @@ describe("recovery in the sheet (B3)", () => {
         expect(dialog.querySelector('[data-recovery="run"], [data-recovery="approve"]')).not.toBeNull();
       } else {
         // No run/retry control of ANY kind — and the reason is on screen instead.
-        expect(within(dialog).queryByRole("button", { name: /run now|run again|retry/i })).toBeNull();
-        expect(dialog.querySelector('[data-recovery="none"]')).not.toBeNull();
+        //
+        // wave V25 (L1): the task sheet now hosts an IMAGE-ATTACHMENT panel, which owns its own
+        // "Retry" when the blob read fails.  That control belongs to the attachment surface, not
+        // to task recovery, so the invariant is scoped to the `[data-recovery="none"]` block: the
+        // recovery area must never offer a competing run/retry CTA.  (Anchored, not loosened —
+        // the attachment panel's own Retry is covered by v25-vision.test.tsx.)
+        const recoveryNone = dialog.querySelector('[data-recovery="none"]');
+        expect(recoveryNone).not.toBeNull();
+        expect(
+          within(recoveryNone as HTMLElement).queryByRole("button", {
+            name: /run now|run again|retry/i,
+          }),
+        ).toBeNull();
         expect(dialog.textContent ?? "").toMatch(reasonPattern as RegExp);
       }
     },
@@ -321,10 +332,16 @@ describe("recovery in the sheet (B3)", () => {
     const { dialog } = await openSheet(row);
 
     expect(dialog.querySelectorAll(".btn-glossy")).toHaveLength(0);
-    expect(within(dialog).queryByRole("button", { name: /retry/i })).toBeNull();
+    // wave V25 (L1): scope the recovery invariant to the `[data-recovery="none"]` block — the
+    // attachment panel's own failed-read Retry is a different surface (pinned by v25-vision).
+    const recoveryNone = dialog.querySelector('[data-recovery="none"]');
+    expect(recoveryNone).not.toBeNull();
     expect(within(dialog).queryByRole("button", { name: /run/i })).toBeNull();
-    expect(dialog.textContent ?? "").not.toMatch(/\bretry\b/i);
-    expect(dialog.textContent ?? "").toMatch(/no recovery action/i);
+    expect(
+      within(recoveryNone as HTMLElement).queryByRole("button", { name: /retry/i }),
+    ).toBeNull();
+    expect((recoveryNone as HTMLElement).textContent ?? "").not.toMatch(/\bretry\b/i);
+    expect(recoveryNone?.textContent ?? "").toMatch(/no recovery action/i);
   });
 
   it("awaiting_approval: approve is the ONLY primary and no new-run button competes with it", async () => {

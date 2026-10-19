@@ -150,8 +150,10 @@ def test_real_registry_specs_are_what_ride_the_request():
     assert server.requests[0]["body"]["tools"] == tool_registry.TOOL_SPECS
     assert {spec["function"]["name"] for spec in tool_registry.TOOL_SPECS} == {
         # V20/L2: phone_read.  V24/L2: web_search + the three code tools (8 frozen names).
+        # V25/L2: the GitHub quartet (12 frozen names — source control behind the firewall).
         "web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
         "phone_read", "code_write", "code_read", "code_list",
+        "github_repo", "github_branch", "github_commit", "github_pr",
     }
 
 

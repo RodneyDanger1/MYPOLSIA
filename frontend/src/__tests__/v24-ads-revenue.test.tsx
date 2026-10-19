@@ -13,6 +13,14 @@ import AdsPage from "@/app/ads/page";
 /**
  * V24/L4 — the ads card's revenue truth.
  *
+ * ATTRIBUTION (V25/L4, migration 0014): these tests were written while the API still served a
+ * stored `0` as `null` (the V24 deviation — the column was `NOT NULL DEFAULT 0`, so an unmeasured
+ * day and a measured zero were the same byte).  The wire cases below already use `null` for
+ * "unmeasured" and `0` for "measured zero", so they remain the correct expectations; what changed
+ * is that the BACKEND now actually produces both.  The storage half is pinned in
+ * `backend/tests/unit/test_v25_ads_nullable.py`; the display half's dedicated file is
+ * `v25-ads-nullable.test.tsx`.
+ *
  * The stored-metrics expander already lists each day; this lane adds the CAMPAIGN-LEVEL reading
  * the card shows: Revenue (sum of the days whose revenue was measured) and ROAS (only from the
  * days where BOTH revenue and spend were measured).  The three states pinned here:

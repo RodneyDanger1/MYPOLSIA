@@ -304,7 +304,7 @@ def test_migration_0012_adds_the_hot_indexes_and_round_trips(monkeypatch, tmp_pa
     before = _indexes(db_path)
     assert not (set(PERF_INDEXES) & set(before)), "RED: 0011 must not already carry them"
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0012")
     after = _indexes(db_path)
     for name, table in PERF_INDEXES.items():
         assert after.get(name) == table, f"{name} missing from {table} at head"
@@ -328,7 +328,7 @@ def test_migration_0012_adds_the_hot_indexes_and_round_trips(monkeypatch, tmp_pa
     for name in PERF_INDEXES:
         assert name not in rolled_back, f"{name} survived downgrade"
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0012")
     assert set(PERF_INDEXES) <= set(_indexes(db_path))
 
 
@@ -395,5 +395,8 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         assert revision, f"unparsable revision header: {path.name}"
         graph[revision] = None if down in (None, "None") else down
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0012"], f"expected a single head (0012), found {heads}"
+    # V25: the head moved 0012 -> 0014 (L1's 0013_task_attachments, L4's 0014_ads_nullable_revenue);
+    # V24's 0012 -> 0011 leg is unchanged and still asserted below.
+    assert heads == ["0014"], f"expected a single head (0014), found {heads}"
     assert graph["0012"] == "0011"
+    assert graph["0013"] == "0012" and graph["0014"] == "0013"

@@ -134,6 +134,30 @@ after `dispatch_paused` (the ORM/migration column order).  One column row added;
 changed.  Old canonical sha256 `c17dbc5dd6861fb3dc0c45b330c40611b9c8b06c83a59d5f3ebdfd6e6d19c3a1`
 -> `7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36eaade848` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (V25/L4, 2026-10-19): `ad_metrics.revenue_usd` is now NULLABLE with NO
+default, and `ad_metrics.roas` is GENERATED with the measured-only rule — both carried by
+`backend/alembic/versions/0014_ads_nullable_revenue.py`.  Rationale (the V24/L4 deviation this
+closes): the pre-0014 `NUMERIC(14, 4) DEFAULT '0' NOT NULL` made an unmeasured revenue and a
+measured `$0` the same stored byte, so the API had to serve every zero as `null`.  Row changes:
+`revenue_usd` `('NUMERIC(14, 4)', True, '', '', '', False)` (nullable, python/server default
+gone) and `roas`'s COMPUTED expression gains `revenue_usd IS NOT NULL AND` and drops `ELSE 0`
+(NULL unless both inputs are measured; zero spend is not a denominator).  No other row changed.
+Old canonical sha256 `7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36eaade848` ->
+`519a31651b505dc2cc2e11325200fed0e2aebd95d5b470bb4b25db3cbfba8eda` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (V25/L1, 2026-10-19): `task_attachments` — a task's image attachments
+for vision input (Polsia reads screenshots; V25 PLAN item 1) — is a NEW table added by
+`backend/alembic/versions/0013_task_attachments.py`.  Eight columns, all NOT NULL except the
+nullable `created_at` with its `now()` server default; `task_id` is a FK -> `tasks.id`
+`ON DELETE CASCADE`; `ix_task_attachments_task_id` is the one explicit index.  `stored_name`
+is the server-generated `<uuid4>.<ext>` locator (the operator's `filename` is display-only), so
+the byte path can never be built from user input.  22 tables -> 23 (the table list
+had already grown to 22 by V24; this revision adds the attachment table).  No existing row changed.
+Old canonical sha256 `519a31651b505dc2cc2e11325200fed0e2aebd95d5b470bb4b25db3cbfba8eda` ->
+`2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -152,7 +176,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36eaade848"
+DDL_SHA256 = "2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -176,6 +200,7 @@ FROZEN_TABLE_NAMES = (
     'social_posts',
     'stripe_events',
     'support_inbox_items',
+    'task_attachments',
     'task_schedules',
     'tasks',
 )
@@ -212,12 +237,13 @@ FROZEN_COLUMNS = {
         ('clicks', 'INTEGER', True, '0', '0', '', False),
         ('conversions', 'INTEGER', True, '0', '0', '', False),
         ('spend_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
-        # R31: the real NOT NULL column the shipped DDL holds, mapped after the money it derives from
-        ('revenue_usd', 'NUMERIC(14, 4)', False, '0', '0', '', False),
+        # V25/L4: nullable with NO default — NULL is "not measured", 0 is a measured zero
+        ('revenue_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         # R31: GENERATED on both engines (`COMPUTED: <expr>` marker) — writable Floats before
         ('ctr', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN impressions > 0 THEN round(CAST(CAST(clicks AS REAL) / impressions AS NUMERIC), 6) ELSE 0 END', '', False),
         ('cpc', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN clicks > 0 THEN round(CAST(CAST(spend_usd AS REAL) / clicks AS NUMERIC), 6) ELSE 0 END', '', False),
-        ('roas', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) ELSE 0 END', '', False),
+        # V25/L4: the roas expression yields NULL unless revenue is measured AND spend > 0
+        ('roas', 'NUMERIC(14, 6)', True, '', 'COMPUTED: CASE WHEN revenue_usd IS NOT NULL AND spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) END', '', False),
     ),
     'agent_runs': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -476,6 +502,18 @@ FROZEN_COLUMNS = {
         ('task_id', 'INTEGER', True, '', '', 'ix_support_inbox_items_task_id', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
     ),
+    'task_attachments': (
+        # V25/L1 (migration 0013): image attachments. `stored_name` is the server-generated
+        # `<uuid4>.<ext>` locator; `filename` is operator display text and never a path.
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('task_id', 'INTEGER', False, '', '', 'ix_task_attachments_task_id', False),
+        ('filename', 'VARCHAR(255)', False, '', '', '', False),
+        ('stored_name', 'VARCHAR(128)', False, '', '', '', False),
+        ('mime', 'VARCHAR(50)', False, '', '', '', False),
+        ('size_bytes', 'INTEGER', False, '', '', '', False),
+        ('sha256', 'VARCHAR(64)', False, '', '', '', False),
+        ('created_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
     'task_schedules': (
         # V8/0008 (C2's frozen table): owner-defined recurring prompts. `cadence` carries the
         # named ck_task_schedules_cadence CHECK; `hour` company-local 0-23; `weekday` NULL for
@@ -535,6 +573,8 @@ FROZEN_INDEXES = {
     ('ix_auto_mode_sessions_started_at', ('started_at',), False),
     ('ix_support_inbox_items_status', ('status',), False),
     ('ix_support_inbox_items_task_id', ('task_id',), False),
+    # V25/L1 (0013): the attachments read (list + the per-task cap aggregate).
+    ('ix_task_attachments_task_id', ('task_id',), False),
     ('ix_tasks_created_at', ('created_at',), False),
     ('ix_tasks_dedupe_key', ('dedupe_key',), True),
     ('ix_tasks_pending_queue', ('status', 'priority', 'scheduled_date'), False),

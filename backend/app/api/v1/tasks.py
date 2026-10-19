@@ -24,13 +24,37 @@ runs through `asyncio.to_thread` exactly like `agents.py`'s trigger — a dead b
 stall the event loop while it climbs redis-py's retry ladder.  A broker refusal is a named
 503 `E_TASK_NOT_RUNNABLE` and the row is LEFT HONEST: this route never marks anything
 `in_progress`; only the worker's atomic `claim_task` may do that after a real delivery.
+
+IMAGE ATTACHMENTS (V25/L1) — the vision-input surface, in this module and a sibling router:
+
+    POST   /api/v1/tasks/{task_id}/attachments   multipart `file` -> 201 metadata
+    GET    /api/v1/tasks/{task_id}/attachments   -> [metadata], upload order
+    GET    /api/v1/attachments/{attachment_id}   -> the bytes, sniffed content type
+    DELETE /api/v1/attachments/{attachment_id}   -> 204 (blob + row removed)
+
+The upload refuses BY NAME: `E_VALIDATION` (not PNG/JPEG/WebP by magic bytes, > 5 MiB, > 4 per
+task, > 8 MiB total), `E_NOT_FOUND` (unknown task / attachment), `E_CONFIG` (the data volume is
+not writable) and `E_UPSTREAM` (the row exists but its blob is gone/no longer the recorded type).
+Every route is owner-keyed by the router dependency; the byte response carries
+`X-Content-Type-Options: nosniff` and an `inline` disposition with a QUOTED name, and the path is
+derived from the row's server-generated `stored_name` — never from the operator's file name.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,7 +62,13 @@ from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.core.errors import E_NOT_FOUND, E_TASK_NOT_RUNNABLE, ERROR_HINTS
 from app.models.task import Task
-from app.schemas.task import TaskCreate, TaskResponse, TaskStatusUpdate
+from app.schemas.task import (
+    TaskAttachmentResponse,
+    TaskCreate,
+    TaskResponse,
+    TaskStatusUpdate,
+)
+from app.services import task_attachment_service as attachment_service
 from app.services.task_service import (
     TaskRunTotals,
     create_task,
@@ -260,3 +290,136 @@ async def update_task_status_endpoint(
         )
     with refusal_guard():
         return await _task_response(db, task)
+
+
+# ── V25/L1: task image attachments (vision input) ────────────────────────────────────────────
+# A SECOND router for the id-addressed attachment surface (`/api/v1/attachments/{id}`), so the
+# byte route cannot collide with `/tasks/{task_id}` and each router keeps ONE prefix.  Both are
+# owner-keyed; `main.py` includes this one next to `tasks.router`.
+
+attachments_router = APIRouter(
+    prefix="/attachments", tags=["tasks"], dependencies=[Depends(verify_api_key)]
+)
+
+
+def _task_404(task_id: int) -> HTTPException:
+    """The named 404 every task-addressed route answers for an unknown id."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": E_NOT_FOUND,
+            "message": f"task {task_id} does not exist",
+            "how_to_fix": ERROR_HINTS[E_NOT_FOUND],
+            "context": {"task_id": task_id},
+        },
+    )
+
+
+def _attachment_404(attachment_id: int) -> HTTPException:
+    """The named 404 for an unknown attachment id (the row does not exist)."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": E_NOT_FOUND,
+            "message": f"attachment {attachment_id} does not exist",
+            "how_to_fix": ERROR_HINTS[E_NOT_FOUND],
+            "context": {"attachment_id": attachment_id},
+        },
+    )
+
+
+@router.post(
+    "/{task_id}/attachments",
+    response_model=TaskAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_task_attachment_endpoint(
+    task_id: int,
+    file: UploadFile = File(..., description="a PNG, JPEG or WebP image, at most 5 MB"),
+    db: AsyncSession = Depends(get_db),
+) -> TaskAttachmentResponse:
+    """Attach ONE image to an existing task (V25/L1).
+
+    Order matters: the task is checked FIRST (an upload to a missing task is `E_NOT_FOUND`, not
+    a file written for a row that never existed), then the body is read under the 5 MiB cap, then
+    the service sniffs the bytes and applies the per-task caps BEFORE writing anything.  A 201
+    means the blob is on the data volume and the row is persisted — `get_db` commits after the
+    response is built, and the service removes the blob again if the row fails to land.
+    """
+    with refusal_guard():
+        task = await get_task(db, task_id)
+        if task is None:
+            raise _task_404(task_id)
+        data = await attachment_service.read_upload(file)
+        row = await attachment_service.save_attachment(
+            db,
+            task_id=task_id,
+            filename=file.filename or "image",
+            data=data,
+            declared_mime=file.content_type,
+        )
+        return TaskAttachmentResponse.model_validate(row)
+
+
+@router.get("/{task_id}/attachments", response_model=list[TaskAttachmentResponse])
+async def list_task_attachments_endpoint(
+    task_id: int, db: AsyncSession = Depends(get_db)
+) -> list[TaskAttachmentResponse]:
+    """This task's images, oldest first — metadata only; the bytes have their own route."""
+    with refusal_guard():
+        task = await get_task(db, task_id)
+        if task is None:
+            raise _task_404(task_id)
+        rows = await attachment_service.list_attachments(db, task_id)
+        return [TaskAttachmentResponse.model_validate(row) for row in rows]
+
+
+@attachments_router.get(
+    "/{attachment_id}",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/png": {}, "image/jpeg": {}, "image/webp": {}}},
+        404: {"description": "E_NOT_FOUND"},
+        502: {"description": "E_UPSTREAM — the row exists, its blob is gone"},
+    },
+)
+async def get_attachment_endpoint(
+    attachment_id: int, db: AsyncSession = Depends(get_db)
+) -> Response:
+    """Serve ONE attachment's exact bytes with the SNIFFED content type (V25/L1).
+
+    `stored_name` is server-generated and re-validated by the service, so the path this reads can
+    never contain `..`, a separator or a symlink escape.  A row whose blob vanished is
+    `E_UPSTREAM` (502), never an empty 200: a caller must be able to tell "no image" from
+    "the image is gone".  `nosniff` stops a browser from reinterpreting the bytes as anything
+    other than the recorded image type.
+    """
+    with refusal_guard():
+        row = await attachment_service.get_attachment(db, attachment_id)
+        if row is None:
+            raise _attachment_404(attachment_id)
+        data = await attachment_service.read_attachment_bytes(row)
+        disposition = f'inline; filename="{quote((row.filename or "image")[:255])}"'
+        return Response(
+            content=data,
+            media_type=row.mime,
+            headers={
+                "Content-Disposition": disposition,
+                "Content-Length": str(len(data)),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=60",
+            },
+        )
+
+
+@attachments_router.delete("/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_attachment_endpoint(
+    attachment_id: int, db: AsyncSession = Depends(get_db)
+) -> Response:
+    """Remove ONE attachment: the blob and the row together, or neither (V25/L1)."""
+    with refusal_guard():
+        row = await attachment_service.get_attachment(db, attachment_id)
+        if row is None:
+            raise _attachment_404(attachment_id)
+        await attachment_service.delete_attachment(db, row)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

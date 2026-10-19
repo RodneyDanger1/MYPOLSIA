@@ -688,6 +688,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                          # agent's prompt (RD4 §4 note 3 / RD12).  Additive for every agent: the
                          # prompt layers read only id/title/description/acceptance.
                          "metadata": task.metadata_json}
+            # V25/L1 — the task's image attachments, as metadata REFS (id/name/mime/stored_name),
+            # never bytes: the agent's run context (`set_run_context`) reads the blobs and builds
+            # the data URIs on the RUN thread.  Read in this claim session so the set is the one
+            # that was committed when the task was claimed.  No attachments => `[]`, which
+            # leaves every prompt and every model request byte-identical to the pre-V25 path.
+            from app.services.task_attachment_service import attachment_refs, list_attachments
+
+            task_dict["attachments"] = attachment_refs(await list_attachments(db, task.id))
             agent_type = task.agent_type
             # Both read INSIDE the claim session (the row is attached here): the budget gate
             # (T04) keys on `source`, and the approval channel (T02) keys on the supplied token.

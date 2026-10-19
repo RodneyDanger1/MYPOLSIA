@@ -545,5 +545,8 @@ async def test_the_mapped_metric_insert_can_write_the_migrated_schema(head_sessi
         select(AdMetric).where(AdMetric.id == metric.id)
     )).scalar_one()
     assert stored.ctr == Decimal("0.200000")          # 2/10 — computed by the engine
-    assert stored.revenue_usd == Decimal("0.0000")    # the NOT NULL column's default
-    assert (stored.cpc, stored.roas) == (Decimal("0.000000"), Decimal("0.000000"))
+    # V25/L4 (old -> new): this used to assert the pre-0014 `NOT NULL DEFAULT 0` value.  Migration
+    # 0014 makes revenue nullable with no default, so an unset revenue is None and the generated
+    # ROAS is None too (a bare metric day has no revenue measurement to divide).
+    assert stored.revenue_usd is None
+    assert (stored.cpc, stored.roas) == (Decimal("0.000000"), None)

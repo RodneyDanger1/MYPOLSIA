@@ -48,9 +48,13 @@ export function BusinessPanel() {
   const [margin, setMargin] = useState<{ value: number | null; reason: string | null; error: string | null }>(
     { value: null, reason: null, error: null },
   );
+  /** V25/L5: the panel's own retry — a failed read stays failed until a full reload otherwise
+   *  (this panel does not poll). Both reads that feed it re-issue together. */
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     api
       .get<DashboardSummary>("/dashboard/summary")
       .then((data) => {
@@ -62,10 +66,11 @@ export function BusinessPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   useEffect(() => {
     let cancelled = false;
+    setMargin({ value: null, reason: null, error: null });
     api
       .get<PlanningView>("/finance/planning")
       .then((view) => {
@@ -93,14 +98,21 @@ export function BusinessPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   const loading = summary === null && !error;
 
   return (
     <Card title="Business">
       {loading ? <PanelSkeleton rows={4} /> : null}
-      {!loading && error ? <PanelError label="the dashboard summary" message={error} /> : null}
+      {!loading && error ? (
+        <PanelError
+          label="the dashboard summary"
+          message={error}
+          onRetry={() => setAttempt((n) => n + 1)}
+          retryTestId="business-panel-retry"
+        />
+      ) : null}
       {!loading && !error && summary ? <BusinessRows summary={summary} margin={margin} /> : null}
     </Card>
   );

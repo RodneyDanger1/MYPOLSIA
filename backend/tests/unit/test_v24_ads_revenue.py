@@ -285,15 +285,15 @@ async def test_record_ads_run_persists_the_reported_revenue_exactly(async_db_ses
     assert row.revenue_usd == Decimal("12.3456")
 
 
-async def test_record_ads_run_leaves_the_revenue_column_default_untouched_when_unreported(
+async def test_record_ads_run_leaves_an_unreported_revenue_null(
     async_db_session,
 ) -> None:
-    """No revenue in the payload = no revenue written; the column's frozen DEFAULT is not a write.
+    """No revenue in the payload = an explicit NULL at rest; the writer never fabricates a `0`.
 
-    (The DDL is `revenue_usd NUMERIC(14,4) DEFAULT '0' NOT NULL` — alembic 0002:203-207/0003:71 —
-    so the database itself cannot hold NULL for this column.  What the lane forbids is the WRITER
-    or the SCHEMA asserting a measured `0`; the API serves the unmeasurable stored default as null,
-    see the route tests below.)
+    V25/L4 re-pin (old -> new): this test previously asserted `Decimal("0.0000")` — the pre-0014
+    column's `DEFAULT 0`, which the lane could only explain around.  Migration 0014 makes the
+    column nullable with no default and `record_ads_run` writes NULL, so "not measured" is now a
+    stored state instead of a default that every reader had to second-guess.
     """
     report = await ads_service.record_ads_run(async_db_session, {
         "campaigns": [_campaign_payload()],
@@ -303,7 +303,8 @@ async def test_record_ads_run_leaves_the_revenue_column_default_untouched_when_u
 
     assert report["ok"] is True, report
     row = (await ads_service.list_metrics(async_db_session, 1))[0]
-    assert row.revenue_usd == Decimal("0.0000"), "the column's default, written by nobody"
+    assert row.revenue_usd is None, "an unreported revenue is absence, not $0"
+    assert row.roas is None
 
 
 # ── 5. the API serves revenue and derives ROAS from the measured pair only ──────────────────
@@ -339,12 +340,16 @@ async def _seed_campaign_and_metrics(async_db_session) -> int:
         # both measured: 20 / 8 = 2.5
         AdMetric(campaign_id=campaign.id, date=date(2026, 10, 1), impressions=100, clicks=10,
                  conversions=2, spend_usd=Decimal("8.0000"), revenue_usd=Decimal("20.0000")),
-        # revenue unreported -> the column default 0; spend measured.  Must NOT serve 0.0 / 0.0.
+        # revenue unreported -> stored NULL (migration 0014); spend measured.
+        # Must NOT serve 0.0 / 0.0.
         AdMetric(campaign_id=campaign.id, date=date(2026, 10, 2), impressions=80, clicks=4,
-                 conversions=0, spend_usd=Decimal("5.0000"), revenue_usd=Decimal("0.0000")),
+                 conversions=0, spend_usd=Decimal("5.0000"), revenue_usd=None),
         # revenue measured, spend zero -> revenue is a reading, ROAS is unmeasurable.
         AdMetric(campaign_id=campaign.id, date=date(2026, 10, 3), impressions=10, clicks=1,
                  conversions=1, spend_usd=Decimal("0.0000"), revenue_usd=Decimal("6.0000")),
+        # revenue MEASURED as zero over measured spend -> $0 and 0.00× are readings (V25/L4).
+        AdMetric(campaign_id=campaign.id, date=date(2026, 10, 4), impressions=20, clicks=2,
+                 conversions=0, spend_usd=Decimal("5.0000"), revenue_usd=Decimal("0.0000")),
     ])
     await async_db_session.commit()
     return campaign.id
@@ -369,3 +374,8 @@ async def test_api_serves_measured_revenue_and_computes_roas(ads_client, async_d
     zero_spend = rows["2026-10-03"]
     assert zero_spend["revenue_usd"] == 6.0
     assert zero_spend["roas"] is None, "revenue/spend is unmeasurable when spend is zero"
+
+    # V25/L4 (old -> new): a MEASURED zero is no longer erased — it is served as 0.0 / 0.0.
+    measured_zero = rows["2026-10-04"]
+    assert measured_zero["revenue_usd"] == 0.0, "a measured $0 day is a reading, not a dash"
+    assert measured_zero["roas"] == 0.0, "0 revenue over measured spend is a real 0.00×"

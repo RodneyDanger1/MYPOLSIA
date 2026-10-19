@@ -14,6 +14,7 @@ import {
   Megaphone,
   Phone,
   Settings,
+  ShieldAlert,
   Target,
   Twitter,
 } from "lucide-react";
@@ -27,7 +28,7 @@ import type { LucideIcon } from "lucide-react";
  * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
  * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
  * count claim moves with the table (eleven -> sixteen; V17/L4 added Capabilities; V24/L3 added
- * Sites, so seventeen), labels stay as short as the live menu items.
+ * Sites, so seventeen; V25/L5 added Ops, so eighteen), labels stay as short as the live menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -65,6 +66,11 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/memory", label: "Memory", icon: Database },
+  // V25/L5: the God Mode cockpit — runs, pending approvals, manual dispatches and the live kill
+  // switches in one owner surface (`app/ops/page.tsx`, existing API only). It joins the system
+  // cluster before the read-only Capabilities map; Settings stays the last item. The count claim
+  // above moves seventeen -> eighteen with this row.
+  { href: "/ops", label: "Ops", icon: ShieldAlert },
   // V17/L4: the read-only capability map (agent -> tool -> action, shipped in V16) was reachable
   // only from Settings; it is a reference surface, so it joins the system cluster here and Settings
   // stays the last item (the file's own convention).

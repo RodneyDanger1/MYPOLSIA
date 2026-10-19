@@ -112,18 +112,22 @@ def test_the_migration_chain_is_linear_with_a_single_head():
     re-pin (`company_config.human_hourly_rate`); the linearity law itself is unchanged.
     V24: the head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) — deliberate re-pin; the
     revision is INDEX-ONLY (five additive indexes), so no DDL hash in the schema-frozen pin moved.
+    V25: the head moved 0012 -> 0013 -> 0014 — TWO deliberate re-pins in one wave: L1's
+    `0013_task_attachments.py` (the vision-input table) and L4's `0014_ads_nullable_revenue.py`
+    (measured-zero vs unknown).  Both are linear additions; the linearity law is unchanged.
     """
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0012"], f"expected a single head (0012), found {heads}"
+    assert heads == ["0014"], f"expected a single head (0014), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0012"
+    cursor: str | None = "0014"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004", "0003", "0002", "0001"
+        "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
+        "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
 
@@ -318,7 +322,9 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
         # V24: the chain head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) — index-only,
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012"
+        # V25: 0013 (L1, task_attachments) and 0014 (L4, ads nullable revenue) — deliberate re-pin;
+        # the 0005/0006 legs below are unchanged.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

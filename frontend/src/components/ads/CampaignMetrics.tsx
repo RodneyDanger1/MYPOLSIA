@@ -28,6 +28,12 @@ import { useAdsRead } from "./useAdsRead";
  * measured — the coverage line names the subset).  The API serves an unmeasurable revenue/ROAS as
  * `null`, so the strip dashes rather than claiming `$0.00` / `0.00×`; a genuinely measured zero
  * still renders as a zero reading.
+ *
+ * V25/L4 (migration 0014): the BACKEND can now hold that distinction at rest — `revenue_usd` is
+ * nullable with no default and the API serves a measured 0 as `0.0`.  This component's display
+ * law is therefore the whole contract, and it needs no branch: `null` is the dash, `0` is a
+ * reading.  Pinned by `src/__tests__/v25-ads-nullable.test.tsx` (the `NOT_MEASURED` marker is
+ * emitted ONLY for `null` — never for zero).
  */
 
 export type AdMetric = {

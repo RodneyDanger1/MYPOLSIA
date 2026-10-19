@@ -638,6 +638,42 @@ HTTP + DOM (200, title, script-free) rather than a screenshot.
   cannot be distinguished from unknown (L4's documented deviation); fixing it needs migration `0013`
   (nullable columns + `0 → NULL` backfill) and writer/API/FE alignment.
 
+## 4c. Wave V25 settlement (2026-10-19) — vision, GitHub tools, deploy adapter, ads nullable, God Mode
+
+Five lanes landed on `7faa6dd`; gates on the settled tree: backend **3,106 / 0 failed / 0 errors /
+13 skipped**, jest **956/956**, mypy+ruff clean, migrations **0013** (task_attachments) and **0014**
+(ads nullable) applied to live PostgreSQL (**0014 head**).
+
+- **Vision input (L1).** Task image attachments end to end: upload (PNG/JPEG/WebP ≤5 MB, ≤4/task,
+  magic-byte sniffed, atomic write), list/blob/delete routes, blob served with the sniffed type, and
+  the DeepSeek runtime sends OpenAI-style `image_url` content parts (no attachments ⇒ byte-identical
+  plain message; replay does not re-send). Live proof: a **code_generation** task recreated the
+  attached PNG as `swatch.html` at `#ff0000`, 96×96, using the code workspace; a blue-vs-none probe
+  proved the model reads pixels (blue→blue, image-less→guess). **Residual:** agents whose prompts
+  treat the task brief as untrusted data refuse off-role image questions **by name** — honest, but a
+  dedicated "describe this image" affordance is a V26 item.
+- **GitHub tools (L2).** `github_repo/branch/commit/pr` behind the firewalled registry, token only
+  from the secret store, `code_generation` only, mutations default **dry-run** and send zero requests
+  when dry. No token on this host ⇒ live `E_CONFIG` proven; real authenticated writes are owner-gated.
+  Per-run workspace seam (`execute_tool(run_id=...)`) is implemented and tested; the runtime does not
+  yet carry a run id, so runs still use the shared root.
+- **Deploy adapter (L3).** `POST/GET /api/v1/sites/SLUG/deploy`: dry-run by default, exact planned
+  call with masked auth, bounded 20 s live call, success only with a Render deploy id, state persisted
+  in `meta.json`; live proof: `configured:false` + **503 E_CONFIG** naming `RENDER_API_KEY` and
+  `RENDER_SERVICE_ID`, meta untouched. A real Render deploy is owner-gated.
+- **Ads truth schema (L4).** Migration **0014**: `revenue_usd` nullable with no default, existing
+  `0 → NULL` backfill (a stored zero was never certified as measured), `roas` NULL unless revenue and
+  spend are measured; API serves null vs 0.00 distinctly; live columns verify `YES/YES`. L4 also fixed
+  a real 500 in campaign metrics on malformed at-rest numeric/date cells.
+- **God Mode (L5).** `/ops` cockpit: live runs (tools chips, cost, duration), approvals with real
+  approve/deny, agent triggers, auto-mode/pause/sandbox readings, honest empty/error states; nav
+  gains Ops (17→18, three nav pins re-pinned). Live: `/ops` 200 and the nav href ships in the built
+  layout chunk.
+- **Settle re-pins (parent):** task-sheet "one recovery action" pins scoped to
+  `[data-recovery="none"]` (the attachment panel owns its own Retry), unreported ads revenue pinned to
+  **NULL**, attachment blob route added to the response-model exemptions, a single-line httpx timeout
+  for the static gate, schema table count 22→**23**.
+
 - **API_KEY rotation** (F-02 residual): the loopback bind (`127.0.0.1:80`) removes the measured network
   exposure, so rotation is deliberately not executed; do it BEFORE ever publishing the stack beyond
   localhost (set `API_KEY` + `NEXT_PUBLIC_API_KEY` and rebuild the frontend image — they must match).

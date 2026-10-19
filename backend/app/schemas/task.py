@@ -65,6 +65,23 @@ class TaskResponse(TimestampedORM):
     tokens_out: int | None = None
 
 
+class TaskAttachmentResponse(TimestampedORM):
+    """One image attached to a task (V25/L1).
+
+    Metadata only — the bytes are served by `GET /api/v1/attachments/{id}`.  `stored_name` is
+    deliberately absent: it is the server's storage locator and no client needs it.  `mime` is
+    the SNIFFED type recorded at upload, `sha256` the digest of the stored bytes, and
+    `created_at` the database's upload timestamp (the inherited `TimestampedORM` field).
+    """
+
+    id: int
+    task_id: int
+    filename: str
+    mime: str
+    size_bytes: int
+    sha256: str
+
+
 class TaskStatusUpdate(BaseModel):
     """The task status-change request body — now WIRED to `PATCH /api/v1/tasks/{task_id}/status`.
 

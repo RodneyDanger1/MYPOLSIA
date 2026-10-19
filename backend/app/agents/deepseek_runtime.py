@@ -70,9 +70,17 @@ executor (`E_TOOL_EXEC`) and a non-`str` return (`E_TOOL_CONTRACT`). A tool resu
 reported as the run's answer, the registry's own refusal payloads pass back verbatim, `usage` is
 SUMMED over every provider call (measured-or-absent across the whole run), and the run record
 carries tool NAMES only.
+
+VISION INPUT (V25/L1): `invoke(images=[...])` sends a task's attached images as OpenAI-compatible
+content parts on the user turn — `{"type":"text"}` plus one `{"type":"image_url"}` data URI per
+image.  The caps (PNG/JPEG/WebP, <= 5 MiB each, <= 8 MiB per request, raw bytes) are enforced
+BEFORE the request; a task with no images sends the exact same plain-string message as before
+(pinned byte-for-byte).  `invoke(task_title=...)` publishes the run's title for
+`registry.execute_tool(task_title=...)`, which `web_search` uses as the provider's `ori_question`.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -123,7 +131,12 @@ REASONING_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
 #: (the claude CLI gets that from its own on-disk sessions). In-process only; a lost entry is a
 #: warned fresh call, never a silent mis-attribution.
 SESSION_STORE_LIMIT = 32
+#: V25/L1: a session carrying image content parts can be megabytes, so the store also has a
+#: BYTE budget.  Oldest sessions are evicted until the total fits — the count bound alone would
+#: let 32 × 8 MiB of images (plus base64 inflation) sit in one worker process.
+SESSION_STORE_MAX_BYTES = 64 * 1024 * 1024
 _SESSIONS: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+_SESSION_BYTES: dict[str, int] = {}
 _SESSION_LOCK = threading.Lock()
 
 #: HTTP status -> error-envelope subtype, chosen so `claude_cli.is_retryable_failure` classifies
@@ -236,6 +249,114 @@ TOOL_NAME_MAX_CHARS = 80
 TOOL_NAMES_MAX = 32
 #: Bound on the runtime's OWN refusal payloads; a registry payload passes through as it is.
 TOOL_RESULT_TEXT_LIMIT = 1000
+
+
+# ── vision input (V25/L1) ────────────────────────────────────────────────────────────────────
+# A task may carry image attachments; `invoke(images=[...])` turns the user turn into OpenAI-
+# compatible CONTENT PARTS (text + `image_url` data URIs).  The contract, deliberately narrow:
+#
+#   * the model is `deepseek-flash` (the vision-capable model this deployment runs); an image on
+#     any other model is still sent — this runtime does not pretend to know a provider's model
+#     matrix, and a model that cannot read images answers with the provider's own named error;
+#   * only PNG/JPEG/WebP data URIs are accepted.  The bytes were already sniffed at upload, but
+#     this boundary re-checks the prefix and decodes the base64 so a caller cannot smuggle a
+#     `data:text/html` or a malformed payload into a request;
+#   * per image <= 5 MiB and per request <= 8 MiB of RAW image bytes (the same numbers the
+#     upload route enforces, so an accepted task is always sendable).  Base64 inflates by ~4/3;
+#     the cap is on the decoded bytes, which is what the provider actually charges for;
+#   * NO images => the user message is the SAME plain string it has always been.  That
+#     byte-identical rule is pinned by tests: a task with no attachments must not change one
+#     byte of the request, so the pre-V25 fleet path cannot regress.
+VISION_ALLOWED_MIME = ("image/png", "image/jpeg", "image/webp")
+VISION_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+VISION_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+
+
+def _image_parts(images: Any) -> list[dict[str, Any]]:
+    """Validate `invoke(images=...)` and build the request's `image_url` content parts.
+
+    Returns `[]` for None/empty — the caller then leaves the user message as a plain string.
+    Every refusal is `E_VALIDATION` and happens BEFORE any HTTP request: a payload over the
+    budget must not be sent, and a malformed one must never be guessed at.
+    """
+    if not images:
+        return []
+    if not isinstance(images, (list, tuple)):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"deepseek runtime: images must be a list, got {type(images).__name__}",
+            how_to_fix="pass the task's image payloads from task_attachment_service.image_parts()",
+            context={"runtime": "deepseek"},
+        )
+    parts: list[dict[str, Any]] = []
+    total = 0
+    for index, image in enumerate(images):
+        if not isinstance(image, dict):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} is {type(image).__name__}, expected an object "
+                "with mime and data_uri",
+                how_to_fix="rebuild the payload with task_attachment_service.image_parts()",
+                context={"runtime": "deepseek", "image_index": index},
+            )
+        mime = str(image.get("mime") or "").strip().lower()
+        data_uri = image.get("data_uri")
+        if mime not in VISION_ALLOWED_MIME:
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} has mime {mime!r}; only "
+                f"{', '.join(VISION_ALLOWED_MIME)} are accepted",
+                how_to_fix="upload a PNG, JPEG or WebP image (the upload route sniffs the bytes)",
+                context={"runtime": "deepseek", "image_index": index, "mime": mime},
+            )
+        prefix = f"data:{mime};base64,"
+        if not isinstance(data_uri, str) or not data_uri.startswith(prefix):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} is not a {mime} base64 data URI",
+                how_to_fix="rebuild the payload with task_attachment_service.image_parts()",
+                context={"runtime": "deepseek", "image_index": index},
+            )
+        encoded = data_uri[len(prefix):]
+        if not encoded:
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} carries no base64 payload",
+                how_to_fix="re-upload the image; the stored file is empty",
+                context={"runtime": "deepseek", "image_index": index},
+            )
+        try:
+            # validate=True rejects non-base64 characters; the decoded LENGTH is the exact
+            # raw-byte count the cap is stated in.
+            raw = base64.b64decode(encoded, validate=True)
+        except Exception as exc:  # noqa: BLE001 - any decode failure is malformed input, named
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} is not valid base64 ({type(exc).__name__})",
+                how_to_fix="rebuild the payload with task_attachment_service.image_parts()",
+                context={"runtime": "deepseek", "image_index": index},
+            ) from exc
+        if len(raw) > VISION_MAX_IMAGE_BYTES:
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image #{index} is {len(raw)} bytes, over the "
+                f"{VISION_MAX_IMAGE_BYTES}-byte per-image limit",
+                how_to_fix="upload images of at most 5 MB",
+                context={"runtime": "deepseek", "image_index": index,
+                         "limit_bytes": VISION_MAX_IMAGE_BYTES},
+            )
+        total += len(raw)
+        if total > VISION_MAX_TOTAL_BYTES:
+            raise PolsiaError(
+                E_VALIDATION,
+                f"deepseek runtime: image attachments total {total} bytes, over the "
+                f"{VISION_MAX_TOTAL_BYTES}-byte per-request limit",
+                how_to_fix="remove an image from the task or upload smaller images",
+                context={"runtime": "deepseek", "total_bytes": total,
+                         "limit_bytes": VISION_MAX_TOTAL_BYTES},
+            )
+        parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+    return parts
 
 
 def _tool_registry():
@@ -460,7 +581,7 @@ def _assistant_tool_echo(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execute_tool_calls(
-    calls: Any, *, agent_type: str, url: str
+    calls: Any, *, agent_type: str, url: str, task_title: str | None = None
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run every call of ONE tool_calls turn -> (`role:"tool"` messages, names that reached it).
 
@@ -521,8 +642,15 @@ def _execute_tool_calls(
             # It REACHED the executor — which is what the run record's "ran" means — whether the
             # registry then refused it or a seam violation blew up in our face.
             reached.append(name)
+            # V25/L1: the run's task title rides the SAME frozen signature as a keyword-only
+            # addition, and only when the run HAS one — a title-less run calls `execute_tool`
+            # with the pre-V25 signature, so an older executor double (or a registry from a
+            # build that predates `task_title`) keeps working unchanged.
+            tool_kwargs: dict[str, Any] = {"agent_type": agent_type}
+            if isinstance(task_title, str) and task_title.strip():
+                tool_kwargs["task_title"] = task_title.strip()
             try:
-                text = registry.execute_tool(name, arguments, agent_type=agent_type)
+                text = registry.execute_tool(name, arguments, **tool_kwargs)
             except Exception as exc:  # noqa: BLE001 - the seam says "never throws"; a violation is NAMED, never fatal
                 logger.warning(
                     "deepseek runtime: execute_tool(%s) raised %s", name, type(exc).__name__
@@ -751,19 +879,40 @@ def _session_messages(session_id: str | None) -> list[dict[str, Any]] | None:
         return [dict(message) for message in history]
 
 
+def _session_bytes(history: list[dict[str, Any]]) -> int:
+    """The exchange's approximate in-process size: JSON text length (images dominate it)."""
+    try:
+        return len(json.dumps(history, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):  # pragma: no cover - every part is JSON by construction
+        return sum(len(str(part)) for part in history)
+
+
 def _store_exchange(
     session_id: str | None, messages: list[dict[str, Any]], assistant_text: str
 ) -> str:
-    """Persist (system,user,assistant) under `session_id` (new id when absent); bounded LRU."""
+    """Persist (system,user,assistant) under `session_id` (new id when absent); bounded LRU.
+
+    Bounded TWICE — by count (`SESSION_STORE_LIMIT`) and by bytes (`SESSION_STORE_MAX_BYTES`) —
+    because a vision exchange carries the images inline.  At least ONE session always survives:
+    evicting the exchange a repair is about to read would turn a bounded store into a silent
+    "unknown session" for the very run that just wrote it.
+    """
     sid = session_id or f"deepseek-{uuid.uuid4().hex[:16]}"
     history = [dict(message) for message in messages] + [
         {"role": "assistant", "content": assistant_text}
     ]
+    size = _session_bytes(history)
     with _SESSION_LOCK:
         _SESSIONS[sid] = history
         _SESSIONS.move_to_end(sid)
+        _SESSION_BYTES[sid] = size
         while len(_SESSIONS) > SESSION_STORE_LIMIT:
-            _SESSIONS.popitem(last=False)
+            old_sid, _ = _SESSIONS.popitem(last=False)
+            _SESSION_BYTES.pop(old_sid, None)
+        total = sum(_SESSION_BYTES.values())
+        while len(_SESSIONS) > 1 and total > SESSION_STORE_MAX_BYTES:
+            old_sid, _ = _SESSIONS.popitem(last=False)
+            total -= _SESSION_BYTES.pop(old_sid, 0)
     return sid
 
 
@@ -771,6 +920,7 @@ def _reset_session_store() -> None:
     """Test hook: drop every stored exchange (the store is process-local by design)."""
     with _SESSION_LOCK:
         _SESSIONS.clear()
+        _SESSION_BYTES.clear()
 
 
 # ── request construction ─────────────────────────────────────────────────────────────────────
@@ -853,11 +1003,19 @@ def _request_headers(api_key: str) -> dict[str, str]:
     }
 
 
-def _messages_for(plan: InvocationPlan, replay: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _messages_for(
+    plan: InvocationPlan,
+    replay: list[dict[str, Any]] | None,
+    image_parts: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """The chat messages: a replayed exchange + the new turn, or a fresh system+user pair.
 
     The JSON instruction is added ONLY on a fresh exchange (the replayed system message already
     carries it — the repair ladder keeps one conversation per logical run).
+
+    VISION (V25/L1): the validated `image_url` parts ride the FRESH user turn.  On a replay they
+    are already inside the stored exchange, so the new turn is a plain string — re-sending them
+    would double the payload and duplicate the conversation the model is being asked to repair.
     """
     if replay:
         return [*replay, {"role": "user", "content": plan.prompt}]
@@ -870,7 +1028,15 @@ def _messages_for(plan: InvocationPlan, replay: list[dict[str, Any]] | None) -> 
     messages: list[dict[str, Any]] = []
     if system_text:
         messages.append({"role": "system", "content": system_text})
-    messages.append({"role": "user", "content": plan.prompt})
+    if image_parts:
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": plan.prompt}, *image_parts],
+            }
+        )
+    else:
+        messages.append({"role": "user", "content": plan.prompt})
     return messages
 
 
@@ -989,6 +1155,8 @@ def invoke(
     model: str | None = None,
     tools: list[dict] | None = None,
     agent_type: str | None = None,
+    task_title: str | None = None,
+    images: list[dict[str, Any]] | None = None,
 ) -> claude_cli.InvokeResult:
     """Run one DeepSeek chat completion for `inv`; same shape as `claude_cli.invoke`.
 
@@ -1025,7 +1193,11 @@ def invoke(
     model_id = _model_for(model)
     timeout_s = _timeout_seconds()
     url = f"{_base_url()}{CHAT_COMPLETIONS_PATH}"
-    messages = _messages_for(plan, replay=_session_messages(plan.resume_session_id))
+    messages = _messages_for(
+        plan,
+        replay=_session_messages(plan.resume_session_id),
+        image_parts=_image_parts(images),
+    )
     body = _build_body(plan, model=model_id, messages=messages)
     if tool_specs:
         body["tools"] = tool_specs
@@ -1113,7 +1285,7 @@ def invoke(
                         extra={"tools_used": list(tools_used)},
                     )
                 tool_messages, reached = _execute_tool_calls(
-                    calls, agent_type=tool_agent_type, url=url
+                    calls, agent_type=tool_agent_type, url=url, task_title=task_title
                 )
                 for name in reached:
                     _record_tool_name(tools_used, name)
@@ -1262,7 +1434,11 @@ __all__ = [
     "DEEPSEEK_DEFAULT_TIMEOUT_SECONDS",
     "InvocationPlan",
     "SESSION_STORE_LIMIT",
+    "SESSION_STORE_MAX_BYTES",
     "TOOL_LOOP_MAX_ITERATIONS",
+    "VISION_ALLOWED_MIME",
+    "VISION_MAX_IMAGE_BYTES",
+    "VISION_MAX_TOTAL_BYTES",
     "available",
     "invoke",
     "plan_from_invocation",

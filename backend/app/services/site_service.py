@@ -32,9 +32,12 @@ exists is the named `E_VALIDATION` — creation refuses, it never overwrites a p
 """
 from __future__ import annotations
 
+import contextlib
 import html
 import json
+import os
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,7 +45,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_STORAGE, E_VALIDATION, PolsiaError
 from app.models.company import CompanyConfig
 from app.services.company_service import get_company
 
@@ -352,8 +355,13 @@ def _meta_path(slug: str, root: Path) -> Path:
     return root / slug / "meta.json"
 
 
-def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
-    """One site's `meta.json` as the wire row; an unknown slug is the named `E_NOT_FOUND`."""
+def _load_meta(slug: str, root: Path | None) -> dict[str, Any]:
+    """The site's FULL `meta.json` document; unknown/unreadable is the named `E_NOT_FOUND`.
+
+    One reader for every meta consumer (`read_site`, `read_site_meta`, `read_deploy_state`,
+    `record_deploy`), so the "a site exists iff meta.json is a readable JSON object" rule cannot
+    drift between the list, the deploy routes and the builder.
+    """
     validated = validate_slug(slug)
     sites_root = _resolve_root(root)
     path = _meta_path(validated, sites_root)
@@ -368,13 +376,6 @@ def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
         meta = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(meta, dict):
             raise ValueError("meta.json is not a JSON object")
-        row = {
-            "slug": validated,
-            "title": str(meta.get("title") or ""),
-            "url": f"/sites/{validated}/",
-            "created_at": str(meta.get("created_at") or ""),
-            "bytes": int(meta.get("bytes") or 0),
-        }
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise PolsiaError(
             E_NOT_FOUND,
@@ -382,7 +383,87 @@ def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
             how_to_fix="re-create the site (POST /api/v1/sites with a new slug); the files are intact",
             context={"slug": validated, "path": str(path)},
         ) from exc
-    return row
+    return meta
+
+
+def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
+    """One site's `meta.json` as the wire row; an unknown slug is the named `E_NOT_FOUND`."""
+    validated = validate_slug(slug)
+    meta = _load_meta(validated, root)
+    try:
+        return {
+            "slug": validated,
+            "title": str(meta.get("title") or ""),
+            "url": f"/sites/{validated}/",
+            "created_at": str(meta.get("created_at") or ""),
+            "bytes": int(meta.get("bytes") or 0),
+        }
+    except (TypeError, ValueError) as exc:
+        # A meta.json this module did not write (e.g. `"bytes": "lots"`) is not a site the API can
+        # honestly describe: the same named refusal as an unreadable file, never a raw 500.
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"site {validated!r} has an unreadable meta.json ({type(exc).__name__})",
+            how_to_fix="re-create the site (POST /api/v1/sites with a new slug); the files are intact",
+            context={"slug": validated, "path": str(_meta_path(validated, _resolve_root(root)))},
+        ) from exc
+
+
+def read_site_meta(slug: str, *, root: Path | None = None) -> dict[str, Any]:
+    """The site's full `meta.json` (every key), for consumers the frozen wire row does not carry.
+
+    Read-only: the caller gets a fresh dict and cannot mutate the file through it.
+    """
+    return _load_meta(slug, root)
+
+
+def read_deploy_state(slug: str, *, root: Path | None = None) -> dict[str, Any] | None:
+    """The site's stored `last_deploy` record, or None when it was never deployed.
+
+    A record that is not a JSON object is reported as ABSENT (None) rather than crashing a read:
+    the deploy route must answer "no deploy state" honestly, not 500 on a hand-edited file.
+    """
+    meta = _load_meta(slug, root)
+    record = meta.get("last_deploy")
+    return record if isinstance(record, dict) else None
+
+
+def record_deploy(
+    slug: str, record: dict[str, Any], *, root: Path | None = None
+) -> dict[str, Any]:
+    """Merge `last_deploy` into the site's `meta.json` atomically; returns the record stored.
+
+    The write is temp-file-then-`os.replace` beside the target, so a reader (the static mount, a
+    second API worker, the list route) sees either the old document or the new one — never a torn
+    file.  Every existing key is preserved: the deploy facts are ADDITIVE, and `meta.json` stays
+    the one source of truth for the site.  Note the file lives inside the PUBLIC site directory —
+    callers must pass non-secret deploy facts only (the Render key is never written here).
+
+    An unreadable/missing site is `E_NOT_FOUND` (from `_load_meta`); a failed write is `E_STORAGE`
+    naming the file, never a silent no-op that would let the API claim a record it did not store.
+    """
+    meta = _load_meta(slug, root)
+    site_dir = _resolve_root(root) / validate_slug(slug)
+    meta["last_deploy"] = record
+    path = site_dir / "meta.json"
+    temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        temp.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temp, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):  # best-effort cleanup of the temp file
+            temp.unlink(missing_ok=True)
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not record the deploy state for site {slug!r}: {type(exc).__name__}: {exc}",
+            how_to_fix=f"make sure the sites directory is writable ({site_dir}) and retry",
+            context={"slug": slug, "path": str(path)},
+        ) from exc
+    return record
 
 
 def list_sites(*, slug: str | None = None, root: Path | None = None) -> list[dict[str, Any]]:
@@ -523,7 +604,10 @@ __all__ = [
     "derive_slug",
     "generate_site",
     "list_sites",
+    "read_deploy_state",
     "read_site",
+    "read_site_meta",
+    "record_deploy",
     "render_site",
     "validate_slug",
 ]

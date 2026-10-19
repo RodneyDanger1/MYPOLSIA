@@ -1,15 +1,17 @@
-"""Tool registry (V12/W-B; phone_read added V20/L2; web_search + code tools added V24/L2) — the
-REAL tools agents may call, and WHO may call them.
+"""Tool registry (V12/W-B; phone_read added V20/L2; web_search + code tools added V24/L2;
+GitHub tools + run-scoped workspace added V25/L2) — the REAL tools agents may call, and WHO may
+call them.
 
 The frozen interface the runtime (W-A) codes against:
 
-  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, exactly eight frozen names:
+  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, exactly twelve frozen names:
     `web_fetch`, `web_search`, `macro_snapshot`, `pricing_catalog`, `phone_read`,
-    `code_write`, `code_read`, `code_list`;
-  * `def execute_tool(name, arguments, *, agent_type, task_title=None) -> str` — SYNC; returns
-    the tool-result text (a JSON object). Unknown / denied / failed = a NAMED refusal payload
-    (`E_*`), never a throw — the orchestrating loop must be able to finish honestly from any
-    reply.
+    `code_write`, `code_read`, `code_list`, `github_repo`, `github_branch`, `github_commit`,
+    `github_pr`;
+  * `def execute_tool(name, arguments, *, agent_type, task_title=None, run_id=None) -> str` —
+    SYNC; returns the tool-result text (a JSON object). Unknown / denied / failed = a NAMED
+    refusal payload (`E_*`), never a throw — the orchestrating loop must be able to finish
+    honestly from any reply.
 
 Honesty rules (repo-wide, enforced here):
   * `web_fetch` is a REAL HTTP(S) GET (pinned httpx) — http(s) only, wall-clock timeout, a byte
@@ -47,6 +49,28 @@ Honesty rules (repo-wide, enforced here):
     `code_write` returns `{path, bytes}`, `code_read` `{path, text, bytes}`, `code_list`
     relative paths plus byte sizes. The workspace is a DELIVERABLE surface, not the repo and not
     a shell: there is no exec, no network and no path out.
+  * V25/L2 adds an OPTIONAL run id to that seam (`execute_tool(..., run_id=...)`): when the
+    caller has one, the three code tools operate under
+    `<settings.code_workspace_dir>/runs/<run_id>/` so two runs cannot read or overwrite each
+    other's files; the reported `path` stays relative to the RUN directory. The id is
+    validated by name (`E_VALIDATION`: separators, dots, `..`, drive letters, control
+    characters and >64 chars are refused) and the resolved directory must still sit under the
+    workspace root (a junction out is refused). ABSENT/blank run id keeps today's shared root
+    byte-identical — same files, same result shapes, no `runs/` tree created — so every pre-V25
+    call site is unchanged. `cleanup_run_workspace(run_id)` removes ONE run directory, refuses a
+    hostile id, and refuses a directory that resolves outside `runs/`.
+  * `github_repo` / `github_branch` / `github_commit` / `github_pr` (V25/L2) are the
+    code_generation agent's REAL source-control surface — the V25-PLAN row 2: "GitHub tools —
+    repo/branch/commit/PR behind the firewalled registry + secret store ... The code agent can
+    actually ship code; source history like Polsia". The implementation lives in
+    `app/services/github_service.py` (httpx; ONE credential path through
+    `secret_store.get_secret("GITHUB_TOKEN")`; named `E_CONFIG`/`E_AUTH`/`E_VALIDATION`/
+    `E_UPSTREAM` refusals). `github_branch` reads a branch, or creates one from an existing
+    base when `from_branch` is given; `github_commit` takes a list of `{path, content}` and
+    walks the Git data API (base64 blobs -> tree on `base_tree` -> commit -> ref PATCH with
+    `force: false`); `github_pr` opens a PR from a branch to a base. The three mutations
+    default to `dry_run: true` (a plan, NO request), the schema has no `force` field, and a
+    `force` argument is refused by name — this registry can express no force-push and no merge.
 
 V24/L2 DELIBERATELY REVERSED the V12 "web_search does NOT ship" rule: the provider now exists
 (DeepSeek Search API, documented at api-docs.deepseek.com/guides/search) and the wave plan
@@ -66,6 +90,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 from contextvars import ContextVar
@@ -165,6 +190,29 @@ CODE_TEXT_ENCODING = "utf-8"
 _CODE_BINARY_SNIFF_BYTES = 8192             # NULs in the head of a file mean "binary"
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
+# ── per-run workspace (V25/L2) ──────────────────────────────────────────────────────────────
+#: The subdirectory a run-scoped workspace lives under.  Absent run id = the shared root, so
+#: this name is never created by a pre-V25 call.
+RUN_WORKSPACE_SUBDIR = "runs"
+#: 1-64 of `[A-Za-z0-9_-]`, starting with an alphanumeric: no separators, no dots, no `..`,
+#: no drive letter and no control character can be expressed, so the id is safe by construction.
+RUN_ID_MAX_CHARS = 64
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+# ── GitHub source control (V25/L2) ─────────────────────────────────────────────────────────
+#: The four registry names, in the order the allowlist advertises them (read -> branch ->
+#: commit -> PR: the order the agent should use them in).
+GITHUB_TOOLS: tuple[str, ...] = ("github_repo", "github_branch", "github_commit", "github_pr")
+#: Each tool's own argument set — anything else is refused by name.  `force` is deliberately
+#: absent everywhere: the registry cannot express a force-push.
+_GITHUB_ARGUMENTS: dict[str, frozenset[str]] = {
+    "github_repo": frozenset({"repo"}),
+    "github_branch": frozenset({"repo", "branch", "from_branch", "dry_run"}),
+    "github_commit": frozenset({"repo", "branch", "message", "files", "dry_run"}),
+    "github_pr": frozenset({"repo", "title", "head", "base", "body", "dry_run"}),
+}
+
+
 #: The HTTP transport `web_search` builds its client over.  `None` in production (a plain
 #: `httpx.Client`); tests install an `httpx.MockTransport` — the LABELLED test double — through
 #: this ONE seam, so validation, mapping, refusal taxonomy and the key path all run for real.
@@ -176,6 +224,13 @@ _SEARCH_TRANSPORT: Any = None
 #: frozen signature carries no run object.  Default "" = "the caller had no title" (the request
 #: then omits `ori_question` entirely; the provider treats absent as not provided).
 _TASK_TITLE: ContextVar[str] = ContextVar("polsia_tool_task_title", default="")
+
+#: The calling run's id (V25/L2).  `execute_tool(..., run_id=...)` publishes it for the duration
+#: of ONE tool call and the three code tools read it for their workspace scope — the same
+#: contextvar isolation the task title uses (the executor's frozen signature carries no run
+#: object).  Default `None` = "the caller has no run id" = the shared workspace root, exactly as
+#: before V25.
+_RUN_ID: ContextVar[str | None] = ContextVar("polsia_tool_run_id", default=None)
 
 #: One-line WHEN-to-use guidance per tool — rendered by base_agent's tool doctrine (V12/W-B)
 #: and kept honest by the specs below.
@@ -209,17 +264,40 @@ TOOL_GUIDANCE: dict[str, str] = {
     ),
     "code_write": (
         "write the ACTUAL deliverable — code, config, a script, notes — as a UTF-8 text file in "
-        "the run workspace (≤256 KiB, relative paths only); prefer it over describing code in "
-        "prose, and use code_list first so you build on what exists."
+        "the LOCAL run workspace (≤256 KiB, relative paths only) while you draft and iterate; "
+        "prefer it over describing code in prose, use code_list first so you build on what "
+        "exists, and use github_commit only when the change must land in the real repository."
     ),
     "code_read": (
-        "read back a text file that is already in the run workspace (yours or an earlier run's) "
-        "before changing it; code_list first when you do not know the names, and nothing "
-        "outside the workspace is readable."
+        "read back a text file that is already in the LOCAL run workspace (yours, or an earlier "
+        "run's when no run id scoped this one) before changing it; code_list first when you do "
+        "not know the names, and nothing outside the workspace is readable."
     ),
     "code_list": (
-        "list the run workspace as relative paths with byte sizes so you know what exists "
-        "before reading or writing — a bounded listing that says when it cut, never a guess."
+        "list the LOCAL run workspace as relative paths with byte sizes so you know what exists "
+        "before reading or writing — a bounded listing that says when it cut, never a guess. "
+        "Use it for scratch work; use github_repo/github_branch to inspect the real repository."
+    ),
+    "github_repo": (
+        "read the REAL repository's metadata — default branch, visibility, description and "
+        "whether your token may push — BEFORE branching or committing. This is the shipped "
+        "source tree, not the local scratch workspace; nothing is written."
+    ),
+    "github_branch": (
+        "read one branch, or CREATE your working branch from an existing base when from_branch "
+        "is given — branch before committing and leave the base branch alone. dry_run defaults "
+        "to true (a plan, no request); pass dry_run:false to create the ref. Never force-pushes."
+    ),
+    "github_commit": (
+        "commit files to a GitHub branch when the deliverable must become SOURCE HISTORY — not "
+        "for scratch work, which belongs in the local workspace (code_write). Takes a list of "
+        "{path, content} text files; dry_run defaults to TRUE, so pass dry_run:false only when "
+        "you mean to write. It never force-pushes and never rewrites history."
+    ),
+    "github_pr": (
+        "open a pull request from your working branch into the base branch AFTER committing, so "
+        "a human can review the change — it never merges and never force-pushes, and dry_run "
+        "defaults to true. Use it instead of asking the owner to merge by hand."
     ),
 }
 
@@ -436,16 +514,183 @@ TOOL_SPECS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_repo",
+            "description": (
+                "Read a GitHub repository's metadata (default branch, visibility, description, "
+                "archived, whether your token may push) from the REAL repository — use it "
+                "before branching or committing. Read-only. A missing token is E_CONFIG; a bad "
+                "owner/name is E_VALIDATION; GitHub 401/403 is E_AUTH; 5xx/timeout is "
+                "E_UPSTREAM. Use the local workspace for scratch work, this for the shipped "
+                "source tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository as 'owner/name', e.g. 'acme/widgets'.",
+                    },
+                },
+                "required": ["repo"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_branch",
+            "description": (
+                "Read one branch's head sha, or CREATE a working branch from an existing base "
+                "branch when 'from_branch' is given (branch before committing; never work on "
+                "the base branch itself). Idempotent: an existing branch is reported, not "
+                "recreated. dry_run defaults to TRUE for the create path — a plan with no "
+                "request; pass dry_run:false to create the ref. Never force-pushes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "'owner/name'."},
+                    "branch": {
+                        "type": "string",
+                        "description": "The branch to read, or the branch to create.",
+                    },
+                    "from_branch": {
+                        "type": "string",
+                        "description": (
+                            "Existing base branch to create 'branch' from. Omit to only READ "
+                            "'branch'."
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "Only used when from_branch is given (a mutation). Default true: "
+                            "return the plan and send no request."
+                        ),
+                    },
+                },
+                "required": ["repo", "branch"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_commit",
+            "description": (
+                "Commit text files to a repository branch when the deliverable must become "
+                "SOURCE HISTORY (scratch work belongs in the local workspace). Takes "
+                "files=[{path, content}] (UTF-8 text, <=256 KiB each, <=30 files) and walks "
+                "GitHub's Git data API (base64 blobs -> tree -> commit -> ref update). dry_run "
+                "defaults to TRUE: a plan with no request and null ids; pass dry_run:false to "
+                "commit. It NEVER force-pushes and never rewrites history (force is always "
+                "false). Refusals: E_CONFIG/E_AUTH/E_VALIDATION/E_UPSTREAM."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "'owner/name'."},
+                    "branch": {
+                        "type": "string",
+                        "description": "Existing branch the commit fast-forwards (e.g. a branch "
+                                       "you created with github_branch).",
+                    },
+                    "message": {"type": "string", "description": "Commit message."},
+                    "files": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 30,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Repository-relative path, e.g. "
+                                                   "'src/app.py'. No '..', no absolute paths.",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Complete UTF-8 text of the file "
+                                                   "(<=256 KiB).",
+                                },
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": False,
+                        },
+                        "description": "The files this commit writes.",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "Default true: validate and return the plan, no request. Pass "
+                            "false to create the commit for real."
+                        ),
+                    },
+                },
+                "required": ["repo", "branch", "message", "files"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_pr",
+            "description": (
+                "Open a pull request from a working branch ('head') into a base branch for "
+                "human review, after committing. Never merges and never force-pushes. dry_run "
+                "defaults to TRUE: a plan with no request and a null number; pass dry_run:false "
+                "to open it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "'owner/name'."},
+                    "title": {"type": "string", "description": "PR title."},
+                    "head": {
+                        "type": "string",
+                        "description": "The branch carrying your commits.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "The branch to merge into (usually the default branch).",
+                    },
+                    "body": {"type": "string", "description": "Optional PR description."},
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "Default true: return the plan and send no request. Pass false to "
+                            "open the pull request for real."
+                        ),
+                    },
+                },
+                "required": ["repo", "title", "head", "base"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 _SPEC_BY_NAME: dict[str, dict] = {spec["function"]["name"]: spec for spec in TOOL_SPECS}
 
 #: The ACTION CLASS each registry tool is gated as.  Reads are the default (V12/W-B); a tool
-#: that WRITES (V24/L2 `code_write`) is gated as `internal_write`, so the firewall decision
-#: reflects what the call really does — `code_generation` holds that class, and an agent that
-#: somehow held only `read` could not sneak a write through the registry.
+#: that WRITES is gated as `internal_write` (V24/L2 `code_write`), so the firewall decision
+#: reflects what the call really does.  V25/L2: the three GitHub MUTATIONS are gated as
+#: `external_reversible` — they reach a third party and change repository state — so the same
+#: sandbox/taint logic that governs a post or an email governs a commit.  `github_repo` stays
+#: READ, and `github_branch` WITHOUT `from_branch` is re-gated as READ at execution time (the
+#: same predicate its runner uses), because that call is a GET.  `github_branch` WITH
+#: `from_branch` keeps the write class below.
 _TOOL_ACTION_CLASS: dict[str, ActionClass] = {
     "code_write": ActionClass.INTERNAL_WRITE,
+    "github_branch": ActionClass.EXTERNAL_REVERSIBLE,
+    "github_commit": ActionClass.EXTERNAL_REVERSIBLE,
+    "github_pr": ActionClass.EXTERNAL_REVERSIBLE,
 }
 
 
@@ -467,7 +712,7 @@ def tools_for(agent_type: str) -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 
 def execute_tool(name: str, arguments: dict, *, agent_type: str,
-                 task_title: str | None = None) -> str:
+                 task_title: str | None = None, run_id: str | None = None) -> str:
     """Run one tool call as `agent_type`; ALWAYS returns text (a JSON object), never raises.
 
     Order: the tool must exist by name, the firewall must ALLOW (agent, tool) — its tool leg
@@ -479,7 +724,25 @@ def execute_tool(name: str, arguments: dict, *, agent_type: str,
     published for the duration of THIS call (a contextvar — the `RUN_TAINT` pattern) and
     `web_search` sends it as the provider's `ori_question`.  Absent/blank means "no title" and
     the field is omitted; nothing else reads it.
+
+    `run_id` (V25/L2) is the calling RUN's id when the executor has one.  It is published for
+    the duration of THIS call and the three code tools scope their workspace to
+    `<code_workspace_dir>/runs/<run_id>/`; the reported paths stay relative to that run
+    directory.  ABSENT/BLANK keeps the shared workspace root byte-identical (no `runs/`
+    directory is created — every pre-V25 call site is unchanged).  An id that is not a string,
+    or one carrying separators/`..`/dots/control characters, is a named `E_VALIDATION`.
     """
+    run_token = None
+    if run_id is not None:
+        if not isinstance(run_id, str):
+            return json.dumps(named_refusal(
+                E_VALIDATION,
+                f"run_id must be a string (got {type(run_id).__name__}) — it names the run's "
+                "workspace subdirectory",
+                how_to_fix="pass the run's id string, or omit run_id for the shared workspace",
+                tool=name, agent=agent_type))
+        if run_id.strip():
+            run_token = _RUN_ID.set(run_id.strip())
     token = None
     if isinstance(task_title, str) and task_title.strip():
         token = _TASK_TITLE.set(task_title.strip())
@@ -496,6 +759,8 @@ def execute_tool(name: str, arguments: dict, *, agent_type: str,
     finally:
         if token is not None:
             _TASK_TITLE.reset(token)
+        if run_token is not None:
+            _RUN_ID.reset(run_token)
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -510,12 +775,25 @@ def _execute(name: str, arguments: Any, *, agent_type: str) -> dict:
             agent=agent_type,
         )
     action_class = _TOOL_ACTION_CLASS.get(name) or ActionClass.READ
+    if (name == "github_branch" and isinstance(arguments, dict)
+            and not arguments.get("from_branch")):
+        # `github_branch` has two modes with different truth: without `from_branch` it is a GET
+        # (a read — sandbox must not block it), with it the tool writes a ref.  The predicate is
+        # the SAME one the runner uses, so the gate and the behaviour cannot disagree.
+        action_class = ActionClass.READ
+    from app.config import settings  # local: the module's import graph stays config-free at load
+
     decision = decide(
         ActionRequest(agent_type=agent_type, action_class=action_class,
                       channel="", tool=name),
         # Reads are not sandboxed side effects (the sandbox leg governs external writes), but an
         # operator FREEZE must stop tool calls exactly as it stops everything else.
         kill_switch=kill_grade_from_env() == "freeze",
+        # V25/L2: the GitHub mutations are EXTERNAL_REVERSIBLE, so `decide()`'s sandbox leg now
+        # has to see the operator's real setting — otherwise its parameter default (True) would
+        # silently sandbox every external registry call forever.  Reads/internal writes are
+        # untouched by this leg (it only fires for external classes).
+        sandbox_mode=bool(getattr(settings, "sandbox_mode", True)),
     )
     if decision.decision is not Decision.ALLOW:
         return named_refusal(
@@ -1097,20 +1375,55 @@ def _run_web_search(*, agent_type: str, arguments: dict) -> dict:
 # code_write / code_read / code_list — the run's text workspace, traversal-proof
 # ---------------------------------------------------------------------------
 
+def _validate_run_id(
+    tool: str, raw: str, *, agent_type: str,
+) -> tuple[str, dict | None]:
+    """`(run_id, None)` for a safe id, `("", refusal)` for anything else.
+
+    The charset is the whole containment proof for the id itself: `[A-Za-z0-9_-]`, starting
+    alphanumeric, <=64 chars — no separator, dot, `..`, drive letter or control character can be
+    written, so `runs/<id>` can never name a path outside `runs/`.  A bad id is refused BEFORE
+    the workspace root is created, so a hostile call leaves no directory behind.
+    """
+    text = raw.strip()
+    if not _RUN_ID_RE.match(text):
+        return "", named_refusal(
+            E_VALIDATION,
+            f"{tool}: run_id {raw!r} is not a safe run id — use 1-{RUN_ID_MAX_CHARS} letters, "
+            "digits, '_' or '-', starting with a letter or digit (no separators, dots or '..')",
+            how_to_fix="pass the run's own id, or omit run_id for the shared workspace",
+            tool=tool, agent=agent_type)
+    return text, None
+
+
 def _workspace_root(tool: str, *, agent_type: str) -> tuple[Path | None, dict | None]:
-    """`(root, None)` for the resolved workspace directory, `(None, refusal)` otherwise.
+    """`(root, None)` for the workspace directory this call may touch, `(None, refusal)` else.
 
     Read from `settings.code_workspace_dir` at CALL time (a relative path resolves against the
     backend working directory, the `deepseek_key_file` rule).  A path that exists but is not a
     directory is a NAMED `E_CONFIG` — misconfiguration must never look like an empty workspace.
+
+    V25/L2: when the executor published a run id, the call's root is
+    `<workspace>/runs/<run_id>/` instead of the workspace root.  The id is validated BEFORE
+    anything is created (a hostile id must leave the filesystem untouched), and the resolved
+    run directory must still sit under the workspace root — a junction planted at
+    `runs/<id>` that points elsewhere is refused BY NAME, never followed.  With no run id the
+    function returns the shared root exactly as it did before V25.
     """
+    run_name = ""
+    run_id = _RUN_ID.get()
+    if run_id:
+        run_name, refusal = _validate_run_id(tool, run_id, agent_type=agent_type)
+        if refusal is not None:
+            return None, refusal
+
     from app.config import settings
 
     raw = getattr(settings, "code_workspace_dir", CODE_WORKSPACE_DEFAULT)
     text = raw.strip() if isinstance(raw, str) else ""
-    root = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
+    base = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
     try:
-        root = root.resolve()
+        base = base.resolve()
     except (OSError, ValueError) as exc:
         return None, named_refusal(
             E_CONFIG,
@@ -1118,13 +1431,34 @@ def _workspace_root(tool: str, *, agent_type: str) -> tuple[Path | None, dict | 
             f"resolved ({type(exc).__name__}: {exc})",
             how_to_fix="set CODE_WORKSPACE_DIR to a directory this process can create and read",
             tool=tool, agent=agent_type)
-    if root.exists() and not root.is_dir():
+    if base.exists() and not base.is_dir():
         return None, named_refusal(
             E_CONFIG,
-            f"{tool}: settings.code_workspace_dir is {str(root)!r}, which exists but is not a "
+            f"{tool}: settings.code_workspace_dir is {str(base)!r}, which exists but is not a "
             "directory",
             how_to_fix="point CODE_WORKSPACE_DIR at a directory (or delete the file in the way)",
             tool=tool, agent=agent_type)
+
+    root = base / RUN_WORKSPACE_SUBDIR / run_name if run_name else base
+    if run_name:
+        try:
+            resolved_run = root.resolve()
+        except (OSError, ValueError) as exc:
+            return None, named_refusal(
+                E_CONFIG,
+                f"{tool}: the run workspace for {run_name!r} cannot be resolved "
+                f"({type(exc).__name__}: {exc})",
+                how_to_fix="check the code workspace directory and its permissions",
+                tool=tool, agent=agent_type)
+        if resolved_run != base and base not in resolved_run.parents:
+            return None, named_refusal(
+                E_VALIDATION,
+                f"{tool}: run workspace {run_name!r} resolves outside the code workspace — a "
+                "link or junction cannot be used to leave the workspace",
+                how_to_fix="remove the link under runs/ and retry; run workspaces stay inside "
+                           "the code workspace",
+                tool=tool, agent=agent_type, resolved=str(resolved_run))
+        root = resolved_run
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -1411,6 +1745,86 @@ def _run_code_list(*, agent_type: str, arguments: dict) -> dict:
     }}
 
 
+def cleanup_run_workspace(run_id: str) -> dict[str, object]:
+    """Remove ONE run's workspace directory (`<workspace>/runs/<run_id>`); never anything else.
+
+    Called by whoever owns a finished run (the executor/worker), not by a tool call.  A hostile
+    id is `E_VALIDATION`; a run directory that resolves outside `runs/` (a junction planted by
+    something else) is `E_VALIDATION` and NOTHING is deleted; a tree that contains any link or
+    junction is refused the same way, because a recursive delete must never follow one out of
+    the workspace.  An absent directory is an honest `removed: False` — cleaning an
+    already-clean run is not an error.
+    """
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise PolsiaError(
+            E_VALIDATION,
+            "cleanup_run_workspace: run_id must be a non-blank string",
+            how_to_fix="pass the run id whose workspace should be removed",
+            context={"run_id": str(run_id)[:80]},
+        )
+    name = run_id.strip()
+    if not _RUN_ID_RE.match(name):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_run_workspace: run_id {run_id!r} is not a safe run id",
+            how_to_fix="pass 1-64 letters, digits, '_' or '-' (no separators, dots or '..')",
+            context={"run_id": run_id[:80]},
+        )
+
+    from app.config import settings
+
+    raw = getattr(settings, "code_workspace_dir", CODE_WORKSPACE_DEFAULT)
+    text = raw.strip() if isinstance(raw, str) else ""
+    base = Path(text or CODE_WORKSPACE_DEFAULT).expanduser().resolve()
+    runs_dir = base / RUN_WORKSPACE_SUBDIR
+    candidate = runs_dir / name
+    if not candidate.exists():
+        return {"run_id": name, "removed": False, "path": str(candidate)}
+
+    resolved = candidate.resolve()
+    if resolved == runs_dir or runs_dir.resolve() not in resolved.parents:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_run_workspace: {name!r} resolves outside the runs directory — refusing "
+            "to delete anything through a link",
+            how_to_fix="remove the link under runs/ by hand, then retry",
+            context={"run_id": name, "resolved": str(resolved)},
+        )
+    if not resolved.is_dir():
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_run_workspace: {name!r} is not a directory",
+            how_to_fix="pass a run id whose workspace exists as a directory",
+            context={"run_id": name},
+        )
+    if _tree_contains_link(resolved):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_run_workspace: the workspace for {name!r} contains a link or junction — "
+            "refusing a recursive delete that could follow it out of the workspace",
+            how_to_fix="inspect the run workspace and remove the link by hand, then retry",
+            context={"run_id": name},
+        )
+    shutil.rmtree(resolved)
+    return {"run_id": name, "removed": True, "path": str(candidate)}
+
+
+def _tree_contains_link(root: Path) -> bool:
+    """True when any entry under `root` is a symlink/junction (never followed while checking)."""
+    is_junction = getattr(os.path, "isjunction", None)
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        for entry_name in (*dirnames, *filenames):
+            path = Path(current) / entry_name
+            try:
+                if path.is_symlink():
+                    return True
+                if callable(is_junction) and is_junction(path):
+                    return True
+            except OSError:  # unreadable entry: treat as unsafe and refuse the delete
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # macro_snapshot / pricing_catalog — the existing services, passed through
 # ---------------------------------------------------------------------------
@@ -1605,6 +2019,140 @@ def _run_phone_read(*, agent_type: str, arguments: dict) -> dict:
     return {"ok": True, "tool": "phone_read", "result": result}
 
 
+# ---------------------------------------------------------------------------
+# github_repo / github_branch / github_commit / github_pr (V25/L2)
+# ---------------------------------------------------------------------------
+
+def _github_arguments(
+    tool: str, arguments: dict, *, agent_type: str,
+) -> tuple[dict | None, dict | None]:
+    """`(arguments, None)` when every key is documented, `(None, refusal)` otherwise.
+
+    Strict on purpose: an unknown key is how a caller would try to express something this
+    surface deliberately cannot do — `force`, a refspec, a merge strategy.  Refusing it by name
+    is the difference between "not offered" and "silently ignored".
+    """
+    unknown = sorted(set(arguments) - _GITHUB_ARGUMENTS[tool])
+    if unknown:
+        extra = ""
+        if "force" in unknown:
+            extra = (" — force-push/forced update is not expressible on this surface; every git "
+                     "ref update is sent with force=false")
+        return None, named_refusal(
+            E_VALIDATION,
+            f"{tool}: unknown argument(s) {', '.join(unknown)}; this tool accepts "
+            f"{', '.join(sorted(_GITHUB_ARGUMENTS[tool])) or 'no arguments'}{extra}",
+            how_to_fix=(
+                "remove the unsupported argument; for a hard reset or a force-push, do it as a "
+                "human in git — the agent's GitHub surface cannot"
+            ),
+            tool=tool, agent=agent_type, unknown=unknown)
+    return arguments, None
+
+
+def _github_dry_run(
+    tool: str, arguments: dict, *, agent_type: str,
+) -> tuple[bool | None, dict | None]:
+    """The caller's `dry_run` (strict boolean), or `None` for "use the tool's default (true)"."""
+    raw = arguments.get("dry_run")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, bool):
+        return None, named_refusal(
+            E_VALIDATION,
+            f"{tool}: 'dry_run' must be true or false (got {raw!r}) — a string 'false' is not "
+            "the same as false",
+            how_to_fix="pass dry_run as a JSON boolean; omit it for the default true",
+            tool=tool, agent=agent_type)
+    return raw, None
+
+
+def _github_refusal(tool: str, exc: PolsiaError, *, agent_type: str) -> dict:
+    """A service `PolsiaError` -> the registry's named-refusal payload (context preserved)."""
+    return named_refusal(
+        exc.code, exc.message, how_to_fix=exc.how_to_fix,
+        tool=tool, agent=agent_type, github=dict(exc.context))
+
+
+def _run_github_repo(*, agent_type: str, arguments: dict) -> dict:
+    """Read one repository's metadata (`github_service.get_repo`)."""
+    from app.services import github_service
+
+    args, refusal = _github_arguments("github_repo", arguments, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    assert args is not None
+    try:
+        result = github_service.get_repo(args.get("repo"))
+    except PolsiaError as exc:
+        return _github_refusal("github_repo", exc, agent_type=agent_type)
+    return {"ok": True, "tool": "github_repo", "result": {"repo": result}}
+
+
+def _run_github_branch(*, agent_type: str, arguments: dict) -> dict:
+    """Read one branch, or create it from `from_branch` (dry-run by default)."""
+    from app.services import github_service
+
+    args, refusal = _github_arguments("github_branch", arguments, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    assert args is not None
+    dry_run, refusal = _github_dry_run("github_branch", args, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    from_branch = args.get("from_branch")
+    try:
+        if from_branch is None:
+            result = github_service.get_branch(args.get("repo"), args.get("branch"))
+        else:
+            result = github_service.create_branch(
+                args.get("repo"), args.get("branch"), from_branch,
+                dry_run=True if dry_run is None else dry_run)
+    except PolsiaError as exc:
+        return _github_refusal("github_branch", exc, agent_type=agent_type)
+    return {"ok": True, "tool": "github_branch", "result": result}
+
+
+def _run_github_commit(*, agent_type: str, arguments: dict) -> dict:
+    """Commit `files` to a branch (dry-run by default; force is always false)."""
+    from app.services import github_service
+
+    args, refusal = _github_arguments("github_commit", arguments, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    assert args is not None
+    dry_run, refusal = _github_dry_run("github_commit", args, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    try:
+        result = github_service.commit_files(
+            args.get("repo"), args.get("branch"), args.get("message"), args.get("files"),
+            dry_run=True if dry_run is None else dry_run)
+    except PolsiaError as exc:
+        return _github_refusal("github_commit", exc, agent_type=agent_type)
+    return {"ok": True, "tool": "github_commit", "result": result}
+
+
+def _run_github_pr(*, agent_type: str, arguments: dict) -> dict:
+    """Open a PR from `head` into `base` (dry-run by default; never merges)."""
+    from app.services import github_service
+
+    args, refusal = _github_arguments("github_pr", arguments, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    assert args is not None
+    dry_run, refusal = _github_dry_run("github_pr", args, agent_type=agent_type)
+    if refusal is not None:
+        return refusal
+    try:
+        result = github_service.create_pr(
+            args.get("repo"), args.get("title"), args.get("head"), args.get("base"),
+            args.get("body"), dry_run=True if dry_run is None else dry_run)
+    except PolsiaError as exc:
+        return _github_refusal("github_pr", exc, agent_type=agent_type)
+    return {"ok": True, "tool": "github_pr", "result": result}
+
+
 _RUNNERS = {
     "web_fetch": _run_web_fetch,
     "web_search": _run_web_search,
@@ -1614,6 +2162,10 @@ _RUNNERS = {
     "code_write": _run_code_write,
     "code_read": _run_code_read,
     "code_list": _run_code_list,
+    "github_repo": _run_github_repo,
+    "github_branch": _run_github_branch,
+    "github_commit": _run_github_commit,
+    "github_pr": _run_github_pr,
 }
 
 __all__ = [
@@ -1624,10 +2176,13 @@ __all__ = [
     "E_BALANCE",
     "E_RATE_LIMIT",
     "E_UNAVAILABLE",
+    "GITHUB_TOOLS",
     "PHONE_CODE_WITHHELD",
     "PHONE_READ_LIMIT_DEFAULT",
     "PHONE_READ_LIMIT_MAX",
     "PHONE_READ_THREADS_MAX",
+    "RUN_ID_MAX_CHARS",
+    "RUN_WORKSPACE_SUBDIR",
     "SEARCH_COUNT_DEFAULT",
     "SEARCH_COUNT_MAX",
     "SEARCH_QUERY_MAX_CHARS",
@@ -1635,6 +2190,7 @@ __all__ = [
     "SEARCH_URL",
     "TOOL_GUIDANCE",
     "TOOL_SPECS",
+    "cleanup_run_workspace",
     "execute_tool",
     "tools_for",
 ]

@@ -114,7 +114,11 @@ def test_the_setting_defaults_to_data_workspace():
 
 
 def test_the_allowlist_grants_the_code_tools_to_code_generation_only():
-    assert tool_registry.tools_for("code_generation") == (
+    # V25/L2 re-pin: the SAME agent also gained the GitHub quartet AFTER these three
+    # (append-only — the workspace trio keeps its positions).  This pin now states the trio as
+    # the PREFIX of the code agent's toolbox; the quartet's own holders are pinned separately in
+    # test_v25_github_tools.py.
+    assert tool_registry.tools_for("code_generation")[:3] == (
         "code_write", "code_read", "code_list")
     # The orchestrator DECISION (evidence quoted in the lane RECEIPT): it plans from the context
     # it is given and must not act; a workspace reader would widen a planner into an actor.

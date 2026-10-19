@@ -210,13 +210,31 @@ describe("Run this task — the board refetch", () => {
 describe("Run this task — the detail surface", () => {
   it("pending: posts the exact route; completed: no control", async () => {
     const user = userEvent.setup();
-    fetchMock.mockResolvedValueOnce(jsonResponse(202, { task_id: 7, status: "dispatched" }));
+    // V25/L1: the detail body ALSO loads the task's image attachments on mount (`TaskAttachments`),
+    // so this pin routes by URL instead of assuming the run POST is fetch call #0. The run
+    // contract asserted here (exact route, POST, 202, status notice) is unchanged.
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/api/v1/tasks/7/run") && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(202, { task_id: 7, status: "dispatched" }));
+      }
+      if (String(url).endsWith("/api/v1/tasks/7/attachments")) {
+        return Promise.resolve(jsonResponse(200, []));
+      }
+      if (String(url).endsWith("/api/v1/tasks/8/attachments")) {
+        return Promise.resolve(jsonResponse(200, []));
+      }
+      return Promise.resolve(jsonResponse(404, { detail: { code: "E_NOT_FOUND", message: "no" } }));
+    });
 
     const { unmount } = render(<TaskDetailContent task={task({ id: 7 })} />);
     const section = screen.getByTestId("run-this-task");
     await user.click(within(section).getByRole("button", { name: /run this task/i }));
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const runCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/api/v1/tasks/7/run"),
+    );
+    expect(runCall).toBeDefined();
+    const [url, init] = runCall as [string, RequestInit];
     expect(url).toMatch(/\/api\/v1\/tasks\/7\/run$/);
     expect(init.method).toBe("POST");
     await screen.findByRole("status");

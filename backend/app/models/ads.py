@@ -24,16 +24,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
 #: The derived-ratio expressions, copied verbatim from `alembic/versions/0002_queue_and_perf.py`
-#: (`_CTR_EXPR` / `_CPC_EXPR` / `_ROAS_EXPR`).  BOTH engines hold these three columns
-#: `GENERATED ALWAYS AS (<expr>)` (0002:233-245 drops the writable columns and re-adds them;
-#: 0003:71/79 rebuilds the table in the same shape), so the ORM must declare them computed.
+#: (`_CTR_EXPR` / `_CPC_EXPR`) and `0014_ads_nullable_revenue.py` (`_ROAS_EXPR`).  BOTH engines
+#: hold these three columns `GENERATED ALWAYS AS (<expr>)` (0002:233-245 drops the writable columns
+#: and re-adds them; 0003:71/79 rebuilds the table; 0014 swaps the roas expression to the
+#: measured-only rule), so the ORM must declare them computed.
 #: `Computed(expr)` without `persisted` is the dialect-honest form (measured): SQLite renders the
 #: expression with its VIRTUAL default, PostgreSQL's dialect renders the STORED keyword it requires.
 _CTR_EXPR = "CASE WHEN impressions > 0 THEN round(CAST(CAST(clicks AS REAL) / impressions AS NUMERIC), 6) ELSE 0 END"
 _CPC_EXPR = "CASE WHEN clicks > 0 THEN round(CAST(CAST(spend_usd AS REAL) / clicks AS NUMERIC), 6) ELSE 0 END"
 _ROAS_EXPR = (
-    "CASE WHEN spend_usd > 0 THEN round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) "
-    "ELSE 0 END"
+    "CASE WHEN revenue_usd IS NOT NULL AND spend_usd > 0 THEN "
+    "round(CAST(CAST(revenue_usd AS REAL) / CAST(spend_usd AS REAL) AS NUMERIC), 6) END"
 )
 
 
@@ -92,13 +93,11 @@ class AdMetric(Base):
     spend_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 4), server_default="0", default=0
     )
-    # `revenue_usd` is the real money column both engines hold — `NOT NULL` (0002:203-207 adds it
-    # `nullable=False`; 0003:71 re-states `NUMERIC(14, 4) DEFAULT '0' NOT NULL`) — and the input
-    # `roas` is derived from.  It was unmapped, so no ORM insert could ever write the shipped
-    # schema without tripping the NOT NULL (R26 F2).
-    revenue_usd: Mapped[Decimal] = mapped_column(
-        Numeric(14, 4), server_default="0", default=0, nullable=False
-    )
+    # V25/L4: `revenue_usd` is the measured money column, and absence is a REAL state now.  It is
+    # NULLABLE with NO default (alembic 0014; the pre-0014 shape was `NOT NULL DEFAULT 0`, which
+    # made "never measured" indistinguishable from "measured $0").  An unreported revenue is
+    # stored as NULL, a reported 0 stays 0, and the API serves exactly that difference.
+    revenue_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
     # ctr/cpc/roas are RATIOS, not money — `Numeric(14, 6)` is the type the shipped DDL holds them
     # in (0002:244), and they are GENERATED: the ORM omits them from INSERT/UPDATE and reads the
     # engine's value back (measured; an explicitly set value still reaches the INSERT and the

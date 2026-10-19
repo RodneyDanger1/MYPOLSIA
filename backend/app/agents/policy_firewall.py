@@ -248,7 +248,28 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # `settings.code_workspace_dir` (text only, ≤256 KiB, traversal-proof) and `code_write`
         # is gated as `internal_write`; they are NOT the repository, NOT a shell and NOT the
         # network — the existing git/PR walls above are unchanged.
-        agent_tools=("code_write", "code_read", "code_list"),
+        # V25/L2 — the four GitHub tools join THIS row and only this row (least privilege,
+        # evidence quoted):
+        #   * V25-PLAN "Remaining work" row 2: "**GitHub tools** — repo/branch/commit/PR behind
+        #     the firewalled registry + secret store ... The code agent can actually ship code;
+        #     source history like Polsia" — the recipient is named by the plan: the CODE agent.
+        #   * This is the only agent whose ROLE is "Ship features" / "implement small,
+        #     verifiable changes", the only one that already holds the `github` channel and the
+        #     CLI `Bash(git status|diff|log|branch|add|commit *)` allowlist (and still denies
+        #     `Bash(git push *)`, so the CLI path cannot publish either).
+        #   * Its own V24 prompt doctrine ("write the ACTUAL deliverable ... prefer it over
+        #     describing code") is what a commit completes; no other agent's prompt asks for a
+        #     repository.  The outbound-channel agents, the planners and finance reason from the
+        #     context they are given, and the orchestrator "cannot fetch, post or spend ... a
+        #     planner that can act is a planner that can be injected into acting".  A
+        #     source-control write for any of those would be privilege without a task.
+        #   * Order is the use order (read -> branch -> commit -> PR); append-only, so the V24
+        #     names keep their positions for every pre-V25 consumer.
+        #   * The mutation tools are gated `external_reversible` in
+        #     `tool_registry._TOOL_ACTION_CLASS`, so the firewall's sandbox/taint legs govern a
+        #     commit exactly as they govern a post; `dry_run` defaults to true on top of that.
+        agent_tools=("code_write", "code_read", "code_list",
+                     "github_repo", "github_branch", "github_commit", "github_pr"),
     ),
     "finance": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),

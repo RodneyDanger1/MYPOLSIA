@@ -143,11 +143,14 @@ describe("/sites — the create form", () => {
       tagline: "A clear line",
     });
     // The list is re-read from the disk-backed API — the created row's created_at/bytes come from
-    // the server, not from the create response.
-    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    // the server, not from the create response.  Wave V25 also reads each row's deploy state
+    // (`/sites/<slug>/deploy`), so the assertion counts LIST reads by path, not every GET.
+    await waitFor(() =>
+      expect(mockGet.mock.calls.filter(([path]) => path === "/sites")).toHaveLength(2),
+    );
     const refreshed = await screen.findByTestId("sites-list");
     expect(within(refreshed).getByText("Landing page")).toBeInTheDocument();
-    expect(mockGet).toHaveBeenLastCalledWith("/sites");
+    expect(mockGet).toHaveBeenCalledWith("/sites");
   });
 
   it("sends only the fields the operator typed (blank boxes are omitted, not invented)", async () => {
