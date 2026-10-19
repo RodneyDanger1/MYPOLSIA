@@ -45,6 +45,7 @@ CHECK_NAMES = (
     "phone-media",
     "phone-codes",
     "docs",
+    "api-docs",
     "server-header",
     "send-bridge",
     "backups",

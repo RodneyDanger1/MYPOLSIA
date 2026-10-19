@@ -289,11 +289,16 @@ def create_app() -> FastAPI:
         # cross-origin client reads the declared total under the same contract as the rest.
         # V18 (V18-05): Content-Disposition joins so a cross-origin JS download can read the
         # server's own filename (phone media parts; same-origin clients already saw it).
+        # V21/L1 (V20 handoff): X-Polsia-Total — the declared FULL match count the paged owner
+        # reads carry (app/api/v1/totals.py) — joins the list.  Same law as Row-Count: without
+        # it a cross-origin client reads the page but not the honest total, so a truncated page
+        # is indistinguishable from the whole table.
         expose_headers=[
             "X-Polsia-Error-Code",
             "X-Request-ID",
             "X-Response-Time-ms",
             "X-Polsia-Row-Count",
+            "X-Polsia-Total",
             "Content-Disposition",
         ],
     )

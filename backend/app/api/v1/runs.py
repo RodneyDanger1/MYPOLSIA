@@ -75,6 +75,26 @@ runs".  A count/rows mismatch refuses the same way, naming both numbers.
 
 AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router carries
 (`channels.py:52`, `notifications.py:82-84`).
+
+DETAIL — `GET /api/v1/runs/{run_id}` (V21/L2): ONE run, the frozen row plus the two accounting
+facts the record truly stores.
+
+  WHAT IS STORED, AND WHAT IS NOT (proven static + executable before this route existed):
+    * `num_turns` and `is_error` ARE stored: `base_agent.usage_metadata` -> `RunUsage.as_dict` ->
+      `agent_tasks._apply_run_usage` writes them into `agent_runs.usage_json`.  Served as
+      `int | null` / `bool | null`; `null` = not recorded (legacy row), never 0 / false.
+    * `tools_used` is NOT stored.  The DeepSeek runtime puts it on the invocation envelope
+      (`deepseek_runtime.py:1225`), but the persistence boundary drops it: `accounting.RunUsage`
+      has no such field, `usage_from_envelope` never reads `env["tools_used"]`,
+      `base_agent.RUN_META_KEYS` omits it, and `_apply_run_usage` records only `usage_json` +
+      those keys.  `agent_runs` has no such column.  So this route does NOT serve a `tools_used`
+      field: `[]` would be the MEASURED ZERO "tools were available, none ran", a different fact
+      from "never recorded".  The finding is also in the lane receipt; if a future writer stores
+      it, the field is added HERE on purpose (never silently fabricated).
+  * A missing run is the named 404 `E_NOT_FOUND` envelope (the `tasks.py:130-140` shape), never an
+    empty 200 body.
+  * A malformed at-rest `usage_json` reads as null counters and the row still serves (the U5
+    per-row junk rule).
 """
 from __future__ import annotations
 
@@ -85,7 +105,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,10 +113,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictInstant
 from app.api.v1.status_filters import RUN_STATUSES, require_status
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import iso_utc
 from app.schemas.common import UtcDatetime
-from app.services.run_service import RunFilters, RunRowData, export_runs, list_runs
+from app.services.run_service import (
+    RunDetailData,
+    RunFilters,
+    RunRowData,
+    export_runs,
+    get_run,
+    list_runs,
+)
 
 router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(verify_api_key)])
 
@@ -142,6 +169,18 @@ class RunsResponse(BaseModel):
 
     items: list[RunRow]
     total: int
+
+
+class RunDetail(RunRow):
+    """ONE run: the frozen row + the only envelope facts the record stores.
+
+    `tools_used` is deliberately absent — see the module docstring's DETAIL section.  Both
+    counters are `null` when the row has no stored `usage_json` (a legacy/pre-accounting row):
+    null means "not recorded", never 0 turns and never a fabricated `is_error=False`.
+    """
+
+    num_turns: int | None
+    is_error: bool | None
 
 
 #: The CSV header, DERIVED from the row model so it cannot drift from the wire contract.
@@ -206,6 +245,15 @@ def _row_model(row: RunRowData) -> RunRow:
     )
 
 
+def _detail_model(row: RunDetailData) -> RunDetail:
+    """`RunDetailData` -> wire detail.  Reuses `_row_model` so the shared fields cannot drift."""
+    return RunDetail(
+        **_row_model(row).model_dump(),
+        num_turns=row.num_turns,
+        is_error=row.is_error,
+    )
+
+
 def _refuse_unknown_format(requested: str) -> PolsiaError:
     """The named refusal for an unknown export format (E_VALIDATION, per the frozen contract)."""
     return PolsiaError(
@@ -223,7 +271,10 @@ def _csv_cell(value: object) -> str:
     if isinstance(value, datetime):
         # V19/L2: the export promises "exactly the values served by the list" — the list
         # serves `...Z` (UtcDatetime), so the CSV cell must use the same UTC spelling.
-        return iso_utc(value)
+        # V21/L2 typing fix (behaviour unchanged): `iso_utc` is typed `str | None` for its
+        # optional input; this branch guarantees a datetime, and a hypothetical None would
+        # have reached csv.writer as an EMPTY cell anyway — `or ""` is that same byte.
+        return iso_utc(value) or ""
     return str(value)
 
 
@@ -318,3 +369,27 @@ async def export_runs_route(
     return StreamingResponse(
         _json_chunks(payload), media_type="application/json", headers=headers
     )
+
+
+@router.get("/{run_id}", response_model=RunDetail)
+async def get_run_route(run_id: int, db: AsyncSession = Depends(get_db)) -> RunDetail:
+    """ONE run by id: the frozen ledger row + the counters the record truly stores (V21/L2).
+
+    Declared AFTER `/export` on purpose: FastAPI matches in registration order, so `/runs/export`
+    reaches the export route and never this numeric path parameter.  A missing id is the named
+    404 `E_NOT_FOUND` envelope — not an empty 200 that would read like a run.  Read failures go
+    through `refusal_guard()` (E_DB 503 + `X-Polsia-Error-Code`), the sibling-route rule.
+    """
+    with refusal_guard():
+        detail = await get_run(db, run_id=run_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": E_NOT_FOUND,
+                "message": f"run {run_id} does not exist",
+                "how_to_fix": ERROR_HINTS[E_NOT_FOUND],
+                "context": {"run_id": run_id},
+            },
+        )
+    return _detail_model(detail)

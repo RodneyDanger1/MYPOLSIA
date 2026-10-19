@@ -31,7 +31,11 @@ jobs:
       - name: ruff
         run: ruff check app/ celery_app/ tests/
       - name: mypy
-        run: mypy app/ || true   # advisory while the reconstruction settles; see reports
+        # V21/L1: HARD gate.  This step carried `|| true` ("advisory while the reconstruction
+        # settles"), so four real type errors — three in services/phone_send_service.py and one in
+        # api/v1/runs.py — could never fail a job.  The three this lane owns are fixed at the
+        # source; `[tool.mypy]` in pyproject.toml is the contract and a type error now fails CI.
+        run: mypy app/
 
   backend-unit:
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { countText, textOrDash } from "@/components/finance/format";
@@ -69,6 +70,20 @@ const LEDGER_COLUMNS: Column<RunsRow>[] = [
   { key: "cost", header: "COST", render: (row) => costText(row.cost_usd) },
   { key: "source", header: "SOURCE", render: (row) => textOrDash(row.cost_source) },
   { key: "attempt", header: "ATTEMPT", render: (row) => attemptText(row.attempt) },
+  // V21 settle: the ledger now links to the run's own detail page (V21/L2 shipped /runs/[id]).
+  {
+    key: "run",
+    header: "RUN",
+    render: (row) => (
+      <Link
+        href={`/runs/${row.id}`}
+        className="ui-label text-link hover:underline"
+        aria-label={`Open run ${row.id}`}
+      >
+        #{row.id}
+      </Link>
+    ),
+  },
 ];
 
 /**

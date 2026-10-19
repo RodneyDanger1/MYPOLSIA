@@ -37,6 +37,15 @@ SEMANTICS (frozen by the P4 outline; the identical text documents `app/api/v1/ru
     repo's float convention (`app/schemas/task.py:52-63`).  Every measurement is served EXACTLY as
     stored: the read never re-derives a half-measured sum, and an unmeasured column stays null
     (the writers' F-10/R8 discipline is the one definition of that rule).
+
+DETAIL (V21/L2) — `get_run`/`GET /api/v1/runs/{id}`: the frozen row plus the two accounting facts
+the record ACTUALLY stores in `usage_json` — `num_turns` (int) and `is_error` (bool), read with the
+same per-row tolerance as the attribution strings.  `tools_used` is NOT among them and is
+deliberately absent from the wire: the DeepSeek runtime reports it in its invocation envelope
+(`agents/deepseek_runtime.py:1225`), but no writer persists it — `accounting.RunUsage` has no such
+field, `usage_from_envelope` never reads the key, `base_agent.RUN_META_KEYS` omits it, and
+`agent_tasks._apply_run_usage` records only `usage_json` + those keys.  Serving `[]` would turn
+"never recorded" into the measured zero "no tool ran", which is a different fact.
 """
 from __future__ import annotations
 
@@ -52,7 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant
 from app.models.task import AgentRun, Task
-from app.services.query_helpers import fetch_rows, fetch_scalar
+from app.services.query_helpers import fetch_one, fetch_rows, fetch_scalar
 
 
 @dataclass(frozen=True)
@@ -90,6 +99,19 @@ class RunRowData:
     pricing_version: str | None
 
 
+@dataclass(frozen=True)
+class RunDetailData(RunRowData):
+    """One ledger row PLUS the stored accounting counters — nothing else exists to serve.
+
+    `num_turns`/`is_error` come from the row's `usage_json` (where `_apply_run_usage` records the
+    agent's `RUN_META_KEYS`).  `None` is "not recorded" — never 0, never False.  There is no
+    `tools_used`: see the module docstring's DETAIL section for the provenance chain.
+    """
+
+    num_turns: int | None = None
+    is_error: bool | None = None
+
+
 def _nonempty_str(value: Any) -> str | None:
     """A stored attribution value or None.  `""` is the writer's "unset" marker
     (`RunUsage.as_dict` writes `cost_source or None`), so an empty string is NOT served."""
@@ -98,21 +120,57 @@ def _nonempty_str(value: Any) -> str | None:
     return None
 
 
-def _usage_attribution(raw: str | None) -> tuple[str | None, str | None]:
-    """`(cost_source, pricing_version)` from a row's raw `usage_json` text — junk reads as null.
+def _usage_payload(raw: str | None) -> dict[str, Any] | None:
+    """A row's `usage_json` as a dict, or None for NULL / unparseable / non-object at-rest values.
 
     Tolerant per row on purpose (measured; see the module docstring): the feed must not refuse
-    over one malformed at-rest row, and it must never fabricate an attribution.
+    over one malformed at-rest row, and it must never fabricate a value from junk.
     """
     if not raw:
-        return None, None
+        return None
     try:
         payload = json.loads(raw)
     except ValueError:
-        return None, None
-    if not isinstance(payload, dict):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _usage_attribution(raw: str | None) -> tuple[str | None, str | None]:
+    """`(cost_source, pricing_version)` from a row's raw `usage_json` text — junk reads as null."""
+    payload = _usage_payload(raw)
+    if payload is None:
         return None, None
     return _nonempty_str(payload.get("cost_source")), _nonempty_str(payload.get("pricing_version"))
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A stored turn count, or None.  Mirrors `accounting._int_or_none`'s discipline: a bool is a
+    flag (not a count), a string is not a measurement, and a non-integral float is never
+    truncated; an integral float survives a JSON round-trip as the same count."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def _flag_or_none(value: Any) -> bool | None:
+    """A stored boolean, or None.  A string "yes"/"true" is NOT coerced — it is not a bool."""
+    return value if isinstance(value, bool) else None
+
+
+def _usage_counters(raw: str | None) -> tuple[int | None, bool | None]:
+    """`(num_turns, is_error)` from a row's raw `usage_json` — junk reads as null.
+
+    These are the ONLY envelope facts this wave surfaces, because they are the only ones the
+    persistence boundary stores (`agent_tasks._apply_run_usage` -> `usage_json`).
+    """
+    payload = _usage_payload(raw)
+    if payload is None:
+        return None, None
+    return _count_or_none(payload.get("num_turns")), _flag_or_none(payload.get("is_error"))
 
 
 def _run_conditions(filters: RunFilters, target: object) -> list[ColumnElement[bool]]:
@@ -263,3 +321,60 @@ async def export_runs(db: AsyncSession, *, filters: RunFilters) -> tuple[list[Ru
             context={"declared_total": total, "rows_read": len(rows)},
         )
     return rows, total
+
+
+async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
+    """ONE ledger row + its stored counters, or None when the id does not exist.
+
+    Same column list, same LEFT OUTER JOIN (a cycle run serves with a null title) and the same
+    TEXT-cast `usage_json` read as `fetch_run_rows` — one row shape, one junk rule.  `None` is the
+    route's 404; no empty stand-in row is ever returned.  Read failures raise `E_DB` through
+    `fetch_one` (the route's `refusal_guard` wraps it).
+    """
+    stmt = (
+        select(
+            AgentRun.id,
+            AgentRun.task_id,
+            Task.title,
+            AgentRun.agent_type,
+            AgentRun.run_type,
+            AgentRun.status,
+            AgentRun.attempt,
+            AgentRun.started_at,
+            AgentRun.ended_at,
+            AgentRun.duration_secs,
+            AgentRun.tokens_input,
+            AgentRun.tokens_output,
+            AgentRun.tokens_used,
+            AgentRun.cost_usd,
+            cast(AgentRun.usage_json, Text),
+        )
+        .select_from(AgentRun)
+        .outerjoin(Task, Task.id == AgentRun.task_id)
+        .where(AgentRun.id == run_id)
+    )
+    row = await fetch_one(db, stmt, what="run")
+    if row is None:
+        return None
+    data = _row_to_data(row)
+    num_turns, is_error = _usage_counters(row[-1])
+    return RunDetailData(
+        id=data.id,
+        task_id=data.task_id,
+        task_title=data.task_title,
+        agent_type=data.agent_type,
+        run_type=data.run_type,
+        status=data.status,
+        attempt=data.attempt,
+        started_at=data.started_at,
+        ended_at=data.ended_at,
+        duration_secs=data.duration_secs,
+        tokens_input=data.tokens_input,
+        tokens_output=data.tokens_output,
+        tokens_used=data.tokens_used,
+        cost_usd=data.cost_usd,
+        cost_source=data.cost_source,
+        pricing_version=data.pricing_version,
+        num_turns=num_turns,
+        is_error=is_error,
+    )

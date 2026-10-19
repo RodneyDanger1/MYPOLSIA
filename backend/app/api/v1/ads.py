@@ -53,10 +53,11 @@ async def ads_campaign_metrics(
 ) -> list[AdMetricResponse]:
     """Per-day metrics for ONE campaign, newest first — the read the R33 writer feeds.
 
-    V19/L2 (closes V17/L3-08 + V18 DEBT): `ads_service.list_metrics` was reachable only from
-    tests while `record_ads_run` wrote real `ad_metrics` rows from every completed ads run —
-    the stored measurement had no product consumer.  This is that consumer; an unknown campaign
-    is the service's named `E_NOT_FOUND` (a refusal, never an empty list that reads like
+    V19/L2 — the V17/L3-08 gap is CLOSED (it was carried into V18): `ads_service.list_metrics`
+    was reachable only from tests while `record_ads_run` wrote real `ad_metrics` rows from every
+    completed ads run — the stored measurement had no product consumer.  This route IS that
+    consumer; an unknown campaign is the service's named `E_NOT_FOUND` (a refusal, never an
+    empty list that reads like
     "no metrics yet").
     """
     with refusal_guard():

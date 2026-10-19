@@ -125,6 +125,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # OLD surface had no runs route; NEW pins added deliberately with the routes (count 37 -> 39).
     ("GET", "/api/v1/runs"),
     ("GET", "/api/v1/runs/export"),
+    # wave V21 (L2): the addressable run detail — documented by app/api/v1/runs.py (+ its DETAIL
+    # section on the tools_used provenance) and tests/unit/test_v21_tools_used.py; route verified
+    # live in app.routes as [GET]. NEW pin added deliberately with the route.
+    ("GET", "/api/v1/runs/{run_id}"),
     # wave V8 (C2): the owner's scheduled task prompts — documented by app/api/v1/schedules.py and
     # app/schemas/schedule.py; routes verified live in app.routes as [GET]/[POST] on the
     # collection and [PATCH]/[DELETE] on `/schedules/{schedule_id}` (checked 2026-10-14). OLD

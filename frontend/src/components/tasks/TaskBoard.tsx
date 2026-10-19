@@ -22,8 +22,13 @@ export const TASKS_BOARD_LIMIT = 500;
  * the column is nullable on the wire, and silently dropping such a row would be the Q-12
  * truncation-honesty defect wearing a different hat. The two live columns always render; the
  * extra buckets render only when they carry rows.
+ *
+ * `OPEN_STATUSES` is the non-terminal set that feeds TO DO: pending, in progress and awaiting
+ * approval are all still open work, so none of them may fall into DONE or be dropped. The name
+ * describes that contract (it is a status set, not a task marker); the TO DO column label is the
+ * surface's, not the set's.
  */
-const TODO_STATUSES = new Set(["pending", "in_progress", "awaiting_approval"]);
+const OPEN_STATUSES = new Set(["pending", "in_progress", "awaiting_approval"]);
 const DONE_STATUSES = new Set(["completed"]);
 const NOT_DONE_STATUSES = new Set(["failed", "rejected", "cancelled"]);
 
@@ -39,7 +44,7 @@ export function groupTasks(rows: TaskRow[]): Group[] {
   const buckets: Record<string, TaskRow[]> = { todo: [], done: [], notdone: [], unknown: [] };
   for (const row of rows) {
     const status = row.status;
-    if (status && TODO_STATUSES.has(status)) buckets.todo.push(row);
+    if (status && OPEN_STATUSES.has(status)) buckets.todo.push(row);
     else if (status && DONE_STATUSES.has(status)) buckets.done.push(row);
     else if (status && NOT_DONE_STATUSES.has(status)) buckets.notdone.push(row);
     else buckets.unknown.push(row);

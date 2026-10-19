@@ -153,8 +153,8 @@ def _post_linkedin(text: str, *, image_url: str = "") -> dict:
     """Post one text update to LinkedIn through the versioned REST API (`/rest/posts`).
 
     Credentials are read defensively (`_setting`): LINKEDIN_ACCESS_TOKEN + LINKEDIN_AUTHOR_URN.
-    A media post is refused BY NAME — LinkedIn's images API is a deliberate follow-up, never a
-    silent drop of the image.
+    A media post is REFUSED BY NAME — LinkedIn's images API is a documented limitation (deliberate
+    scope, not an open work item), never a silent drop of the image.
     """
     if image_url:
         return named_refusal(
@@ -348,8 +348,8 @@ def _tiktok_publish_video(text: str, image_url: str) -> Any:  # pragma: no cover
 
     # ONE documented call: POST /v2/post/publish/video/init/ (Direct Post). `publish_id` is
     # TikTok's id for the publish request; the PULL_FROM_URL fetch + processing complete
-    # asynchronously (status/fetch is the documented polling endpoint — a deliberate follow-up,
-    # never faked here).
+    # asynchronously (status/fetch is the documented polling endpoint — polling is a documented
+    # limitation of this adapter, deliberate scope; completion is never faked here).
     response = httpx.post(
         _TIKTOK_POST_INIT_URL,
         headers={
@@ -634,8 +634,8 @@ def refund_payment(*, payment_id: str, amount_cents: int | None = None) -> dict:
     Only `pi_`-prefixed ids reach the provider; anything else (`evt_…`, a fabricated id,
     a bare integer string) is refused by NAME with `E_VALIDATION` and NO network call — the
     value may be the provider's real id of the WRONG type, which is a caller error, not an
-    integration failure.  Adding a `ch_…`/`py_…` route is a deliberate follow-up (REQUESTS),
-    never a best-effort guess here.
+    integration failure.  Adding a `ch_…`/`py_…` route is a documented limitation (tracked as a
+    REQUESTS item), never a best-effort guess here.
 
     `amount_cents` caps a partial refund; `None` refunds what is left on the PaymentIntent.
     """

@@ -68,8 +68,9 @@ class AdMetricResponse(ORMModel):
     """One stored `ad_metrics` day (V19/L2 — the read `list_metrics` never had).
 
     WHY: the R33 writer stores each completed ads run's `metrics[]` as `AdMetric` rows, but the
-    API exposed NO read for them — `list_metrics` had no module-external consumer and was
-    V17/L3-08/V18 DEBT.  The write is real; a stored measurement nobody can read is the dead
+    API exposed NO read for them — `list_metrics` had no module-external consumer (V17/L3-08,
+    tracked into V18).  CLOSED in V19: `GET /api/v1/ads/campaigns/{id}/metrics` is that read.
+    The write is real; a stored measurement nobody can read is the dead
     half of the seam.  Money is served as float (the repo's `*_usd` wire convention; the column
     stays `NUMERIC(14,4)` exact at rest); `ctr`/`cpc`/`roas` are the engines' GENERATED columns,
     `null` when the denominator is zero/absent (never a fabricated ratio).

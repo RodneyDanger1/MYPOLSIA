@@ -7,8 +7,9 @@
 # the phone surface is honest (real store, or a NAMED refusal — never a raw 500, never invented
 # rows), that the key-only codes surface answers a COUNT without ever echoing a code, that the
 # optional host send bridge is either healthy or named OFF, that docs visibility matches
-# `SANDBOX_MODE`, that the proxy does not disclose its version, and that backups exist.  It never
-# writes: every request is GET or HEAD.
+# `SANDBOX_MODE`, that the API's own Swagger UI (/apidocs) and schema (/openapi.json) are reachable
+# through the proxy (V21), that the proxy does not disclose its version, and that backups exist.
+# It never writes: every request is GET or HEAD.
 #
 # USAGE
 #   scripts/smoke.sh                                  # base http://127.0.0.1, key from $API_KEY
@@ -179,9 +180,10 @@ print_plan() {
     printf '  %-2s %-15s %-5s %s\n' 7 phone-media GET "$BASE/api/v1/phone/media?thread_id=<first summary thread> -> parts[] or named refusal"
     printf '  %-2s %-15s %-5s %s\n' 8 phone-codes GET "$BASE/api/v1/phone/codes?limit=1 -> codes[N] (count only; values never printed)"
     printf '  %-2s %-15s %-5s %s\n' 9 docs GET "${API_BASE:-$BASE}/docs -> matches SANDBOX_MODE in $ROOT/.env"
-    printf '  %-2s %-15s %-5s %s\n' 10 server-header GET "$BASE/ -> Server absent or version-masked"
-    printf '  %-2s %-15s %-5s %s\n' 11 send-bridge GET "<\$PHONE_SEND_BRIDGE_URL>/health -> 200 {status:ok}; unset = named SKIP"
-    printf '  %-2s %-15s %-5s %s\n' 12 backups LOCAL "$ROOT/backups/polsia-*.sql + 4 volume archives (warn-only)"
+    printf '  %-2s %-15s %-5s %s\n' 10 api-docs GET "${API_BASE:-$BASE}/apidocs -> 200 swagger-ui (api-base: /docs) + /openapi.json -> 200 openapi"
+    printf '  %-2s %-15s %-5s %s\n' 11 server-header GET "$BASE/ -> Server absent or version-masked"
+    printf '  %-2s %-15s %-5s %s\n' 12 send-bridge GET "<\$PHONE_SEND_BRIDGE_URL>/health -> 200 {status:ok}; unset = named SKIP"
+    printf '  %-2s %-15s %-5s %s\n' 13 backups LOCAL "$ROOT/backups/polsia-*.sql + 4 volume archives (warn-only)"
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -201,7 +203,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
         printf 'bridge: $PHONE_SEND_BRIDGE_URL is not set — send-bridge will SKIP (bridge OFF, the default)\n'
     fi
     print_plan
-    printf 'DRY RUN complete: 12 checks planned, 0 requests made.\n'
+    printf 'DRY RUN complete: 13 checks planned, 0 requests made.\n'
     exit 0
 fi
 
@@ -240,6 +242,20 @@ hdr_value() {
     grep -i "^$2:" "$1" 2>/dev/null | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//; s/ *$//'
 }
 has() { grep -q "$1" "$2" 2>/dev/null; }
+# V21: FastAPI's Swagger UI template carries one of these bundle markers.  Case-insensitive: the
+# template has changed spelling between FastAPI releases (`swagger-ui-dist`, `SwaggerUIBundle`).
+has_swagger_ui() { grep -qiE 'swagger-ui|swaggeruibundle' "$1" 2>/dev/null; }
+# V21: is the API-docs route part of the repo's OWN nginx config?  This is used for one purpose
+# only: telling a stale running build (the route was never shipped) from a real failure (the route
+# is shipped but does not answer).  It is never a substitute for the HTTP check.
+nginx_config_mentions_apidocs() {
+    [ -n "$ROOT" ] || return 1
+    for _conf in "$ROOT"/nginx/*.conf; do
+        [ -f "$_conf" ] || continue
+        grep -q 'apidocs' "$_conf" 2>/dev/null && return 0
+    done
+    return 1
+}
 
 # JSON value by python expression over `d`.  The document arrives on STDIN (never as a path: a
 # native Windows python.exe cannot open an MSYS `/tmp/...` path), and the expression is argv[1].
@@ -271,6 +287,14 @@ fi
 printf 'INFO base=%s root=%s key=$%s(%s)\n' "$BASE" "$ROOT" "$KEY_VAR" \
     "$([ -n "$KEY" ] && echo present || echo absent)"
 printf '\n'
+
+# The docs posture comes from `.env` — NEVER the API key, which is environment-only.  Parsed once,
+# here, because two checks compare against it: `docs` (the /docs path the Next app serves) and
+# `api-docs` (the API's own Swagger UI + schema).
+SANDBOX=""
+if [ -f "$ROOT/.env" ]; then
+    SANDBOX=$(grep -E '^[[:space:]]*SANDBOX_MODE=' "$ROOT/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r' | tr -d '"' | tr 'A-Z' 'a-z')
+fi
 
 # ── 1. health ───────────────────────────────────────────────────────────────────────────────
 code=$(get_code "$BASE/api/v1/health" "$WORK/health.json")
@@ -477,10 +501,6 @@ else
 fi
 
 # ── 9. docs visibility matches SANDBOX_MODE ─────────────────────────────────────────────────
-SANDBOX=""
-if [ -f "$ROOT/.env" ]; then
-    SANDBOX=$(grep -E '^[[:space:]]*SANDBOX_MODE=' "$ROOT/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r' | tr -d '"' | tr 'A-Z' 'a-z')
-fi
 if [ -z "$SANDBOX" ]; then
     skip docs "no SANDBOX_MODE in $ROOT/.env — nothing to compare /docs against"
 else
@@ -513,7 +533,48 @@ else
     fi
 fi
 
-# ── 10. the proxy must not disclose its version ─────────────────────────────────────────────
+# ── 10. API docs (V21): Swagger UI + schema, through the proxy or at --api-base ─────────────
+# The contract this pins: GET /apidocs is the API's Swagger UI — deliberately a different route
+# from /docs, which nginx routes to the Next app (this tree has no /docs page; it answers 404) —
+# and GET /openapi.json is its schema.  Both are
+# auto-hidden when SANDBOX_MODE=false (FastAPI sets the URLs to None), so that posture is a NAMED
+# SKIP: flipping sandbox back to true is the only way to check them, and the `docs` check already
+# proves the hiding.  Everywhere else this is PASS-or-FAIL.  A 404 pair is a named SKIP ONLY when
+# the repo's own nginx config has no /apidocs location — the running build genuinely predates the
+# route (a stale stack).  With --api-base the API itself is asked, so that discriminator does not
+# apply: a 404 there means the backend image is stale -> FAIL, rebuild it.
+case "$SANDBOX" in
+    false|0|no|off)
+        skip api-docs "SANDBOX_MODE=$SANDBOX — the API's docs routes are auto-hidden in this posture (set SANDBOX_MODE=true to check them)"
+        ;;
+    *)
+        # Through the proxy the public page is /apidocs (nginx aliases it to the backend's /docs).
+        # Against the API itself (--api-base) the page is still FastAPI's /docs — /apidocs is a
+        # proxy-level name and the backend does not serve it.
+        docs_page_path=/apidocs
+        if [ -n "$API_BASE" ]; then docs_page_path=/docs; fi
+        docs_api_base=${API_BASE:-$BASE}
+        code_docs=$(get_code "$docs_api_base$docs_page_path" "$WORK/apidocs.html")
+        code_schema=$(get_code "$docs_api_base/openapi.json" "$WORK/openapi.json")
+        marker=no
+        if has_swagger_ui "$WORK/apidocs.html"; then marker=yes; fi
+        schema_ok=no
+        if has '"openapi"' "$WORK/openapi.json"; then schema_ok=yes; fi
+        stale=0
+        if [ -z "$API_BASE" ] && [ "${code_docs:-000}" = 404 ] && [ "${code_schema:-000}" = 404 ]; then
+            if ! nginx_config_mentions_apidocs; then stale=1; fi
+        fi
+        if [ "$code_docs" = 200 ] && [ "$marker" = yes ] && [ "$code_schema" = 200 ] && [ "$schema_ok" = yes ]; then
+            pass api-docs "GET $docs_page_path -> 200 swagger-ui=yes; GET /openapi.json -> 200 openapi=yes"
+        elif [ "$stale" = 1 ]; then
+            skip api-docs "the running build predates the V21 docs route: /apidocs + /openapi.json answer 404 and nginx has no /apidocs location (rebuild + reload nginx, then re-run)"
+        else
+            fail api-docs "docs($docs_page_path)=${code_docs:-000} swagger-ui=$marker, schema=${code_schema:-000} openapi=$schema_ok — expected 200 for both (reload nginx if its config has the route; rebuild the backend image if the API itself 404s)"
+        fi
+        ;;
+esac
+
+# ── 11. the proxy must not disclose its version ─────────────────────────────────────────────
 code=$(head_code "$BASE/" "$WORK/server.hdr")
 server=$(hdr_value "$WORK/server.hdr" 'Server')
 if [ "${code:-000}" = 000 ]; then
@@ -534,7 +595,7 @@ else
     esac
 fi
 
-# ── 11. send bridge (optional; default OFF): healthy when configured, named OFF otherwise ───
+# ── 12. send bridge (optional; default OFF): healthy when configured, named OFF otherwise ───
 if [ -z "$BRIDGE_URL" ]; then
     skip send-bridge "PHONE_SEND_BRIDGE_URL is not set — the send bridge is OFF (the default); sends use the direct subprocess path"
 else
@@ -574,7 +635,7 @@ else
     fi
 fi
 
-# ── 12. backup artifacts (warn-only: a fresh clone has none until `make backup`) ───────────
+# ── 13. backup artifacts (warn-only: a fresh clone has none until `make backup`) ───────────
 sql_count=$(ls -1 "$ROOT"/backups/polsia-*.sql 2>/dev/null | wc -l | tr -d ' ')
 missing=""
 for vol in backend_data chroma_data celery_beat_data redis_data; do

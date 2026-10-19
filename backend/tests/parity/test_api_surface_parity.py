@@ -127,6 +127,12 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # (csv/json; row count == total). Owner-key.
     ("/api/v1/runs", ("GET",)),
     ("/api/v1/runs/export", ("GET",)),
+    # wave V21 (L2): the addressable run DETAIL — the frozen ledger row plus the two stored
+    # accounting counters (usage_json.num_turns / usage_json.is_error).  `tools_used` is NOT
+    # served: the record does not persist it (see app/api/v1/runs.py's DETAIL section).  NEW pin
+    # added deliberately with the route (documented /api/v1 count 75 -> 76;
+    # EXPECTED_ROUTES total 77 -> 78).
+    ("/api/v1/runs/{run_id}", ("GET",)),
     # wave V8 (C2): the owner's scheduled task prompts — GET/POST the collection, PATCH/DELETE the
     # item (`/schedules/{schedule_id}`); pause = PATCH enabled=false. OLD surface had no schedules
     # routes; NEW pins added deliberately (count 44 -> 48). Owner-key.

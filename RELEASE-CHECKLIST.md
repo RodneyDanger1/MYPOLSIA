@@ -22,33 +22,31 @@ convention: writers never run docker/live; the wave verifier + parent own the de
 ```bash
 cd backend
 ruff check app/ celery_app/ tests/          # → "All checks passed!" (CI hard gate)
-mypy app/                                    # → "Success: no issues found" (project bar;
-                                             #    CI keeps mypy advisory with `|| true`)
+mypy app/                                    # → "Success: no issues found" (HARD CI gate since V21;
+                                             #    the workflow step carries no `|| true`)
 python -m pytest tests/unit tests/redteam tests/parity -q   # → 0 failed / 0 errors
 ```
 - [ ] Full backend suite green with the expected tally (junit xml attached to the wave receipt);
       skipped count named (testcontainers tests skip without Docker — integration runs in CI).
 - [ ] Coverage gate holds: `cd backend && python -m pytest tests/unit -q --cov=app` ≥ the ratchet in
-      `backend/pyproject.toml` — `[tool.coverage.report] fail_under = 87`, measured at 87.5461%
-      (4,984 of 5,693) with `core = "sysmon"` in `[tool.coverage.run]`. The config is the single
-      truth; the V18 release-ops lane verified it is coherent (no stale "75" target — that number is
-      only named as the project's *original* declared target, now met) and did **not** run the gate.
-      **V20 lane L3 measured 86.66% (11,631 statements, 1,551 missed) mid-wave on an unfrozen tree and
-      did NOT earn a ratchet move — `fail_under = 87` is byte-identical (`backend/pyproject.toml`
-      sha256 `987779171769c37ca1e25fa388ba211ee2a1cfc52b9c9bbeb046fbffaa486ffe`, `cmp` silent vs
-      `pre/pyproject.toml.pre`). The parent re-measures on the frozen tree; a settled number below 87.0
-      requires targeted tests, not a lowered floor.** The full run stays parent/verifier-owned.
-      Evidence: `wave-v20/l3-proof-depth/raw/coverage-run.log`; base artifact
-      `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
+      `backend/pyproject.toml` — `[tool.coverage.report] fail_under = 90`, measured at **92.08%** on
+      the V21 tree (`11,678` statements / `925` missed, CI's exact command with `--cov-report=term-missing`)
+      with `core = "sysmon"` in `[tool.coverage.run]`. The config is the single truth; 87.5461%
+      (4,984 of 5,693) is the V19-base history. **V20 lane L3's mid-wave 86.66% did not earn a move;
+      the V20 settle 92.07% raised 87 → 88; V21 lane L3 measured 92.08% (exit 0) and raised 88 → 90
+      (`backend/pyproject.toml:58`).** The full run stays parent/verifier-owned. If the settled number
+      lands below 90.0, targeted tests are required — never a lowered floor. Evidence:
+      `wave-v21/l3-proof-depth2/raw/coverage-ci-exact.txt`, `wave-v20/l3-proof-depth/raw/coverage-run.log`;
+      base artifact `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
 - Executed locally in V17 (L5): `ruff check tests/unit/test_v17_restore_script.py` → "All checks
   passed!" (`wave-v17/l5-release-ops/out/checklist-2-5-gates.txt`). `mypy app/`, the full pytest run
   and the coverage ratchet are **UNRUN in this lane** — the verifier runs them once for the wave.
-- **V20 known settlement item (must clear before the full suite is green):** L2's receipt hands the
-  parent four V12-era pin files outside its territory — `test_v12_registry.py`,
-  `test_v12_allowlist.py`, `test_v12_seam_end_to_end.py`, `test_v12_tool_loop_registry.py` — which fail
-  by design (**9 failed / 95** in `wave-v20/l2-agent-phone-tool/raw/NEIGHBORS-v12.*`); the exact
-  re-pins are in `wave-v20/l2-agent-phone-tool/REQUESTS-v12-pins.md`. The lane's own files are
-  **68/68 green**. A "0 failed" claim in §2 is false until those re-pins land.
+- **V20 settlement item — CLOSED ✅ before this wave.** L2's receipt handed the parent four V12-era
+  pin files outside its territory (`test_v12_registry.py`, `test_v12_allowlist.py`,
+  `test_v12_seam_end_to_end.py`, `test_v12_tool_loop_registry.py`) which failed by design (**9 failed
+  / 95**) until the registry gained `phone_read`. The parent re-pinned all five of the V12 pin family
+  post-audit with attribution comments — `88/0/0/0` and `101/0/0/0` across focused runs
+  (NEXTSTEPS §3e). A "0 failed" claim in §2 is now honest.
 
 ## 3. Static gates (frontend)
 ```bash
@@ -64,8 +62,8 @@ npm run build                                # `next build` → exit 0 (own gate
   lane's only FE-adjacent claim is that no FE file was touched by it.
 
 ## 4. CI on the push
-- [ ] `ci.yml` green (lint job: ruff hard gate, mypy advisory; unit job: `pytest tests/unit -q` +
-      coverage variant).
+- [ ] `ci.yml` green (lint job: ruff **and mypy** hard gates — the mypy step carries no `|| true`
+      since V21; unit job: `pytest tests/unit -q` + coverage variant).
 - [ ] `integration.yml` green (testcontainers suite exits 0 with real Postgres/Redis; Playwright E2E
       on Node 24 — `node:sqlite` needs ≥ 22).
 - [ ] `docker-build.yml` green (all images build; stack boots; health-checked).
@@ -190,6 +188,41 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       Evidence: `wave-v20/l3-proof-depth/raw/02-codes-vs-stale-live.txt`,
       `raw/03-invoices-terminal-vs-stale-live.txt`, `raw/00-served-build-check.txt`.
 
+- [ ] **V21 — API docs through nginx (parent live-check; read-only GETs)** — reload the proxy after
+      the V21 route lands: `docker compose exec nginx nginx -t` → syntax ok, then
+      `docker compose exec nginx nginx -s reload`. With `SANDBOX_MODE=true` in the running backend:
+      `curl -si http://127.0.0.1/apidocs | head -20` → `HTTP/1.1 200`, `text/html`, and the body
+      carries `swagger-ui`; `curl -s http://127.0.0.1/openapi.json | head -c 80` → starts with
+      `{"openapi":"3.…"`. Then `make smoke` → `PASS api-docs: GET /apidocs -> 200 swagger-ui=yes;
+      GET /openapi.json -> 200 openapi=yes` (13 checks total). Open the page in a browser too: the
+      location-level CSP exists so Swagger's jsDelivr assets load — a 200 that renders blank is the
+      false success those headers are there to prevent. With `SANDBOX_MODE=false` both URLs are 404
+      and `make smoke` prints `SKIP api-docs` — that pair is correct posture, not a failure.
+- [ ] **V21 — mypy is a hard gate (parent/CI)** — `cd backend && mypy app/` exits 0 under the
+      project's own config; `.github/workflows/ci.yml`'s mypy step runs `mypy app/` with **no**
+      `|| true`; the `ci.yml` lint job is green on the push. L1's receipt records the before/after
+      error count and every `# type: ignore[code]` it added, with its reason.
+- [ ] **V21 — run detail transparency (parent live-check; visual)** — after the backend + FE rebuild,
+      open **`http://127.0.0.1/runs/<id>`** (the page exists but no ledger link wires it yet — that
+      link is a parent follow-up outside L2's territory): the run's ledger row plus the two **stored**
+      counters (`num_turns`, `is_error`) and the honest **“tool activity: not recorded”** state. The record
+      genuinely stores no tool list (L2's provenance probe: `tools_used` lives only in the runtime
+      envelope, never in `agent_runs`/`usage_json` — NEXTSTEPS §3f), so **no tool chips are expected**.
+      A fabricated `tools_used: []`, a fabricated 0, or a silently blank panel is the defect this
+      check looks for. `GET /api/v1/runs/{id}` answers the frozen list-row fields + `num_turns` /
+      `is_error` (`null` = not recorded, never 0/false) and a missing id is the named 404 `E_NOT_FOUND`.
+      Evidence: `wave-v21/l2-run-transparency/RECEIPT.md`.
+- [ ] **V21 — the 404 page (parent live-check; visual)** — `curl -s -o /dev/null -w '%{http_code}'
+      http://127.0.0.1/definitely-not-a-page` → `404`, and the page renders the app's own
+      `data-testid="not-found"` surface inside the shell (h1 "This page does not exist"), not Next's
+      default "This page could not be found". Needs the FE rebuild — `frontend/src/app/not-found.tsx`
+      is source-only until then.
+- [ ] **V21 — e2e sweep, three specs (parent live-check; after the FE rebuild)** —
+      `cd e2e && npx playwright test v20-codes-panel.spec.ts v21-agent-toolbox.spec.ts
+      v21-not-found.spec.ts --reporter=list` → all green (5 codes-panel + 5 toolbox + 1 not-found).
+      The toolbox spec is already green against the served V20 build (L3 receipt); the 404 spec is
+      RED until the rebuild because the served bundle predates `not-found.tsx`.
+
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,
       `/api/v1/phone/summary|messages|calls` return real fixture rows; null ≠ 0 enforced; export zip
@@ -226,6 +259,11 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       (§3e — the V20 block: **all five lanes SETTLED** with complete receipts, verifier PASSed every
       one; the V12 pin family re-pinned by the parent post-audit; the stale E7 bullet in §4 replaced
       with the V17-L1 closed statement; §4's V19 API cards closed in V20).
+- [x] NEXTSTEPS.md updated for V21: §3f records every lane **by receipt existence** (all four writer
+      receipts present at this write — L1/L2/L4 DONE, L3 partial with coverage pending; L6 in flight)
+      and §4a is the debt-marker ledger measured on the tree (`grep -rn -E
+      "TODO|FIXME|XXX|HACK|DEBT" backend/app frontend/src`). Reconcile both at settle against the
+      frozen tree.
 
 **Not ready if:** any gate has failures not named as pre-existing, any drill shows a fabricated
 state (empty-as-error, 0-as-null, success-on-refusal), any doc claims a feature the frozen tree

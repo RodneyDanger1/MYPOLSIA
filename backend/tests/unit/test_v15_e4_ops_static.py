@@ -112,7 +112,15 @@ def test_2r08_security_headers_at_server_scope() -> None:
         assert "add_header" not in _block(NGINX_CONF, header), (
             f"add_header inside {header} would silently drop the server-scope inheritance"
         )
-    assert len(re.findall(r"^\s*add_header\s", NGINX_CONF, flags=re.MULTILINE)) == 3
+    # V21/L1: `location = /apidocs` is the ONE deliberate exception.  Swagger UI loads its JS/CSS
+    # from cdn.jsdelivr.net, which the server-scope `default-src 'self'` blocks — the page would
+    # answer 200 and render blank.  A location-level add_header REPLACES the inherited set, so that
+    # block re-declares all three headers (verified below); every other location still carries
+    # none (the loop above).  The total is therefore 3 server-scope + 3 on /apidocs.
+    docs = _block(NGINX_CONF, "location = /apidocs {")
+    for header in ("Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options"):
+        assert f"add_header {header}" in docs, f"/apidocs must re-declare {header}"
+    assert len(re.findall(r"^\s*add_header\s", NGINX_CONF, flags=re.MULTILINE)) == 6
 
 
 def test_2r08_csp_is_next_compatible_and_never_grants_unsafe_eval() -> None:

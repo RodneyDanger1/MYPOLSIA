@@ -76,9 +76,11 @@ make smoke                        # the full GET-only acceptance (needs $API_KEY
 
 `make smoke` is the one-command gate: health, security headers, the 401/200 key gate, capabilities,
 phone summary + media + the key-only **codes** surface (row count only — values are never printed),
-`/docs` vs `SANDBOX_MODE`, the proxy `Server` header, the optional **send bridge**
-(`GET $PHONE_SEND_BRIDGE_URL/health` when exported; unset = a named SKIP because the bridge is OFF by
-default), and the backup artifacts — one named PASS/FAIL line each, exit 0 only when all pass.
+`/docs` vs `SANDBOX_MODE`, the API's own **Swagger UI + schema** (`/apidocs` + `/openapi.json` — the
+V21 route; a named SKIP only when sandbox hides the docs or the running build predates the route),
+the proxy `Server` header, the optional **send bridge** (`GET $PHONE_SEND_BRIDGE_URL/health` when
+exported; unset = a named SKIP because the bridge is OFF by default), and the backup artifacts — one
+named PASS/FAIL line each, exit 0 only when all pass.
 `make smoke-dry` prints the plan without making a request. It never writes and never starts/stops a
 service.
 
@@ -100,6 +102,8 @@ service.
 | `make smoke` reports `FAIL server-header: Server: nginx/x.y.z` | nginx advertises its version (`server_tokens` defaults to `on`) | add `server_tokens off;` at `http{}` scope in `nginx/nginx.conf`, then `docker compose exec nginx nginx -s reload` |
 | `make smoke` reports `SKIP send-bridge: PHONE_SEND_BRIDGE_URL is not set` | the send bridge is OFF — the default; the host-run API uses the direct subprocess path | nothing to fix; export the URL + token only when you deliberately run the bridge (USAGE §5.2) |
 | `make smoke` reports `FAIL send-bridge: ... no response` | the bridge is not running, is bound to another interface, or the URL/port is wrong | start it on the host with `PHONE_SEND_BRIDGE_TOKEN` exported, then `curl -s http://127.0.0.1:9227/health` before re-running smoke |
+| `make smoke` reports `FAIL api-docs: docs=404 … schema=404` | the V21 nginx route is in `nginx/nginx.conf` on disk but the running proxy was not reloaded (or the backend image predates the route when `--api-base` is used) | `docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload`, rebuild the backend if it answers 404 at `--api-base`; `SKIP api-docs` is the honest pre-V21/sandbox-off state |
+| `make smoke` reports `SKIP api-docs: SANDBOX_MODE=false` | the API hides its docs in the production posture — by design | set `SANDBOX_MODE=true` on a local stack if you want the Swagger UI |
 | `POST /api/v1/phone/send` returns `E_CONFIG` | `PHONE_SEND_BRIDGE_URL` is set but `PHONE_SEND_BRIDGE_TOKEN` is missing on the backend | set the same token in `.env`, restart the backend container; the token must never go on a command line |
 
 ## 8) CI parity (what GitHub Actions installs)
@@ -109,6 +113,6 @@ service.
 the exact pins CI installs) on Python 3.12 + Node 24,
 and run: ruff+mypy, unit tests, testcontainers integration, Playwright E2E, and a full image build +
 health-checked stack boot. Local tools matching those pins = local results predict CI results.
-Local gates: `ruff check app/ celery_app/ tests/` is the **hard** lint gate (CI fails on it);
-`mypy app/` is the project's clean bar (CI keeps mypy advisory with `|| true` while the
-reconstruction settles).
+Local gates: `ruff check app/ celery_app/ tests/` and `mypy app/` are **both hard** lint gates (CI
+fails on either); mypy stopped being advisory at V21 — the workflow step carries no `|| true` and the
+repo is expected to stay clean under the project's own config.

@@ -202,10 +202,18 @@ def _bridge_timeout(url: str, timeout: float) -> PolsiaError:
     )
 
 
-def _bridge_unreachable(url: str, exc: BaseException) -> PolsiaError:
+def _bridge_unreachable(url: str, exc: BaseException | str) -> PolsiaError:
+    """A bridge connect failure, rendered from whichever shape `URLError.reason` carries.
+
+    `urllib.error.URLError.reason` is `str | BaseException` (typeshed): the socket layer reports
+    a plain message ("Connection refused") and the URL layer an exception.  A string rendered as
+    `str: <text>` would read like a fabricated exception type, so the string arm is rendered
+    as-is; an exception keeps its own type name.
+    """
+    detail = f"{type(exc).__name__}: {exc}" if isinstance(exc, BaseException) else exc
     return PolsiaError(
         E_PHONE_UNAVAILABLE,
-        f"the phone send bridge at {url} is unreachable ({type(exc).__name__}: {exc}) — start "
+        f"the phone send bridge at {url} is unreachable ({detail}) — start "
         "scripts/phone_send_bridge.py on the host, then retry",
         how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
         context={"bridge_url": url},
@@ -582,7 +590,12 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
         code = error.get("code")
         message = error.get("message") or "the phone send driver refused the send"
         how_to_fix = error.get("how_to_fix") or ""
-        context = error.get("context") if isinstance(error.get("context"), dict) else {}
+        # Bound ONCE: `isinstance(error.get("context"), dict)` narrows only the expression mypy
+        # can see, not a second `.get()` call on the next line — the old one-liner's type stayed
+        # `Any | dict[Any, Any] | None` and failed the `dict[str, Any]` parameter below.  The
+        # values are identical; only the annotation is new.
+        raw_context = error.get("context")
+        context: dict[str, Any] = raw_context if isinstance(raw_context, dict) else {}
         if not isinstance(code, str) or code not in DRIVER_CODES:
             context = {**context, "driver_code": code}
             code = E_PHONE_UNAVAILABLE

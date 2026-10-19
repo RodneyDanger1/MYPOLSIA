@@ -1,4 +1,4 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V20)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V21)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
@@ -19,6 +19,11 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
   typing (L1), the `phone_read` agent tool (L2), e2e depth + coverage ratchet (L3), the agents-page
   toolbox (L4), docs settle (L5); the riding verifier (L6) owns the gate. Lane status is stated by
   receipt in §3e — nothing in this wave is claimed landed without one.
+- **Wave V21 is IN FLIGHT** — base `e618342` (CI all-green at that base; backend **2694 passed / 0
+  failed / 0 errors / 13 skipped**, e2e **7/7**, smoke **12 checks**, `fail_under = 88` —
+  `wave-v21/V21-PLAN.md`). Six seats: gate hardening (L1), run transparency (L2), proof depth (L3),
+  UI completeness (L4), docs-and-smoke (L5), riding verifier (L6). Lane status by receipt in §3f;
+  nothing in this wave is claimed landed without one.
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
@@ -234,7 +239,8 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
   check after the FE rebuild. **Coverage: L3 measured 86.66% (11,631 statements, 1,551 missed) mid-wave
   → the ratchet was NOT earned; `fail_under = 87` stays and `backend/pyproject.toml` is byte-identical
   (sha256 `98777917…486ffe`).** The parent re-measures on the frozen tree; below 87.0 = add targeted
-  tests, never lower the floor.
+  tests, never lower the floor. *(Settled afterwards: the frozen-tree run measured **92.07%** and the
+  floor moved **87 → 88** — §0's V21 base line and `backend/pyproject.toml:58`.)*
 - **Agents-page toolbox (L4) — SETTLED ✅** (`wave-v20/l4-agents-toolbox/RECEIPT.md`, complete). Every
   agent card gains a `TOOLS · N` button (collapsed by default — no tool markup in the DOM) that expands
   to one row per tool: name in the page's mono label style + the registry's own one-line description.
@@ -256,7 +262,121 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
   acceptance paragraph, `RELEASE-CHECKLIST.md` the V20 parent live-checks. `DEPENDENCIES.md` unchanged —
   V20 adds no new dependency (L2/L4 are in-app; L3 is test tooling already pinned).
 
+## 3f. WAVE V21 — IN FLIGHT (base `e618342`; receipts under `wave-v21/`)
+
+L5 wrote this block while the wave was running and **re-read it at 08:39 CDT, after L3's receipt
+update** (all four writer receipts existed). Status is quoted from those receipts plus L5's own work.
+The wave is **not settled**: the verifier gate (L6) and the parent's rebuild/nginx reload are still
+open, and the settlement items at the end are named, not hidden.
+
+- **Gate hardening (L1) — RECEIPT PRESENT, DONE ✅** (`wave-v21/l1-gate-hardening/RECEIPT.md`, 4/4 items
+  + tests). mypy baseline **4 errors / 2 files** (`phone_send_service.py` ×3, `runs.py` ×1 — the last
+  closed by L2 in this wave) → **0 errors / 148 files**; the `|| true` is deleted from `ci.yml` and
+  `test_the_mypy_ci_step_is_a_hard_gate` reads the step; **zero** `# type: ignore`, zero overrides,
+  `pyproject.toml` untouched. `expose_headers` now carries `X-Polsia-Total` (wire capture in
+  `raw/cors-header.txt`). Two exact nginx locations — `location = /apidocs` → backend `/docs` with a
+  jsDelivr-scoped CSP plus the two other security headers, `location = /openapi.json` → backend — and
+  the backend answers 200/200 with 64 paths (`raw/docs-assets.txt`). Debt item: **no open marker
+  existed**; all six sites adjudicated. Tests: 11 new pins (RED 6 → GREEN 11), focused set **152
+  passed**. The live nginx reload/curl is the parent's (exact commands in its receipt). Full
+  `pytest tests/unit` **aborted at 50% by a 420 s terminal clamp, not by a failure** — the receipt
+  says so plainly; the settle run owns the full tally.
+- **Run transparency (L2) — RECEIPT PRESENT, DONE ✅** (`wave-v21/l2-run-transparency/RECEIPT.md`).
+  Its finding is the important half: **`tools_used` is produced but never persisted** — the runtime
+  envelope carries it (`deepseek_runtime.py:1041,1119,1225`), but `usage_from_envelope`, `RunUsage`,
+  `RUN_META_KEYS`, `_apply_run_usage` and the `agent_runs` columns all drop it (provenance probe:
+  every file:line in §0). The frozen interface's honest branch was taken: a NEW `GET
+  /api/v1/runs/{id}` serves the frozen list-row fields **plus `num_turns` / `is_error`** (`null` =
+  not recorded, never 0/false; malformed at-rest JSON → null, row still serves; missing id → named
+  404 `E_NOT_FOUND`). The NEW FE route `/runs/[id]` (`RunDetail.tsx`) renders **“Tool activity: not
+  recorded for this run.”**, the two stored counters, and **zero** chips — an off-contract
+  `tools_used` in a response is ignored, never rendered. Proof: backend RED 7 failed → GREEN 33
+  passed (9 new + 24 U5), broader surface 240 passed; FE 9/9, `tsc` exit 0 (0 bytes); mypy clean on
+  both touched files. **Note:** the detail page has no link from the `/usage` ledger yet —
+  `src/app/usage/page.tsx` is outside L2's territory; navigate by URL until the parent wires it.
+- **Proof depth 2 (L3) — RECEIPT PRESENT, DONE ✅ except the 404 live run** (`wave-v21/l3-proof-depth2/RECEIPT.md`).
+  New `e2e/v21-agent-toolbox.spec.ts` (5 tests) is **GREEN live — 5/5 passed** (22.4 s, then 14.4 s
+  after one assertion-hardening edit: `main`→`body` so the "no No-tools text" check cannot go
+  vacuous), with a RED probe (2 mutated expectations → 2 failed) proving the assertions bite; it pins
+  one capabilities read per roster, collapsed-by-default `TOOLS · N`, panel contents and the
+  registry's own descriptions, Escape focus return, the two distinct honest empty states, and the
+  `UNAVAILABLE` + Retry path. New `e2e/v21-not-found.spec.ts` is **AUTHORED; RED on the stale served
+  FE** (source `not-found.tsx` + L4's receipt exist; the running bundle still serves Next's default
+  404 — re-checked at 08:35) — parent redeploy, then the green run (1 test; both files enumerate 6/2).
+  **Coverage ratchet EARNED:** one CI-exact run measured **92.08%** (`11,678` statements, `925`
+  missed, exit 0) and raised `fail_under` **88 → 90** (`backend/pyproject.toml:58`; pre-image
+  `pre/pyproject.toml.v20`).
+- **UI completeness (L4) — RECEIPT PRESENT, DONE ✅** (`wave-v21/l4-ui-completeness/RECEIPT.md`, 3/3).
+  `frontend/src/app/not-found.tsx` (server segment, testids `not-found` / `not-found-home`, h1 "This
+  page does not exist", Common-surfaces nav) with 5/5 pins and a production build that prerenders
+  `/_not-found` **inside the shell** (20/20 pages, exit 0). The a11y contract of the V20 toolbox is
+  now pinned (4/4, product bytes identical). Item 2 resolved the plan's TaskBoard "marker" honestly:
+  **no TODO/DEBT marker ever existed** — the plan's grep matched the identifier `TODO_STATUSES`, now
+  renamed `OPEN_STATUSES` with a contract comment (53/53 before and after, behaviour unchanged).
+- **Docs + smoke (L5) — DONE at this write** (this lane). `scripts/smoke.sh` is **13 checks**: the
+  new `api-docs` check requires `GET /apidocs` → 200 with a Swagger-UI marker **and**
+  `GET /openapi.json` → 200 with an `openapi` key (through the proxy, or at `--api-base`). Its only
+  SKIPs are `SANDBOX_MODE=false` (docs auto-hidden by design) and a 404 pair when the repo's own
+  `nginx/*.conf` has no `/apidocs` location (a genuine pre-V21 build); once the config has the route,
+  404 is a **FAIL** naming the reload/rebuild. Proven live in this lane: the same script printed
+  `SKIP` at **08:13:29** (no route in the config) and `FAIL api-docs: docs=404 … schema=404` at
+  **08:14:10** (L1's route written at 08:14:08, nginx not yet reloaded), with the original 12 checks
+  unchanged and the dry run still making zero requests. Four shim branches (PASS / no-marker FAIL /
+  shipped-route 404 FAIL / pre-V21 SKIP) are banked in `raw/api-docs-branches.txt`. Docs: README
+  (feature-tour API-docs row, 13-check acceptance, mypy hard-gate CI row), USAGE §7.2 + §7.1 13-check
+  list, DEPENDENCIES §6/§8 + two api-docs troubleshooting rows, RELEASE-CHECKLIST (V21 live-checks),
+  this file (§3f + the §4a ledger). Coverage statements now match `backend/pyproject.toml:58`
+  (`fail_under = 90`, measured 92.08% by L3) — README/USAGE/RELEASE-CHECKLIST still said 87 when this
+  lane opened, and were re-anchored twice as V20's 88 became V21's 90.
+- **Verifier (L6) — SETTLED ✅** (receipt: `wave-v21/v-verify/VERIFY.md`). All five lanes PASS; frozen-tree
+  gate **2715 tests / 0 failed / 0 errors / 13 skipped**, coverage **92.19%** run by the verifier itself;
+  `mypy app` exit 0 (148 files) re-run by the verifier; ruff/jest/tsc clean. No BLOCKER/MAJOR findings.
+
+**Settlement items — closed by the parent after the verifier's report:**
+1. **Parity rows for L2's `/api/v1/runs/{run_id}`** — added by L2 in its own territory (both parity files,
+   declared in its receipt); the verifier saw them green at freeze.
+2. **Smoke pins now name the 13th check** — `CHECK_NAMES` gained `api-docs` (parent, at settle); the
+   shim branches were already banked by L5.
+3. **Served stack was pre-wave** — rebuilt at settle: backend + frontend images, nginx reloaded; `/apidocs`
+   200 (Swagger UI), `/openapi.json` 200 (63 live paths), 404 + run detail live-verified.
+4. **Territory exceptions confirmed by the parent**: `services/phone_send_service.py` (L1 — reassigned by
+   the parent mid-wave), the two parity pins (L2 — the tests mandate the update), the v15 nginx
+   `add_header` count pin 3→6 (L1 — the docs CSP needs its own headers; exact count kept).
+
 ## 4. Open offers / owner decisions (nothing built unasked)
+
+### 4a. Debt-marker ledger — the V21 tree
+
+Measured with the brief's own command
+`grep -rn -E "TODO|FIXME|XXX|HACK|DEBT" backend/app frontend/src` at **2026-10-19 08:19 CDT**
+(raw output banked at `wave-v21/l5-docs-smoke/raw/debt-grep.txt`). **No open, actionable marker
+remains in product source.** The remaining hits, each named and judged:
+
+| # | file:line | text | verdict |
+|---|---|---|---|
+| 1 | `backend/app/agents/integrations.py:41` | `urn:li:person:XXXX` in `_LINKEDIN_HINT` | **not a marker** — a documented example of the LinkedIn author-URN format; `XXXX` matched the `XXX` pattern |
+| 2 | `backend/app/agents/__pycache__/integrations.cpython-312.pyc` | binary match | **build artifact** — the compiled copy of hit 1; excluded by a `--include=*.py` source grep |
+| 3 | `frontend/src/__tests__/v19-fe-contract.test.tsx:13` | `* DEBT HALF (RED-first, each pinned on behaviour):` | **historical test docstring** — labels the V19 debt items this test pins as closed; no open work |
+
+The V21 plan named debt markers in three backend files plus `TaskBoard.tsx`
+(`wave-v21/V21-PLAN.md` item map). On the tree measured above:
+
+- **`backend/app/api/v1/ads.py`** — no `TODO`/`DEBT` token remains. The plan's marker was the
+  `V19/L2 (closes V17/L3-08 + V18 DEBT)` docstring note in `ads_campaign_metrics`; L1 owns the file
+  and the current docstring carries the closure without the ledger word.
+- **`backend/app/schemas/social.py`** — same: the `V17/L3-08/V18 DEBT` note in `AdMetricResponse` is
+  gone from the current tree.
+- **`backend/app/agents/integrations.py`** — no `TODO`/`FIXME`/`DEBT` marker exists at this write;
+  the only hit is the `XXXX` placeholder in row 1. The plan's "marker" here was not a ledger token on
+  this tree, so nothing is claimed closed in this file.
+- **`frontend/src/components/tasks/TaskBoard.tsx`** — no `TODO`/`FIXME`/`XXX`/`HACK`/`DEBT` token
+  remains. L4's receipt settles the plan's item: **no marker ever existed** — the plan's boundary-less
+  grep matched the product identifier `TODO_STATUSES`, which L4 renamed `OPEN_STATUSES` with a
+  contract comment (behaviour identical, 53/53 before and after). The `todo` bucket key remains as
+  product vocabulary.
+
+Re-run the command on the frozen tree at settle: this ledger is only true of the tree it measured.
+
 - **V19 settlement — CLOSED ✅.** All five lanes + verifier PASS; CI green at `c2e1261`; the three
   post-audit fixes (ads-route parity rows · t14 import-time stamp · bridge pre-drain RST) are in the
   commit. One parent follow-up landed with them: the phone export's stamp/filename are now UTC

@@ -40,6 +40,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
 | **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser. **Agents (V20):** the firewalled read-only `phone_read` tool — newest threads + optional per-thread messages, **codes never** (code-shaped bodies withheld), granted to `orchestrator` + `customer_support` only; the running image shows the new grant after the V20 rebuild (USAGE §5.3). See USAGE §5.1–5.3; [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
+| **API docs** | `/apidocs` | *V21* — the API's own **Swagger UI**, proxied by nginx to FastAPI's `/docs` (`/docs` itself stays with the Next app, which has no such page in this tree, so it answers 404). The schema is at `/openapi.json`. Explore/probe any route by hand: each protected operation shows an `X-API-Key` header field — use **Try it out**, paste the owner key, **Execute** (this app declares the key as a header parameter, not a security scheme, so there is no Authorize button). Auto-hidden (404) when `SANDBOX_MODE=false`. Needs the V21 nginx reload; `make smoke`'s `api-docs` check proves both URLs (USAGE §7.2) |
 
 ## How to use it
 
@@ -180,16 +181,16 @@ Fill in the relevant sections of `.env` to activate each integration:
 Things this repository declares or advertises that are **not** yet true, recorded here instead of being
 quietly relaxed. Each one names its measurement.
 
-- **Backend coverage: 87.5% at the V19 base; V20's mid-wave measurement is 86.66% — the floor is 87
-  and stays there.** The base measurement (4,984 of 5,693 statements; `pytest tests/unit tests/parity
+- **Backend coverage: 92.08% on the V21 tree — the floor is 90 and only moves up.** The
+  historical base measurement (4,984 of 5,693 statements; `pytest tests/unit tests/parity
   tests/redteam --cov=app` with the `sysmon` core pinned in `pyproject.toml` — the truthful tracer for
   async route lines, measured by R26/R27/R28; it was 51.48% at the first measurement and 73.0% before
   the R17–R32 hardening waves) **meets the `fail_under = 75` this project originally declared**; the
-  gate is now a **ratchet at the measured floor (87)**, so it only moves up. V20 lane L3 measured
-  **86.66%** (11,631 statements, 1,551 missed; `wave-v20/l3-proof-depth/RECEIPT.md`) — mid-wave, on an
-  unfrozen tree — and therefore **did not earn** a ratchet move: `backend/pyproject.toml` is unchanged
-  (`fail_under = 87`, sha256 `98777917…486ffe`). The parent re-measures on the frozen tree; if the
-  settled tree lands below 87.0, targeted tests are required before commit, not a lowered floor.
+  gate is a **ratchet at the measured floor (90)**, so it only moves up. V20 lane L3 measured
+  **86.66%** mid-wave on an unfrozen tree (not a move); the V20 settle run measured **92.07%** and
+  raised the floor **87 → 88**. V21 lane L3 then measured **92.08%** (11,678 statements, 925 missed;
+  CI's exact command) and raised it **88 → 90** (`backend/pyproject.toml:58` — the single truth). If a
+  future settled tree lands below 90.0, targeted tests are required before commit, not a lowered floor.
 - **The advertised capability that had no producer wired in is now closed (with one named residual).**
   The `ad_campaigns`/`ad_metrics` writers had no callers — an honest 0-with-no-data situation, tracked
   as work, not presented as a working feature. R33 wired them: a completed `ads_management` run
@@ -484,10 +485,16 @@ the frozen `parts[]` shape or a named refusal (a raw 500, or a plain 404 from a 
 FAIL) · `/api/v1/phone/codes?limit=1` answers `data.codes[]` and the check reports a **count only** —
 code values are never printed, even on failure · `/docs` visibility matches `SANDBOX_MODE` in `.env`
 (when the base fronts the Next app at `/docs`, the check reports a named SKIP and tells you to pass
-`--api-base`) · the proxy does not disclose its version in `Server` · the optional **send bridge**
-answers `200 {status:"ok"}` at `$PHONE_SEND_BRIDGE_URL/health` when the URL is exported, and is a
-**named SKIP** when it is not (bridge OFF — the default; never a silent pass) · `backups/` holds a
-dump plus the four volume archives (WARN-only — a fresh clone has none until `make backup`).
+`--api-base`) · the API's own **Swagger UI** answers `GET /apidocs` with a 200 that carries a
+Swagger-UI marker **and** `GET /openapi.json` answers 200 with an `openapi` key (V21; through the
+proxy by default, or at `--api-base` when given — with `SANDBOX_MODE=false` this is a **named SKIP**
+because the API hides its docs by design, and a 404 pair is a named SKIP **only** when the repo's
+`nginx/*.conf` has no `/apidocs` location, i.e. a pre-V21 build; once the config has it, 404 is a
+FAIL naming the reload/rebuild) · the proxy does not disclose its version in `Server` · the optional
+**send bridge** answers `200 {status:"ok"}` at `$PHONE_SEND_BRIDGE_URL/health` when the URL is
+exported, and is a **named SKIP** when it is not (bridge OFF — the default; never a silent pass) ·
+`backups/` holds a dump plus the four volume archives (WARN-only — a fresh clone has none until
+`make backup`).
 
 Its own pins live in `backend/tests/unit/test_v18_smoke_script.py`: static (no write verbs, no `jq`
 dependency, `set -u`, no docker, no traps), a dry run that is executed and must make zero network
@@ -495,6 +502,11 @@ calls, behaviour against a curl shim (missing key fails by name; a raw 500 is ne
 check reports a count and never a value — even on a malformed body; the bridge skips by name when
 unset and fails on `status != ok`, a 5xx, or a scheme-less URL), and a live run that skips with a
 reason when nothing answers.
+
+V21 makes it **13 checks**: the new `api-docs` check above sits beside the original 12, which are
+unchanged. Its route contract is the nginx rule that landed with the same wave (`/apidocs` →
+backend `/docs`; `/openapi.json` → backend schema), so the smoke proves the operator can actually
+reach the docs rather than merely that FastAPI would serve them on a port nobody proxies.
 
 V20 adds **two acceptance surfaces that are not smoke checks**, because neither is a GET on the public
 stack: the `phone_read` agent tool must be exercised **only through the firewalled `execute_tool` path**
@@ -529,7 +541,7 @@ Three GitHub Actions workflows run automatically:
 
 | Workflow | Trigger | Jobs |
 |----------|---------|------|
-| `ci.yml` | PR + push to main | Lint (ruff, mypy, ESLint), unit tests |
+| `ci.yml` | PR + push to main | Lint (ruff, ESLint, and **mypy as a hard gate since V21** — the step carries no `|| true`), unit tests |
 | `integration.yml` | Push to main | Integration tests (testcontainers), Playwright E2E |
 | `docker-build.yml` | Push to main | Build all images, health-check the stack |
 

@@ -107,9 +107,14 @@ describe("Usage — the ledger renders the live GET /runs read", () => {
       "COST",
       "SOURCE",
       "ATTEMPT",
+      "RUN",
     ]) {
       expect(within(rows[0]).getByText(header)).toBeInTheDocument();
     }
+
+    // V21 settle: each ledger row links to its run detail page.
+    const runLink = within(rows[1]).getByRole("link", { name: /Open run \d+/ });
+    expect(runLink).toHaveAttribute("href", expect.stringMatching(/^\/runs\/\d+$/));
 
     expect(within(rows[1]).getByText("Draft October newsletter")).toBeInTheDocument();
     expect(within(rows[1]).getByText("social_media")).toBeInTheDocument();

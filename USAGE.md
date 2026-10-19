@@ -425,8 +425,8 @@ per-agent grant is the honest answer to "which agents can read the phone".
 
 ## 7. Operating safely (what the hardening actually does)
 
-- **Docs auto-hide**: `/docs`, `/redoc`, `/openapi.json` are 404 when `SANDBOX_MODE=false`
-  (production posture); the API root stops advertising them.
+- **Docs auto-hide**: `/docs`, `/redoc`, `/openapi.json` and (through nginx) `/apidocs` are 404 when
+  `SANDBOX_MODE=false` (production posture); the API root stops advertising them.
 - **Loopback bind**: nginx publishes `127.0.0.1:80` only — nothing is on your LAN. Before ever
   publishing this stack beyond localhost: rotate `API_KEY`/`NEXT_PUBLIC_API_KEY` (they must match;
   rebuild the frontend image) — see README "Known gaps" F-02.
@@ -452,38 +452,72 @@ make smoke-dry                                       # print the plan; makes no 
 
 `make smoke` (→ `scripts/smoke.sh`) prints one `PASS <name>: <detail>` / `FAIL <name>: <detail>` line
 per check and exits **0** only when every check passed, **1** when one failed, **2** on a usage
-refusal. It runs **12 checks**: health, the three security headers, the key gate both ways (401
+refusal. It runs **13 checks**: health, the three security headers, the key gate both ways (401
 `E_AUTH`, then a 200 envelope), the sorted capabilities manifest, the phone summary + media surface
 (real store or a **named** refusal — a raw 500 is a FAIL), the key-only **codes** surface (a row
 COUNT, never a code value — even a failure withholds the body), `/docs` against `SANDBOX_MODE`, the
-proxy's `Server` header, the optional **send bridge** (`GET <PHONE_SEND_BRIDGE_URL>/health` must be
-`{status:"ok"}` when the URL is exported; unset is a **named SKIP** — bridge OFF, the default), and
-the backup artifacts. Under `make`, a failed check surfaces as make's own exit 2; the script's
+API's own **Swagger UI + schema** (`/apidocs` must answer 200 with a Swagger-UI marker and
+`/openapi.json` 200 with an `openapi` key — V21; a named SKIP when `SANDBOX_MODE=false` hides them),
+the proxy's `Server` header, the optional **send bridge** (`GET <PHONE_SEND_BRIDGE_URL>/health` must
+be `{status:"ok"}` when the URL is exported; unset is a **named SKIP** — bridge OFF, the default),
+and the backup artifacts. Under `make`, a failed check surfaces as make's own exit 2; the script's
 codes are 0/1/2. The base is `http://127.0.0.1` by default (`SMOKE_ARGS="--base …"` to
 change it); because nginx sends `/docs` to the Next app, pass
 `SMOKE_ARGS="--api-base http://127.0.0.1:8000"` when the API is host-run to check the API's own
-`/docs`.
+`/docs` and `/openapi.json` — the `api-docs` check asks `/docs` at the API itself, because `/apidocs`
+is the proxy-level alias and the backend does not serve that name.
 
 ```bash
 cd backend
 python -m pytest tests/unit -q --cov=app        # the coverage gate (CI runs this exact command)
 ```
 
-The gate is the **ratchet** in `backend/pyproject.toml`: `[tool.coverage.report] fail_under = 87`,
-measured at 87.5461% (4,984 of 5,693 statements) with the `sysmon` core pinned in
-`[tool.coverage.run]`. Coverage is only enforced when `--cov` is passed, so the command above (or
+The gate is the **ratchet** in `backend/pyproject.toml`: `[tool.coverage.report] fail_under = 90`,
+measured at **92.08%** on the V21 tree (11,678 statements, 925 missed; CI's exact command) with the
+`sysmon` core pinned in `[tool.coverage.run]` (87.5461% / 4,984 of 5,693 is the V19-base figure the
+floor first moved up from). Coverage is only enforced when `--cov` is passed, so the command above (or
 CI's coverage step) is the gate; the full measured run also includes `tests/parity tests/redteam`.
-The floor only moves up. **V20 measurement (lane L3, `wave-v20/l3-proof-depth/RECEIPT.md`): 86.66%
-(11,631 statements, 1,551 missed)** — mid-wave, on an unfrozen tree — so the ratchet was **not raised**:
-`backend/pyproject.toml` is byte-identical (`fail_under = 87`, sha256 `98777917…486ffe`). The parent
-re-measures on the frozen tree; if that lands below 87.0, add targeted tests before commit — never
-lower the floor.
+The floor only moves up. **V20's mid-wave 86.66% did not earn a move; the V20 settle 92.07% raised
+87 → 88, and V21 lane L3's 92.08% raised 88 → 90.** If a future settled tree lands below 90.0, add
+targeted tests before commit — never lower the floor.
+
+### 7.2 API docs — the Swagger UI (`/apidocs`, V21)
+
+The API's own interactive reference is at **`http://localhost/apidocs`** (through nginx), with its
+OpenAPI 3 schema at **`http://localhost/openapi.json`**. It is deliberately a different route from
+`/docs`: nginx sends `/docs` to the Next app — which has no `/docs` page in this tree, so it answers
+404 — while `/apidocs` maps onto the backend's existing FastAPI `/docs`. The alias adds no API route,
+so the parity surface is unchanged and the frontend is untouched.
+
+What it is for: exploring and probing any `/api/v1` route by hand — the full parameter list, request
+bodies, response models and the named refusal codes — without reading the source. The page loads its
+JS/CSS from jsDelivr and its favicon from `fastapi.tiangolo.com` (FastAPI's stock template), which is
+why that one location carries its own CSP: jsDelivr is added for script/style only, `unsafe-eval` is
+still not granted, and the schema endpoint keeps the server-scope headers unchanged.
+
+Two honest gates:
+
+- **Auth:** every `/api/v1` route still needs `X-API-Key`. The page renders that header as a parameter
+  on each protected operation — the app declares it with `Header(alias="X-API-Key")` in
+  `backend/app/core/security.py`, so there is **no Authorize button**: use **Try it out**, paste the
+  owner key into the `X-API-Key` field, then **Execute**. The browser sends it per request; the docs
+  page stores nothing server-side.
+- **Sandbox:** with `SANDBOX_MODE=false` the backend registers no docs routes at all (404, and nginx
+  passes that 404 through). Flip to `true` on a local stack to use them; a production 404 here is the
+  designed posture, not a broken deployment.
+
+`make smoke` proves it: the `api-docs` check requires `200` + a Swagger-UI marker from `/apidocs`
+and `200` + an `openapi` key from `/openapi.json`. It is a **named SKIP** when sandbox is off (the
+docs are auto-hidden) or when the running build predates the route, and a **FAIL** once nginx's own
+config carries the route but the proxy was not reloaded — run
+`docker compose exec nginx nginx -s reload` and re-run.
 
 ## 8. Where to learn more
 
 | For | Read |
 |---|---|
 | Feature tour (skimmable) | [README.md](README.md) |
+| Interactive API reference (Swagger UI) | `/apidocs` on a running stack — USAGE §7.2 |
 | Install / troubleshooting | [DEPENDENCIES.md](DEPENDENCIES.md) |
 | Supervision tiers → enforcing code | [docs/SUPERVISION.md](docs/SUPERVISION.md) |
 | Acceptance testing model | [docs/ACCEPTANCE_TESTING.md](docs/ACCEPTANCE_TESTING.md) |
