@@ -53,7 +53,7 @@ import logging
 import os
 import tempfile
 import zipfile
-from datetime import date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,7 @@ from starlette.background import BackgroundTask
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.data import ExportFileResponse
 from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.timeutil import today_utc
 from app.services import phone_link_service as phone
 from app.services import phone_media_service as media
 from app.services import phone_send_service as sends
@@ -312,7 +313,9 @@ def _build_export() -> tuple[Path, dict[str, int]]:
 
     payload = json.dumps(
         {
-            "exported": datetime.now().isoformat(timespec="seconds"),
+            # UTC-aware stamp (V19 handoff from the API-solidity lane): a naive local stamp made
+            # the same export read differently per host timezone.
+            "exported": datetime.now(UTC).isoformat(timespec="seconds"),
             "count": len(messages),
             "messages": messages,
         },
@@ -361,7 +364,7 @@ async def phone_export() -> ExportFileResponse:
     """The archive download — temp file built and counted before the first byte (H-P1)."""
     with refusal_guard():
         path, counts = await asyncio.to_thread(_build_export)
-    filename = f"polsia-phone-export-{date.today().isoformat()}.zip"
+    filename = f"polsia-phone-export-{today_utc().isoformat()}.zip"  # UTC day, not the host's
     return ExportFileResponse(
         path,
         media_type="application/zip",

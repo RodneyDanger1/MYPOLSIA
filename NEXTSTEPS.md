@@ -2,8 +2,8 @@
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
-## 0. Where things stand (as of the V18 close, base `257e20c`; V19 in flight — see §3d)
-- **Landed & committed (pushed):** V1–V16 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
+## 0. Where things stand (as of the V19 close, base `c2e1261`)
+- **Landed & committed (pushed):** V1–V19 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
   agent orchestration, firewalled tool-calling (DeepSeek-first runtime), compliance-gated outreach,
   Stripe billing/webhooks, finance & planning, memory layer, activity feed, ops console, hardened nginx,
   scheduled backups, phone-in-Polsia (live-proven), capability maps, operator docs. V15 base `3972097`;
@@ -11,8 +11,9 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
 - **V16/V17/V18 are closed and committed.** V18 closed at `257e20c` with CI fully green: backend
   **2522 passed / 0 failed / 0 errors / 13 skipped**, integration **11/0/0/0**, jest **698/698 ×2**
   (the V19 plan's base line; `wave-v18/` carries the per-lane evidence).
-- **Wave V19 is in flight** (five writers + verifier). At the time this section was written, lane L5
-  (smoke + docs) had landed; **L1–L4 were still running** — see §3d for the named, unsettled items.
+- **Wave V19 is CLOSED** — all five lanes landed and the riding verifier PASSed every one (its final
+  confirming gate: 2578/0/0/13, matching the parent's independent run); CI all-green at `c2e1261`.
+  Details and the three post-audit fixes are in §3d.
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
@@ -126,10 +127,12 @@ unless `PHONE_SEND_BRIDGE_URL` is set (USAGE §5.2).
   and `server-header` is masked. The remaining `docs` SKIP is the known nginx↔Next `/docs` routing;
   `--api-base` checks the API itself.
 
-## 3d. WAVE V19 — IN FLIGHT (last written by lane L5; **L1–L4 were still running**)
+## 3d. WAVE V19 — SETTLED (all five lanes + verifier; CI green at `c2e1261`)
 
-This section is deliberately split into **settled** and **in flight**. Read the lane receipts under
-`wave-v19/l*/RECEIPT.md` before closing the wave; at this lane's write only `l5-smoke-docs/` exists.
+Lane L5 wrote the first half of this section while L1–L4 were still running; the in-flight markers are
+now resolved below, and the three defects the verifier's frozen-tree gate found (parity rows for the
+wired ads route · the t14 module-import time-bomb · the bridge's pre-drain Windows RST) were fixed
+post-audit and re-verified (see `wave-v19/v-verify/VERIFY.md` and `v-final/SETTLE-NOTES.md`).
 
 - **One-command acceptance extended — SETTLED ✅ (L5).** `scripts/smoke.sh` now runs **12 checks**.
   The two new ones are `phone-codes` (`GET /api/v1/phone/codes?limit=1`; `200 data.codes[N]` with a
@@ -150,28 +153,34 @@ This section is deliberately split into **settled** and **in flight**. Read the 
   smoke/troubleshooting; `README.md` phone row + acceptance paragraph; `RELEASE-CHECKLIST.md` two new
   parent live-checks; `Makefile` smoke comment. Coverage statement re-checked against
   `backend/pyproject.toml` (`fail_under = 87`) — no doc claims a different floor.
-- **Codes panel — IN FLIGHT (L1).** `frontend/src/components/phone/**` + `/phone`: fetch-on-click,
-  mask-last-2/reveal/copy, null media `when`. **No receipt on disk at this write.** The docs describe
-  the frozen V19 behaviour; the parent must not publish the panel until L1's receipt and tests exist.
-- **API solidity sweep — IN FLIGHT (L2).** Envelope/code/header consistency, pagination totals,
-  serialization, uncoded-500 fuzz (work already visible in the tree: `invoices.py`, `timeutil.py`,
-  `company.py`, `tests/unit/test_v19_api_solidity.py`). **No receipt on disk at this write.**
-- **Send bridge — IN FLIGHT (L3).** `scripts/phone_send_bridge.py` **does not exist yet** (checked at
-  this write); `phone_send_service.py` is being modified. The smoke check is honest today because it
-  skips by name when the URL is unset; the docs describe the frozen interface (`POST /send` +
-  `X-Bridge-Token`, `GET /health` → `{status, paired, version}`). **Do not mark the bridge shipped
-  until L3's receipt, the script and its tests are on disk.**
-- **FE↔API contract — IN FLIGHT (L4).** Invoices/feed/anchors conformance + `v19-fe-contract` test.
-  **No receipt on disk at this write.**
+- **Codes panel — SETTLED ✅ (L1).** `PhoneCodesPanel` on `/phone` (fetch-on-click only, mask-last-2,
+  reveal/copy re-masks, null media `when` → "time unknown"); 25 new FE pins; the verifier's independent
+  panel probe 7/7 (idle = zero fetches, one click = one audited GET, zero storage calls).
+- **API solidity sweep — SETTLED ✅ (L2).** Four fixes (uncoded `PUT /config` 500; invoice JSON NaN
+  write/read laundering; `UtcDatetime` across 25 schema fields + `iso_utc()` for exports/CSV; the ads
+  `list_metrics` DEBT **wired** as `GET /api/v1/ads/campaigns/{id}/metrics` — parity rows added by the
+  parent); 68/68 refusal-uniformity probes, totals honesty and the fuzz matrix clean; 18 new pins.
+  Carried cards are listed in §4.
+- **Send bridge — SETTLED ✅ (L3).** `scripts/phone_send_bridge.py` (loopback default, env-only token,
+  constant-time compare, named refusals) + `phone_send_service` transport selection (243/0 diff — the
+  direct path is untouched); 81/81 focused pins; live refusal matrix 9/9 with zero resets (the
+  pre-drain RST the verifier caught was fixed and re-proven); the owner 3-command flow is in USAGE §5.2.
+- **FE↔API contract — SETTLED ✅ (L4).** All 29 FE GETs captured live and fed to the shipped parsers:
+  29 ACCEPTED / 0 MISMATCH (fixtures banked under `__tests__/fixtures/v19/`); three debts closed
+  (invoices Send/Void disabled-with-reason, feed refusal codes, raw anchors → `next/link`); 53/53 pins.
 - **Coverage gate — NOT RUN here (by design).** `fail_under = 87` stays the single truth (measured
   87.5461% at the base: 4,984 of 5,693). This lane's new tests only add coverage; the verifier/parent
   runs `cd backend && pytest tests/unit -q --cov=app` at settle, and the floor only moves up.
 
 ## 4. Open offers / owner decisions (nothing built unasked)
-- **V19 settlement (open):** when this file was written, lanes **L1 (codes panel), L2 (API solidity),
-  L3 (send bridge) and L4 (FE contract) were still in flight** — only L5's receipt exists. Read
-  `wave-v19/l*/RECEIPT.md` + the verifier report before publishing any V19 claim; §3d marks exactly
-  what is settled and what is not.
+- **V19 settlement — CLOSED ✅.** All five lanes + verifier PASS; CI green at `c2e1261`; the three
+  post-audit fixes (ads-route parity rows · t14 import-time stamp · bridge pre-drain RST) are in the
+  commit. One parent follow-up landed with them: the phone export's stamp/filename are now UTC
+  (`phone.py`, previously naive local — L2's handoff).
+- **L2 carried cards (V19 API-solidity findings, ordered-not-built):** ten routes whose bodies are
+  untyped dicts (no OpenAPI schema) · limit-without-total lists · unknown `status=` answers `200 []`
+  on runs/outreach while other routes 422 · two defensive `RuntimeError`s · `pricing.count` is page
+  length, not a true total. Details: `wave-v19/l2-api-solidity/FINDINGS.md`.
 - **E7 carry-forward findings (V15.5 receipts; not yet ordered):** re-arm clears `paused_release` on
   broker acceptance → an accept-then-lost message can strand a `pending` non-scheduler row (only
   `source='scheduler'` rows have the 30-min reconciler net) · `_clear_paused_markers` unlocked

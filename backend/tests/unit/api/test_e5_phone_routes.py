@@ -212,6 +212,8 @@ async def test_codes_window_param_and_audit_on_an_empty_window(
 
 
 async def test_export_streams_a_zip_with_the_three_members(api_client, auth_headers, phone_store):
+    from app.core.timeutil import today_utc
+
     assert phone_store
     resp = await api_client.get("/api/v1/phone/export", headers=auth_headers)
 
@@ -219,11 +221,15 @@ async def test_export_streams_a_zip_with_the_three_members(api_client, auth_head
     assert resp.headers["content-type"] == "application/zip"
     disposition = resp.headers["content-disposition"]
     assert "attachment" in disposition and ".zip" in disposition
+    assert disposition == (
+        f'attachment; filename="polsia-phone-export-{today_utc().isoformat()}.zip"'
+    ), "the filename carries the UTC day (V19: naive local dates made the same export vary by host)"
 
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
         assert sorted(archive.namelist()) == ["calls.csv", "contacts.json", "messages.json"]
         messages = json.loads(archive.read("messages.json"))
         assert messages["count"] == len(messages["messages"]) == 10
+        assert messages["exported"].endswith("+00:00"), "the exported stamp is UTC-aware"
         assert {"when", "dir", "who", "text", "thread_id"} <= set(messages["messages"][0])
         calls = list(csv.reader(io.StringIO(archive.read("calls.csv").decode("utf-8"))))
         assert calls[0] == ["when", "type", "who", "number", "duration_s"]
