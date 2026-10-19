@@ -1,8 +1,8 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V17)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V18)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
-## 0. Where things stand (as of the V16 close; V17 in flight — see §3b)
+## 0. Where things stand (as of the V17 close; V18 in flight — see §3c)
 - **Landed & committed (pushed):** V1–V16 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
   agent orchestration, firewalled tool-calling (DeepSeek-first runtime), compliance-gated outreach,
   Stripe billing/webhooks, finance & planning, memory layer, activity feed, ops console, hardened nginx,
@@ -81,7 +81,7 @@ one audit row per attempt; the live send is owner-gated (see `USAGE.md` §5 Send
 - **Gate at V16 close:** backend 0F/0E, ruff + mypy clean, FE jest ×2, `tsc` 0, `next build` 0,
   and **CI (`ci.yml`, `integration.yml`, `docker-build`) fully green** at `a002100`.
 
-## 3b. WAVE V17 — IN FLIGHT (this section is updated by the release-ops lane)
+## 3b. WAVE V17 — CLOSED (base `27a353e`; details in `wave-v17/`)
 - **Restore drill — NEW, executed ✅.** `scripts/restore.sh` + `make restore-drill SRC=backups` prove a
   backup restores: one throwaway `postgres:16-alpine` container (`polsia-restore-drill-pg`, **no
   published ports**, never the compose project), dump loaded into a fresh `polsia` database, public
@@ -95,6 +95,28 @@ one audit row per attempt; the live send is owner-gated (see `USAGE.md` §5 Send
   full-stack restore) stay with the parent/owner.
 - **Docs truth pass.** Phone + capabilities are stated as **live (V16)** with the real-store drill
   citation; `make restore-drill` is documented in README/USAGE/DEPENDENCIES.
+
+## 3c. WAVE V18 — IN FLIGHT (this section is updated by the release-ops lane)
+- **One-command acceptance — NEW, executed ✅.** `scripts/smoke.sh` + `make smoke` (and
+  `make smoke-dry`) are the release checklist as one GET/HEAD-only command: health, the three
+  security headers, the key gate both ways (401 `E_AUTH`, then 200 envelope), the sorted
+  capabilities manifest, phone summary + media (real store or a NAMED refusal — a raw 500 and a
+  plain 404 are FAILs), `/docs` against `SANDBOX_MODE`, the proxy `Server` header, and the backup
+  artifacts. One `PASS/FAIL <name>: <detail>` line per check; exit 0/1 (2 = usage refusal). The key
+  is read from the environment only and never printed. Pins:
+  `backend/tests/unit/test_v18_smoke_script.py` (14: static + executed dry run + curl-shim
+  behaviour + a live run that skips with a reason). Live run 2026-10-18: 8 PASS / 1 named SKIP
+  (docs at the nginx base) / 2 named FAIL (`phone-media` absent from the running image until the
+  V18 media lane is built; `server-header` `nginx/1.31.6`).
+- **Coverage ratchet — verified coherent ✅ (gate NOT run here).** `fail_under = 87` in
+  `backend/pyproject.toml` is the single truth (measured 87.5461%, 4,984 of 5,693, `core = "sysmon"`);
+  the "75" that survives in comments/README is named only as the *original declared* target, now met.
+  The gate command is `cd backend && python -m pytest tests/unit -q --cov=app` (what CI runs); the
+  full measured run also spans `tests/parity tests/redteam`. The full run stays parent/verifier-owned.
+- **HANDOFF — nginx discloses its version.** `Server: nginx/1.31.6` on every proxied response
+  (`server_tokens` defaults to `on`; no `server_tokens` line exists in `nginx/nginx.conf`). Fix: add
+  `server_tokens off;` at `http{}` scope and reload nginx, then `make smoke` turns that check green.
+  Not applied by the V18 release-ops lane (outside its territory).
 
 ## 4. Open offers / owner decisions (nothing built unasked)
 - **E7 carry-forward findings (V15.5 receipts; not yet ordered):** re-arm clears `paused_release` on

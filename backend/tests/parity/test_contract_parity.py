@@ -54,6 +54,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/phone/calls"),
     ("GET", "/api/v1/phone/codes"),
     ("GET", "/api/v1/phone/export"),
+    # wave V18 (L2): the media surface — list a thread's parts, stream one part's bytes.
+    ("GET", "/api/v1/phone/media"),
+    ("GET", "/api/v1/phone/media/{part_id}"),
     # wave V17 (L2): the policy-gated SEND route — documented by app/api/v1/phone.py and
     # tests/unit/api/test_v17_phone_send.py; refusals by name, audit row per attempt.
     ("POST", "/api/v1/phone/send"),

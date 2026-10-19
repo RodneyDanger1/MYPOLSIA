@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore restore-drill
+.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore restore-drill smoke smoke-dry
 
 up:
 	docker-compose up -d
@@ -120,3 +120,19 @@ restore:
 # absent, or a container with that name already exists).  DRY=1 prints the plan and touches nothing.
 restore-drill:
 	@sh scripts/restore.sh --src "$${SRC:-backups}" $${DRY:+--dry-run}
+
+# `make smoke` is the ONE-COMMAND acceptance for a RUNNING stack: scripts/smoke.sh issues GET/HEAD
+# requests only — health, the three security headers, the key gate both ways (401 E_AUTH without a
+# key, 200 envelope with it), the sorted capabilities manifest, the phone summary + media surface
+# (real store or a NAMED refusal, never a raw 500), /docs against SANDBOX_MODE, the proxy's Server
+# header, and the backup artifacts — and prints one named `PASS/FAIL <check>: <detail>` line each.
+# Exit 0 = every check passed, 1 = a check failed, 2 = usage refusal.  It never writes and never
+# touches the compose project.  The key comes from the ENVIRONMENT ($API_KEY by default), never
+# from `.env`: `export API_KEY=…` first (an inline assignment lands in shell history).
+#   make smoke                                            # base http://127.0.0.1
+#   make smoke SMOKE_ARGS="--api-base http://127.0.0.1:8000"   # check the API's own /docs too
+smoke:
+	@sh scripts/smoke.sh $${SMOKE_ARGS:-}
+
+smoke-dry:
+	@sh scripts/smoke.sh --dry-run

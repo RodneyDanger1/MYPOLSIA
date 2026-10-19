@@ -101,6 +101,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/phone/codes", ("GET",)),                            # key-only + activity_log audit row per call
     ("/api/v1/phone/export", ("GET",)),                           # application/zip: messages.json + calls.csv + contacts.json
     ("/api/v1/phone/messages", ("GET",)),
+    # wave V18 (L2): the media surface — list a thread's attachment parts + stream one part's bytes
+    # from the real store (documented by app/api/v1/phone.py + tests/unit/api/test_v18_phone_media.py).
+    ("/api/v1/phone/media", ("GET",)),
+    ("/api/v1/phone/media/{part_id}", ("GET",)),
     # wave V17 (L2): the policy-gated SEND composer's route — sandbox / unpaired / unavailable /
     # validation refuse by name; one activity_log row per attempt; documented by
     # app/api/v1/phone.py + tests/unit/api/test_v17_phone_send.py.

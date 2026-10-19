@@ -27,12 +27,16 @@ export type DataTableProps<R> = {
   rowKey: (row: R) => string;
   empty: ReactNode;
   footer?: ReactNode;
+  /** Accessible name for the table. Rendered as a visually-hidden `<caption>` so every
+   *  DataTable surface is announced by what it lists, not as an unnamed "table". */
+  label?: string;
 };
 
-export function DataTable<R>({ columns, rows, rowKey, empty, footer }: DataTableProps<R>) {
+export function DataTable<R>({ columns, rows, rowKey, empty, footer, label }: DataTableProps<R>) {
   return (
     <>
       <table className="w-full border-collapse text-left">
+        {label === undefined ? null : <caption className="sr-only">{label}</caption>}
         <thead>
           <tr className="border-b border-line">
             {columns.map((column) => (

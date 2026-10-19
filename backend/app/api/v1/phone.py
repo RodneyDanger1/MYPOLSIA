@@ -6,6 +6,9 @@ THE CONTRACT (frozen before this module was written)
     GET /api/v1/phone/messages?limit&thread_id&q     -> {messages[{when,dir,who,text,thread_id}]}
     GET /api/v1/phone/calls?limit&missed_only        -> {calls[{when,type,who,num_masked,dur_s}]}
     GET /api/v1/phone/codes?within_hours             -> {codes[{when,from,code,snippet}]}
+    GET /api/v1/phone/media?thread_id                -> {parts[{part_id, content_type, size_bytes,
+                                                          when, thread_id}], truncated}
+    GET /api/v1/phone/media/{part_id}                -> the attachment's BYTES (binary route)
     GET /api/v1/phone/export                         -> application/zip download
     POST /api/v1/phone/send                          -> {sent_at, to_masked, driver}
         body {"to": "<thread_id | E.164 digits>", "body": "1..640 chars"}; sandbox / unpaired /
@@ -54,14 +57,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Response
+from fastapi import Path as PathParam
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.data import ExportFileResponse
-from app.core.errors import E_STORAGE, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
 from app.services import phone_link_service as phone
+from app.services import phone_media_service as media
 from app.services import phone_send_service as sends
 from app.services.activity_service import log_activity
 
@@ -143,6 +148,56 @@ async def phone_codes(
     return {"ok": True, "data": {"codes": rows}}
 
 
+# ── media ────────────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/media")
+async def phone_media_list(
+    thread_id: int = Query(..., ge=1),
+    limit: int = Query(media.MEDIA_LIST_LIMIT, ge=1, le=media.MEDIA_LIST_LIMIT),
+) -> dict[str, Any]:
+    """One thread's newest attachments: `{parts[{part_id, content_type, size_bytes, when,
+    thread_id}], truncated}` — cap 50, and `truncated` NAMES the cap instead of hiding it.
+
+    `thread_id` is required: media is only meaningful in the context of who sent it, and a global
+    "every attachment on the phone" listing is not a surface this product offers.  The join is the
+    MEASURED one (`mms_part.message_id -> mms.message_id -> mms.thread_id`, 1844/1844 resolved on
+    the real store) — see `services/phone_media_service`.
+
+    `limit` may NARROW the window (L4 renders 24 thumbnails at a time) but never widen it past
+    `MEDIA_LIST_LIMIT`: a higher value is a coded 422 from the Query bound, not a silent clamp.
+    An unknown thread answers `parts: []` — the store was read and holds nothing; that is honest,
+    and distinguishable from the 503 an absent store raises.
+    """
+    with refusal_guard():
+        data = await asyncio.to_thread(media.media_parts, thread_id=thread_id, limit=limit)
+    return {"ok": True, "data": data}
+
+
+@router.get("/media/{part_id}")
+async def phone_media_bytes(part_id: int = PathParam(..., ge=1)) -> Response:
+    """One attachment's BYTES — 200 binary, or a named refusal with the product's envelope.
+
+    The whole blob is verified (declared size == stored byte count, within the 25 MiB cap) BEFORE
+    the response object exists, so a refusal is always a clean coded JSON answer and a 200 is
+    always a complete, byte-exact download.  There is no StreamingResponse and no temp file here
+    on purpose: the measured largest part is ~2.2 MiB, so a bounded in-memory read is smaller
+    than the machinery a partial-body risk would buy.
+
+    `Content-Type` comes from the part row (sanitized; fallback `application/octet-stream`) and
+    `Content-Disposition` from `part_id` + a fixed extension map — never from the row's `name`.
+    This route answers HEADERS, not an envelope: the `{"ok": ...}` shape exists on the JSON route
+    only, exactly as the plan froze it.
+    """
+    with refusal_guard():
+        part = await asyncio.to_thread(media.read_part, part_id)
+    return Response(
+        content=part.data,
+        media_type=part.content_type,
+        headers={"Content-Disposition": part.disposition()},
+    )
+
+
 # ── send ────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -191,26 +246,51 @@ async def _audit_send_attempt(
 
 @router.post("/send")
 async def phone_send(
-    payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_db)
+    payload: Any = Body(None), db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     """Send one SMS through the owner's paired Google Messages web session.
 
-    The body is read as a plain dict (not a pydantic model) on purpose: every validation mistake
-    must answer the app's own named `E_VALIDATION` envelope AND leave an audit row, which FastAPI's
-    request-validation handler cannot do (it answers before the route body runs).
+    THE BODY IS TYPED `Any` + `Body(None)` ON PURPOSE (V-12).  Every validation mistake must answer
+    the app's own named `E_VALIDATION` envelope, carry `X-Polsia-Error-Code`, AND leave one audit
+    row — and a `dict`/`Body(...)` annotation defeats all three: FastAPI then rejects a non-object
+    body (`[]`, `"x"`, `42`, `null`) — and an ABSENT body — BEFORE this function runs, with the
+    framework's uncoded `{"detail": [...]}` 422 and ZERO audit rows, so the attempt is invisible in
+    `activity_log`.  Measured at HEAD in `tests/unit/api/test_v18_phone_media.py` (RED leg).
 
-    Ordering is the service's: sandbox -> validation -> driver present -> subprocess. Refusals are
-    raised as CODED `HTTPException`s (`sends.http_refusal`) so `E_PHONE_SEND_UNPAIRED` keeps its 409
-    without a `core/errors.py` edit; `main.py`'s coded handler supplies the envelope and header.
+    DEVIATION FROM THE PLAN'S LITERAL SIGNATURE, recorded in the lane RECEIPT: the plan wrote
+    `payload: Any = Body(...)`; `Body(None)` is that same parameter made OPTIONAL so a `null` or
+    absent body reaches the route instead of the framework handler.  The frozen RESPONSE contract
+    is unchanged (`E_VALIDATION` 422 + envelope + header); the only behavioural delta is that those
+    two input classes are now audited like every other attempt instead of vanishing.
+
+    Ordering after the shape check is the service's: sandbox -> validation -> driver present ->
+    subprocess. Refusals are raised as CODED `HTTPException`s (`sends.http_refusal`) so
+    `E_PHONE_SEND_UNPAIRED` keeps its 409 without a `core/errors.py` edit; `main.py`'s coded handler
+    supplies the envelope and header.
     """
     with refusal_guard():
         outcome: sends.SendResult | None = None
         refusal: PolsiaError | None = None
-        try:
-            outcome = await sends.send(payload.get("to"), payload.get("body"))
-        except PolsiaError as exc:
-            refusal = exc
-        await _audit_send_attempt(db, payload, outcome, refusal)
+        body: dict[str, Any] | None = payload if isinstance(payload, dict) else None
+        if body is None:
+            received = (
+                "null" if payload is None else "array" if isinstance(payload, list)
+                else type(payload).__name__
+            )
+            refusal = PolsiaError(
+                E_VALIDATION,
+                f"the request body must be a JSON OBJECT with `to` and `body` (received JSON {received})",
+                how_to_fix='send {"to": "<thread_id | E.164 digits>", "body": "1..640 chars"}',
+                context={"received_type": received},
+            )
+        else:
+            try:
+                outcome = await sends.send(body.get("to"), body.get("body"))
+            except PolsiaError as exc:
+                refusal = exc
+        # One row per attempt, ALWAYS — a non-object body has no target, so `mask_target(None)`
+        # yields "" and the row still names the code (V-12).
+        await _audit_send_attempt(db, body or {}, outcome, refusal)
         if refusal is not None:
             raise sends.http_refusal(refusal) from refusal
         assert outcome is not None

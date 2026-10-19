@@ -114,6 +114,7 @@ function CountTable({ counts }: { counts: Record<string, number> | null }) {
   const rows = Object.entries(counts);
   return (
     <DataTable
+      label="Database tables and their row counts"
       columns={[
         { key: "table", header: "Table", render: (row: [string, unknown]) => row[0] },
         {

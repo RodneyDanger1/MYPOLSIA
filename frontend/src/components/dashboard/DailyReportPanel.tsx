@@ -105,6 +105,7 @@ export function DailyReportPanel() {
             type="button"
             className="ui-label text-link hover:underline"
             aria-expanded={docsOpen}
+            aria-haspopup="dialog"
             onClick={() => setDocsOpen(true)}
           >
             VIEW ALL

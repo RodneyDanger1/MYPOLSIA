@@ -117,8 +117,14 @@ def test_crash_between_claim_and_send_never_resends(queue_db, mock_redis, monkey
         raise RuntimeError("worker crashed mid-send (v11-f5 test)")
 
     monkeypatch.setattr(invoice_service, "deliver_invoice_email", _crash)
-    with pytest.raises(RuntimeError):
-        _run(queue_db, date(2026, 11, 7))  # due - 3: the pre_due step is owed
+    # V18/L1 (L3-07) DELIBERATE RE-PIN: this RuntimeError used to escape the tick, aborting every
+    # remaining invoice.  The contract is now "record the step's named failure, keep processing"
+    # (`dunning._dun_one`'s uncoded-exception branch).  The crash-window contract THIS test exists
+    # for — the claim stays pending, the step is never re-sent, the window is named — is unchanged.
+    crashed = _run(queue_db, date(2026, 11, 7))  # due - 3: the pre_due step is owed
+    (failure,) = crashed["errors"]
+    assert failure["step"] == "pre_due" and failure["invoice_id"] == invoice_id
+    assert failure["code"] == "E_DUNNING_STEP_FAILED"
 
     (claim,) = _claims(queue_db)
     assert claim["detail"]["state"] == "pending"

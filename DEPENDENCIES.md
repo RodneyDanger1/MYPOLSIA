@@ -70,7 +70,13 @@ wsl --status                      # WSL2 installed
 docker --version && docker compose version
 make --version
 curl http://localhost/api/v1/health
+make smoke                        # the full GET-only acceptance (needs $API_KEY exported)
 ```
+
+`make smoke` is the one-command gate: health, security headers, the 401/200 key gate, capabilities,
+phone summary + media, `/docs` vs `SANDBOX_MODE`, the proxy `Server` header, and the backup
+artifacts — one named PASS/FAIL line each, exit 0 only when all pass. `make smoke-dry` prints the
+plan without making a request. It never writes and never starts/stops a service.
 
 ## 7) Troubleshooting quick table
 
@@ -86,6 +92,8 @@ curl http://localhost/api/v1/health
 | `/api/v1/phone/*` answers 503 `E_PHONE_UNAVAILABLE` | Phone Link store not mounted / empty (the phone feature, live since V16) | set `PHONE_LINK_DB_DIR` to the store root and `docker compose up -d`; keep the Phone Link app running for fresh sync (`PHONELINK-MCP-TEST.md`) |
 | `make restore-drill` exits 2 with `REFUSED: a container named "polsia-restore-drill-pg" already exists` | a previous drill was interrupted before its trap could tear down | `docker rm -f polsia-restore-drill-pg`, then re-run; the script never reuses or replaces an existing container |
 | `make restore-drill` exits 2 with `docker is not available on PATH` | Docker Desktop not running / CLI not on PATH | start Docker Desktop; verify `docker ps` works in the same shell |
+| `make smoke` reports `FAIL auth-200: no key in $API_KEY` | the key is read from the **environment** only (never `.env`) | `export API_KEY=…` in the same shell, then re-run; `make smoke-dry` shows whether the key is present |
+| `make smoke` reports `FAIL server-header: Server: nginx/x.y.z` | nginx advertises its version (`server_tokens` defaults to `on`) | add `server_tokens off;` at `http{}` scope in `nginx/nginx.conf`, then `docker compose exec nginx nginx -s reload` |
 
 ## 8) CI parity (what GitHub Actions installs)
 

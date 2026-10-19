@@ -50,7 +50,9 @@ stores (no cloud, no third-party service, no phone-app installation):
   name (`E_PHONE_UNAVAILABLE`, 503)** when the mount/store is absent — never fabricates.
 - **P-02** routes (key-auth, `{ok, data}` envelope, coded refusals):
   `GET /api/v1/phone/summary` · `GET /api/v1/phone/messages?limit&thread_id` ·
-  `GET /api/v1/phone/calls?limit&missed_only` · `GET /api/v1/phone/codes?within_hours` (key-only +
+  `GET /api/v1/phone/calls?limit&missed_only` · `GET /api/v1/phone/media?thread_id` (attachment list,
+  cap 50 + `truncated`) · `GET /api/v1/phone/media/{part_id}` (binary stream, real Content-Type +
+  `phone-part-<id>.<ext>` filename) · `GET /api/v1/phone/codes?within_hours` (key-only +
   audit-logged) · `GET /api/v1/phone/export` (streaming zip: messages.json, calls.csv, contacts.json +
   `Content-Disposition` filename).
 - **P-03** a ≤5-minute maintenance-style tick publishes "SMS received: <who>" / "Missed call: <who>"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { TaskCard } from "./TaskCard";
 import type { TaskRow } from "./types";
@@ -98,12 +98,14 @@ function TaskColumn({
   // count stays visible in BOTH states. Live evidence only shows the expanded state, so the
   // collapsed contract is ours and is pinned here.
   const [collapsed, setCollapsed] = useState(false);
+  const bodyId = useId();
   return (
     <section data-group={group.key} className="min-w-0">
       <header className="flex items-center gap-2 border-b border-line pb-1">
         <button
           type="button"
           aria-expanded={!collapsed}
+          aria-controls={collapsed ? undefined : bodyId}
           onClick={() => setCollapsed((current) => !current)}
           className="ui-label flex items-center gap-1 text-ink"
         >
@@ -113,7 +115,7 @@ function TaskColumn({
         <span className="ui-label ml-auto text-ink-muted">{group.rows.length}</span>
       </header>
       {collapsed ? null : (
-        <div className="mt-2 max-h-[70vh] space-y-[14px] overflow-y-auto pr-1">
+        <div id={bodyId} className="mt-2 max-h-[70vh] space-y-[14px] overflow-y-auto pr-1">
           {group.rows.length === 0 ? (
             <p className="ui-label text-ink-muted">None</p>
           ) : (

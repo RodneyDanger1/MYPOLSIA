@@ -86,7 +86,11 @@ export function FinanceListPanel<T>({
 
       {rows !== null && rows.length > 0 ? (
         <>
-          <table className="w-full border-collapse text-left" data-testid={`${testId}-table`}>
+          <table
+            aria-label={title}
+            className="w-full border-collapse text-left"
+            data-testid={`${testId}-table`}
+          >
             <thead>
               <tr className="border-b border-line">
                 {columns.map((column) => (

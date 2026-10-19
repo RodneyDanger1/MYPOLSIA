@@ -284,7 +284,9 @@ path:
   resolution; **refuses by name** (`E_PHONE_UNAVAILABLE`, 503) when the mount/store is absent —
   never fabricates.
 - **Routes** (key-auth, `{ok,data}` envelope): `GET /api/v1/phone/summary` · `…/messages?limit&
-  thread_id` · `…/calls?limit&missed_only` · `…/codes?within_hours` (**key-only + audit-logged** —
+  thread_id` · `…/calls?limit&missed_only` · `…/media?thread_id` (**attachment list**, cap 50 with an
+  honest `truncated`) · `…/media/{part_id}` (**binary stream** — real Content-Type + download filename
+  `phone-part-<id>.<ext>`) · `…/codes?within_hours` (**key-only + audit-logged** —
   it exists for auth flows) · `…/export` (streaming zip: messages.json, calls.csv, contacts.json).
 - **Visibility:** a ≤5-minute tick publishes "SMS received: …" / "Missed call: …" into the activity
   feed (dedupe by kind+id — a re-run publishes nothing twice); dashboard **Phone** card + `/phone`
@@ -334,6 +336,39 @@ never fabricated rows).
   when neither mechanism applies. No secret is ever logged or returned by the API.
 - **Strict edges**: unknown config keys → 422 naming the key; malformed timestamps → 422 naming the
   field; money columns refuse NaN/Inf; dirty DB rows refuse by name.
+
+### 7.1 Gates you can run yourself
+
+Two commands cover "is this release healthy": one proves the running stack, the other proves the
+tests. Both are read-only.
+
+```bash
+export API_KEY=<the key the stack was booted with>   # environment only — never `.env`, never inline
+make smoke                                           # GET/HEAD acceptance; exit 0 = all checks pass
+make smoke-dry                                       # print the plan; makes no request
+```
+
+`make smoke` (→ `scripts/smoke.sh`) prints one `PASS <name>: <detail>` / `FAIL <name>: <detail>` line
+per check and exits **0** only when every check passed, **1** when one failed, **2** on a usage
+refusal. It checks health, the three security headers, the key gate both ways (401 `E_AUTH`, then a
+200 envelope), the sorted capabilities manifest, the phone summary + media surface (real store or a
+**named** refusal — a raw 500 is a FAIL), `/docs` against `SANDBOX_MODE`, the proxy's `Server` header,
+and the backup artifacts. Under `make`, a failed check surfaces as make's own exit 2; the script's
+codes are 0/1/2. The base is `http://127.0.0.1` by default (`SMOKE_ARGS="--base …"` to
+change it); because nginx sends `/docs` to the Next app, pass
+`SMOKE_ARGS="--api-base http://127.0.0.1:8000"` when the API is host-run to check the API's own
+`/docs`.
+
+```bash
+cd backend
+python -m pytest tests/unit -q --cov=app        # the coverage gate (CI runs this exact command)
+```
+
+The gate is the **ratchet** in `backend/pyproject.toml`: `[tool.coverage.report] fail_under = 87`,
+measured at 87.5461% (4,984 of 5,693 statements) with the `sysmon` core pinned in
+`[tool.coverage.run]`. Coverage is only enforced when `--cov` is passed, so the command above (or
+CI's coverage step) is the gate; the full measured run also includes `tests/parity tests/redteam`.
+The floor only moves up.
 
 ## 8. Where to learn more
 

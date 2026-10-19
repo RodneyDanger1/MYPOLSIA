@@ -131,6 +131,7 @@ export default function UsagePage() {
 
         {!loading && error === null && data !== null ? (
           <DataTable<RunsRow>
+            label="Usage runs"
             columns={LEDGER_COLUMNS}
             rows={data.items}
             rowKey={(row) => String(row.id)}

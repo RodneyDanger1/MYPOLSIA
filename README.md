@@ -38,7 +38,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads) |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package |
-| **Phone** | `/phone` | *Live (V16)* — texts/calls/codes + archive download, plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation; send is served by the host-run API — see USAGE §5 Send); see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
+| **Phone** | `/phone` | *Live (V16)* — texts/calls/codes + media (photos/attachments stream from the store) + archive download, plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation; send is served by the host-run API — see USAGE §5 Send); see [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 
 ## How to use it
@@ -255,6 +255,8 @@ make test            # Run unit + integration tests
 make test-unit       # Unit tests only
 make lint            # Ruff + mypy + ESLint
 make reset-db        # Drop and recreate schema
+make smoke           # GET-only acceptance against the running stack (named PASS/FAIL, exit code)
+make smoke-dry       # Print the smoke plan; no request is made
 ```
 
 Without Docker there is a separate target set — `make dev-backend` (the venv + local SQLite backend,
@@ -454,6 +456,36 @@ second stack proves the *app*. Never against the live project:
 4. Boot it: `docker compose -p scratch up -d`.
 5. Smoke: `curl -fsS http://localhost/api/v1/health` returns `{"status":"ok"}`, and ONE dashboard
    page renders real restored rows (not the empty state).
+
+### One-command acceptance (`make smoke`)
+
+`scripts/smoke.sh` is the release checklist as one command. It issues **GET/HEAD requests only** —
+nothing is written, no service is started or stopped, and the compose project is never touched — and
+prints one named line per check (`PASS <name>: <detail>` / `FAIL <name>: <detail>`), exiting 0 only
+when every check passed (1 = a check failed, 2 = usage refusal; through `make`, a failed check
+surfaces as make's own exit 2).
+
+```bash
+export API_KEY=<the same key the stack was booted with>   # environment, never `.env`, never inline
+make smoke                                                # base http://127.0.0.1
+make smoke SMOKE_ARGS="--api-base http://127.0.0.1:8000"  # also check the API's own /docs
+make smoke-dry                                            # print the plan, make no request
+```
+
+What it proves: `/api/v1/health` is exactly `{"status":"ok"}` · `/` carries CSP +
+`X-Frame-Options` + `nosniff` · a protected route answers **401 `E_AUTH` without a key** and a 200
+envelope with it · `/api/v1/ops/capabilities` has agents (>0) in sorted order · `/api/v1/phone/summary`
+is either real (`store_status=ok`) or a **named** 503, and `/api/v1/phone/media?thread_id=…` returns
+the frozen `parts[]` shape or a named refusal (a raw 500, or a plain 404 from a missing route, is a
+FAIL) · `/docs` visibility matches `SANDBOX_MODE` in `.env` (when the base fronts the Next app at
+`/docs`, the check reports a named SKIP and tells you to pass `--api-base`) · the proxy does not
+disclose its version in `Server` · `backups/` holds a dump plus the four volume archives (WARN-only —
+a fresh clone has none until `make backup`).
+
+Its own pins live in `backend/tests/unit/test_v18_smoke_script.py`: static (no write verbs, no `jq`
+dependency, `set -u`, no docker, no traps), a dry run that is executed and must make zero network
+calls, behaviour against a curl shim (missing key fails by name; a raw 500 is never green), and a
+live run that skips with a reason when nothing answers.
 
 ### Data export & wipe
 

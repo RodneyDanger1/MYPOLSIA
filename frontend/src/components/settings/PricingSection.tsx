@@ -172,6 +172,7 @@ export function PricingSection() {
           ) : null}
 
           <DataTable
+            label="Pricing snapshot"
             columns={[
               { key: "service", header: "Service", render: (row: PricingRow) => row.service },
               {

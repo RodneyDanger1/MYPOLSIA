@@ -64,7 +64,9 @@ export function NewTaskDialog({
   const agentFieldId = useId();
   const descriptionFieldId = useId();
   const priorityFieldId = useId();
+  const priorityErrorId = useId();
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const [title, setTitle] = useState("");
   const [agentType, setAgentType] = useState("");
@@ -118,11 +120,37 @@ export function NewTaskDialog({
       style={{ backgroundColor: SCRIM }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         onKeyDown={(e) => {
-          if (e.key === "Escape") onClose();
+          if (e.key === "Escape") {
+            onClose();
+            return;
+          }
+          // Tab is trapped inside the modal: focus must not walk into the page behind it.
+          if (e.key !== "Tab") return;
+          const panel = dialogRef.current;
+          if (!panel) return;
+          const focusables = Array.from(
+            panel.querySelectorAll<HTMLElement>(
+              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
+          if (focusables.length === 0) return;
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          const active = document.activeElement;
+          if (e.shiftKey) {
+            if (active === first || !panel.contains(active)) {
+              e.preventDefault();
+              last.focus();
+            }
+          } else if (active === last || !panel.contains(active)) {
+            e.preventDefault();
+            first.focus();
+          }
         }}
         className="card-surface my-4 w-full max-w-[560px] shadow-2xl"
       >
@@ -145,6 +173,7 @@ export function NewTaskDialog({
                 ref={titleInputRef}
                 id={titleFieldId}
                 type="text"
+                aria-required="true"
                 maxLength={512}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -159,6 +188,7 @@ export function NewTaskDialog({
               </label>
               <select
                 id={agentFieldId}
+                aria-required="true"
                 value={agentType}
                 onChange={(e) => setAgentType(e.target.value)}
                 className={INPUT_CLASS}
@@ -196,10 +226,12 @@ export function NewTaskDialog({
                 step={1}
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
+                aria-invalid={priorityValid ? undefined : true}
+                aria-describedby={priorityValid ? undefined : priorityErrorId}
                 className={INPUT_CLASS}
               />
               {priorityValid ? null : (
-                <p role="alert" className="mt-1 text-xs text-alert">
+                <p id={priorityErrorId} role="alert" className="mt-1 text-xs text-alert">
                   Priority must be a whole number — clear it to use the server&rsquo;s default (3).
                 </p>
               )}

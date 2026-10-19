@@ -287,11 +287,14 @@ def create_app() -> FastAPI:
         # (http://localhost:3000) describes — same-origin nginx deployments never needed them.
         # V7-T07: X-Polsia-Row-Count (runs export, app/api/v1/runs.py) joins the list so a
         # cross-origin client reads the declared total under the same contract as the rest.
+        # V18 (V18-05): Content-Disposition joins so a cross-origin JS download can read the
+        # server's own filename (phone media parts; same-origin clients already saw it).
         expose_headers=[
             "X-Polsia-Error-Code",
             "X-Request-ID",
             "X-Response-Time-ms",
             "X-Polsia-Row-Count",
+            "Content-Disposition",
         ],
     )
 

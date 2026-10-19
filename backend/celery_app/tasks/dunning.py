@@ -70,6 +70,13 @@ CLAIM_STATE_REFUSED = "refused"
 DUNNING_LOCAL_HOUR = 8
 #: The named-refusal record (warning level) — never silent about a refused tick.
 DUNNING_REFUSAL_ACTION = "invoice_dunning_refused"
+#: L3-07 (V18): the named-failure record (error level) for one step that raised a NON-`PolsiaError`.
+#: The step's claim stays `pending` (at-most-once: the provider may have seen the message), but
+#: the failure is durable and named instead of aborting the remaining invoices.
+DUNNING_ERROR_ACTION = "invoice_dunning_error"
+#: The code that failure carries — this module's named failure, the `E_RUN_ARTIFACTS_PERSIST_FAILED`
+#: precedent (`celery_app/tasks/agent_tasks.py:202`).
+DUNNING_STEP_FAILED_CODE = "E_DUNNING_STEP_FAILED"
 #: The offset (days past due) at which a still-`sent` invoice is factually overdue.
 PAST_DUE_FLIP_AT_DAYS = 5
 
@@ -237,11 +244,17 @@ async def _dun_one(
     sent: list[dict[str, Any]],
     refused: list[dict[str, Any]],
     consumed: dict[int, set[str]] | None = None,
+    errors: list[dict[str, Any]] | None = None,
 ) -> None:
     """One invoice, one session: re-read state, fire at most ONE owed step, commit the ledger.
 
     `consumed` is the tick's ONCE-read consumed-steps map (F16/V12-W-C); a direct call without
     it still reads the ledger for itself (the per-invoice fallback keeps single calls honest).
+
+    `errors` (L3-07/V18) is the tick's named-failure sink: a NON-`PolsiaError` raised inside the
+    send step is recorded there (and in `invoice_dunning_error`) instead of escaping and killing
+    the remaining invoices.  The step's claim stays `pending` — the at-most-once rule is
+    unchanged: an unknown failure never re-sends.
     """
     from app.services.invoice_service import deliver_invoice_email, transition_invoice
 
@@ -328,6 +341,53 @@ async def _dun_one(
             )
             await db.commit()  # the refusal record + the released claim are durable
             return
+        except Exception as exc:  # noqa: BLE001 — L3-07: one invoice must not kill the ladder
+            # An UNCODED failure inside the step.  Never a fabricated outcome and never a
+            # whole-tick abort: the exception is logged with its traceback, the step is named as
+            # failed in the tick's result and in a durable error row, and the ladder continues
+            # with the next invoice.  The claim stays `pending` (at-most-once: the provider may
+            # have seen the message; the next tick names the window in `unfinalized_claims`).
+            failure = {
+                "invoice_id": invoice_id,
+                "number": invoice.number,
+                "step": step.key,
+                "code": DUNNING_STEP_FAILED_CODE,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+            logger.exception(
+                "dunning: %s for invoice %s failed with an uncoded %s",
+                step.key,
+                invoice.number,
+                type(exc).__name__,
+            )
+            if errors is not None:
+                errors.append(failure)
+            # Release this connection's read transaction BEFORE the fresh write below (SQLite
+            # would otherwise hold a SHARED lock against the error row's INSERT/COMMIT).
+            await db.rollback()
+            try:
+                async with session_factory() as err_db:
+                    await log_activity(
+                        err_db,
+                        "finance",
+                        DUNNING_ERROR_ACTION,
+                        summary=(
+                            f"Dunning {step.key} for invoice {failure['number']} failed "
+                            f"unexpectedly: {failure['message']}"
+                        ),
+                        level="error",
+                        detail={
+                            **failure,
+                            "superseded": superseded,
+                            "claim_state": CLAIM_STATE_PENDING,
+                        },
+                    )
+                    await err_db.commit()
+            except Exception:  # noqa: BLE001 — recording the failure must not re-abort the tick
+                logger.exception(
+                    "dunning: could not record the uncoded failure for invoice %s", invoice_id
+                )
+            return
         flipped_to: str | None = None
         if step.offset_days >= PAST_DUE_FLIP_AT_DAYS and invoice.status is InvoiceStatus.SENT:
             await transition_invoice(db, invoice, InvoiceStatus.OVERDUE)
@@ -383,6 +443,7 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
     session_factory = get_session_factory()
     sent: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
     async with session_factory() as db:
         open_ids = await fetch_scalars(
@@ -411,20 +472,36 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
             if isinstance(row.detail, dict) and row.detail.get("state") == CLAIM_STATE_PENDING
         ]
     for invoice_id in open_ids:
-        await _dun_one(
-            session_factory,
-            int(invoice_id),
-            today,
-            sent=sent,
-            refused=refused,
-            consumed=consumed,
-        )
+        try:
+            await _dun_one(
+                session_factory,
+                int(invoice_id),
+                today,
+                sent=sent,
+                refused=refused,
+                consumed=consumed,
+                errors=errors,
+            )
+        except Exception as exc:  # noqa: BLE001 — L3-07: never abort the remaining invoices
+            # The send-step guard lives in `_dun_one`; this catches a failure in the re-read or
+            # the claim write, which would otherwise end the tick before the later invoices ran.
+            logger.exception("dunning: invoice %s failed before its step could be dispatched", invoice_id)
+            errors.append(
+                {
+                    "invoice_id": int(invoice_id),
+                    "number": None,
+                    "step": None,
+                    "code": DUNNING_STEP_FAILED_CODE,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
     result: dict[str, Any] = {
-        "status": "completed" if (sent or refused) else "no_due",
+        "status": "completed" if (sent or refused or errors) else "no_due",
         "date": today.isoformat(),
         "sent": sent,
         "refused": refused,
+        "errors": errors,
         "unfinalized_claims": unfinalized,
         "steps": [step.key for step in DUNNING_STEPS],
     }
@@ -434,9 +511,11 @@ async def _run_dunning(now: datetime | None = None) -> dict[str, Any]:
 
 __all__ = [
     "DUNNING_ACTION",
+    "DUNNING_ERROR_ACTION",
     "DUNNING_LOCAL_HOUR",
     "DUNNING_REFUSAL_ACTION",
     "DUNNING_STEPS",
+    "DUNNING_STEP_FAILED_CODE",
     "PAST_DUE_FLIP_AT_DAYS",
     "DunningStep",
     "compose_dunning_email",

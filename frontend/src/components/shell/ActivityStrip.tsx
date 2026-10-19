@@ -161,6 +161,7 @@ export function ActivityStrip() {
   const titleId = useId();
   const logButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -311,13 +312,39 @@ export function ActivityStrip() {
           }}
         >
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
             data-testid="activity-log"
             className="card-surface my-4 flex w-full max-w-[637px] flex-col shadow-2xl"
             onKeyDown={(e) => {
-              if (e.key === "Escape") closeOverlay();
+              if (e.key === "Escape") {
+                closeOverlay();
+                return;
+              }
+              // Tab is trapped inside the modal: focus must not walk into the page behind it.
+              if (e.key !== "Tab") return;
+              const panel = dialogRef.current;
+              if (!panel) return;
+              const focusables = Array.from(
+                panel.querySelectorAll<HTMLElement>(
+                  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+                ),
+              ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
+              if (focusables.length === 0) return;
+              const first = focusables[0];
+              const last = focusables[focusables.length - 1];
+              const active = document.activeElement;
+              if (e.shiftKey) {
+                if (active === first || !panel.contains(active)) {
+                  e.preventDefault();
+                  last.focus();
+                }
+              } else if (active === last || !panel.contains(active)) {
+                e.preventDefault();
+                first.focus();
+              }
             }}
           >
             <header className="flex items-center gap-2 border-b border-line px-4 py-2">

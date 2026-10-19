@@ -28,8 +28,12 @@ python -m pytest tests/unit tests/redteam tests/parity -q   # → 0 failed / 0 e
 ```
 - [ ] Full backend suite green with the expected tally (junit xml attached to the wave receipt);
       skipped count named (testcontainers tests skip without Docker — integration runs in CI).
-- [ ] Coverage gate holds: `python -m pytest tests/unit -q --cov=app` ≥ the ratchet in
-      `pyproject.toml` (`fail_under`).
+- [ ] Coverage gate holds: `cd backend && python -m pytest tests/unit -q --cov=app` ≥ the ratchet in
+      `backend/pyproject.toml` — `[tool.coverage.report] fail_under = 87`, measured at 87.5461%
+      (4,984 of 5,693) with `core = "sysmon"` in `[tool.coverage.run]`. The config is the single
+      truth; the V18 release-ops lane verified it is coherent (no stale "75" target — that number is
+      only named as the project's *original* declared target, now met) and did **not** run the gate.
+      The full run stays parent/verifier-owned. Evidence: `wave-v18/l5-smoke-release/raw/coverage-grep.txt`.
 - Executed locally in V17 (L5): `ruff check tests/unit/test_v17_restore_script.py` → "All checks
   passed!" (`wave-v17/l5-release-ops/out/checklist-2-5-gates.txt`). `mypy app/`, the full pytest run
   and the coverage ratchet are **UNRUN in this lane** — the verifier runs them once for the wave.
@@ -106,6 +110,19 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       compose project; never published a port.
       Evidence: `wave-v17/l5-release-ops/out/restore-drill-real.txt` + `cleanup-proof.txt`.
       The optional full-stack boot (README "Restore drill", steps 1–5) remains a parent live-check.
+- [x] **One-command acceptance (`make smoke`)** — executed 2026-10-18 against the live stack
+      (`GET`/`HEAD` only): **8 PASS** (health `{"status":"ok"}`; CSP + `SAMEORIGIN` + `nosniff`;
+      401 `E_AUTH` without a key; 200 envelope with it, 20 items; capabilities `agents=10
+      sorted=True registry_tools=3`; phone `store_status=ok unread=54 threads=10`; backup artifacts
+      1 dump + 4/4 archives), **1 named SKIP** (`/docs` is served by the Next app at the nginx base —
+      `--api-base` checks the API itself), **2 named FAIL**: `phone-media` (the route is absent from
+      the running image — L2 lands it this wave; rebuild, then re-run) and `server-header`
+      (`Server: nginx/1.31.6` — nginx discloses its version; **HANDOFF** to the nginx owner:
+      `server_tokens off;` at `http{}` scope, then reload). Exit 1 from the script (make reports a
+      failed recipe as exit 2), as designed.
+      Evidence: `wave-v18/l5-smoke-release/raw/live-smoke.txt`; pins
+      `backend/tests/unit/test_v18_smoke_script.py` (14 tests: 13 shim/static + 1 live).
+      **Re-run `make smoke` at settle**, after the backend image is rebuilt with the V18 media route.
 
 ## 6. V16 feature drills
 - [x] **Phone (fixture):** with an E5-style fixture store mounted via `PHONE_LINK_DB_DIR`,

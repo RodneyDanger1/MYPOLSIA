@@ -19,6 +19,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
@@ -67,6 +68,15 @@ async def get_daily_report(db: AsyncSession, report_date: date) -> DailyReport |
 async def get_or_create_daily_report(db: AsyncSession, report_date: date) -> DailyReport:
     """Idempotent: the same report_date always yields the same row/id.
 
+    L3-09 (V18): the read-then-insert was a TOCTOU window — two concurrent ticks both saw
+    `None` and both inserted, and the loser's `flush()` raised an uncoded IntegrityError out of
+    the task.  The DB guarantee is `daily_reports.report_date UNIQUE` (model + migration
+    `0001_initial_schema.py:249`); this function now LOSES the race by design: the insert runs
+    inside a SAVEPOINT, an IntegrityError rolls the savepoint back (the caller's transaction
+    survives, so nothing else in the tick is lost), and the winner's row is re-read and
+    returned.  A constraint failure with NO visible row is re-raised — never a fabricated
+    report.
+
     Flushes (so `.id` is populated) but never commits - the caller owns the
     transaction.
     """
@@ -75,8 +85,19 @@ async def get_or_create_daily_report(db: AsyncSession, report_date: date) -> Dai
         return existing
 
     report = DailyReport(report_date=report_date)
-    db.add(report)
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            db.add(report)
+            await db.flush()
+    except IntegrityError:
+        # Another writer inserted this day's row between our read and our flush.  The savepoint
+        # rollback discards OUR insert; theirs is the answer.
+        if report in db:
+            db.expunge(report)
+        winner = await get_daily_report(db, report_date)
+        if winner is None:
+            raise
+        return winner
     return report
 
 

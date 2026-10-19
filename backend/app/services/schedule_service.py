@@ -17,8 +17,10 @@ What this module owns, and the rules it is the ONE definition of:
   deterministic and documented.  A `once` schedule's `next_run_at` clears to None once the tick
   has fired it (no fabricated repeat).
 * **The pause rule** — `enabled=false` IS the pause: the tick skips the row; disabling CLEARS
-  `next_run_at` and enabling recomputes it from the wall clock, so a resume never fires a child for
-  a window that passed while the schedule was paused.
+  `next_run_at` and a REAL false->true enable recomputes it from the wall clock, so a resume never
+  fires a child for a window that passed while the schedule was paused.  Re-sending
+  `{"enabled": true}` on an already-enabled row changes nothing and leaves its pending instant
+  exactly as it was (a no-op save must not skip a due run).
 * **`claim_due_schedules`** — the tick's one selection: every ENABLED row whose `next_run_at` is
   due (`<= now`, bound for the active dialect).  Every due row is validated BEFORE anything is
   advanced (a malformed stored value refuses `E_CONFIG` with the row and range named, and the tick
@@ -256,10 +258,11 @@ async def update_schedule(
 ) -> TaskSchedule:
     """Apply ONLY the provided fields (the route passes `model_dump(exclude_unset=True)`).
 
-    The pause rule: disabling clears `next_run_at`; enabling recomputes it from the wall clock;
-    changing cadence/hour/weekday on an enabled row recomputes it too (a name- or prompt-only edit
-    leaves the pending instant alone — INCLUDING a consumed `once` row's None: only a semantics
-    field re-arms).  An unknown key is refused `E_VALIDATION` before the row is
+    The pause rule: disabling clears `next_run_at`; a REAL false->true enable recomputes it from
+    the wall clock (re-sending `enabled: true` on an enabled row is a no-op and leaves the pending
+    instant — including one already due — untouched); changing cadence/hour/weekday on an enabled
+    row recomputes it (a name- or prompt-only edit leaves the pending instant alone — INCLUDING a
+    consumed `once` row's None: only a semantics field re-arms).  An unknown key is refused `E_VALIDATION` before the row is
     read; `weekday: null` clears the column (only legal for the cadences that do not use it).
     """
     unknown = set(changes) - UPDATABLE_FIELDS
@@ -268,6 +271,7 @@ async def update_schedule(
             "changes", sorted(unknown), f"only {sorted(UPDATABLE_FIELDS)} may be updated"
         )
     row = await get_schedule(db, schedule_id)
+    was_enabled = bool(row.enabled)
     cadence = changes.get("cadence", row.cadence)
     hour = changes.get("hour", row.hour)
     weekday = changes.get("weekday", row.weekday)
@@ -284,7 +288,16 @@ async def update_schedule(
         # F4 (V11/W2): only a SEMANTICS change re-arms.  The removed `or row.next_run_at is None`
         # fallback re-armed a consumed `once` schedule (tick-cleared None) on ANY edit, so a
         # prompt tweak silently fired the one-shot again.
-        if set(changes) & _SCHEDULE_SEMANTICS_FIELDS:
+        #
+        # L3-05 (V18): `enabled` is a semantics field only when it CHANGES.  Re-sending
+        # `{"enabled": true}` on an already-enabled row is a NO-OP SAVE, and recomputing there
+        # discarded a pending due instant (a schedule already due today was pushed to its next
+        # occurrence, skipping today's run).  A real false->true transition still re-arms from
+        # the wall clock (the pause/resume rule above).
+        semantics = set(changes) & _SCHEDULE_SEMANTICS_FIELDS
+        if was_enabled:
+            semantics.discard("enabled")
+        if semantics:
             row.next_run_at = compute_next_run(
                 row.cadence, row.hour, row.weekday, now=now or now_utc(), tz=company_tz()
             )

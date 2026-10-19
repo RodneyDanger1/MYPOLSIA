@@ -16,6 +16,7 @@ import {
   isPhoneUnavailable,
   parseCalls,
   parseMessages,
+  parseRefusalBody,
   parseSummary,
   parseThreadParam,
   phoneErrorText,
@@ -27,6 +28,7 @@ import {
   type PhoneSendResult,
 } from "./phoneApi";
 import { PhoneUnavailable } from "./PhoneStates";
+import { PhoneMediaSection } from "./PhoneMedia";
 import { usePhoneRead } from "./usePhoneRead";
 
 /**
@@ -35,6 +37,8 @@ import { usePhoneRead } from "./usePhoneRead";
  *   GET /api/v1/phone/summary                          -> threads index + the page's gate state
  *   GET /api/v1/phone/messages?limit&thread_id         -> recent window, or one thread's window
  *   GET /api/v1/phone/calls?limit&missed_only          -> calls list, filterable
+ *   GET /api/v1/phone/media?thread_id=N                -> per-thread media grid (V18)
+ *   GET /api/v1/phone/media/{part_id}                  -> one streamed part (viewer/download)
  *   GET /api/v1/phone/export                           -> streaming ZIP download (below)
  *
  * What is deliberately NOT here: no poll loop (the store is read-only in this deployment and the
@@ -64,26 +68,8 @@ import { usePhoneRead } from "./usePhoneRead";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost";
 
-/** The refusal carried by a response body, in the shapes `lib/api.ts` parses (the `{ok:false,…}`
- *  envelope and FastAPI's `{detail:{…}}`) — the same module-local mirror `SitePackageSection` and
- *  `ExportButton` carry, for the same reason: the api client is JSON-only and exports neither
- *  this parser nor a blob mode (adding one is a REQUEST for that file's owner). */
-function refusalOf(body: unknown): { code: string; message: string; howToFix: string } | null {
-  if (!body || typeof body !== "object") return null;
-  const b = body as { ok?: unknown; error?: unknown; detail?: unknown };
-  const candidate =
-    b.ok === false && b.error !== null && typeof b.error === "object"
-      ? (b.error as Record<string, unknown>)
-      : b.detail !== null && typeof b.detail === "object"
-        ? (b.detail as Record<string, unknown>)
-        : null;
-  if (!candidate || typeof candidate.code !== "string") return null;
-  return {
-    code: candidate.code,
-    message: typeof candidate.message === "string" ? candidate.message : candidate.code,
-    howToFix: typeof candidate.how_to_fix === "string" ? candidate.how_to_fix : "",
-  };
-}
+/** The refusal carried by a response body is parsed by `phoneApi.parseRefusalBody` — the SAME
+ *  parser the media stream uses (one refusal vocabulary for every raw-fetch surface). */
 
 /** The server's own save name out of `Content-Disposition` (quoted and unquoted forms). An
  *  unrecognisable header falls back to `phone-export.zip` — a stated fallback name, never an
@@ -198,7 +184,7 @@ export function PhoneConsole() {
         } catch {
           parsed = undefined;
         }
-        const refusal = refusalOf(parsed);
+        const refusal = parseRefusalBody(parsed);
         throw refusal
           ? new ApiError(res.status, refusal.message, refusal.code, refusal.howToFix, parsed)
           : new ApiError(res.status, text || res.statusText, `E_HTTP_${res.status}`);
@@ -303,7 +289,9 @@ export function PhoneConsole() {
                   type="text"
                   data-testid="phone-send-to"
                   aria-label="Send to: a thread id or E.164 digits"
-                  placeholder="thread id or +15550104477"
+                  aria-invalid={sendError !== null ? true : undefined}
+                  aria-describedby={sendError !== null ? "phone-send-error" : undefined}
+                  placeholder="thread id or +155****4477"
                   value={sendTo}
                   onChange={(event) => {
                     setSendTo(event.target.value);
@@ -317,6 +305,8 @@ export function PhoneConsole() {
                 <textarea
                   data-testid="phone-send-body"
                   aria-label="Message body"
+                  aria-invalid={sendError !== null ? true : undefined}
+                  aria-describedby={sendError !== null ? "phone-send-error" : undefined}
                   rows={3}
                   maxLength={SEND_BODY_MAX}
                   value={sendBody}
@@ -363,6 +353,7 @@ export function PhoneConsole() {
             {sendError !== null ? (
               <div
                 key={`phone-send-error-${sendAttempts}`}
+                id="phone-send-error"
                 role="alert"
                 data-testid="phone-send-error"
                 className="border border-alert bg-surface p-3"
@@ -448,13 +439,13 @@ export function PhoneConsole() {
             ) : null}
 
             {messagesRead.kind === "ok" && trimmedQuery !== "" && filtered.length > 0 ? (
-              <p data-testid="phone-search-note" className="ui-label text-ink-muted">
+              <p role="status" data-testid="phone-search-note" className="ui-label text-ink-muted">
                 Filtering the loaded window: {filtered.length} of {loaded.length} messages match “
                 {query}”.
               </p>
             ) : null}
             {messagesRead.kind === "ok" && trimmedQuery !== "" && filtered.length === 0 ? (
-              <p data-testid="phone-search-empty" className="ui-label text-ink-muted">
+              <p role="status" data-testid="phone-search-empty" className="ui-label text-ink-muted">
                 No loaded messages match “{query}”.
               </p>
             ) : null}
@@ -489,6 +480,8 @@ export function PhoneConsole() {
               </ul>
             ) : null}
           </section>
+
+          <PhoneMediaSection threadId={threadId} />
 
           <section aria-label="Phone calls" className="space-y-2">
             <SectionHeader

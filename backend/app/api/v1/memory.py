@@ -2,7 +2,7 @@
 
 `?q=` is semantic search (ChromaDB) with a keyword fallback inside the service;
 `?category=&limit=` is the plain list.  Every refusal from `memory_service`
-(`E_VALIDATION` on an empty query, `E_STORAGE` when a write cannot be indexed or a
+(`E_VALIDATION` on a supplied-but-empty query, `E_STORAGE` when a write cannot be indexed or a
 delete cannot remove the document, `E_NOT_FOUND` for an unknown id, `E_DB` when
 nothing can be read) reaches the client as that named refusal.
 
@@ -30,7 +30,11 @@ async def read_memory(
     limit: int = Query(default=20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> list[MemoryItem]:
-    if q:
+    # L3-06 (V18): the docstring's `E_VALIDATION` on an empty query is reachable only for a
+    # SUPPLIED `q`.  The old falsy `if q:` sent `?q=` down the unfiltered-list branch, so the
+    # documented refusal never fired; `q is not None` makes the contract true by name (an empty
+    # or whitespace query is refused inside `search_memory`, an ABSENT `q` is the plain list).
+    if q is not None:
         with refusal_guard():
             hits = await search_memory(db, q, n_results=limit, category=category)
         return [MemoryItem.model_validate(hit) for hit in hits]

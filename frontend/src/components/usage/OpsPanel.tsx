@@ -218,6 +218,7 @@ export function OpsPanel() {
 
         {!quality.loading && quality.error === null && quality.data !== null ? (
           <DataTable<OpsQualityRow>
+            label="Agent quality by agent"
             columns={QUALITY_COLUMNS}
             rows={quality.data.agents}
             rowKey={(row) => row.agent_type}

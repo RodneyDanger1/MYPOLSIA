@@ -281,3 +281,141 @@ export function parseThreadParam(raw: string | null): number | null {
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
+
+/* ── the MEDIA surface (wave V18, frozen: list + stream) ─────────────────────────────────── */
+
+/** The list route's own cap — the service returns at most this many parts, newest window. */
+export const MEDIA_CAP = 50;
+
+/** The client's inline-preview ceiling. Above it a part is offered as a DOWNLOAD with the size
+ *  stated, because auto-fetching a hundreds-of-megabytes blob into an object URL would stall the
+ *  tab — the store's own `size_bytes` is what this compares, never an estimate. */
+export const MEDIA_PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
+
+/** One media part — `GET /phone/media?thread_id=N` → `data.parts[]`, field for field. `when` is the
+ *  store's own timestamp string and renders VERBATIM (this client has no clock authority). */
+export type PhoneMediaPart = {
+  part_id: number;
+  content_type: string;
+  size_bytes: number;
+  when: string;
+  thread_id: number;
+};
+
+/** `GET /phone/media?thread_id=N` → `data`. `truncated` is the service's own statement that the
+ *  thread holds more parts than the 50 it returned; it is rendered by name, never inferred. */
+export type PhoneMediaList = {
+  parts: PhoneMediaPart[];
+  truncated: boolean;
+};
+
+/** Validates the media list `data`; every failed check names the exact field (a string `part_id`
+ *  must never render as a row). */
+export function parseMediaList(data: unknown): PhoneMediaList {
+  if (!isRecord(data)) fail("media", "an object body");
+  const { parts, truncated } = data as Record<string, unknown>;
+  if (!Array.isArray(parts)) fail("media", "a parts array");
+  if (typeof truncated !== "boolean") fail("media", "a boolean truncated");
+  const parsed = parts.map((row): PhoneMediaPart => {
+    if (!isRecord(row)) fail("media", "object media part rows");
+    if (typeof row.part_id !== "number") fail("media", "a numeric part_id");
+    if (typeof row.content_type !== "string") fail("media", "a string content_type");
+    if (typeof row.size_bytes !== "number") fail("media", "a numeric size_bytes");
+    if (typeof row.when !== "string") fail("media", "a string when");
+    if (typeof row.thread_id !== "number") fail("media", "a numeric thread_id");
+    return {
+      part_id: row.part_id,
+      content_type: row.content_type,
+      size_bytes: row.size_bytes,
+      when: row.when,
+      thread_id: row.thread_id,
+    };
+  });
+  return { parts: parsed, truncated };
+}
+
+/** Byte count in the UI's KB/MB voice — one decimal, the unit chosen by the real value. A
+ *  non-finite/negative size is "size unknown" (never a fabricated 0). */
+export function mediaSizeText(sizeBytes: number): string {
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return "size unknown";
+  if (sizeBytes < 1024) return `${Math.round(sizeBytes)} B`;
+  const kb = sizeBytes / 1024;
+  // 1023.95 KB would round to "1024.0 KB"; the honest unit there is MB.
+  if (kb < 1023.95) return `${kb.toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The store's `when`, or the stated placeholder when it carries no time — never an invented one. */
+export function mediaWhenText(when: string): string {
+  return when.trim() === "" ? "time unknown" : when;
+}
+
+/** Does this part render as an inline image? */
+export function isImageType(contentType: string): boolean {
+  return /^image\//i.test(contentType);
+}
+
+/** Does this part render as inline audio? */
+export function isAudioType(contentType: string): boolean {
+  return /^audio\//i.test(contentType);
+}
+
+/** The extension the server's own `phone-part-<id>.<ext>` contract uses, for the fallback name
+ *  when a `Content-Disposition` header is absent (the bytes are still the server's). */
+const MEDIA_EXTENSIONS: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "audio/mp4": "m4a",
+  "audio/mpeg": "mp3",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "audio/webm": "weba",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+};
+
+/** The save name for one part: the server's `Content-Disposition` filename when it sent one, else
+ *  the stated `phone-part-<id>.<ext>` fallback (unknown types save as `.bin`). */
+export function mediaFilename(
+  disposition: string | null,
+  partId: number,
+  contentType: string,
+): string {
+  if (disposition) {
+    const match = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition);
+    if (match && match[1].trim() !== "") return match[1].trim();
+  }
+  const base = contentType.split(";")[0].trim().toLowerCase();
+  return `phone-part-${partId}.${MEDIA_EXTENSIONS[base] ?? "bin"}`;
+}
+
+/** The refusal carried by a response body, in the shapes `lib/api.ts` parses (the `{ok:false,…}`
+ *  envelope and FastAPI's `{detail:{…}}`). Exported because the media stream is a raw blob fetch
+ *  (`lib/api.ts` is JSON-only by construction) and must read refusals exactly like the export
+ *  download does. */
+export function parseRefusalBody(body: unknown): { code: string; message: string; howToFix: string } | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as { ok?: unknown; error?: unknown; detail?: unknown };
+  const candidate =
+    b.ok === false && b.error !== null && typeof b.error === "object"
+      ? (b.error as Record<string, unknown>)
+      : b.detail !== null && typeof b.detail === "object"
+        ? (b.detail as Record<string, unknown>)
+        : null;
+  if (!candidate || typeof candidate.code !== "string") return null;
+  return {
+    code: candidate.code,
+    message: typeof candidate.message === "string" ? candidate.message : candidate.code,
+    howToFix: typeof candidate.how_to_fix === "string" ? candidate.how_to_fix : "",
+  };
+}
+
+/** One refusal in the same `code: message — how_to_fix` voice `ApiError.display` uses. */
+export function refusalText(refusal: { code: string; message: string; howToFix: string }): string {
+  return refusal.howToFix
+    ? `${refusal.code}: ${refusal.message} — ${refusal.howToFix}`
+    : `${refusal.code}: ${refusal.message}`;
+}

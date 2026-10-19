@@ -13,6 +13,7 @@ from decimal import Decimal
 import pytest
 
 from app.core.database import utcnow
+from app.core.timeutil import today_utc
 from app.models.company import CompanyConfig
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.report import DailyReport
@@ -39,9 +40,11 @@ async def test_planning_is_null_honest_on_an_empty_database(api_client, auth_hea
     assert "margin_template.human_rate" in body["reasons"]
     # the dated-snapshot provenance rides every catalog-derived response (owner amendment)
     assert body["catalog_as_of"] == "2026-10-14"
-    expected_stale = (date.today() - date(2026, 10, 14)).days >= 180
+    expected_stale = (today_utc() - date(2026, 10, 14)).days >= 180
     assert body["stale"] is expected_stale
-    assert body["staleness_days"] == (date.today() - date(2026, 10, 14)).days
+    # UTC-anchored: the app computes provenance in UTC; a local `date.today()` here flips the
+    # assertion for every run between 00:00 and 07:00 UTC (19:00+ CDT). Measured red 2026-10-18.
+    assert body["staleness_days"] == (today_utc() - date(2026, 10, 14)).days
 
 
 @pytest.mark.asyncio
@@ -110,7 +113,7 @@ def test_pricing_guardrails_price_the_three_antipatterns():
 
 @pytest.mark.asyncio
 async def test_cash_block_rides_the_daily_report_null_honest(api_client, auth_headers, async_db_session):
-    async_db_session.add(DailyReport(report_date=date.today()))
+    async_db_session.add(DailyReport(report_date=today_utc()))  # UTC anchor — the API reads UTC days
     await async_db_session.commit()
 
     resp = await api_client.get("/api/v1/dashboard/reports/daily", headers=auth_headers)
@@ -129,7 +132,7 @@ async def test_cash_block_rides_the_daily_report_null_honest(api_client, auth_he
 
 @pytest.mark.asyncio
 async def test_cash_block_measured_readings(api_client, auth_headers, async_db_session):
-    today = date.today()
+    today = today_utc()  # UTC anchor — the cash block reads UTC-dated rows
     async_db_session.add(DailyReport(report_date=today))
     async_db_session.add(RevenueSnapshot(snapshot_date=today, stripe_balance_cents=12345))
     async_db_session.add(ExpenseRecord(date=today, category="tools", vendor="n8n", amount_cents=4000, currency="usd"))

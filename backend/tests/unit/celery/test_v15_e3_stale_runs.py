@@ -126,11 +126,24 @@ def test_stale_run_closes_fresh_stays_and_second_tick_is_a_noop(queue_db):
     assert by_id[fresh_id]["status"] == "running", "the fresh row is still untouched"
 
 
-def test_measured_cost_keeps_counting_against_the_day_cap(queue_db):
+def test_measured_cost_keeps_counting_against_the_day_cap(queue_db, monkeypatch):
     """A stale run whose cost WAS recorded keeps it — and the day cap still sees it."""
+    from app.core.timeutil import today_utc, utc_day_bounds
+    from celery_app.tasks import maintenance
     from celery_app.tasks._common import day_spend_by_agent
 
-    cost_id = _seed_run(queue_db, seconds_ago=3 * 3600, cost_usd=Decimal("1.2500"))
+    # DETERMINISTIC at any wall-clock hour: the run must be BOTH stale (older than the sweep's
+    # window) AND inside today's UTC day.  With the shipped 2h window those two are mutually
+    # impossible between 00:00 and 02:00 UTC (19:00–21:00 CDT) — measured red 2026-10-18.  So:
+    # seed just after UTC midnight and narrow the sweep's window for this test (the 2h default is
+    # pinned by its own test; here the mechanics are what matter).
+    start, _ = utc_day_bounds(today_utc())
+    elapsed = (datetime.now(UTC) - start).total_seconds()
+    if elapsed < 60:
+        pytest.skip("first minute of the UTC day — a run cannot be both stale and inside today")
+    monkeypatch.setattr(maintenance, "AGENT_RUN_STALE_AFTER_SECONDS", 30)
+    seconds_ago = elapsed - 5  # started ~5 s after the UTC day began => stale (>30 s) and today
+    cost_id = _seed_run(queue_db, seconds_ago=seconds_ago, cost_usd=Decimal("1.2500"))
 
     async def _spend() -> tuple[float, dict[str, float]]:
         async with queue_db.factory() as db:
