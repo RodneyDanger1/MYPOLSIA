@@ -624,6 +624,20 @@ is ONE root (`settings.code_workspace_dir`), not a per-run subdirectory; generat
 only (no cloud deploy); the browser daemon timed out while capturing `/sites`, so that page's proof is
 HTTP + DOM (200, title, script-free) rather than a screenshot.
 
+**V24b (post-settle 2026-10-19) — the two truth-shape 500s L6 measured outside its row, now fixed:**
+- `GET /dashboard/summary` with a LIST-shaped `company_config.kpis` (legal in `jsonb`) answered an
+  uncoded 500 from the response model; it now reads the cell as absent (`{}` + WARNING). Live-checked
+  on PostgreSQL: a list at rest → **200**, `kpis: {}`, dashboard still serving.
+- ONE malformed `tasks.metadata` cell (SQLite TEXT path; `jsonb` cannot hold malformed bytes) took the
+  whole task list down with `JSONDecodeError`; `TolerantJSON` (a `JSON` subclass registered as a
+  SQLite dialect colspec) now reads junk as absent with a WARNING. Schema identity unchanged
+  (`str(col.type) == "JSON"`, DDL frozen), so the schema pin stays truthful.
+- New pins: `tests/unit/test_v24b_truth_500s.py` (RED-first: `ValidationError` / `JSONDecodeError` at
+  base). Gate after the fix: **2,905 / 0 failed / 0 errors / 13 skipped**.
+- **Still open (V25):** `ad_metrics.revenue_usd` is `NUMERIC NOT NULL DEFAULT 0`, so a measured zero
+  cannot be distinguished from unknown (L4's documented deviation); fixing it needs migration `0013`
+  (nullable columns + `0 → NULL` backfill) and writer/API/FE alignment.
+
 - **API_KEY rotation** (F-02 residual): the loopback bind (`127.0.0.1:80`) removes the measured network
   exposure, so rotation is deliberately not executed; do it BEFORE ever publishing the stack beyond
   localhost (set `API_KEY` + `NEXT_PUBLIC_API_KEY` and rebuild the frontend image — they must match).

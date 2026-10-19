@@ -114,13 +114,23 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
             configured_tz,
             row.company_timezone,
         )
+    # V24b: `kpis` is jsonb on PostgreSQL, so a LIST is legal at rest; the response model
+    # requires a mapping, and passing the list through was an uncoded 500 for the whole
+    # dashboard (measured by V24/L6).  A mis-shaped cell is "not measured": `{}` plus a named
+    # warning — never fabricated KPIs and never a crashed surface.
+    kpis = row.kpis if isinstance(row.kpis, dict) else {}
+    if row.kpis is not None and not isinstance(row.kpis, dict):
+        logger.warning(
+            "dashboard summary: company_config.kpis is %s, not a mapping; reading it as absent",
+            type(row.kpis).__name__,
+        )
     return DashboardSummaryResponse(
         tasks_today_total=int(row.total or 0),
         tasks_today_completed=int(row.completed or 0),
         tasks_today_pending=int(row.pending or 0),
         tasks_today_failed=int(row.failed or 0),
         active_agents=_split_agents(row.agents),
-        kpis=row.kpis or {},
+        kpis=kpis,
         last_report_date=row.last_report_date,
     )
 
