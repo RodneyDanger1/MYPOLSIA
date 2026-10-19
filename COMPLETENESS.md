@@ -277,12 +277,12 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 
 | # | Item | Evidence | Owner |
 |---|---|---|---|
-| 12 | **Commit the wave.** Every lane's files are uncommitted: L3 lists **17 modified/new product files + 6 new FE test files** (includes `lib/api.ts`'s additive `onHeaders`); L1 adds the model/service/API/migration + `RunDetail`/`useRunDetail`/`run-chips` test; L2 adds `PhoneThreadView.tsx` + its test. Without the commit the ads-metrics route and the totals fixes re-open. | `wave-v22/l3-wiring-fix/RECEIPT.md` §"Skipped"; L1/L2 receipts | **parent** |
-| 13 | L1's residual: `backend/tests/parity/*.py` header comments still narrate the V21 "tools never persisted" finding (comments only, no assertion). | `wave-v22/l1-tools-persist/RECEIPT.md` §7 | **parent** |
-| 14 | **L4 (e2e + coverage) — DONE ✅, green live run blocked.** Both specs are authored and enumerate (**10 tests**); they are RED on the stale served FE (the assertions bite). Coverage measured **92.10%** → `fail_under` stays **90**. The green run needs the parent rebuild. | `wave-v22/l4-proof/RECEIPT.md` §3–§4 | L4 → **parent** (rebuild + run) |
-| 15 | **L6 verifier gate — PASSED ✅ on the frozen tree.** 2,726 tests / 0 failed / 0 errors / 13 skipped; jest 23 suites / 318 tests; tsc 0 bytes; ruff clean; coverage 92.10% ≥ 90. | `wave-v22/v-verify/VERIFY.md` §1, §2 | L6 (done) |
-| 16 | **Live settle** — rebuild backend + frontend images (the served FE predates L1/L2/L3/L4: `PhoneThreadView`, chips, metrics expander and the copy fixes are source-only until then), reload nginx, run the e2e sweep and `make smoke`, then push and watch CI. | L2 receipt "Notes"; `RELEASE-CHECKLIST.md` §5 | **parent** |
-| 17 | **Redact PII before commit** — L6 found the W2 audit artifact reproduces the owner's live legal name and full postal address (from `/api/v1/config`); the finding is provable from field names + `website_url` alone. | `wave-v22/w2-honesty/MOCK-AUDIT.md` §4 D2; L6 `VERIFY.md` V2 | **parent** |
+| 12 | **Committed.** The wave is in `cc3be4e` (65 files): L1's migration 0010 + model/service/API + chips, L2's `PhoneThreadView`, L3's 17 product files + 6 FE test files (incl. `lib/api.ts`'s additive `onHeaders`), plus the parent's D1/D2/D7–D9 fixes and this file. | `git show --stat cc3be4e` | **done (parent)** |
+| 13 | `backend/tests/parity/*.py` header comments narrate the V21 record — reviewed at settle: they date the route accurately (V21 L2 owned it); no stale claim about persistence remains in them. No change needed. | reviewed by parent | **done (parent)** |
+| 14 | **L4 (e2e + coverage) — DONE ✅ and now green live.** Parent rebuilt FE+BE and ran the sweep: full Playwright **43 passed / 8 skipped / 0 failed**, including the 10 V22 specs (run chips 5, phone thread 5). Coverage 92.10% → `fail_under` stays **90**. | `wave-v22/v-final/e2e-full2.txt` | **done (parent)** |
+| 15 | **L6 verifier gate — PASSED ✅ on the frozen tree.** 2,726 tests / 0 failed / 0 errors / 13 skipped (parent's authoritative re-gate after settle: **2,729 / 0 / 0 / 13**, the +3 being the new D1/D2/D9 pins); full jest **839/839**; tsc 0; ruff 0; coverage 92.10% ≥ 90. | `wave-v22/v-verify/VERIFY.md`; `v-final/gate-final.xml`, `jest-full.txt` | **done** |
+| 16 | **Live settle DONE.** Images rebuilt and recreated; nginx reloaded; live DB migrated **0008 → 0009 → 0010**; `make smoke` **PASS 13 checks**; `/apidocs` + `/openapi.json` 200; 404 page live; `/runs/{id}` honest three-state; the seeded placeholders cleared from the live row (`kpis {}`, `website_url ""`). CI watch pending (runners queued at push time). | `v-final/` evidence; live probes | **done (parent)** |
+| 17 | **PII redacted** in the W2 audit artifact (`<owner name: redacted>` / `<owner postal address: redacted>`); repo-wide re-grep found no live PII in tracked content. | `wave-v22/w2-honesty/MOCK-AUDIT.md`; grep | **done (parent)** |
 
 ### 7.5 Known residuals already documented in the repo (pre-date V22, still true)
 
@@ -294,9 +294,9 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
   send cap by name (`POLSIA-E114`, `cap_unknown`) instead of reading it as zero sends; LinkedIn has no
   send adapter (`README.md` "Known gaps").
 
-**Nothing above is hidden or re-labelled as done.** If the owner wants the shortest path to "complete"
-in their sense: fix D1 and D2 (two seed lines), then decide items 9–11; the rest are labels,
-observability, and the settle steps.
+**Nothing above is hidden or re-labelled as done.** The shortest path to "complete" in the owner's
+sense is now: decide items 9–11 (cycle-report email control, KPI/goals/pricing editor, human hourly
+rate) — the rest are labels, observability, and owner-gated credentials.
 
 
 ## 8. How to re-verify this statement
