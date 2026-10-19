@@ -76,6 +76,7 @@ def _report_read_columns(db: AsyncSession) -> tuple:
     parsed per row below and reads as null ("not measured"), the same rule `run_service` and
     `notifications` already apply to their JSON columns.
     """
+    insights: Any
     if dialect_name(db) == "postgresql":
         # `insights` is a real text[] on PostgreSQL: the driver can only return a list, and
         # casting it to Text would produce array-literal text rather than JSON.

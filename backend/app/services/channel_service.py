@@ -234,10 +234,12 @@ async def channel_sends_snapshot(
             ),
             what="email channel send counts",
         )
-        today, hour = rows[0] if rows else (None, None)
+        row = rows[0] if rows else None
+        today = int(row[0]) if row is not None and row[0] is not None else 0
+        hour = int(row[1]) if row is not None and row[1] is not None else 0
         # The aggregate always yields one row; a NULL sum there is zero matching rows, and email
         # HAS a local send table — so this is a measured 0, never the unknown None.
-        snapshot[_EMAIL_CHANNEL] = {"today": int(today or 0), "hour": int(hour or 0)}
+        snapshot[_EMAIL_CHANNEL] = {"today": today, "hour": hour}
 
     return snapshot
 
