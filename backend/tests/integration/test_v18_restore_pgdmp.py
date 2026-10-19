@@ -93,7 +93,10 @@ def test_restore_sh_runs_its_pgdmp_path_and_tears_the_drill_container_down():
     src.mkdir()
     try:
         with PostgresContainer("postgres:16-alpine") as pg:
-            container_id = pg.get_container_id()
+            # testcontainers' PostgresContainer API varies by version (`get_container_id` is absent
+            # on recent releases; the CI runner's version raised AttributeError).  The wrapped
+            # docker-py container's `.id` is stable across versions.
+            container_id = pg.get_wrapped_container().id
             url = make_url(pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://"))
             user, database = url.username, url.database
 
