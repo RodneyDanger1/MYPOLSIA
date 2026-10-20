@@ -131,7 +131,13 @@ def _safe_url(value: str | None) -> str | None:
     text = (value or "").strip()
     if not text or len(text) > MAX_URL_CHARS:
         return None
-    parsed = urlparse(text)
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        # A malformed authority (e.g. `http://[::1`) is raised by `urlparse` itself.  The
+        # docstring's contract is a DROPPED item, never an exception out of the reader: one
+        # publisher's broken link must not take the feed (or its sibling) down.
+        return None
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return None
     if parsed.username or parsed.password:
@@ -206,14 +212,19 @@ def _published(node: ET.Element) -> str | None:
 def _parse(feed: Feed, raw: bytes) -> list[dict[str, Any]]:
     """Parse one feed body into at most `PER_FEED_LIMIT` items, newest first.
 
-    A body that is not well-formed XML is a NAMED `E_UPSTREAM` for THIS feed only.
+    A body that cannot be parsed as XML (malformed markup, an unknown/multi-byte encoding) is a
+    NAMED `E_UPSTREAM` for THIS feed only.
     """
     try:
         root = ET.fromstring(raw)
-    except ET.ParseError as exc:
+    except (ET.ParseError, ValueError, LookupError) as exc:
+        # Not just `ParseError`: an XML declaration naming an unknown encoding raises
+        # `LookupError`, and a multi-byte/undecodable body raises `ValueError`.  All three mean
+        # "this body could not be read as XML" and are THIS feed's named refusal, never a crash
+        # that would take the sibling feed with it.
         raise PolsiaError(
             E_UPSTREAM,
-            f"{feed.label}: the feed body is not well-formed XML ({exc})",
+            f"{feed.label}: the feed body could not be parsed as XML ({type(exc).__name__}: {exc})",
             how_to_fix="retry; if it persists the publisher is serving a broken feed",
             context={"feed": feed.id},
         ) from exc

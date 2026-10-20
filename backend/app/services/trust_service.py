@@ -22,9 +22,11 @@ Two entry points:
   `169.254.169.254` is refused before the second request is ever sent.  Redirects are followed by
   hand (`follow_redirects=False`) precisely so the guard can see every `Location`.
 
-Both are cached in-process for 1 h.  A cache hit keeps the ORIGINAL `checked_at` — provenance is
-never restamped — and sets `cached: true`.  Failures are never cached, and no result is invented:
-`archived: null` means "the archive could not be asked", never "there is no snapshot".
+Both are cached in-process for 1 h; a result that carries a failed leg (a DNS transport error, a
+partial family, or any TLS failure) is NEVER stored, so a recovered source is visible on the next
+call.  A cache hit keeps the ORIGINAL `checked_at` (provenance is never restamped) and sets
+`cached: true`.  No result is invented: `archived: null` means "the archive could not be asked",
+never "there is no snapshot".
 
 Sync on purpose: the V29 tool runners are sync (`tool_registry._RUNNERS`), and the routes call
 these through `starlette.concurrency.run_in_threadpool`.
@@ -161,6 +163,26 @@ def _link_target(value: Any) -> str:
         raise refuse("empty")
     if len(text) > MAX_LINK_CHARS:
         raise refuse(f"longer than {MAX_LINK_CHARS} characters")
+    # `urllib.parse` accepts ASCII control characters, but `httpx` refuses to build a request
+    # for them (`httpx.InvalidURL`, which is NOT an `httpx.HTTPError` and so escapes every
+    # handler below).  Refuse here, BEFORE the DoH lookups: the character can never be sent, so
+    # it is the caller's `E_VALIDATION`, not an internal failure.  `strip()` above already
+    # removed surrounding whitespace, matching the owner route's own rule.
+    for position, char in enumerate(text):
+        if ord(char) < 0x20 or ord(char) == 0x7F:
+            raise PolsiaError(
+                E_VALIDATION,
+                "link_status: the url contains a control character that cannot be sent over HTTP",
+                how_to_fix=(
+                    "remove or percent-encode the character (a URL cannot carry raw control "
+                    "characters), then retry"
+                ),
+                context={
+                    "field": "url",
+                    "position": position,
+                    "codepoint": f"U+{ord(char):04X}",
+                },
+            )
     try:
         parsed = urlparse(text)
     except ValueError as exc:
@@ -485,7 +507,15 @@ def check_domain(host: str) -> dict[str, Any]:
         "checked_at": now_utc().isoformat(),
         "cached": False,
     }
-    _cache_put(key, result)
+    # A FAILURE IS NEVER A CACHED ANSWER.  `_doh_leg` flattens a resolver failure into a field
+    # (instead of raising, so the route still serves), and `_tls` does the same for a handshake
+    # failure/timeout; caching either would pin an outage for the full hour and hide a recovered
+    # source.  So only a fully clean measurement is stored: no DNS reason (a failed or partial
+    # leg, or NXDOMAIN, is re-measured next call) and a positive TLS reading.  A `tls.ok=false`
+    # result cannot say whether it was a certificate fact or a transport failure, and guessing
+    # wrong in the cache is the more expensive mistake.
+    if dns_reason is None and tls["ok"] is True:
+        _cache_put(key, result)
     return result
 
 
@@ -501,6 +531,16 @@ def _fetch_headers(url: str) -> tuple[int, str | None]:
             if status == 405:
                 # Some servers refuse HEAD outright; the GET is the same resource, not a retry.
                 status, location = _request_headers(client, "GET", url, headers)
+    except httpx.InvalidURL as exc:
+        # Defense in depth behind `_link_target`: httpx builds its own URL object and refuses
+        # characters `urllib.parse` accepted.  `InvalidURL` is not an `httpx.HTTPError`, so this
+        # must be its own handler or the caller's bad URL leaks as an internal failure.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"link_status: {url!r} cannot be sent over HTTP ({exc})",
+            how_to_fix="remove the unsendable characters (percent-encode them) and retry",
+            context={"field": "url", "leg": "http"},
+        ) from exc
     except httpx.TimeoutException as exc:
         raise PolsiaError(
             E_UPSTREAM,

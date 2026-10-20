@@ -20,7 +20,9 @@ the code, so the caller is told, and the provider is never blamed for a typo.
 Honesty rules, in code:
 
 * a code must match `[A-Z]{3}` (case-insensitively normalised) and an amount must be a finite,
-  non-negative number — refused as `E_VALIDATION` BEFORE any socket opens;
+  non-negative number — refused as `E_VALIDATION` BEFORE any socket opens (an integer beyond
+  `float`'s range included); an amount whose cent-precise product exceeds `Decimal`'s precision
+  is the same caller refusal, never an `InvalidOperation` out of the money path;
 * the identity pair (`EUR` -> `EUR`) answers `rate: 1.0`, `source: "identity"`, `date: null` and
   makes no network call: there is no market for converting a currency into itself;
 * the provider's own pair is checked against the request (`base`/`quote`) and a zero, negative,
@@ -39,7 +41,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -87,28 +89,54 @@ def _amount(value: object) -> float:
 
     `bool` is excluded on purpose: `True` is an `int` in Python and would otherwise convert as
     `1.0`.  NaN/inf are excluded because neither can be money, and `Decimal('nan')` would raise
-    out of the money path instead of refusing in the house vocabulary.
+    out of the money path instead of refusing in the house vocabulary.  A Python integer beyond
+    `float`'s range is its own named refusal: `math.isfinite` raises `OverflowError` on it, and
+    JSON parses arbitrarily long integers, so this is caller input, not an internal invariant.
     """
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PolsiaError(
             E_VALIDATION,
             f"amount must be a non-negative finite number (got {value!r})",
             how_to_fix="pass amount >= 0, e.g. 1234.56",
             context={"field": "amount"},
         )
-    return float(value)
+    try:
+        numeric = float(value)
+    except OverflowError as exc:
+        raise PolsiaError(
+            E_VALIDATION,
+            "amount is too large to represent as a money value",
+            how_to_fix="pass a smaller amount, e.g. 1234.56",
+            context={"field": "amount"},
+        ) from exc
+    if not math.isfinite(numeric) or numeric < 0:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"amount must be a non-negative finite number (got {value!r})",
+            how_to_fix="pass amount >= 0, e.g. 1234.56",
+            context={"field": "amount"},
+        )
+    return numeric
 
 
 def _cents(amount: float, rate: float) -> float:
-    """`amount x rate` quantised to cents, half-up on Decimal (never binary-float rounding)."""
-    converted = (Decimal(str(amount)) * Decimal(str(rate))).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    """`amount x rate` quantised to cents, half-up on Decimal (never binary-float rounding).
+
+    `Decimal` quantises within its 28-digit precision; a product that cannot be expressed at
+    cent precision is the caller's amount being absurd, so it is a NAMED `E_VALIDATION` rather
+    than an `InvalidOperation` escaping the money path.
+    """
+    try:
+        converted = (Decimal(str(amount)) * Decimal(str(rate))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    except InvalidOperation as exc:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"fx_convert: amount {amount!r} is too large to convert at cent precision",
+            how_to_fix="pass a smaller amount; a display conversion is not an accounting total",
+            context={"field": "amount"},
+        ) from exc
     return float(converted)
 
 

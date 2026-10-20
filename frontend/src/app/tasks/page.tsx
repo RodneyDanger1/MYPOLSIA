@@ -124,7 +124,18 @@ function TasksPageContent() {
         },
       })
       .then((data) => {
-        if (!cancelled) setRows(data);
+        if (cancelled) return;
+        // The wire is typed, not trusted — the sites page's own rule since V24 ("a 200 whose body is
+        // not a list is named as a broken read"). Without this guard a `null` body leaves
+        // `rows === null` with no error and the skeleton renders FOREVER ("not read yet" standing in
+        // for a broken read), and an object body reaches `TaskBoard`'s iteration and throws the
+        // committed tree away — a header and two buttons, nothing named. Previous rows stay on
+        // screen (they are real reads), exactly as a failed refresh already behaves.
+        if (!Array.isArray(data)) {
+          setError("the server returned no list of tasks");
+          return;
+        }
+        setRows(data);
       })
       .catch((e: unknown) => {
         // The previous rows (if any) stay on screen under the alert — they are real reads; the
@@ -285,10 +296,16 @@ function TasksPageContent() {
         {rows !== null && rows.length > 0 ? (
           <>
             {rows.length === TASKS_BOARD_LIMIT ? (
+              // Three honest cases, never two conflated: the header declared MORE than this page
+              // (name both numbers), declared exactly this page (nothing is missing — the old copy
+              // claimed "the API reports no total, so more may exist" about a total it had just
+              // read), or declared nothing at all (say only what the rows prove).
               <p className="ui-label text-ink-muted">
-                {boardTotal !== null && boardTotal > rows.length
-                  ? `Showing the first ${TASKS_BOARD_LIMIT} of ${boardTotal} tasks`
-                  : `Showing the first ${TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may exist`}
+                {boardTotal === null
+                  ? `Showing the first ${TASKS_BOARD_LIMIT} tasks — the API reports no total, so more may exist`
+                  : boardTotal > rows.length
+                    ? `Showing the first ${TASKS_BOARD_LIMIT} of ${boardTotal} tasks`
+                    : `Showing all ${rows.length} tasks`}
               </p>
             ) : null}
             <TaskBoard

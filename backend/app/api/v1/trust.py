@@ -1,8 +1,7 @@
 """GET /api/v1/trust/domain and /api/v1/trust/link — site and link health (V29/L6).
 
-NOT wired into `app/main.py` by this lane: the parent includes `trust.router` at settle (V29 §8.2,
-the same ownership split every V29 lane follows).  Until then the router is reachable only through
-the local test app in `tests/unit/test_v29_trust.py`.
+**Wired:** both routers are included by `app/main.py` at settle (signals at `app/main.py:498`,
+trust at `app/main.py:499`); the parent owns that include, the lane owns this module.
 
 Both routes are READ-ONLY and keyless upstream (Cloudflare DoH, a direct TLS handshake, the
 Internet Archive) — safe to poll, cached 1 h in the service.  They run the sync service through
@@ -25,6 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import refusal_guard, verify_api_key
+from app.core.errors import E_VALIDATION, PolsiaError
 from app.services import trust_service
 
 router = APIRouter(prefix="/trust", tags=["trust"], dependencies=[Depends(verify_api_key)])
@@ -88,11 +88,41 @@ async def domain_health(
     return DomainHealthResponse.model_validate(result)
 
 
+def _refuse_unsendable_url(url: str) -> str:
+    """The URL as the service will see it, or a NAMED refusal for an unsendable character.
+
+    `httpx` cannot build a request for an ASCII control character (it raises `httpx.InvalidURL`,
+    which is NOT an `httpx.HTTPError`), while `urllib.parse` accepts one — so the service's own
+    validation lets it through and the exception escapes the route as a bare 500 AFTER the DNS
+    lookups have already run (measured live: `url=https%3A%2F%2Fexample.com%2F%00x`).  Refusing
+    here keeps the HTTP surface honest and skips the pointless lookups.  `strip()` mirrors the
+    service's own trimming, so a pasted link with a trailing newline still works.
+    """
+    text = url.strip()
+    for position, char in enumerate(text):
+        if ord(char) < 0x20 or ord(char) == 0x7F:
+            raise PolsiaError(
+                E_VALIDATION,
+                "link_status: the url contains a control character that cannot be sent over HTTP",
+                how_to_fix=(
+                    "remove or percent-encode the character (a URL cannot carry raw control "
+                    "characters), then retry"
+                ),
+                context={
+                    "field": "url",
+                    "position": position,
+                    "codepoint": f"U+{ord(char):04X}",
+                },
+            )
+    return text
+
+
 @router.get("/link", response_model=LinkStatusResponse)
 async def link_status(
     url: str = Query(min_length=1, max_length=2048),
 ) -> LinkStatusResponse:
     """HTTP status of one PUBLIC http(s) URL plus its closest Wayback snapshot."""
     with refusal_guard():
-        result = await run_in_threadpool(trust_service.check_link, url)
+        target = _refuse_unsendable_url(url)
+        result = await run_in_threadpool(trust_service.check_link, target)
     return LinkStatusResponse.model_validate(result)

@@ -222,7 +222,20 @@ function MarketContextStrip({ reloadKey }: { reloadKey: number }) {
     );
   }
 
-  const context = data ?? {};
+  // A 200 whose body is not a market-context OBJECT is a broken read, and it is named as one. The
+  // old `data ?? {}` turned a list/string body into an object with no sections and the strip then
+  // printed "Inflation — not measured: the read gave no reason · FX — …" — a MEASUREMENT claim
+  // ("nothing was measured") about a body that carried no measurement at all. Same rule the sites
+  // page and `useFinanceRead` already apply: a wrong-shaped body is never read as an empty one.
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return (
+      <p className="text-sm text-alert" data-testid="market-context-error">
+        Market context could not be read: the server returned no market-context object
+      </p>
+    );
+  }
+
+  const context: MarketContext = data;
   return (
     <p className="ui-label text-ink-muted" data-testid="market-context">
       <span data-testid="market-context-inflation">
@@ -306,6 +319,17 @@ function FinancePlanningPanel({ reloadKey }: { reloadKey: number }) {
         <p className="text-sm text-ink-muted" data-testid="planning-unrecognised">
           The planning read answered without any planning fields — no burn items, capacity or margin
           inputs came back, so there is nothing on this read to show.
+        </p>
+      ) : null}
+
+      {/* A body that is not even an object (a list, a string, `true`) used to fall through every
+          branch — `view` is null for it and every sentence below is gated on `view !== null` — so
+          the card rendered its heading and nothing else: no failure, no note, no segments. It is
+          the same broken read the "unrecognised" note names for an object, and it is named. */}
+      {!loading && error === null && view === null ? (
+        <p className="text-sm text-alert" data-testid="planning-unreadable">
+          The planning read answered with something that is not a planning object, so there is
+          nothing on this read to show.
         </p>
       ) : null}
 

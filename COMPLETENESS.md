@@ -16,9 +16,10 @@
 > frontend remainders (deep-link retry, truncation copy, dead-component labels), DeepSeek Fetch,
 > FX/invoice currency, fixed-feed signals + dashboard widget, and DNS/TLS/link trust + site badge.
 > Parent wiring: **17 tools** and **106 operations / 35 modules**, no migration (head `0016`).
-> Measured on the settled tree: backend **3,565 tests / 0 failed / 0 errors / 13 skipped**
-> (`wave-v29/v-settle/gate-v29.xml`), jest **118 suites / 1,057 tests** (`jest-v29.log`, `EXIT=0`),
-> integration **15 / 0 failed** (`integration-v29.xml`), live drill **21/21** (`v29-live.log`) plus the
+> Measured on the settled tree: backend **3,640 tests / 0 failed / 0 errors / 13 skipped**
+> (`wave-v29/v-settle/gate-v29-followup.xml`), jest **123 suites / 1,073 tests**
+> (`jest-v29-followup.log`, `EXIT=0`), integration **15 / 0 failed**
+> (`integration-v29-followup.xml`), live drill **21/21** (`v29-live.log`) plus the
 > carried **45/45, 17/17, 42/42, 41/41** (`drills-v29.log`), and fresh-DB Playwright
 > **55 passed / 8 skipped / 0 failed** (`e2e-v29-freshdb.log`). The e2e run caught one real
 > integration bug: stored cleanup rows carry `removed_truncated: null` / `skipped_truncated: null`,

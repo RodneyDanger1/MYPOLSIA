@@ -1,8 +1,7 @@
 """GET /api/v1/signals — headlines from the FIXED feed allowlist (V29/L5).
 
-NOT wired into `app/main.py` by this lane: the parent includes `signals.router` at settle (the
-same pin/wiring split `api/v1/economics.py` records). Until then this router is reachable only
-through the local test app in `tests/unit/test_v29_signals.py`.
+**Wired:** both routers are included by `app/main.py` at settle (signals at `app/main.py:498`,
+trust at `app/main.py:499`); the parent owns that include, the lane owns this module.
 
 The response models are declared HERE, not in `app/schemas/` — the same ruling economics and
 invoices record for a new lane's shapes. The service already returns this exact dict; the model

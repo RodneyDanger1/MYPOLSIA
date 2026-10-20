@@ -408,6 +408,25 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
                 context={"workspace_root": repr(root)[:200]},
             )
         root = root.strip()
+        # A control character can never belong to a path.  `Path.resolve()` refuses it with a bare
+        # ValueError, which the retention registry dresses up as E_CONFIG (503 — "this service
+        # cannot take work right now"), blaming the server for the caller's value.  Refuse it as
+        # the caller error it is, before any filesystem work (V29 follow-up B; the same class as
+        # the /trust/link control-character refusal).
+        for position, char in enumerate(root):
+            if ord(char) < 0x20 or ord(char) == 0x7F:
+                raise PolsiaError(
+                    E_VALIDATION,
+                    "`workspace_root` contains a control character that cannot appear in a path",
+                    how_to_fix=(
+                        "pass a normal directory path (re-paste it without control characters)"
+                    ),
+                    context={
+                        "field": "workspace_root",
+                        "position": position,
+                        "codepoint": f"U+{ord(char):04X}",
+                    },
+                )
     return apply, root
 
 

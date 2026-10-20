@@ -988,14 +988,24 @@ def _resolve_site_directory(slug: str, *, root: Path | None) -> tuple[str, Path]
     return validated, directory
 
 
-def _remove_tree(directory: Path) -> None:
+def _remove_tree(directory: Path, *, defer: frozenset[str] = frozenset()) -> None:
     """Remove `directory` WITHOUT ever following a link (symbolic link or NTFS junction).
 
     `os.scandir` is asked `follow_symlinks=False`; a link is removed as a link (`unlink` for a
     symlink, `rmdir` for a junction) and only a real directory is recursed into.  So a link planted
     inside a site cannot turn a delete into a delete of its target.
+
+    `defer` names top-level entries removed AFTER everything else.  `delete_site` defers
+    `meta.json` — the site's only record — so a removal that cannot finish (measured on Windows:
+    an open handle makes `DeleteFile` fail with `WinError 32`) leaves a site that still lists,
+    still reads and can still be deleted again.  Deferring is TOP-LEVEL only: the recursive calls
+    pass no names, so a nested `meta.json` is ordinary content.
     """
+    deferred: list[Path] = []
     for entry in os.scandir(directory):
+        if entry.name in defer:
+            deferred.append(Path(entry.path))
+            continue
         is_junction = getattr(entry, "is_junction", None)
         if entry.is_symlink():
             os.unlink(entry.path)
@@ -1005,6 +1015,8 @@ def _remove_tree(directory: Path) -> None:
             _remove_tree(Path(entry.path))
         else:
             os.unlink(entry.path)
+    for path in deferred:
+        os.unlink(path)
     os.rmdir(directory)
 
 
@@ -1038,7 +1050,9 @@ def delete_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
     resolves outside the sites root (see `_resolve_site_directory`), `E_NOT_FOUND` when the site is
     already gone (no readable `meta.json`), `E_STORAGE` when the filesystem refuses the removal.
     The DELETE is the site's whole record: `meta.json` lives inside the directory, so a removed
-    directory is a removed site in the list, the static mount and every reader at once.
+    directory is a removed site in the list, the static mount and every reader at once — and it is
+    removed LAST, so a partial failure leaves a site every reader still sees and the retry the
+    `E_STORAGE` message asks for can actually succeed.
     """
     validated, directory = _resolve_site_directory(slug, root=root)
     if not (directory / "meta.json").is_file():
@@ -1049,7 +1063,10 @@ def delete_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
             context={"slug": validated},
         )
     try:
-        _remove_tree(directory)
+        # `meta.json` LAST (V29/G): it is the site's only record, so a removal that cannot
+        # finish — an open file on Windows, a permission on POSIX — must leave the site
+        # readable and retryable instead of vanishing from the list while its files remain.
+        _remove_tree(directory, defer=frozenset({"meta.json"}))
     except OSError as exc:
         raise PolsiaError(
             E_STORAGE,

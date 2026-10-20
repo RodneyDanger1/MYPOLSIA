@@ -320,6 +320,11 @@ async def update_prospect(
     uniqueness-checked by the same unique constraint a create hits; an explicit `null` clears a
     nullable column; an empty string is stored as NULL (`_text`).  `status` is the exception: a
     blank one is refused by name (`_status_value`) — `null` clears it, `"   "` is caller error.
+
+    EVERY provided value is validated and normalised BEFORE the row is touched, so a refused
+    PATCH is atomic: the row keeps its stored values, and the caller's next ordinary commit
+    (this module promises the session stays usable after a refusal) cannot persist a
+    half-applied edit nobody asked for.
     """
     unknown = set(changes) - UPDATABLE_FIELDS
     if unknown:
@@ -329,17 +334,20 @@ async def update_prospect(
             f"only {sorted(UPDATABLE_FIELDS)} may be updated",
         )
     row = await get_prospect(db, prospect_id)
+    prepared: dict[str, Any] = {}
     address = row.email
     for field, value in changes.items():
         if field == "email":
             address = normalize_email(value)
-            row.email = address
-        elif field == "status" and value is not None:
+            prepared["email"] = address
+        elif field == "status":
             # The incoming status is validated BEFORE the row is touched, so a refused PATCH
             # leaves the stored word exactly as it was (an explicit null still clears it).
-            row.status = _status_value(value)
+            prepared["status"] = None if value is None else _status_value(value)
         else:
-            setattr(row, field, _text(value))
+            prepared[field] = _text(value)
+    for field, value in prepared.items():
+        setattr(row, field, value)
     try:
         await db.flush()
     except SQLAlchemyError as exc:

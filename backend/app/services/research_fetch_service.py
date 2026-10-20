@@ -72,12 +72,18 @@ def _validate_url(url: Any) -> str:
 def fetch(url: str, *, max_chars: int = MAX_CONTENT_CHARS) -> dict[str, Any]:
     """Fetch one page as Markdown. Cached for 1 h; failures are never cached."""
     target = _validate_url(url)
-    try:
-        cap = int(max_chars)
-    except (TypeError, ValueError) as exc:
-        raise PolsiaError(E_VALIDATION, "research_fetch: max_chars must be an integer",
-                          how_to_fix="omit max_chars or pass an integer") from exc
-    cap = max(1000, min(cap, MAX_CONTENT_CHARS))
+    # The declared contract (tool spec + this module's docstring) is an INTEGER.  `int()` alone is
+    # a silent coercion — True -> 1, "5000" -> 5000, 2.5 -> 2 and then the 1,000 floor — and
+    # `float("inf")` raises OverflowError straight out of this function, where the tool runner
+    # (which catches only PolsiaError) would surface it as an internal error.  Refuse the caller's
+    # value BY NAME before it can become a cap; a refused argument makes no provider call.
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"research_fetch: max_chars must be an integer (got {type(max_chars).__name__})",
+            how_to_fix=f"omit max_chars for {MAX_CONTENT_CHARS}, or pass an integer",
+        )
+    cap = max(1000, min(max_chars, MAX_CONTENT_CHARS))
     hit = _CACHE.get(target)
     if hit is not None and time.monotonic() - hit[0] < CACHE_TTL_S:
         # Cached content is the FULL body; the per-call cap is applied on the way out, so a later

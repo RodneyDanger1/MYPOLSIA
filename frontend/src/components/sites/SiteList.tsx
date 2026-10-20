@@ -43,6 +43,12 @@ export function SiteList({
     <ul className="divide-y divide-line border border-line" data-testid="sites-list">
       {rows.map((site) => {
         const name = site.title || site.slug;
+        // The badge branches on the TRIMMED host (`SiteHealthBadge` trims and renders nothing for a
+        // blank one), so this row must branch on the same value. A whitespace-only domain is a
+        // string the list really serves (`_summary_row` keeps any non-empty string; only the
+        // create/regenerate validators reject spaces, and `meta.json` is human-editable), and it is
+        // truthy raw but empty trimmed — the row then rendered NEITHER a verdict NOR the LOCAL chip.
+        const domain = typeof site.custom_domain === "string" ? site.custom_domain.trim() : "";
         return (
           <li key={site.slug} data-testid={`site-row-${site.slug}`}>
             <div className="flex flex-wrap items-center gap-3 px-3 py-2">
@@ -56,9 +62,9 @@ export function SiteList({
                     itself is already shown by `SitePages` ("recorded, not verified"); this row adds
                     only the live verdict.  A site with no domain keeps the honest `LOCAL` chip and
                     makes no network call. */}
-                {site.custom_domain ? (
+                {domain ? (
                   <p className="mt-1">
-                    <SiteHealthBadge host={site.custom_domain} />
+                    <SiteHealthBadge host={domain} />
                   </p>
                 ) : (
                   <p className="mt-1">

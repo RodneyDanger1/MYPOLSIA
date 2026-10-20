@@ -134,9 +134,14 @@ export function sanitizeLayout(value: unknown): DashboardLayout {
   return { hidden, order };
 }
 
-/** The full id list for one area: the owner's saved arrangement first, then every
- *  widget the arrangement does not mention (a widget added in a later build lands
- *  in its default position instead of disappearing). */
+/** The full id list for one area: the owner's saved arrangement first, then every widget the
+ *  arrangement does not mention — APPENDED to the end of the area, which is where every widget
+ *  added since V12 ships (`phone` at the end of the left rail, `signals` at the end of the right
+ *  column), so nothing is ever dropped. A layout saved before such a widget existed therefore
+ *  gains it last, which IS its default position today; a future widget inserted MID-column would
+ *  need this to become a default-position merge (measured: a saved `middle` of ['media','tasks']
+ *  renders ['media','tasks','documents'] — appended, not re-inserted at `documents`' default
+ *  index 1). Pinned by __tests__/v29-followup-c-layout.test.tsx. */
 export function areaOrder(layout: DashboardLayout, area: AreaId): WidgetId[] {
   const defaults = defaultOrder(area);
   const saved = layout.order[area] ?? [];
