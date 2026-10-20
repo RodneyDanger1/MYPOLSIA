@@ -1,4 +1,4 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V26)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V27)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 

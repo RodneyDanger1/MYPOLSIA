@@ -79,7 +79,11 @@ export default function SchedulesPage() {
     try {
       const created = await api.post<Schedule>("/schedules", body);
       setCreatedId(created.id);
-      setRows((current) => (current === null ? [created] : [...current, created]));
+      // V28/L1 — a POST answers ONE row, never the table. When the list read has not landed yet
+      // (`rows === null`) the created row must not become "All schedules": `mergeSchedule` returns
+      // the unread `null` untouched, exactly like the prospects page. The read that is in flight
+      // (or the next one) paints the list; until then the page keeps saying it is loading.
+      mergeSchedule(created);
     } catch (e: unknown) {
       setActionError(errorText(e));
     } finally {

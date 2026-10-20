@@ -13,8 +13,8 @@ import { API_BASE } from "./_helpers";
  *
  * The spec reuses an existing V26 site when the stack has one (this lab has the V26 drill rows);
  * on a fresh stack it creates one through the same `POST /api/v1/sites` contract.  Creation is
- * disk-backed and has no delete route, so the created fixture is tagged `v27-e2e-<stamp>` and is
- * the only row a run can leave behind — stated here rather than silently swept.
+ * disk-backed; V27 added `DELETE /api/v1/sites/{slug}`, so a spec-created fixture is tagged
+ * `v27-e2e-<stamp>` and deleted through that route before the test ends.
  *
  * It also pins the V26 custom-domain contract: a scheme or path is REFUSED BY NAME with
  * `E_VALIDATION` (422).  The value is recorded, never DNS-verified, so a spec that sent
@@ -95,5 +95,12 @@ test.describe("V27/L6 — sites 2.0", () => {
     const headerCode = bad.headers()["x-polsia-error-code"];
     const body = (await bad.json()) as { error?: { code?: string } };
     expect(headerCode ?? body.error?.code).toBe("E_VALIDATION");
+
+    // The fixture was created by this test on a fresh stack; remove it through the V27 route so a
+    // CI run leaves no site directory behind (V28/L4 D1 — the old docstring said no route existed).
+    if (!reusable) {
+      const removed = await request.delete(`${API_BASE}/api/v1/sites/${slug}`);
+      expect(removed.status(), await removed.text()).toBe(200);
+    }
   });
 });

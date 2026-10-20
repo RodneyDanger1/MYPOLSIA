@@ -37,11 +37,11 @@ import logging
 from typing import Any
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.models.outreach import Prospect
+from app.models.outreach import EmailLog, Prospect
 from app.services.query_helpers import fetch_scalar, fetch_scalars
 
 logger = logging.getLogger(__name__)
@@ -321,10 +321,51 @@ async def update_prospect(
 
 
 async def delete_prospect(db: AsyncSession, prospect_id: int) -> Prospect:
-    """Remove the row and return it (the route answers 204; the caller reports the id)."""
+    """Remove the row and return it (the route answers 204; the caller reports the id).
+
+    A prospect the outreach agent has already emailed is the PARENT of its `email_logs` rows,
+    and the database refuses the delete (`email_logs.prospect_id ON DELETE RESTRICT`, alembic
+    `0002_queue_and_perf.py:306`).  That refusal is the named `E_VALIDATION` below — with the
+    send-history count — never a bare `IntegrityError` out of a route (this module's promise).
+    The failed flush poisons the session, so the rollback runs first, exactly like the create
+    path's integrity branches; the caller's session is usable immediately afterwards.
+    """
     row = await get_prospect(db, prospect_id)
-    await db.delete(row)
-    await db.flush()
+    key = int(row.id)
+    try:
+        await db.delete(row)
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        sent = (
+            await db.execute(
+                select(func.count()).select_from(EmailLog).where(EmailLog.prospect_id == key)
+            )
+        ).scalar_one()
+        count = int(sent or 0)
+        if not count:
+            # A DELETE on this table has exactly one documented refusal (the FK above); any other
+            # integrity refusal is still named, but it must not borrow that explanation.
+            raise PolsiaError(
+                E_VALIDATION,
+                f"the database refused the delete of prospect {key}: {str(exc.orig)[:200]}",
+                how_to_fix="inspect the rows that reference this prospect and retry",
+                context={"prospect_id": key, "constraint_detail": str(exc.orig)[:200]},
+            ) from exc
+        raise PolsiaError(
+            E_VALIDATION,
+            f"prospect {key} has {count} outreach email(s) recorded, so it cannot be deleted "
+            "(prospects is the parent of email_logs and the database refuses the delete)",
+            how_to_fix=(
+                "keep the send history instead of deleting the prospect: mark it unsubscribed "
+                'with PATCH /api/v1/prospects/{id} {"status": "unsubscribed"}'
+            ),
+            context={
+                "prospect_id": key,
+                "email_logs": count,
+                "constraint": "email_logs.prospect_id",
+            },
+        ) from exc
     return row
 
 

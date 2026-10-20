@@ -19,6 +19,8 @@ import { api } from "@/lib/api";
  * Honesty rules this panel keeps:
  *  - "last result" is the server's newest recorded activity row (`GET`), never client memory
  *    dressed up as history; `{data: null}` renders an explicit "nothing recorded yet" sentence;
+ *  - a recorded row whose `created_at` came back null says "no timestamp recorded" — V28/L1: the
+ *    panel used to call it "just now" and "the result of this run", inventing an instant;
  *  - Dry run and Apply are the SAME server verb, differing only in `{apply: …}` — the panel never
  *    simulates a delete locally;
  *  - Apply is a TWO-CLICK verb: the first click only arms a confirmation ("Confirm apply"), the
@@ -54,7 +56,18 @@ type CleanupRecord = {
   result: RunWorkspaceCleanupResult;
 };
 
-type Shown = { result: RunWorkspaceCleanupResult; at: string | null; trigger: string };
+/** What the panel currently shows, and WHERE it came from. `at === null` has two meanings — a
+ *  stored record whose `created_at` the server could not state (`RunWorkspaceCleanupRecord.created_at`
+ *  is `UtcDatetime | None`, ops.py:328) and the result of a POST pressed in this session — so the
+ *  provenance travels with the state instead of being re-guessed from a null. V28/L1: the panel used
+ *  to print "just now" for BOTH, inventing an instant for a cleanup that may be days old. */
+type Shown = {
+  result: RunWorkspaceCleanupResult;
+  at: string | null;
+  trigger: string;
+  /** True only for the POST's own answer (the one case where "now" is the clock). */
+  justRan: boolean;
+};
 
 function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -154,7 +167,12 @@ export function OpsRetention() {
           return;
         }
         setLast(data);
-        setShown({ result: data.result, at: data.created_at, trigger: data.trigger });
+        setShown({
+          result: data.result,
+          at: data.created_at,
+          trigger: data.trigger,
+          justRan: false,
+        });
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -188,7 +206,7 @@ export function OpsRetention() {
         setActionError("the server's cleanup response is not the documented shape");
         return;
       }
-      setShown({ result, at: null, trigger: "owner" });
+      setShown({ result, at: null, trigger: "owner", justRan: true });
       setNotice(
         result.applied
           ? `Applied: removed ${result.count} expired run workspace(s); ${result.kept} kept.`
@@ -313,7 +331,11 @@ export function OpsRetention() {
 
           <p className="mt-2 text-xs text-ink-muted" data-testid="ops-retention-trigger">
             Last run: {triggerText(shown.trigger)} ·{" "}
-            {shown.at === null ? "just now" : relativeTime(shown.at)}
+            {shown.justRan
+              ? "just now"
+              : shown.at === null
+                ? "no timestamp recorded"
+                : relativeTime(shown.at)}
           </p>
         </div>
       ) : null}
@@ -378,7 +400,7 @@ export function OpsRetention() {
         <span className="ui-label text-ink-muted" data-testid="ops-retention-basis">
           {shown === null
             ? "no recorded run"
-            : shown.at === null
+            : shown.justRan
               ? "result of this run"
               : `last recorded row #${last?.activity_id ?? "—"}`}
         </span>

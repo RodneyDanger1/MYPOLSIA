@@ -318,8 +318,13 @@ async def unsubscribe_prospect(db: AsyncSession, address: str) -> dict[str, Any]
     side effect of sends, so an opt-out can arrive while a send is still in flight — and refuses for
     an address that cannot be one at all (E_VALIDATION, never a silent no-op).  `flush` only: the
     caller commits, like every other writer in this module.
+
+    The address is stored `strip().lower()` — the SAME normalisation `record_sent_emails` and the
+    owner's `prospect_service.normalize_email` apply.  Storing the recipient's typed case made
+    `Ada@Example.COM` a second `prospects` row beside `ada@example.com` (the unique index is
+    case-sensitive), i.e. one person listed twice with one row subscribed and one not.
     """
-    normalized = (address or "").strip()
+    normalized = (address or "").strip().lower()
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
         raise PolsiaError(
             E_VALIDATION,

@@ -273,6 +273,15 @@ async def _plan(conn: Any) -> dict[str, Any]:
         if spec.table not in {"tasks", "agent_runs", "ad_campaigns", "email_campaigns"}
     }
 
+    # `email_logs` carries no tag, so a tagged prospect with send history is NOT deletable: its
+    # children must never be touched and the FK would refuse the parent delete on PostgreSQL
+    # (V28/L5 D-2). Leave the pair for a human, exactly like a task with attachments.
+    prospect_children = await _ids(
+        conn, "SELECT DISTINCT prospect_id FROM email_logs WHERE prospect_id IS NOT NULL"
+    )
+    residual_prospects = others.get("prospects", set()) & prospect_children
+    others["prospects"] = others.get("prospects", set()) - prospect_children
+
     return {
         "ids": {
             "tasks": tasks,
@@ -285,6 +294,7 @@ async def _plan(conn: Any) -> dict[str, Any]:
             "tasks": residual_tasks,
             "ad_campaigns": residual_campaigns,
             "email_campaigns": residual_email_campaigns,
+            "prospects": residual_prospects,
             "site_dirs": _residual_site_dirs(),
         },
     }
@@ -318,6 +328,7 @@ def _print_residuals(plan: dict[str, Any]) -> None:
     print(f"  {'tagged tasks with attachments/chat/support rows':<58} {len(residual['tasks']):>5}")
     print(f"  {'tagged ad_campaigns with ad_metrics children':<58} {len(residual['ad_campaigns']):>5}")
     print(f"  {'tagged email_campaigns with email_logs children':<58} {len(residual['email_campaigns']):>5}")
+    print(f"  {'tagged prospects with email_logs children':<58} {len(residual['prospects']):>5}")
     print(f"  {'drill-named site directories (disk, out of scope)':<58} {residual['site_dirs']:>5}")
 
 
@@ -334,12 +345,15 @@ async def _delete(conn: Any, plan: dict[str, Any]) -> int:
     def statement(table: str, values: set[int]) -> tuple[str, dict[str, Any]]:
         params = {f"id{i}": value for i, value in enumerate(sorted(values))}
         placeholders = ", ".join(f":id{i}" for i in range(len(values)))
-        column = "task_id" if table == "agent_runs" else "id"
-        return f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params
+        # Every planned set holds PRIMARY KEYS. `agent_runs` used to be deleted by `task_id`,
+        # which is a different key space: it could delete an untagged task's run and strand the
+        # planned one (V28/L5 D-1, measured).
+        return f"DELETE FROM {table} WHERE id IN ({placeholders})", params
 
     if ids["agent_runs"]:
         sql, params = statement("agent_runs", ids["agent_runs"])
         deleted += (await conn.execute(text(sql), params)).rowcount
+
     for table in ("tasks", "ad_campaigns", "email_campaigns", "memory_entries", "competitors",
                   "social_posts", "support_inbox_items", "prospects"):
         values = ids.get(table, set())

@@ -53,7 +53,7 @@ receipt at this write)** — never presented as done.
 ## 1. What MYPOLSIA is
 
 A self-hosted business-operations platform: **FastAPI + Celery** backend, **Next.js 14** frontend,
-**nginx** in front, **PostgreSQL 16** (22 tables), **Redis** (broker), **ChromaDB** (vector memory).
+**nginx** in front, **PostgreSQL 16** (24 tables), **Redis** (broker), **ChromaDB** (vector memory).
 An orchestrator plus eight specialist agents run on a **DeepSeek-first runtime** with the Claude Code
 CLI as fallback; every external action passes a policy firewall (sandbox labelling, send caps, cost
 budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `docker-compose.yml`,
@@ -61,12 +61,12 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 
 ## 2. The surfaces — feature, page, API
 
-`frontend/src/app/` holds **19 `page.tsx`** files: **16 top-level routes** in the navigation
-(`frontend/src/components/layout/nav-items.ts:39-68`) plus the root redirect and two detail routes
-(`/tasks/[id]`, `/runs/[id]`). The backend exposes **77 method+path operations** across **26 modules** in
-`backend/app/api/v1/` (counted from the decorators at the V23 write). The V22 live `/openapi.json`
-capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded `TOTAL 76`; it predates V23's
-`GET /api/v1/ops/activity-publish` (`backend/app/api/v1/ops.py:106`, L4).
+`frontend/src/app/` holds **22 `page.tsx`** files: **19 top-level routes** in the navigation
+(`frontend/src/components/layout/nav-items.ts`) plus the root redirect and two detail routes
+(`/tasks/[id]`, `/runs/[id]`). The backend exposes **102 method+path operations** across **33 modules** in
+`backend/app/api/v1/` (V28 measurement from the app's own OpenAPI schema; the V23 write counted 77 across
+26). The V22 live `/openapi.json` capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded
+`TOTAL 76`; it predates the V23–V27 surface.
 
 | # | Surface | Page (source of truth) | Backend it consumes |
 |---|---|---|---|
@@ -86,12 +86,17 @@ capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded `TOTAL 76`; it p
 | 14 | Memory | `frontend/src/app/memory/page.tsx` | `memory.py` (list, create, delete) |
 | 15 | Settings | `frontend/src/app/settings/page.tsx` + `components/settings/*` | `config.py` (6 ops incl. DeepSeek key), `data.py` (export/wipe), `pricing.py`, `site.py` (package + download), `approvals.py` |
 | 16 | Capabilities | `frontend/src/app/capabilities/page.tsx` + `components/capabilities/*` | `ops.py` (`/capabilities`) |
+| 17 | Sites | `frontend/src/app/sites/page.tsx` + `components/sites/*` | `sites.py` (list/create, `DELETE /{slug}`, `/{slug}/regenerate`, `/{slug}/deploy` GET/POST), `site.py` (package + download), `deploy_service` |
+| 18 | Ops | `frontend/src/app/ops/page.tsx` + `components/ops/*` | `ops.py` (`/capabilities`, `/events/stats`, `/events/reset`, `/agent-quality`, `/activity-publish`, `/run-workspace-cleanup` GET/POST), `runs.py`, `approvals.py`, `auto_mode.py` |
+| 19 | Prospects | `frontend/src/app/prospects/page.tsx` + `components/prospects/*` | `prospects.py` (list/create/get/patch/delete) |
 | — | Root | `frontend/src/app/page.tsx` — redirects to `/dashboard` | — |
 | — | API docs | `/apidocs` → nginx → FastAPI `/docs`; schema `/openapi.json` (`nginx/nginx.conf`, V21) | `main.py` docs routes |
 | — | Activity stream | shell-wide feed (`components/shell/ActivityStrip.tsx`) | WebSocket `/ws/activity` (`backend/app/api/v1/ws.py`) |
 
-The four agent tools in the registry are `web_fetch`, `macro_snapshot`, `pricing_catalog`,
-`phone_read` (`backend/app/agents/tool_registry.py:124-215`). The Celery task families are
+The twelve agent tools in the registry are `web_fetch`, `web_search`, `macro_snapshot`,
+`pricing_catalog`, `phone_read`, `code_write`, `code_read`, `code_list`, `github_repo`,
+`github_branch`, `github_commit`, `github_pr` (`backend/app/agents/tool_registry.py`, V28
+measurement). The Celery task families are
 `agent_tasks`, `cadence`, `daily_cycle`, `dunning`, `followups`, `maintenance`, `night_task`,
 `phone_activity` (`backend/celery_app/tasks/`).
 
@@ -102,8 +107,9 @@ enumerated twice — AST over `backend/app/api/v1/*.py` and the live `/openapi.j
 missing / 0 extra**: **76 HTTP operations** at that read (the 77th surface is the WebSocket
 `/api/v1/ws/activity`, absent from OpenAPI by design). V23 adds one further HTTP operation,
 `GET /api/v1/ops/activity-publish`, which is WIRED on arrival (the `/usage` Worker-process card +
-`v23-observability` pins), so the current tree is **78 surfaces: 75 WIRED · 3 API-only · 0
-UNWIRED**. Per-row evidence (consumer `file:line`,
+`v23-observability` pins), so at the V23 write the tree was **78 surfaces: 75 WIRED · 3 API-only · 0
+UNWIRED** (V28 measurement: 102 HTTP operations — this paragraph is the dated V23 record, not the
+current count). Per-row evidence (consumer `file:line`,
 testid, jest/e2e pin) is in W1's matrix; these are its final counts:
 
 | Verdict | At base `4f6a834` | Working tree at W1's read (HEAD + V22 writers) |

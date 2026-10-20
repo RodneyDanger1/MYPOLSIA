@@ -26,9 +26,13 @@ test.describe("Outreach page", () => {
 
     await page.goto("/outreach");
     const shown = await shownCount(page);
-    // The heading is rendered from the page's own fetch: it must include every prospect the API
-    // currently serves (rows are only ever added — there is no DELETE endpoint — so >= is stable).
-    expect(shown).toBeGreaterThanOrEqual(prospects.length);
+    // V27 added DELETE /api/v1/prospects/{id}, so the table can SHRINK between the API read above
+    // and the page's own read. Compare against a snapshot taken AFTER the page rendered (the old
+    // "rows are only ever added" premise has been false since V27; V28/L4 D2).
+    const afterResponse = await request.get(`${API_BASE}/api/v1/outreach/prospects?limit=100`);
+    expect(afterResponse.status(), await afterResponse.text()).toBe(200);
+    const servedAfter = ((await afterResponse.json()) as unknown[]).length;
+    expect(shown).toBeGreaterThanOrEqual(Math.min(prospects.length, servedAfter));
 
     // Wave U2 (coder F2 rebuild): rows are list items with `data-testid="prospect-row"` (was
     // tbody tr — old -> new in the wave receipt). Same pin: the page renders what the API serves.

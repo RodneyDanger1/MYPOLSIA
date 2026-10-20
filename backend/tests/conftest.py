@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ─── Claude CLI mock (autouse — always active in unit tests) ──────────────────
@@ -55,6 +56,16 @@ async def async_db_session():
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
     )
+
+    # Postgres always enforces FKs; SQLite defaults them OFF per connection. Without this the
+    # fixture's schema made every ON DELETE CASCADE decorative, so a unit test could "pass" while
+    # the same delete stranded children in production (V28/L5 D-3).
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_connection, _record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     async with engine.begin() as conn:
         # SQLite doesn't support ARRAY — create tables via raw SQL for models that use it
         await conn.run_sync(Base.metadata.create_all)

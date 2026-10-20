@@ -1270,34 +1270,49 @@ async def generate_site(
             how_to_fix="choose a different slug or title; an existing site is never overwritten",
             context={"slug": slug_text, "reason": "collision"},
         ) from exc
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not create the site directory {slug_text!r}: {type(exc).__name__}: {exc}",
+            how_to_fix=f"make sure the sites directory is writable ({sites_root}) and retry",
+            context={"slug": slug_text, "path": str(site_dir)},
+        ) from exc
 
     sizes: dict[str, int] = {}
-    for filename in _FILES:
-        content = rendered.get(filename)
-        if content is None:
-            continue  # no sitemap without a base_url: a path-only <loc> would be a lie
-        target = site_dir / filename
-        target.write_text(content, encoding="utf-8", newline="\n")
-        sizes[filename] = target.stat().st_size
+    try:
+        for filename in _FILES:
+            content = rendered.get(filename)
+            if content is None:
+                continue  # no sitemap without a base_url: a path-only <loc> would be a lie
+            # Temp-file-then-`os.replace` (the same writer the deploy/regenerate paths use): a
+            # failed write is the named `E_STORAGE` naming the file, never a raw OSError.
+            sizes[filename] = _write_text_atomic(site_dir / filename, content)
 
-    stamp = created_at or datetime.now(UTC).isoformat(timespec="seconds")
-    total = sum(sizes.values())
-    meta = {
-        "slug": slug_text,
-        "title": page_title,
-        "created_at": stamp,
-        "bytes": total,
-        # ── V26 (frozen keys) ──────────────────────────────────────────────────────────────
-        "pages": list(PAGES),
-        "template": chosen_template,
-        "custom_domain": domain,  # recorded, NOT DNS-verified
-        "seo": build_seo(company, title=page_title, tagline=page_tagline or None),
-    }
-    (site_dir / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+        stamp = created_at or datetime.now(UTC).isoformat(timespec="seconds")
+        total = sum(sizes.values())
+        meta = {
+            "slug": slug_text,
+            "title": page_title,
+            "created_at": stamp,
+            "bytes": total,
+            # ── V26 (frozen keys) ──────────────────────────────────────────────────────────
+            "pages": list(PAGES),
+            "template": chosen_template,
+            "custom_domain": domain,  # recorded, NOT DNS-verified
+            "seo": build_seo(company, title=page_title, tagline=page_tagline or None),
+        }
+        _write_text_atomic(
+            site_dir / "meta.json",
+            json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+    except PolsiaError:
+        # A create that cannot finish leaves NOTHING behind: `generate_site` refuses an existing
+        # directory as a slug collision and `delete_site` refuses a directory with no
+        # `meta.json`, so a half-written one would reserve this slug forever.  Only the directory
+        # this call created is removed (the mkdir above proved it did not exist).
+        with contextlib.suppress(OSError):
+            _remove_tree(site_dir)
+        raise
     return {
         "slug": slug_text,
         "url": f"/sites/{slug_text}/",

@@ -31,17 +31,48 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Schedules** | `/schedules` | Recurring task prompts (15-minute cadence, company-local, DST-safe) |
 | **Social** | `/social` | Post drafting/publishing + mention replies (really threaded) |
 | **Outreach** | `/outreach` | Prospects + compliance-gated cold email with follow-up sweep |
+| **Prospects** | `/prospects` | *V27* — the owner-managed CRM: add / correct / remove a row, search across email, name and company, filter by exact status; blank and duplicate addresses are refused by name; the list carries the server's declared total (`X-Polsia-Total`) and an honest `{items: [], total: 0}` when empty |
 | **Support** | `/support` | The inbox mirror; draft/send replies through the one compliance bridge |
 | **Ads** | `/ads` | Campaigns + **per-campaign metrics expander** (V22): opening a campaign issues one `GET /ads/campaigns/{id}/metrics` and renders the real rows (null → `—`, measured 0 → a real zero); collapsed issues no request. Ads↔Stripe sync every 6 h. The count line reads the server's declared total ("N of M campaigns") |
 | **Finance** | `/finance` | Revenue/expenses/invoices KPIs (`null` when never measured). **V23:** a **Human rate** card sets/clears the owner's hourly rate (`PUT /config {"human_hourly_rate": n \| null}`, server response reflected) — gross margin becomes measurable only once price, AI cost (needs capacity) and human hours are also measured; the Planning row shows `—` with the Finance reason until then |
 | **Invoices** | `/invoices` | Create → send → void, with the dunning ladder and amount-gated emails. V22: an optional **line-item editor** on create (blank row omitted; a touched row must name its description and carry numeric qty/price — refused before POST), a read-only `Items (N)` breakdown on each row, and an honest truncation marker from the server's declared total |
 | **Usage** | `/usage` | Agent-runs ledger + CSV export + ops panel (breaker stats, quality reads). Since V21's settle every ledger row links to `/runs/{id}`; V22 adds the run's **real tool activity** — one chip per tool with a count when `tools_used` was recorded, "No tools were called in this run." for a recorded empty list, and "Tool activity: not recorded for this run." for legacy/missing rows (never a fabricated chip or zero) — beside the stored `num_turns`/`is_error`. **V23:** the ops panel adds a **Worker process** card fed by `GET /api/v1/ops/activity-publish` — the worker's last published breaker snapshot (failed publishes, skipped-while-open, breaker state, publish time) or an honest "not published yet" (never fabricated zeros); the API-process counters stay separate |
 | **Memory** | `/memory` | Company-memory search (+ add/forget); runs read and write memories |
+| **Ops** | `/ops` | *V25* — the God Mode cockpit: live runs, pending approvals, manual agent dispatch, the sandbox/kill switches, and the *V27* retention panel (dry-run by default; `apply` deletes exactly the expired run directories and records the counts). Every control calls a real handler; every failure renders the server's named refusal, never a fabricated success |
 | **Settings** | `/settings` | Company + owner profile, sender identity, DeepSeek key, night task, data export/wipe, pricing, site package. **V23:** a **cycle-report email** switch in Emails (`GET`/`PUT /config` → `cycle_report_email`; awaits the server, never flips optimistically) and a **KPI editor** below the form card — six keys (`mrr_usd`, `active_customers`, `churn_rate`, `cac_usd`, `ltv_usd`, `nps`); a blank box removes the key (never saved as 0), clear-all writes `{}`. **V26:** Settings → **Integrations** — a section below the form card (not a fifth tab) with masked status for GitHub/Render/SendGrid (writable) and Stripe/Meta/Google (read-only), save/clear through the one secret store, and read-only test probes whose refusals are shown by name (`E_AUTH`, `E_UPSTREAM`, …). No response carries a credential value |
-| **Sites** | `/sites` | *V24/V26* — build a site from the company profile and preview it. **V26** writes three real pages (`index.html`, `about.html`, `contact.html`) in one of three script-free presets, serves them at `/sites/<slug>/` through nginx, emits `sitemap.xml` with absolute locs, and RECORDS a custom domain (never DNS-verified; a scheme/path is refused 422 `E_VALIDATION`). No cloud deploy — the Render adapter is dry-run by default and refuses `E_CONFIG` without a key |
+| **Sites** | `/sites` | *V24/V26* — build a site from the company profile and preview it. **V26** writes three real pages (`index.html`, `about.html`, `contact.html`) in one of three script-free presets, serves them at `/sites/<slug>/` through nginx, emits `sitemap.xml` with absolute locs, and RECORDS a custom domain (never DNS-verified; a scheme/path is refused 422 `E_VALIDATION`). The site is hosted on this box; the Render adapter only SUBMITS a deploy of a configured service (dry-run by default, `E_CONFIG` without a key) |
 | **Phone** | `/phone` | *Live (V16)* — texts/calls + media (photos/attachments stream from the store) + archive download, a click-to-fetch **verification-codes panel** (V19: masked by default, reveal/copy re-masks, every fetch audit-logged without values), plus a policy-gated send composer (`POST /api/v1/phone/send`; refusals by name: sandbox / unpaired / unavailable / validation). Since V19 the **host send bridge** (`scripts/phone_send_bridge.py`, OFF by default) lets the Docker stack send through the host's paired browser. **Thread view (V22):** any thread row's **Open conversation** opens an in-page panel (`GET /phone/messages?limit=100&thread_id=N`, fetched only on selection) with loading / empty / named-refusal / store-unavailable states and `← All threads` to return. **Agents (V20):** the firewalled read-only `phone_read` tool — newest threads + optional per-thread messages, **codes never** (code-shaped bodies withheld), granted to `orchestrator` + `customer_support` only; the running image shows the new grant after the V20 rebuild (USAGE §5.3). See USAGE §5.1–5.4; [PHONELINK-MCP-TEST.md](PHONELINK-MCP-TEST.md) |
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 | **API docs** | `/apidocs` | *V21* — the API's own **Swagger UI**, proxied by nginx to FastAPI's `/docs` (`/docs` itself stays with the Next app, which has no such page in this tree, so it answers 404). The schema is at `/openapi.json`. Explore/probe any route by hand: each protected operation shows an `X-API-Key` header field — use **Try it out**, paste the owner key, **Execute** (this app declares the key as a header parameter, not a security scheme, so there is no Authorize button). Auto-hidden (404) when `SANDBOX_MODE=false`. Needs the V21 nginx reload; `make smoke`'s `api-docs` check proves both URLs (USAGE §7.2) |
+
+### V28 hardening sweep — measured 2026-10-19 (this commit)
+
+Six sweep lanes, **no new features**: frontend state, backend error paths, wiring audit, e2e
+fidelity, data integrity, adversarial truth. Every product fix landed RED-first.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Backend | **3,396 tests / 0 failed / 0 errors / 13 skipped** (`EXIT=0`) | `wave-v28/v-settle/gate.xml` |
+| Frontend (jest) | **113 suites / 1,026 tests passed** (`EXIT=0`) | `jest-full.log` |
+| Integration (real PG/Redis) | **15 passed / 0 failed** | `integration.xml` |
+| Full e2e on a **fresh** DB | **53 passed / 10 skipped / 0 failed** | `e2e-full-freshdb.log` |
+| Live drills | **45/45, 17/17, 42/42, 41/41**, V28 **22/22** | `drills.log`, `v28-live.sh` |
+
+Fixed by the sweep: deleting a prospect with send history was a raw 500 (now `E_VALIDATION`); a
+failed site create leaked a half-written directory and wedged the slug (now atomic writes,
+`E_STORAGE`, retryable); the opt-out producer stored a differently-cased address than the CRM; the
+retention panel invented “just now” for a record with a null timestamp; AutoMode polled a hidden tab;
+a schedules create could fabricate a one-row table before the list read; the cleanup script deleted
+`agent_runs` by `task_id` instead of run id (it could delete an untagged task's run) and could orphan
+`email_logs`; the SQLite engine never enabled `PRAGMA foreign_keys`, so every cascade was decorative
+there; the Render adapter resolved two settings by computed name. Docs: five false claims corrected
+(Render “not implemented”, DeepSeek “cannot call tools”, route/table/tool counts, the surface table
+missing `/sites` `/ops` `/prospects`, the feature tour), plus two stale e2e assertions (the `/ops`
+empty ledger and the “rows are only ever added” outreach premise).
+
+Residuals: SendGrid/Stripe **live** probes need owner keys; a vision cache hit writes no history row
+for the reading task; wiring the per-run cleanup into the executor is owner-gated (the retention beat
+owns cleanup today); low-severity findings are listed in each lane receipt.
 
 ### V27 settlement — measured 2026-10-19 (this commit)
 
@@ -119,7 +150,7 @@ not a V26 one.
               │                       │                   │
      ┌────────▼────────┐   ┌──────────▼──────┐  ┌────────▼──────┐
      │  PostgreSQL 16  │   │  Redis + Celery  │  │  ChromaDB     │
-     │  (22 tables)    │   │  (task queue)    │  │  (vector mem) │
+     │  (24 tables)    │   │  (task queue)    │  │  (vector mem) │
      └─────────────────┘   └──────────────────┘  └───────────────┘
 ```
 
@@ -215,16 +246,20 @@ Fill in the relevant sections of `.env` to activate each integration:
   owner-authenticated `POST /api/v1/support/inbox` — there is no mail-poll (IMAP) setting
 - **Web search for competitor research** — no web-search key exists (the advertised-but-dead
   settings were removed, D14): under the CLI runtime the agent reaches the web through the CLI's
-  own WebSearch/WebFetch tools; the DeepSeek-first runtime cannot call tools yet (tool-calling
-  is deferred), so competitor research under it works from the prompt's context only
+  own WebSearch/WebFetch tools; under the DeepSeek-first runtime the agent's registry tools
+  (`web_fetch`, `web_search`) ride the request and every `tool_calls` turn is executed by
+  `app/agents/deepseek_runtime.py`, so `competitor_research` searches and fetches for real (V28
+  correction: the earlier "tool-calling is deferred / prompt context only" text was stale)
 - **Google Ads / Meta Ads** — Campaign management (advertised, not implemented:
   `GOOGLE_ADS_CLIENT_SECRET` is not read by any code path; the other Google Ads settings are)
 - **Stripe** — Revenue and expense tracking (`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`; there
   is no client-side publishable-key setting)
 - **GitHub** — Open PRs from the code generation agent
-- **Deployment (Render)** — not implemented: there is no Deployment agent and never was (see
-  `docs/ACCEPTANCE_TESTING.md`); the dead environment placeholder for it was removed with the other
-  advertised-but-dead settings (D14)
+- **Deployment (Render)** — the site deploy adapter ships (`backend/app/services/deploy_service.py`):
+  `POST /api/v1/sites/{slug}/deploy` is a DRY RUN by default and a live submit needs
+  `RENDER_API_KEY` + `RENDER_SERVICE_ID`, claiming success only for a Render response carrying a
+  deploy id. There is still no Deployment *agent*; the owner drives the route (V28 correction: the
+  earlier "not implemented / placeholder removed" text described the pre-V25 tree)
 
 ## Known gaps (measured, not hidden)
 
@@ -404,7 +439,7 @@ polsia/
 │   │   │   └── finance/
 │   │   ├── api/v1/          # REST endpoints + WebSocket
 │   │   ├── core/            # DB, Redis, ChromaDB, events, security
-│   │   ├── models/          # SQLAlchemy ORM (22 tables)
+│   │   ├── models/          # SQLAlchemy ORM (24 tables)
 │   │   ├── schemas/         # Pydantic request/response models
 │   │   └── services/        # Business logic layer
 │   ├── celery_app/          # Celery worker, Beat schedule, tasks
@@ -583,9 +618,9 @@ rebuild.
   needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
-  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 65 routes (the
-  60 documented through V9, plus V10's data pair, V11's unsubscribe + ops-sandbox routes, and
-  V12's site-package download), pinned route-by-route in `backend/tests/parity/`.
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 102
+  method+path operations (V28 measurement from the app's own OpenAPI schema; the original 65-route
+  tree documented through V9 is pinned route-by-route in `backend/tests/parity/`).
 
 ## CI/CD
 

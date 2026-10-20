@@ -94,11 +94,20 @@ def _resolved(name: str) -> str | None:
 
     A whitespace-only env value is treated as ABSENT (it cannot be a credential) and falls through
     to the Settings field, rather than shadowing a configured `.env` value with nothing.
+
+    V28/L3: the field is named BY LITERAL, not computed (`name.lower()`).  The computed form made
+    the link from RENDER_API_KEY to `Settings.render_api_key` exist only at runtime — a field
+    rename would have degraded silently to "not configured", and no audit could see the edge.
+    `tests/unit/test_v28_wiring.py::test_every_settings_field_has_a_reader` now pins both reads.
     """
     env_value = os.environ.get(name)
     if env_value is not None and env_value.strip():
         return env_value.strip()
-    return _setting(name.lower()) or None
+    if name == RENDER_API_KEY_ENV:
+        return _setting("render_api_key") or None
+    if name == RENDER_SERVICE_ID_ENV:
+        return _setting("render_service_id") or None
+    return None  # not a credential this adapter knows: absent, never a guessed attribute
 
 
 def credentials() -> tuple[str | None, str | None, list[str]]:

@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -65,6 +66,17 @@ def get_engine() -> AsyncEngine:
                 },
             )
         _engine = create_async_engine(url, **kwargs)
+        if url.startswith("sqlite"):
+            # SQLite defaults `PRAGMA foreign_keys` to OFF per connection, so every FK in the
+            # schema (task -> attachments -> vision_descriptions, prospect -> email_logs, ...) was
+            # advisory on the documented embedded path. Postgres always enforces them; the app must
+            # behave the same on SQLite. V28/L5 D-3 measured a deleted attachment leaving its
+            # descriptions behind because of this.
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _sqlite_fk_on(dbapi_connection: Any, _record: Any) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
     return _engine
 
 

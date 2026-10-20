@@ -24,6 +24,8 @@ export type AutoModeStatus = { active: boolean; session: AutoModeSession | null 
  * Reads on mount and on a modest interval, and re-seeds from the answer of every action
  * (POST/DELETE return the session itself — no follow-up read is invented). The interval is
  * cleared on unmount: no timer outlives the page, and no state update escapes a torn-down panel.
+ * V28/L1: an interval tick is SKIPPED while the document is hidden (the mount read is not) — the
+ * rule `useVisibilityPoll` and `useAgentStatus` already hold.
  */
 
 /** The poll cadence: one honest refresh a minute keeps the counters and the countdown live. */
@@ -91,7 +93,15 @@ export function useAutoMode() {
     void read().finally(() => {
       if (mounted.current) setLoading(false);
     });
+    // V28/L1 — the same hidden-tab law as `useVisibilityPoll` / `useAgentStatus`: a hidden tab is
+    // not watching, so its tick is SKIPPED (no request leaves the browser for a surface nobody can
+    // see). The MOUNT read above is exempt: opening the dashboard in the background must render the
+    // same panel it renders in front. `visibilitychange` is not a read trigger here — the next
+    // visible tick (≤ 60 s) is the refresh, which keeps this a one-interval poller.
+    const isHidden = () =>
+      typeof document !== "undefined" && document.visibilityState === "hidden";
     const timer = setInterval(() => {
+      if (isHidden()) return;
       void read();
     }, REFRESH_MS);
     return () => {
