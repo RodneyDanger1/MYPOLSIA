@@ -23,16 +23,28 @@ WHAT IS DELETED (and what never is)
         prospects             email / company
 
     NEVER touched: `ad_metrics`, `email_logs` or any other CHILD row of a tagged parent (the
-    parent is reported as residual instead), `task_attachments` and the `data/sites` directories
-    (out of scope — reported as residual counts so an operator sees they exist), and any row whose
-    title/name does not carry the tag.  A tagged task that owns attachments or chat/support rows
-    is skipped and reported: deleting it would either strand a blob or delete rows that carry no
-    tag themselves.
+    parent is reported as residual instead), `task_attachments`, and any row whose title/name does
+    not carry the tag.  A tagged task that owns attachments or chat/support rows is skipped and
+    reported: deleting it would either strand a blob or delete rows that carry no tag themselves.
+
+SITE DIRECTORIES (V29/L1)
+    Drill waves also leave generated sites under `backend/data/sites` (`v24-live-*`, `v25-drive-*`,
+    `v26-drill-*`, …).  They are not rows, and they are NOT selected by `TAG_RE`: that pattern
+    misses `v24-live`/`v25-drive` and would match a REAL site named "drill".  Selection is an
+    explicit PREFIX allowlist (`SITE_DIR_PREFIXES`) limited to a direct, non-link child of the
+    sites root.  The dry run REPORTS the count and moves nothing; `--apply` QUARANTINES each one —
+    a same-filesystem rename into `backend/data/trash/v29-<UTC stamp>/`, beside `sites/` (never
+    inside it, so the `StaticFiles` mount cannot serve a quarantined site).  Nothing is ever
+    `shutil.rmtree`d, a symlink/junction is refused and never followed, and the rename happens
+    AFTER the row transaction commits: the irreversible half (rows) finishes before a directory
+    moves.  Emptying the trash is a separate, explicit step an operator takes by hand.
 
 MODES
     (default)          DRY RUN — prints the target, the tag rule and the per-table counts.
     --report           same counts, explicitly a report; never deletes.
-    --apply            deletes exactly the rows the plan counted, in ONE transaction.
+    --apply            deletes exactly the rows the plan counted (ONE transaction), then
+                       quarantines the allowlisted drill site directories (a rename, never a
+                       delete).
     --apply --report   prints BEFORE and AFTER count blocks, deleting between them.
 
 EXIT CODES
@@ -43,7 +55,10 @@ EXIT CODES
 SAFETY
     The resolved `DATABASE_URL` is printed on every run with credentials stripped, alongside the
     exact tag rule, so an operator can see WHERE the script points before trusting a count.  A
-    non-local PostgreSQL host is refused unless `--allow-remote` is passed explicitly.
+    non-local PostgreSQL host is refused unless `--allow-remote` is passed explicitly.  Drill site
+    directories are quarantined by PREFIX allowlist with a same-filesystem rename into
+    `data/trash/v29-<stamp>/` — `TAG_RE` is never applied to a path, `shutil.rmtree` is never
+    called on a site, and a symlink or junction is refused and never followed.
 
 USAGE
     python backend/scripts/cleanup_drill_data.py            # dry run (host, from the repo root)
@@ -56,9 +71,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -74,6 +91,23 @@ if str(BACKEND) not in sys.path:  # `app` lives beside this script (backend/app)
 #: then the two dialects would select different rows).
 TAG_RE = re.compile(r"\[drill\]|\bdrill\b", re.IGNORECASE)
 SQL_TAG = "%drill%"
+
+#: The ONLY site-directory names `--apply` may quarantine (V29/L1 T1.5).  `TAG_RE` is NEVER applied
+#: to a path: it misses `v24-live-*` / `v25-drive-*` (they are drill sites too) and it would match
+#: a REAL site named "drill".  Every prefix keeps its trailing dash, so `v24-live-` cannot select a
+#: site called `v24-lively`; adding a wave is one line here, never a user-supplied name.
+SITE_DIR_PREFIXES: tuple[str, ...] = (
+    "v24-live-",
+    "v25-drive-",
+    "v26-drill-",
+    "v27-e2e-",
+    "v28-e2e-",
+    "v29-drill-",
+)
+
+#: One quarantine batch per APPLY run: `<backend>/data/trash/v29-<UTC stamp>/`.  Emptying a batch
+#: is a separate, explicit operator step — this script never deletes one it wrote.
+TRASH_BATCH_PREFIX = "v29-"
 
 #: PostgreSQL hosts considered local.  `postgres`/`db` are the docker-compose service names; the
 #: loopback names cover a host-run Postgres.  Anything else needs `--allow-remote`.
@@ -282,6 +316,10 @@ async def _plan(conn: Any) -> dict[str, Any]:
     residual_prospects = others.get("prospects", set()) & prospect_children
     others["prospects"] = others.get("prospects", set()) - prospect_children
 
+    # Disk state, scanned ONCE per plan: the eligible site dirs (what apply renames) and the
+    # allowlisted names that are links and must be refused rather than followed.
+    site_dirs, refused_site_dirs = _site_dir_candidates()
+
     return {
         "ids": {
             "tasks": tasks,
@@ -290,22 +328,117 @@ async def _plan(conn: Any) -> dict[str, Any]:
             "email_campaigns": email_campaigns,
             **others,
         },
+        # PATHS, not names: `--apply` renames exactly these AFTER the row transaction commits
+        # (V29/L1 T1.5).  `refused_site_dirs` are the allowlisted names that are links — reported
+        # by name and never followed.  The residual block keeps the COUNTS for display.
+        "site_dirs": site_dirs,
+        "refused_site_dirs": refused_site_dirs,
         "residual": {
             "tasks": residual_tasks,
             "ad_campaigns": residual_campaigns,
             "email_campaigns": residual_email_campaigns,
             "prospects": residual_prospects,
-            "site_dirs": _residual_site_dirs(),
+            "site_dirs": len(site_dirs),
+            "site_dirs_refused": len(refused_site_dirs),
         },
     }
 
 
-def _residual_site_dirs() -> int:
-    """Drill-named site directories under `backend/data/sites` — counted, NEVER deleted."""
-    root = BACKEND / "data" / "sites"
+def _sites_root() -> Path:
+    """`<backend>/data/sites` — the ONE root `site_service` writes; resolved at CALL time.
+
+    `POLSIA_SITES_DIR` is a test seam: the V28 cleanup test runs this script with `cwd=backend`,
+    so without an override an `--apply` would quarantine whatever real drill dirs a developer has
+    there. Production/container runs leave it unset and get the real root.
+    """
+    override = os.environ.get("POLSIA_SITES_DIR")
+    return Path(override) if override else BACKEND / "data" / "sites"
+
+
+def _trash_root() -> Path:
+    """`<backend>/data/trash` — BESIDE `sites/`, so the static mount can never serve a batch."""
+    override = os.environ.get("POLSIA_TRASH_DIR")
+    return Path(override) if override else BACKEND / "data" / "trash"
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink OR a Windows junction: both redirect somebody else's directory at this name."""
+    is_junction = getattr(os.path, "isjunction", None)
+    return path.is_symlink() or bool(callable(is_junction) and is_junction(path))
+
+
+def _site_dir_candidates() -> tuple[list[Path], list[Path]]:
+    """`(eligible, refused)` drill site directories under `data/sites`.
+
+    Eligibility is the whole safety rule, and every clause is required: a DIRECT child of the
+    sites root (`path.parent` is the root), a real directory (`follow_symlinks=False`), NOT a
+    symlink/junction, and a name that starts with one of `SITE_DIR_PREFIXES`.  `refused` holds the
+    entries that match the allowlist but are a link (or cannot be inspected): they are reported by
+    name and never followed.  `TAG_RE` is deliberately not consulted for a path (V29/L1 T1.5).
+    """
+    root = _sites_root()
     if not root.is_dir():
+        return [], []
+    eligible: list[Path] = []
+    refused: list[Path] = []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            path = Path(entry.path)
+            if path.parent != root or not path.name.startswith(SITE_DIR_PREFIXES):
+                continue
+            if _is_link(path):
+                refused.append(path)
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                refused.append(path)
+                continue
+            eligible.append(path)
+    return sorted(eligible, key=lambda child: child.name), sorted(refused, key=lambda c: c.name)
+
+
+def _batch_stamp() -> str:
+    """The quarantine batch's UTC stamp — one per run, seconds resolution."""
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _quarantine_site_dirs(paths: list[Path], *, stamp: str | None = None) -> int:
+    """RENAME each eligible drill site directory into `data/trash/v29-<stamp>/`; return the count.
+
+    Called AFTER the row transaction commits (the rows are the irreversible half).  A rename on
+    the same filesystem moves the site's own files; nothing here is `shutil.rmtree`d, so an
+    operator can put a batch back.  The batch lives beside `sites/`, never inside it.  A path that
+    is not an allowlisted, non-link DIRECT child of the root is refused BY NAME and skipped —
+    never followed, never deleted.
+    """
+    root = _sites_root()
+    eligible: list[Path] = []
+    for path in paths:
+        if path.parent != root or not path.name.startswith(SITE_DIR_PREFIXES):
+            print(f"REFUSED a site path (not a direct child of {root}): {path}")
+            continue
+        if _is_link(path):
+            print(f"REFUSED a site path (a link, never followed): {path}")
+            continue
+        if not path.is_dir():
+            print(f"REFUSED a site path (no longer a directory): {path}")
+            continue
+        eligible.append(path)
+    if not eligible:
         return 0
-    return sum(1 for child in root.iterdir() if child.is_dir() and TAG_RE.search(child.name))
+    batch = _trash_root() / f"{TRASH_BATCH_PREFIX}{stamp or _batch_stamp()}"
+    moved = 0
+    for path in eligible:
+        target = batch / path.name
+        if target.exists():
+            print(f"REFUSED a site path (already quarantined in this batch): {path}")
+            continue
+        batch.mkdir(parents=True, exist_ok=True)
+        path.rename(target)
+        moved += 1
+    return moved
 
 
 def _counts(plan: dict[str, Any]) -> dict[str, int]:
@@ -329,7 +462,12 @@ def _print_residuals(plan: dict[str, Any]) -> None:
     print(f"  {'tagged ad_campaigns with ad_metrics children':<58} {len(residual['ad_campaigns']):>5}")
     print(f"  {'tagged email_campaigns with email_logs children':<58} {len(residual['email_campaigns']):>5}")
     print(f"  {'tagged prospects with email_logs children':<58} {len(residual['prospects']):>5}")
-    print(f"  {'drill-named site directories (disk, out of scope)':<58} {residual['site_dirs']:>5}")
+    print(f"  {'drill site directories (allowlist; quarantined on --apply)':<58} {residual['site_dirs']:>5}")
+    if residual["site_dirs_refused"]:
+        print(
+            f"  {'allowlisted site paths REFUSED (a link; never followed)':<58} "
+            f"{residual['site_dirs_refused']:>5}"
+        )
 
 
 # ── deletion ─────────────────────────────────────────────────────────────────────────────────
@@ -402,7 +540,17 @@ async def _run(args: argparse.Namespace) -> int:
 
         async with engine.begin() as conn:
             deleted = await _delete(conn, plan)
-        print(f"APPLIED — deleted {deleted} row(s) in one transaction")
+        # AFTER the commit: the rows are the irreversible half, so a failed commit leaves every
+        # directory exactly where it was.  The quarantine is a RENAME into `data/trash/v29-<stamp>/`
+        # — never an `rmtree`, and never inside the `sites` root the static mount serves.  The
+        # refused (link) paths ride along so the run NAMES them instead of dropping them silently.
+        quarantined = _quarantine_site_dirs(
+            [*plan.get("site_dirs", []), *plan.get("refused_site_dirs", [])]
+        )
+        print(
+            f"APPLIED — deleted {deleted} row(s); quarantined {quarantined} drill site "
+            "director(y|ies)"
+        )
 
         if args.report:
             async with engine.connect() as conn:

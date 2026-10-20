@@ -83,6 +83,8 @@ async def test_finance_tools_carry_the_registry_descriptions(api_client, auth_he
     assert finance["tools"] == [
         {"name": "macro_snapshot", "description": _spec_description("macro_snapshot")},
         {"name": "pricing_catalog", "description": _spec_description("pricing_catalog")},
+        # V29/L4: display-only currency conversion for budget/pricing reasoning.
+        {"name": "fx_convert", "description": _spec_description("fx_convert")},
     ]
     assert finance["channels"] == ["stripe"]
 
@@ -109,7 +111,7 @@ async def test_phone_read_is_listed_exactly_where_the_allowlist_says(api_client,
     }
     assert holders == {"orchestrator", "customer_support"}
     assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
-        "macro_snapshot", "pricing_catalog", "phone_read"]
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert"]
     assert [tool["name"] for tool in rows["customer_support"]["tools"]] == ["phone_read"]
     assert rows["customer_support"]["tools"][0]["description"] == _spec_description("phone_read")
 
@@ -135,12 +137,12 @@ async def test_v24_tools_are_listed_exactly_where_the_allowlist_says(api_client,
 
     rows = {row["agent_type"]: row for row in data["agents"]}
     assert [tool["name"] for tool in rows["competitor_research"]["tools"]] == [
-        "web_fetch", "web_search"]
+        "web_fetch", "web_search", "research_fetch", "signals_read", "domain_health", "link_status"]
     # V25/L2: the workspace trio keeps its positions and the GitHub quartet follows it.
     assert [tool["name"] for tool in rows["code_generation"]["tools"]][:3] == [
         "code_write", "code_read", "code_list"]
     assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
-        "macro_snapshot", "pricing_catalog", "phone_read"]
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert"]
 
     registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}
     for name in ("web_search", "code_write", "code_read", "code_list"):
@@ -171,7 +173,7 @@ async def test_v25_github_tools_are_listed_exactly_where_the_allowlist_says(
     assert [tool["name"] for tool in rows["code_generation"]["tools"]] == [
         "code_write", "code_read", "code_list", *quartet]
     assert [tool["name"] for tool in rows["orchestrator"]["tools"]] == [
-        "macro_snapshot", "pricing_catalog", "phone_read"]
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert"]
     holders = {
         agent_type for agent_type, row in rows.items()
         if set(tool["name"] for tool in row["tools"]) & set(quartet)

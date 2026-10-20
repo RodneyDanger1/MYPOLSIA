@@ -44,7 +44,9 @@ deliberately does NOT print the amounts — money is not a credential, but it is
 key works either.
 
 All four are bounded at `PROBE_TIMEOUT_S` (10 s, the brief's ceiling), follow no redirects, and
-read at most `MAX_PROBE_BYTES`.  Failure mapping uses the codes that already exist in
+read at most `MAX_PROBE_BYTES` — the body is STREAMED and abandoned the moment that cap is passed,
+so an oversized or endless response is never pulled in full just to be rejected (V29/L1 T1.1).
+Failure mapping uses the codes that already exist in
 `app/core/errors.py` — no new code, so the status-table census (`test_r29_status_parity`)
 does not move:
 
@@ -346,9 +348,30 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
     try:
         # The timeout must sit on the constructor's own line: the perf pin scans for
         # `httpx.AsyncClient(` and `timeout=` together (tests/unit/test_v24_perf.py:338).
-        async with httpx.AsyncClient(timeout=httpx.Timeout(PROBE_TIMEOUT_S),
-                                     follow_redirects=False, transport=_TRANSPORT) as client:
-            response = await client.get(url, headers=headers)
+        # V29/L1 T1.1 — READ at most the cap.  `client.get()` buffers the WHOLE body before any
+        # length check, so a huge (or endless) response was consumed in full just to be rejected.
+        # Streaming lets the probe abandon the response the moment the cap is passed: at most ONE
+        # chunk beyond `MAX_PROBE_BYTES` is ever pulled from the wire.
+        async with (
+            httpx.AsyncClient(timeout=httpx.Timeout(PROBE_TIMEOUT_S),
+                              follow_redirects=False, transport=_TRANSPORT) as client,
+            client.stream("GET", url, headers=headers) as response,
+        ):
+            status = response.status_code
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_PROBE_BYTES:
+                    raise PolsiaError(
+                        E_UPSTREAM,
+                        f"{provider}: the probe answered past the {MAX_PROBE_BYTES}-byte "
+                        "read cap",
+                        how_to_fix=(
+                            "retry; if it persists the endpoint is returning an unexpected body"
+                        ),
+                        context={"provider": provider, "status": status},
+                    )
+            raw = bytes(body)
     except httpx.TimeoutException as exc:
         raise PolsiaError(
             E_UPSTREAM,
@@ -368,18 +391,9 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
             context={"provider": provider},
         ) from exc
 
-    raw = response.content or b""
-    if len(raw) > MAX_PROBE_BYTES:
-        raise PolsiaError(
-            E_UPSTREAM,
-            f"{provider}: the probe answered {len(raw)} bytes, past the "
-            f"{MAX_PROBE_BYTES}-byte read cap",
-            how_to_fix="retry; if it persists the endpoint is returning an unexpected body",
-            context={"provider": provider, "status": response.status_code},
-        )
-    if response.status_code in (401, 403):
+    if status in (401, 403):
         detail = _provider_message(raw)
-        message = f"{provider}: the credential was refused (HTTP {response.status_code})"
+        message = f"{provider}: the credential was refused (HTTP {status})"
         if detail:
             message += f": {detail}"
         raise PolsiaError(
@@ -389,11 +403,11 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
                 f"re-enter a valid {provider} credential in Settings → Integrations "
                 "(or fix the environment variable) and test again"
             ),
-            context={"provider": provider, "status": response.status_code},
+            context={"provider": provider, "status": status},
         )
-    if response.status_code != 200:
+    if status != 200:
         detail = _provider_message(raw)
-        message = f"{provider}: the probe answered HTTP {response.status_code}"
+        message = f"{provider}: the probe answered HTTP {status}"
         if detail:
             message += f": {detail}"
         raise PolsiaError(
@@ -403,7 +417,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
                 "retry; if it persists the provider is answering unexpectedly — this is not "
                 "fixed by re-entering your own configuration"
             ),
-            context={"provider": provider, "status": response.status_code},
+            context={"provider": provider, "status": status},
         )
     if not raw:
         return None
@@ -415,7 +429,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
             f"{provider}: the probe answered 200 with a body that is not JSON — refusing "
             "rather than reporting a result nobody can read",
             how_to_fix="retry; if it persists the provider's contract has changed",
-            context={"provider": provider, "status": response.status_code},
+            context={"provider": provider, "status": status},
         ) from None
 
 

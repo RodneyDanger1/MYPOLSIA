@@ -189,6 +189,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # wave V9 settle (V9-D3, parent): the planner / invoices / economics routers, wired by the
     # parent commit after their writers settled — each documented by its module + wave tests.
     ("/api/v1/economics/context", ("GET",)),
+    # wave V29 (L4/L5/L6): display-only FX conversion, fixed-feed signals, domain/link trust.
+    ("/api/v1/economics/convert", ("GET",)),
+    ("/api/v1/signals", ("GET",)),
+    ("/api/v1/trust/domain", ("GET",)),
+    ("/api/v1/trust/link", ("GET",)),
     ("/api/v1/invoices", ("GET",)),
     ("/api/v1/invoices", ("POST",)),
     ("/api/v1/invoices/{invoice_id}", ("GET",)),

@@ -220,6 +220,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/invoices/{invoice_id}/send"),
     ("POST", "/api/v1/invoices/{invoice_id}/void"),
     ("GET", "/api/v1/economics/context"),
+    # wave V29: display-only FX conversion, fixed-feed signals, domain/link trust.
+    ("GET", "/api/v1/economics/convert"),
+    ("GET", "/api/v1/signals"),
+    ("GET", "/api/v1/trust/domain"),
+    ("GET", "/api/v1/trust/link"),
     # wave V10 (H1/D7): the data portability surface — documented by app/api/v1/data.py and
     # tests/unit/api/test_v10_data_export.py; GET /data/export (ZIP) + DELETE /data (dry-run /
     # single-use-token wipe). The count comment chain continues: Count 51 -> 60 -> 62.

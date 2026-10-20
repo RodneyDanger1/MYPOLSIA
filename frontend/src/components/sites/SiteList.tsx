@@ -3,6 +3,7 @@
 import { absoluteStamp } from "@/components/dashboard/format";
 import { Button } from "@/components/ui";
 import { SiteDeployControl, type DeployBoard } from "@/components/sites/SiteDeployControl";
+import { SiteHealthBadge } from "@/components/sites/SiteHealthBadge";
 import { SiteLifecycleControl, type LifecycleBoard } from "@/components/sites/SiteLifecycleControl";
 import { SitePages } from "@/components/sites/SitePages";
 import { bytesText, type SiteSummary } from "@/components/sites/types";
@@ -51,6 +52,25 @@ export function SiteList({
                 <p className="ui-label text-ink-muted">
                   {`${absoluteStamp(site.created_at)} · ${bytesText(site.bytes)}`}
                 </p>
+                {/* V29/L6: a RECORDED custom domain is now CHECKED (DNS + certificate).  The host
+                    itself is already shown by `SitePages` ("recorded, not verified"); this row adds
+                    only the live verdict.  A site with no domain keeps the honest `LOCAL` chip and
+                    makes no network call. */}
+                {site.custom_domain ? (
+                  <p className="mt-1">
+                    <SiteHealthBadge host={site.custom_domain} />
+                  </p>
+                ) : (
+                  <p className="mt-1">
+                    <span
+                      className="ui-label text-ink-muted"
+                      data-testid={`site-local-${site.slug}`}
+                      title="Served from this machine at /sites/<slug>/ — there is no domain to check"
+                    >
+                      LOCAL
+                    </span>
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <a

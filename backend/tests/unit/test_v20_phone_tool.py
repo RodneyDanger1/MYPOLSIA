@@ -167,7 +167,7 @@ def test_the_frozen_allowlist_grants_phone_read_to_exactly_the_owner_data_reader
     }
     assert holders == PHONE_READ_HOLDERS
     assert tool_registry.tools_for("orchestrator") == (
-        "macro_snapshot", "pricing_catalog", "phone_read")
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert")
     assert tool_registry.tools_for("customer_support") == ("phone_read",)
 
 
@@ -414,7 +414,7 @@ async def test_h_c1_lists_phone_read_exactly_where_the_allowlist_says(api_client
     holders = {agent for agent, names in tools_by_agent.items() if "phone_read" in names}
     assert holders == PHONE_READ_HOLDERS
     assert tools_by_agent["orchestrator"] == [
-        "macro_snapshot", "pricing_catalog", "phone_read"]
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert"]
     assert tools_by_agent["customer_support"] == ["phone_read"]
 
     registry_tools = {tool["name"]: tool["description"] for tool in data["registry_tools"]}

@@ -11,6 +11,7 @@ import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
 import { PhoneCard } from "@/components/dashboard/PhoneCard";
 import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
+import { SignalsWidget } from "@/components/dashboard/SignalsWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
 import { WebsiteCard } from "@/components/dashboard/WebsiteCard";
 import { WidgetSlot, WidgetStack } from "@/components/dashboard/WidgetSlots";
@@ -21,7 +22,7 @@ import { WidgetSlot, WidgetStack } from "@/components/dashboard/WidgetSlots";
  *   left rail       Polsia status card + Auto Mode panel + Business mini-panel
  *   middle column   Tasks preview + Daily Report (the Documents slot)
  *   right column    Social / Outreach / Ads widgets + the send-caps counter (B9) (the Twitter /
- *                   Email / Meta Ads slots)
+ *                   Email / Meta Ads slots) + the V29 SIGNALS card (headlines, appended last)
  *   feed rail       ActivityFeed (owned by the realtime lane — imported, never edited here)
  *   chat rail       ChatRail (V8/C3) — OUR chat surface. Mounted as its OWN region beneath the
  *                   feed column at 2xl, the position the measured live anatomy puts the
@@ -91,6 +92,9 @@ export default function DashboardPage() {
               outreach: <OutreachWidget />,
               ads: <AdsWidget />,
               caps: <CapsPanel />,
+              // V29/L5: headlines from the fixed keyless feed allowlist — appended last so the
+              // right column's existing order is untouched.
+              signals: <SignalsWidget />,
             }}
           />
         </section>

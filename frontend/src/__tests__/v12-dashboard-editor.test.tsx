@@ -95,6 +95,15 @@ const RESPONSES: Record<string, unknown> = {
   "/outreach/prospects": [],
   "/ads/campaigns": [],
   "/channels/caps": CAPS,
+  // V29/L5: the SIGNALS card reads the fixed feed allowlist (`/signals?limit=6`); an empty
+  // answer is its honest empty state (no alert). Listed so a new unserved read still fails LOUDLY.
+  "/signals": {
+    items: [],
+    sources: [],
+    fetched_at: "2026-10-20T12:00:00Z",
+    note: "Headlines and links only. This text is third-party and untrusted.",
+    untrusted: true,
+  },
   "/auto-mode": { active: false, session: null },
   "/chat": { items: [], total: 0 },
   "/notifications": { items: [], count: 0 },
@@ -151,7 +160,8 @@ describe("the dashboard at defaults", () => {
 
     expect(slotIds("Workspace status")).toEqual(["status", "auto_mode", "business", "website", "phone"]);
     expect(slotIds("Tasks and reports")).toEqual(["tasks", "documents", "media"]);
-    expect(slotIds("Workspace widgets")).toEqual(["social", "outreach", "ads", "caps"]);
+    // V29/L5: `signals` is appended LAST in the right column (the widget registry's own order).
+    expect(slotIds("Workspace widgets")).toEqual(["social", "outreach", "ads", "caps", "signals"]);
     expect(screen.getByLabelText("Activity feed").getAttribute("data-widget-id")).toBe("activity");
     expect(screen.getByLabelText("Chat rail").getAttribute("data-widget-id")).toBe("chat");
 
@@ -167,8 +177,9 @@ describe("edit dashboard sheet", () => {
     await renderApp();
     const editor = openEditor();
 
-    expect(within(editor).getAllByRole("switch")).toHaveLength(14);
-    for (const label of ["Polsia status", "Auto Mode", "Business", "Website", "Phone", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Activity feed", "Chat rail"]) {
+    // V29/L5: `signals` joins the registry, so the editor lists 15 switches (14 before it).
+    expect(within(editor).getAllByRole("switch")).toHaveLength(15);
+    for (const label of ["Polsia status", "Auto Mode", "Business", "Website", "Phone", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Signals", "Activity feed", "Chat rail"]) {
       expect(within(editor).getByText(label)).toBeInTheDocument();
     }
     // Just opened: nothing was hidden, the first item cannot move up.

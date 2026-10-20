@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
-import { countText, usdText } from "@/components/finance/format";
+import { countText, currencyCode, moneyText, usdText } from "@/components/finance/format";
 import { InvoiceCreateForm } from "@/components/invoices/InvoiceCreateForm";
 import { errorText, useInvoiceList } from "@/components/invoices/useInvoices";
 import { Button, Card, Chip } from "@/components/ui";
@@ -74,7 +74,7 @@ function billToName(row: Invoice): string {
  *  object carries them; a NAMED absence when it carries none (never `undefined`, never a `NaN`
  *  price, never a blank row that reads as an item with no content). Booleans, arrays and non-string
  *  descriptions are not display claims. */
-function lineItemText(item: unknown, index: number): string {
+function lineItemText(item: unknown, index: number, currency: string | null): string {
   const fallback = `Item ${index + 1} — no description, quantity or amount recorded`;
   if (item === null || typeof item !== "object" || Array.isArray(item)) return fallback;
   const record = item as Record<string, unknown>;
@@ -86,7 +86,7 @@ function lineItemText(item: unknown, index: number): string {
   const qty = typeof qtyRaw === "number" && Number.isFinite(qtyRaw) ? countText(qtyRaw) : null;
   const amountRaw = record.amount ?? record.unit_price ?? record.price ?? record.total;
   const amount =
-    typeof amountRaw === "number" && Number.isFinite(amountRaw) ? usdText(amountRaw) : null;
+    typeof amountRaw === "number" && Number.isFinite(amountRaw) ? moneyText(amountRaw, currency) : null;
   if (description === null && qty === null && amount === null) return fallback;
   return [description ?? `Item ${index + 1}`, qty !== null ? `qty ${qty}` : null, amount]
     .filter((part): part is string => part !== null)
@@ -104,10 +104,44 @@ function InvoiceLineItems({ row }: { row: Invoice }) {
       <summary className="ui-label cursor-pointer text-link">Items ({items.length})</summary>
       <ul className="mt-1 space-y-1" data-testid={`invoice-items-list-${row.id}`}>
         {items.map((item, index) => (
-          <li key={index}>{lineItemText(item, index)}</li>
+          <li key={index}>{lineItemText(item, index, row.currency)}</li>
         ))}
       </ul>
     </details>
+  );
+}
+
+/** One currency's display-only conversion: a POSITIVE rate and the market date it came from.
+ *  `null` in the map (and `undefined` before the read settles) both mean "no usable rate" — the
+ *  cell then renders `≈ —`; a refused conversion is NEVER retried as 1:1. */
+type FxRate = { rate: number; date: string | null };
+
+/** The row's money cell: the amount in the row's OWN currency, plus — for a measured non-USD
+ *  total — a display-only `≈ $X` line at the backend's rate. `title` states the rate, its market
+ *  date and the fact that the stored total is unchanged (the honesty rule for converted money). */
+function InvoiceTotal({ row, quote }: { row: Invoice; quote: FxRate | null | undefined }) {
+  const code = currencyCode(row.currency);
+  const total =
+    typeof row.total === "number" && Number.isFinite(row.total) ? row.total : null;
+  return (
+    <span className="ml-auto text-right text-sm text-ink" data-testid="invoice-total">
+      {moneyText(total, row.currency)}
+      {code !== "USD" && total !== null ? (
+        <span
+          className="block ui-label text-ink-muted"
+          data-testid="invoice-converted"
+          title={
+            quote !== null && quote !== undefined
+              ? `1 ${code} = ${quote.rate} USD${quote.date ? ` (ECB reference rate dated ${quote.date})` : ""} — display only; the stored ${code} total is unchanged`
+              : `no USD rate could be read for ${code} — the stored ${code} total is unchanged`
+          }
+        >
+          {quote !== null && quote !== undefined
+            ? `≈ ${usdText(total * quote.rate)}`
+            : `≈ ${NOT_MEASURED}`}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -124,6 +158,46 @@ export default function InvoicesPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createdNumber, setCreatedNumber] = useState<string | null>(null);
   const [voidingId, setVoidingId] = useState<number | null>(null);
+
+  /** Display-only USD rates, one per non-USD currency on screen. `null` = the read was refused
+   *  (rendered `≈ —`); an absent key = not read yet. NEVER written back to an invoice. */
+  const [fxRates, setFxRates] = useState<Record<string, FxRate | null>>({});
+  /** Currencies this page has already asked for, so a re-render (or two rows sharing a currency)
+   *  cannot fire a second read for the same rate. */
+  const fxRequested = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (rows === null) return;
+    const wanted = new Set<string>();
+    for (const row of rows) {
+      const code = currencyCode(row.currency);
+      const measurable = typeof row.total === "number" && Number.isFinite(row.total);
+      if (code !== "USD" && measurable && !fxRequested.current.has(code)) wanted.add(code);
+    }
+    if (wanted.size === 0) return; // nothing to convert -> no rate traffic at all
+    for (const code of wanted) {
+      fxRequested.current.add(code);
+      void api
+        .get<{ rate?: unknown; date?: unknown }>(
+          `/economics/convert?amount=1&from=${encodeURIComponent(code)}&to=USD`,
+        )
+        .then((body) => {
+          const rate =
+            typeof body?.rate === "number" && Number.isFinite(body.rate) && body.rate > 0
+              ? body.rate
+              : null;
+          const date = typeof body?.date === "string" ? body.date : null;
+          setFxRates((current) => ({
+            ...current,
+            [code]: rate === null ? null : { rate, date },
+          }));
+        })
+        .catch(() => {
+          // A named refusal (E_VALIDATION / E_UPSTREAM) is NOT a 1:1 rate: say the dash.
+          setFxRates((current) => ({ ...current, [code]: null }));
+        });
+    }
+  }, [rows]);
 
   /** Merge one server-answered invoice into the list: replace in place when the list already
    *  holds it (send/void), prepend when it is new (create — the list is newest-first). When a
@@ -259,9 +333,7 @@ export default function InvoicesPage() {
                   <Chip variant="soft" data-testid="invoice-status">
                     {row.status}
                   </Chip>
-                  <span className="ml-auto text-sm text-ink" data-testid="invoice-total">
-                    {usdText(row.total)}
-                  </span>
+                  <InvoiceTotal row={row} quote={fxRates[currencyCode(row.currency)]} />
                 </div>
                 <div className="flex flex-wrap gap-3 ui-label text-ink-muted">
                   <span data-testid="invoice-bill-to">{billToName(row)}</span>

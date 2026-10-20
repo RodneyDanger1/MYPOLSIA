@@ -47,6 +47,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.services import deploy_service
@@ -260,13 +261,15 @@ async def delete_site_route(slug: str) -> SiteDeletedResponse:
     """Remove one site's directory — its pages, `styles.css`, sitemap and `meta.json`.
 
     The disk is the site's only record, so the removed directory is a removed site everywhere: the
-    list, the `StaticFiles` mount and any later read.  Refusals by name: `E_NOT_FOUND` when the slug
-    is already gone (a second delete is honest, not a 200), `E_VALIDATION` for a slug/path that is
-    not a direct child of `data/sites` (traversal, absolute or a link), `E_STORAGE` when the
-    filesystem refuses the removal.
+    list, the `StaticFiles` mount and any later read.  Removing a tree is BLOCKING filesystem work,
+    so it runs in a worker thread (`run_in_threadpool`, the `/ops` cleanup precedent) instead of
+    stalling the event loop for every other request (V29/L1 T1.2).  Refusals by name: `E_NOT_FOUND`
+    when the slug is already gone (a second delete is honest, not a 200), `E_VALIDATION` for a
+    slug/path that is not a direct child of `data/sites` (traversal, absolute or a link),
+    `E_STORAGE` when the filesystem refuses the removal.
     """
     with refusal_guard():
-        result = delete_site(slug)
+        result = await run_in_threadpool(delete_site, slug)
     return SiteDeletedResponse.model_validate(result)
 
 

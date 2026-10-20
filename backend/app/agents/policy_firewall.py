@@ -149,7 +149,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # injected into acting)."  Its prompts name what it is given — company profile, KPIs,
         # yesterday's summary, the task board and the budget — and never the workspace, so a
         # workspace reader would widen a planner into an actor for no planning benefit.
-        agent_tools=("macro_snapshot", "pricing_catalog", "phone_read"),
+        agent_tools=("macro_snapshot", "pricing_catalog", "phone_read",
+                     "signals_read", "fx_convert"),
     ),
     "business_planning": AgentCapability(
         allowed_tools=("Read",), denied_tools=("Bash", "Edit", "Write", "WebFetch", "mcp__*"),
@@ -157,8 +158,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # classes stay absent — reads + internal writes only.
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
         # V12/W-B: plans must read the macro snapshot + market-rate catalog before claiming
-        # numbers (frozen mapping).
-        agent_tools=("macro_snapshot", "pricing_catalog"),
+        # numbers (frozen mapping). V29: fx_convert for display-only currency reasoning.
+        agent_tools=("macro_snapshot", "pricing_catalog", "fx_convert"),
     ),
     "competitor_research": AgentCapability(
         # V12/W-B: the stale ("WebFetch", "WebSearch") pair replaced HONESTLY.  `WebSearch` is
@@ -180,7 +181,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # reasons from the context it is given, and the orchestrator's docstring is "It cannot
         # fetch, post or spend ... a planner that can act is a planner that can be injected into
         # acting".  `web_fetch` stays first (append-only re-pin).
-        agent_tools=("web_fetch", "web_search"),
+        agent_tools=("web_fetch", "web_search",
+                     "research_fetch", "signals_read", "domain_health", "link_status"),
     ),
     # V12/W-B: company_planner WAS ABSENT from this map — `decide()` denied it as "unknown
     # agent" before the tool leg could even run, so the frozen mapping (macro_snapshot +
@@ -203,6 +205,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # the first real publish, while an attempted send still refuses BY NAME until creds are
         # configured.
         channels=("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube"),
+        # V29/L5: the market-signal reader (headlines/links only; untrusted content).
+        agent_tools=("signals_read",),
     ),
     "email_outreach": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
@@ -210,6 +214,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE,
                                   ActionClass.EXTERNAL_REVERSIBLE}),
         channels=("email",),
+        # V29/L6: check a link before sending it (public URLs only).
+        agent_tools=("link_status",),
     ),
     "customer_support": AgentCapability(
         allowed_tools=(), denied_tools=("Bash", "Edit", "Write", "Read", "mcp__*"),
@@ -278,7 +284,8 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
                                   ActionClass.EXTERNAL_IRREVERSIBLE}),  # refunds: approval-gated
         channels=("stripe",),
         # V12/W-B: budget/pricing reasoning reads the macro snapshot + catalog (frozen mapping).
-        agent_tools=("macro_snapshot", "pricing_catalog"),
+        # V29/L4: display-only currency conversion.
+        agent_tools=("macro_snapshot", "pricing_catalog", "fx_convert"),
     ),
 }
 

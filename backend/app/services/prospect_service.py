@@ -25,6 +25,8 @@ Rules this module is the ONE definition of:
   (`new`, `contacted`, …) and this surface must not invent a strict enum that would reject them.
   The filter is therefore EXACT string equality, and the column's own CHECK — where a migrated
   database has one — is the last word, mapped to `E_VALIDATION` (`context.field = "status"`).
+  A BLANK status is refused (`E_VALIDATION`, `context.field = "status"`); `null`/omitted means
+  "unrecorded" (V29/L1 T1.3 — blank is caller error, not a second spelling of absent).
 * **A short page is distinguishable from the whole table.** `list_prospects` returns
   `(rows, total)` where `total` is the count over the SAME predicates without LIMIT.
 
@@ -109,11 +111,31 @@ def _text(value: object) -> str | None:
 
     `""` and NULL render differently in every list ("—" vs an empty line), and a blank name is
     not a recorded name — so the blank is stored as "not recorded", never as the empty string.
+    `status` is the ONE exception: blank is caller error there (`_status_value`).
     """
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _status_value(value: object) -> str:
+    """A status the owner supplied, trimmed — or the named `E_VALIDATION` when it is BLANK.
+
+    `null`/omitted already means "unrecorded" (the column default on create, a cleared value on
+    update), so a blank string is not a second spelling of it: it is a form that sent nothing and
+    would otherwise be stored as NULL, hiding the broken caller.  V29/L1 T1.3 — a deliberate
+    semantic: `""`/whitespace is refused with `context.field = "status"`, `null` is unrecorded.
+    """
+    text = str(value).strip()
+    if not text:
+        raise PolsiaError(
+            E_VALIDATION,
+            "prospect status cannot be blank; omit it or pass null for 'unrecorded'",
+            how_to_fix='omit status, pass null, or use a lifecycle word like "new"',
+            context={"field": "status", "value": str(value)},
+        )
+    return text
 
 
 def _integrity_refusal(address: str, exc: SQLAlchemyError) -> PolsiaError:
@@ -264,7 +286,8 @@ async def create_prospect(
     """Insert one owner-created prospect (flushed; `.id` set); duplicates answer `E_VALIDATION`.
 
     `status=None` leaves the COLUMN default (`new`) in charge — the service never invents a
-    lifecycle word for a row the owner did not give one to.
+    lifecycle word for a row the owner did not give one to.  A BLANK status is refused by name
+    (`_status_value`), never folded into the same "unrecorded" as an omitted one.
     """
     address = normalize_email(email)
     row = Prospect(
@@ -276,7 +299,7 @@ async def create_prospect(
         source=_text(source),
     )
     if status is not None:
-        row.status = _text(status)
+        row.status = _status_value(status)
     db.add(row)
     try:
         await db.flush()
@@ -295,7 +318,8 @@ async def update_prospect(
 
     An unknown key is refused before the row is read; `email`, when present, is normalised and
     uniqueness-checked by the same unique constraint a create hits; an explicit `null` clears a
-    nullable column; an empty string is stored as NULL (`_text`).
+    nullable column; an empty string is stored as NULL (`_text`).  `status` is the exception: a
+    blank one is refused by name (`_status_value`) — `null` clears it, `"   "` is caller error.
     """
     unknown = set(changes) - UPDATABLE_FIELDS
     if unknown:
@@ -310,6 +334,10 @@ async def update_prospect(
         if field == "email":
             address = normalize_email(value)
             row.email = address
+        elif field == "status" and value is not None:
+            # The incoming status is validated BEFORE the row is touched, so a refused PATCH
+            # leaves the stored word exactly as it was (an explicit null still clears it).
+            row.status = _status_value(value)
         else:
             setattr(row, field, _text(value))
     try:

@@ -79,10 +79,11 @@ def test_the_block_carries_action_classes_channels_and_tool_descriptions(monkeyp
 
 
 def test_the_block_states_none_for_an_empty_registry_allowlist(monkeypatch):
-    doctrine = _doctrine("social_media", deepseek=True, monkeypatch=monkeypatch)
+    # V29: social_media now holds signals_read; ads_management is the empty-registry agent.
+    doctrine = _doctrine("ads_management", deepseek=True, monkeypatch=monkeypatch)
 
-    assert "twitter" in doctrine and "youtube" in doctrine, (
-        "social_media's real channels are the visibility this feature adds"
+    assert "google_ads" in doctrine and "meta_ads" in doctrine, (
+        "ads_management's real channels are the visibility this feature adds"
     )
     assert "external_reversible" in doctrine
     assert "none" in doctrine

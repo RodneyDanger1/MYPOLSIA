@@ -38,9 +38,11 @@ SAFE_TEST_KEY = "sk-f1-seam-test-key"
 #: V24/L2: `web_search` + the three code tools joined — the frozen wire vocabulary is eight.
 #: V25/L2: the GitHub quartet joined — the frozen wire vocabulary is twelve (V25-PLAN row 2:
 #: "GitHub tools — repo/branch/commit/PR behind the firewalled registry + secret store").
+#: V29/L3-L6: five tools joined — seventeen frozen wire names.
 FROZEN_TOOL_NAMES = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
                      "phone_read", "code_write", "code_read", "code_list",
-                     "github_repo", "github_branch", "github_commit", "github_pr"}
+                     "github_repo", "github_branch", "github_commit", "github_pr",
+                     "research_fetch", "fx_convert", "signals_read", "domain_health", "link_status"}
 
 
 def _agent(agent_type: str) -> BasePolsiaAgent:
@@ -127,9 +129,10 @@ def _argv_flag(argv: list[str], flag: str) -> str | None:
 @pytest.mark.parametrize(("agent_type", "expected"), [
     # (A-2's own parent-live-check agent) CLI map says `WebFetch` — the argv must say `web_fetch`.
     # V24/L2: the shipped search joins it (append-only; the registry order is the offer order).
-    ("competitor_research", ("web_fetch", "web_search")),
+    ("competitor_research", ("web_fetch", "web_search", "research_fetch", "signals_read",
+                             "domain_health", "link_status")),
     # CLI map is EMPTY — only the REGISTRY list can turn this agent's loop on at all.
-    ("finance", ("macro_snapshot", "pricing_catalog")),
+    ("finance", ("macro_snapshot", "pricing_catalog", "fx_convert")),
 ])
 def test_case_a_registry_tools_reach_the_wire_as_the_activation_signal(monkeypatch, agent_type, expected):
     assert tool_registry.tools_for(agent_type) == expected  # frozen mapping guard
@@ -221,12 +224,12 @@ def test_case_a_over_requested_tool_is_refused_by_the_real_registry(monkeypatch)
 
 # ── Case B: agent with NONE — the pre-loop contract, byte-identical ───────────────────────────
 
-@pytest.mark.parametrize("agent_type", ["email_outreach", "no_such_agent"])
+@pytest.mark.parametrize("agent_type", ["ads_management", "no_such_agent"])
 def test_case_b_agent_without_registry_tools_sends_no_tools_field(monkeypatch, agent_type):
-    """`email_outreach`: mapped, `agent_tools=()` (V20/L2 moved customer_support onto
-    `phone_read`, so the canonical no-tools agent is email_outreach); `no_such_agent`: an empty
-    mapping must never default to tools. Both: no `tools` on the wire, no `tools_used` in the
-    envelope, exactly one provider call — no key beyond the pre-loop body."""
+    """`ads_management`: mapped, `agent_tools=()` (V29 gave social_media/email_outreach
+    `signals_read`/`link_status`, so the canonical no-tools agent is ads_management);
+    `no_such_agent`: an empty mapping must never default to tools. Both: no `tools` on the wire,
+    no `tools_used` in the envelope, exactly one provider call — no key beyond the pre-loop body."""
     wire, seen = _wire(monkeypatch, lambda n, body: _completion(json.dumps({"summary": "plain"})))
 
     raw = _agent(agent_type)._real_call("plain work")
@@ -251,7 +254,7 @@ def test_case_c_doctrine_names_only_callable_registry_tools(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: SAFE_TEST_KEY)
 
     finance = _agent("finance").layers_for({"title": "t"}, {})["tool_doctrine"].text
-    assert "- Tools available to you: macro_snapshot, pricing_catalog." in finance
+    assert "- Tools available to you: macro_snapshot, pricing_catalog, fx_convert." in finance
     assert "web_fetch" not in finance          # not callable for finance -> must not be named
 
     # V20/L2: customer_support now holds exactly the read-only phone tool; its doctrine names
@@ -262,7 +265,7 @@ def test_case_c_doctrine_names_only_callable_registry_tools(monkeypatch):
     assert "web_fetch" not in support
 
     # A genuinely tool-less agent keeps the honest no-tools text.
-    empty = _agent("email_outreach").layers_for({"title": "t"}, {})["tool_doctrine"].text
+    empty = _agent("ads_management").layers_for({"title": "t"}, {})["tool_doctrine"].text
     assert "none for this agent" in empty
     for name in FROZEN_TOOL_NAMES:
         assert name not in empty

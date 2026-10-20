@@ -70,8 +70,8 @@ def test_registry_tools_are_every_spec_sorted_by_name():
 
 
 def test_empty_allowlist_renders_an_empty_list_never_a_default_set():
-    # V24/L2: code_generation LEFT this list (it now holds the three code tools).
-    for agent_type in ("social_media", "email_outreach", "ads_management"):
+    # V29: social_media/email_outreach gained signals_read/link_status; ads_management is empty.
+    for agent_type in ("ads_management",):
         assert capability_manifest.tool_entries_for(agent_type) == [], agent_type
 
 
@@ -86,7 +86,9 @@ def test_the_v24_tools_are_visible_exactly_where_the_allowlist_grants_them():
         agent_type: [tool["name"] for tool in capability_manifest.tool_entries_for(agent_type)]
         for agent_type in pf.AGENT_CAPABILITIES
     }
-    assert holders["competitor_research"] == ["web_fetch", "web_search"]
+    assert holders["competitor_research"] == [
+        "web_fetch", "web_search", "research_fetch", "signals_read",
+        "domain_health", "link_status"]
     # V25/L2: the trio keeps its positions and the GitHub quartet follows it (append-only).
     assert holders["code_generation"][:3] == ["code_write", "code_read", "code_list"]
     assert {agent for agent, names in holders.items() if "web_search" in names} == {
@@ -137,7 +139,8 @@ def test_the_phone_tool_is_visible_exactly_where_the_allowlist_grants_it():
     }
     with_phone = {agent for agent, names in holders.items() if "phone_read" in names}
     assert with_phone == {"orchestrator", "customer_support"}
-    assert holders["orchestrator"] == ["macro_snapshot", "pricing_catalog", "phone_read"]
+    assert holders["orchestrator"] == [
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert"]
     assert holders["customer_support"] == ["phone_read"]
     registry_names = [tool["name"] for tool in capability_manifest.registry_tool_entries()]
     assert "phone_read" in registry_names
@@ -202,21 +205,24 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
 # channel `code_generation` already had; the manifest action-class rows are byte-identical).
 
 PINNED_REGISTRY_TOOLS: tuple[str, ...] = (
-    "code_list", "code_read", "code_write", "github_branch", "github_commit", "github_pr",
-    "github_repo", "macro_snapshot", "phone_read", "pricing_catalog", "web_fetch", "web_search")
+    "code_list", "code_read", "code_write", "domain_health", "fx_convert", "github_branch",
+    "github_commit", "github_pr", "github_repo", "link_status", "macro_snapshot", "phone_read",
+    "pricing_catalog", "research_fetch", "signals_read", "web_fetch", "web_search")
 
 PINNED_AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "ads_management": (),
-    "business_planning": ("macro_snapshot", "pricing_catalog"),
+    "business_planning": ("macro_snapshot", "pricing_catalog", "fx_convert"),
     "code_generation": ("code_write", "code_read", "code_list",
                         "github_repo", "github_branch", "github_commit", "github_pr"),
     "company_planner": ("macro_snapshot", "pricing_catalog"),
-    "competitor_research": ("web_fetch", "web_search"),
+    "competitor_research": ("web_fetch", "web_search", "research_fetch", "signals_read",
+                            "domain_health", "link_status"),
     "customer_support": ("phone_read",),
-    "email_outreach": (),
-    "finance": ("macro_snapshot", "pricing_catalog"),
-    "orchestrator": ("macro_snapshot", "pricing_catalog", "phone_read"),
-    "social_media": (),
+    "email_outreach": ("link_status",),
+    "finance": ("macro_snapshot", "pricing_catalog", "fx_convert"),
+    "orchestrator": ("macro_snapshot", "pricing_catalog", "phone_read", "signals_read",
+                     "fx_convert"),
+    "social_media": ("signals_read",),
 }
 
 PINNED_ACTION_CLASSES: dict[str, tuple[str, ...]] = {

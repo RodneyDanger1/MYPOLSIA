@@ -30,12 +30,17 @@ from app.agents.policy_firewall import ActionClass, ActionRequest, Decision, dec
 #: V25/L2: the GitHub quartet joined — twelve frozen names (the source-control surface).
 #: The V12 seam deliberately goes red when a tool joins; this is that re-pin, with the wave
 #: recorded.
+#: V29/L3-L6: research_fetch + fx_convert + signals_read + domain_health + link_status joined —
+#: seventeen frozen names (real, keyless reads and DeepSeek Fetch behind the firewall).
 FROZEN = {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
           "phone_read", "code_write", "code_read", "code_list",
-          "github_repo", "github_branch", "github_commit", "github_pr"}
-READ_MACRO_AGENTS = ("business_planning", "finance", "company_planner")
-#: V24/L2: `code_generation` LEFT this list — it now owns the three code tools.
-NO_TOOL_AGENTS = ("social_media", "email_outreach", "ads_management")
+          "github_repo", "github_branch", "github_commit", "github_pr",
+          "research_fetch", "fx_convert", "signals_read", "domain_health", "link_status"}
+READ_MACRO_AGENTS = ("company_planner",)
+READ_MACRO_FX_AGENTS = ("business_planning", "finance")
+#: V29/L5-L6: social_media gained signals_read and email_outreach gained link_status; only the
+#: ads agent is genuinely tool-less now.
+NO_TOOL_AGENTS = ("ads_management",)
 
 
 def _probe(agent_type: str) -> BasePolsiaAgent:
@@ -50,13 +55,18 @@ def _probe(agent_type: str) -> BasePolsiaAgent:
 # ── the mapping ──────────────────────────────────────────────────────────────────────────────
 
 def test_the_frozen_agent_tool_mapping_is_wired():
-    # V24/L2: the market-intelligence agent holds the search tool after `web_fetch` (append-only).
-    assert tool_registry.tools_for("competitor_research") == ("web_fetch", "web_search")
+    # V29/L3-L6: append-only — fetch/search stay first, then the four new research/trust reads.
+    assert tool_registry.tools_for("competitor_research") == (
+        "web_fetch", "web_search", "research_fetch", "signals_read", "domain_health", "link_status")
     for agent_type in READ_MACRO_AGENTS:
         assert tool_registry.tools_for(agent_type) == ("macro_snapshot", "pricing_catalog")
+    for agent_type in READ_MACRO_FX_AGENTS:
+        assert tool_registry.tools_for(agent_type) == (
+            "macro_snapshot", "pricing_catalog", "fx_convert")
     # V20/L2: the orchestrator already held owner-data reads, so `phone_read` joins its toolbox.
+    # V29: signals_read + fx_convert follow, append-only.
     assert tool_registry.tools_for("orchestrator") == (
-        "macro_snapshot", "pricing_catalog", "phone_read")
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert")
     # V24/L2: the code agent finally has a filesystem surface (workspace-confined).
     # V25/L2: and now the source-control surface — read -> branch -> commit -> PR, append-only
     # after the workspace trio (evidence quoted on the firewall entry / in the lane RECEIPT).
@@ -65,6 +75,9 @@ def test_the_frozen_agent_tool_mapping_is_wired():
         "github_repo", "github_branch", "github_commit", "github_pr")
     # V20/L2: customer_support's only toolbox entry is the read-only phone tool.
     assert tool_registry.tools_for("customer_support") == ("phone_read",)
+    # V29: social_media reads signals; email_outreach checks a link before sending.
+    assert tool_registry.tools_for("social_media") == ("signals_read",)
+    assert tool_registry.tools_for("email_outreach") == ("link_status",)
     for agent_type in NO_TOOL_AGENTS:
         assert tool_registry.tools_for(agent_type) == (), agent_type
     assert tool_registry.tools_for("no_such_agent") == ()
@@ -91,7 +104,9 @@ def test_web_search_ships_and_only_the_market_intelligence_agent_holds_it():
 def test_competitor_research_holds_web_fetch_and_web_search_and_drops_the_stale_cli_search():
     cap = pf.AGENT_CAPABILITIES["competitor_research"]
     # V24/L2: append-only — the existing fetch stays first, the shipped search joins it.
-    assert cap.agent_tools == ("web_fetch", "web_search")
+    # V29/L3-L6: the four fixed/keyless research reads follow, append-only.
+    assert cap.agent_tools == ("web_fetch", "web_search", "research_fetch",
+                               "signals_read", "domain_health", "link_status")
     assert "WebSearch" not in cap.allowed_tools, (
         "CLI search was never honorable under the DeepSeek runtime; the REGISTRY tool replaced it"
     )
@@ -231,7 +246,8 @@ def test_doctrine_names_both_macro_tools_for_the_finance_family(monkeypatch):
 
 
 def test_doctrine_keeps_the_honest_no_tools_text_when_the_list_is_empty(monkeypatch):
-    doctrine = _doctrine("social_media", deepseek=True, monkeypatch=monkeypatch)
+    # V29: social_media is no longer tool-less (signals_read); ads_management is the honest empty.
+    doctrine = _doctrine("ads_management", deepseek=True, monkeypatch=monkeypatch)
 
     assert "web_fetch" not in doctrine and "none" in doctrine
     assert "no tool" in doctrine.lower()
@@ -298,10 +314,9 @@ def test_real_call_hands_the_deepseek_loop_the_registry_tool_list(monkeypatch):
     run = _fake_roundtrip(monkeypatch, capture=capture)
     run(_probe("competitor_research"), "prompt")
 
-    # V24/L2: the registry list rides the seam in allowlist order (fetch, then search).
-    assert _allowed_tools(capture["inv"]) == ("web_fetch", "web_search"), (
-        "the invocation carries the REGISTRY tools under the DeepSeek runtime"
-    )
+    # V24/L2 + V29: the registry list rides the seam in allowlist order.
+    assert _allowed_tools(capture["inv"]) == (
+        "web_fetch", "web_search", "research_fetch", "signals_read", "domain_health", "link_status")
 
 
 def test_real_call_keeps_the_cli_patterns_under_the_cli_runtime(monkeypatch):
@@ -321,7 +336,7 @@ def test_real_call_leaves_a_no_tool_agent_empty_under_deepseek(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "available", lambda: True)
     capture: dict = {}
     run = _fake_roundtrip(monkeypatch, capture=capture)
-    run(_probe("social_media"), "prompt")
+    run(_probe("ads_management"), "prompt")
 
     assert _allowed_tools(capture["inv"]) == (), (
         "no --allowedTools flag == W-A's runtime behaves exactly as today"

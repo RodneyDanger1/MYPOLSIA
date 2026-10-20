@@ -36,7 +36,8 @@ describe("defaults", () => {
     // rail — the shipped order only grows.
     expect(areaOrder(layout, "left")).toEqual(["status", "auto_mode", "business", "website", "phone"]);
     expect(areaOrder(layout, "middle")).toEqual(["tasks", "documents", "media"]);
-    expect(areaOrder(layout, "right")).toEqual(["social", "outreach", "ads", "caps"]);
+    // V29/L5: `signals` is appended last in the right column (the registry's own order).
+    expect(areaOrder(layout, "right")).toEqual(["social", "outreach", "ads", "caps", "signals"]);
     expect(areaOrder(layout, "regions")).toEqual(["activity", "chat"]);
   });
 });

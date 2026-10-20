@@ -111,7 +111,9 @@ def test_specs_are_openai_function_schemas_with_the_frozen_names():
     # V25/L2: the GitHub quartet joined it (12 names, deliberate re-pin — see the docstring).
     assert set(names) == {"web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
                           "phone_read", "code_write", "code_read", "code_list",
-                          "github_repo", "github_branch", "github_commit", "github_pr"}
+                          "github_repo", "github_branch", "github_commit", "github_pr",
+                          "research_fetch", "fx_convert", "signals_read", "domain_health",
+                          "link_status"}
     for spec in tool_registry.TOOL_SPECS:
         assert spec["type"] == "function"
         function = spec["function"]

@@ -38,7 +38,10 @@ export type WidgetId =
   | "ads"
   | "caps"
   | "activity"
-  | "chat";
+  | "chat"
+  // V29/L5: the SIGNALS card (fixed RSS/Atom allowlist). Added at the END of the union and of
+  // `WIDGETS` so a saved layout from an earlier build keeps its order and gains the card last.
+  | "signals";
 
 export type AreaId = "left" | "middle" | "right" | "regions";
 
@@ -68,6 +71,10 @@ export const WIDGETS: readonly WidgetMeta[] = [
   { id: "caps", area: "right", label: "Send caps" },
   { id: "activity", area: "regions", label: "Activity feed" },
   { id: "chat", area: "regions", label: "Chat rail" },
+  // V29/L5: the SIGNALS card — headlines from the fixed keyless feed allowlist (HN official RSS
+  // + TechCrunch). Appended LAST so a saved arrangement only grows; `areaOrder` places it after
+  // the send-caps card in the right column.
+  { id: "signals", area: "right", label: "Signals" },
 ];
 
 /** Editor section order (the live editor groups its widget list; ours groups by

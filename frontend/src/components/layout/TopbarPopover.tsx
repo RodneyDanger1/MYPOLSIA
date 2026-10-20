@@ -1,5 +1,6 @@
 "use client";
 
+// Not mounted anywhere (V28 finding; kept by the no-delete rule — V29 decision, wave-v29/DECISIONS.md).
 import type { ReactNode } from "react";
 
 import { usePopover } from "@/components/layout/usePopover";

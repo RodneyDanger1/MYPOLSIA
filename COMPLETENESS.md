@@ -11,6 +11,22 @@
 > deleted (rows only); a cache hit reuses another task's stored description without writing a
 > history row for the reading task; real Render/GitHub/ad/Stripe actions remain owner-gated.
 >
+> **V29 settlement (2026-10-20, this commit).** Six lanes: backend remainders (streamed probe cap,
+> threadpool site delete, blank-status refusal, retention truncation flags, drill-site quarantine),
+> frontend remainders (deep-link retry, truncation copy, dead-component labels), DeepSeek Fetch,
+> FX/invoice currency, fixed-feed signals + dashboard widget, and DNS/TLS/link trust + site badge.
+> Parent wiring: **17 tools** and **106 operations / 35 modules**, no migration (head `0016`).
+> Measured on the settled tree: backend **3,565 tests / 0 failed / 0 errors / 13 skipped**
+> (`wave-v29/v-settle/gate-v29.xml`), jest **118 suites / 1,057 tests** (`jest-v29.log`, `EXIT=0`),
+> integration **15 / 0 failed** (`integration-v29.xml`), live drill **21/21** (`v29-live.log`) plus the
+> carried **45/45, 17/17, 42/42, 41/41** (`drills-v29.log`), and fresh-DB Playwright
+> **55 passed / 8 skipped / 0 failed** (`e2e-v29-freshdb.log`). The e2e run caught one real
+> integration bug: stored cleanup rows carry `removed_truncated: null` / `skipped_truncated: null`,
+> and the panel rejected `null` instead of treating it as "not stated"; the validator now accepts
+> absent-or-null while still refusing a truthy string. **Residuals:** SendGrid/Stripe live probes need
+> real keys; Render/GitHub/ad/Stripe writes remain owner-gated; vision cache hits still write no
+> history row; drill site directories are quarantined, never silently deleted.
+>
 > **V26 settlement (2026-10-19, commit `d6bd944`).** Six lanes: agents-page truth, integrations &
 > secrets, run workspaces, vision on demand, sites 2.0, proof/cleanup. Measured on the settled tree:
 > backend **3,226 tests / 0 failed / 0 errors / 13 skipped** (`wave-v26/v-settle/gate3.xml`;
@@ -63,8 +79,8 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 
 `frontend/src/app/` holds **22 `page.tsx`** files: **19 top-level routes** in the navigation
 (`frontend/src/components/layout/nav-items.ts`) plus the root redirect and two detail routes
-(`/tasks/[id]`, `/runs/[id]`). The backend exposes **102 method+path operations** across **33 modules** in
-`backend/app/api/v1/` (V28 measurement from the app's own OpenAPI schema; the V23 write counted 77 across
+(`/tasks/[id]`, `/runs/[id]`). The backend exposes **106 method+path operations** across **35 modules** in
+`backend/app/api/v1/` (V29 measurement from the app's own OpenAPI schema; the V23 write counted 77 across
 26). The V22 live `/openapi.json` capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded
 `TOTAL 76`; it predates the V23–V27 surface.
 
@@ -93,10 +109,10 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 | — | API docs | `/apidocs` → nginx → FastAPI `/docs`; schema `/openapi.json` (`nginx/nginx.conf`, V21) | `main.py` docs routes |
 | — | Activity stream | shell-wide feed (`components/shell/ActivityStrip.tsx`) | WebSocket `/ws/activity` (`backend/app/api/v1/ws.py`) |
 
-The twelve agent tools in the registry are `web_fetch`, `web_search`, `macro_snapshot`,
+The seventeen agent tools in the registry are `web_fetch`, `web_search`, `macro_snapshot`,
 `pricing_catalog`, `phone_read`, `code_write`, `code_read`, `code_list`, `github_repo`,
-`github_branch`, `github_commit`, `github_pr` (`backend/app/agents/tool_registry.py`, V28
-measurement). The Celery task families are
+`github_branch`, `github_commit`, `github_pr`, `research_fetch`, `fx_convert`, `signals_read`,
+`domain_health`, `link_status` (`backend/app/agents/tool_registry.py`, V29 measurement). The Celery task families are
 `agent_tasks`, `cadence`, `daily_cycle`, `dunning`, `followups`, `maintenance`, `night_task`,
 `phone_activity` (`backend/celery_app/tasks/`).
 

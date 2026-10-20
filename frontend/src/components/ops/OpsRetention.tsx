@@ -28,7 +28,10 @@ import { api } from "@/lib/api";
  *  - a refusal is rendered by `errorText` — the server's code, message and fix hint, never
  *    rewritten into a friendlier sentence;
  *  - `applied` comes from the RESPONSE, not from which button was pressed: the chip says what the
- *    server says it did.
+ *    server says it did;
+ *  - V29/L2: the server caps the name lists (50 entries each). `removed_truncated` /
+ *    `skipped_truncated` are OPTIONAL — absent means the server did not say, so the panel makes no
+ *    truncation claim at all; `true` prints the cap sentence with the still-complete count.
  */
 const ROUTE = "/ops/run-workspace-cleanup";
 
@@ -47,6 +50,10 @@ export type RunWorkspaceCleanupResult = {
   skipped: RunWorkspaceCleanupSkip[];
   policy: RunWorkspaceCleanupPolicy;
   applied: boolean;
+  /** V29/L1 adds these to the route; until it lands they are absent. Optional on purpose: absent
+   *  is "the server did not say", never "not truncated". */
+  removed_truncated?: boolean;
+  skipped_truncated?: boolean;
 };
 
 type CleanupRecord = {
@@ -95,7 +102,13 @@ function isResult(value: unknown): value is RunWorkspaceCleanupResult {
     policy !== null &&
     isNumber(policy.keep_latest) &&
     isNumber(policy.max_age_hours) &&
-    typeof candidate.applied === "boolean"
+    typeof candidate.applied === "boolean" &&
+    // Optional flags: absent OR null is fine (an older row did not say); a present value must be
+    // a real boolean, never a truthy string.  V29 stores these as null when not truncated.
+    (candidate.removed_truncated == null ||
+      typeof candidate.removed_truncated === "boolean") &&
+    (candidate.skipped_truncated == null ||
+      typeof candidate.skipped_truncated === "boolean")
   );
 }
 
@@ -312,6 +325,14 @@ export function OpsRetention() {
                 ))}
               </span>
             )}
+            {/* V29/L2 T2.2: only when the response SAYS the list was capped. The count is the
+                server's own total, so it is still complete even though the names are not. */}
+            {shown.result.removed_truncated === true ? (
+              <p className="mt-1 text-xs text-ink-muted" data-testid="ops-retention-truncated">
+                The name list was capped at {shown.result.removed.length}; the count of{" "}
+                {shown.result.count} is complete.
+              </p>
+            ) : null}
           </div>
 
           <div className="mt-2" data-testid="ops-retention-skipped">
@@ -327,6 +348,17 @@ export function OpsRetention() {
                 ))}
               </ul>
             )}
+            {/* V29/L2 T2.2: a capped SKIPPED list hides names, not deletions — say only that the
+                counts above are complete. */}
+            {shown.result.skipped_truncated === true ? (
+              <p
+                className="mt-1 text-xs text-ink-muted"
+                data-testid="ops-retention-skipped-truncated"
+              >
+                The skipped name list was capped at {shown.result.skipped.length}; the counts above
+                are complete.
+              </p>
+            ) : null}
           </div>
 
           <p className="mt-2 text-xs text-ink-muted" data-testid="ops-retention-trigger">

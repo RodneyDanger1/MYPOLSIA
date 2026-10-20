@@ -24,11 +24,50 @@ export function usdText(value: number | null | undefined): string {
   return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** The row's ISO code, normalised: surrounding space and case are irrelevant, and an absent or
+ *  blank code is the server's documented default (`USD`) — never a bare number with no unit. */
+export function currencyCode(currency: string | null | undefined): string {
+  const raw = typeof currency === "string" ? currency.trim().toUpperCase() : "";
+  return raw === "" ? "USD" : raw;
+}
+
+/**
+ * Money in the row's OWN currency (V29/L4). USD goes through `usdText`, so every existing
+ * `$1,234.50` expectation is untouched — the USD shape is exactly what it always was. Any other
+ * code renders as the code plus the grouped amount (`EUR 1,234.56`), because printing `$` on a
+ * EUR invoice was the bug this closes. A null/non-finite value is the house em dash for BOTH
+ * branches: an amount nobody measured has no currency either.
+ */
+export function moneyText(
+  value: number | null | undefined,
+  currency: string | null | undefined,
+): string {
+  const amount = finiteNumber(value);
+  if (amount === null) return NOT_MEASURED;
+  const code = currencyCode(currency);
+  if (code === "USD") return usdText(amount);
+  return `${code} ${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 /** Cents off the wire (`mrr_cents`) as dollars; 123455 cents is `$1,234.55`. */
 export function centsText(value: number | null | undefined): string {
   const cents = finiteNumber(value);
   if (cents === null) return NOT_MEASURED;
   return usdText(cents / 100);
+}
+
+/** Cents in the row's OWN currency (V29 follow-up): USD keeps `centsText`; any other code renders
+ *  `EUR 1,234.56`. Used by the finance expenses/Stripe-event tables, which carry a currency. */
+export function moneyCentsText(
+  value: number | null | undefined,
+  currency: string | null | undefined,
+): string {
+  const cents = finiteNumber(value);
+  if (cents === null) return NOT_MEASURED;
+  return moneyText(cents / 100, currency);
 }
 
 /** A bare count (`active_subscribers`): grouped, no currency. */

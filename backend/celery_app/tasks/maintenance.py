@@ -943,20 +943,30 @@ def run_workspace_cleanup(
     removed_raw = cast(list[object], outcome["removed"])
     skipped_raw = cast(list[dict[str, str]], outcome["skipped"])
     policy_raw = cast(dict[str, object], outcome["policy"])
-    return {
+    removed = [str(name) for name in removed_raw]
+    skipped = [{"name": str(item["name"]), "reason": str(item["reason"])} for item in skipped_raw]
+    cap = RUN_WORKSPACE_CLEANUP_NAME_CAP
+    result: dict[str, Any] = {
         "runs_dir": str(outcome["runs_dir"]),
-        "removed": [str(name) for name in removed_raw],
+        "removed": removed[:cap],
         "count": int(cast(int, outcome["count"])),
         "kept": int(cast(int, outcome["kept"])),
-        "skipped": [
-            {"name": str(item["name"]), "reason": str(item["reason"])} for item in skipped_raw
-        ],
+        "skipped": skipped[:cap],
         "policy": {
             "keep_latest": int(cast(int, policy_raw["keep_latest"])),
             "max_age_hours": float(cast(float, policy_raw["max_age_hours"])),
         },
         "applied": apply,
     }
+    # The SAME 50-name cap the activity row applies, plus the flags that SAY SO, so the POST body
+    # and `GET .../run-workspace-cleanup` cannot disagree about whether a list is complete.  A
+    # flag is present only when its list was actually cut: absent means complete, never `false`
+    # (V29/L1 T1.4).
+    if len(removed) > cap:
+        result["removed_truncated"] = True
+    if len(skipped) > cap:
+        result["skipped_truncated"] = True
+    return result
 
 
 async def record_run_workspace_cleanup(
@@ -992,6 +1002,13 @@ async def record_run_workspace_cleanup(
     if len(removed) > cap:
         detail["removed_truncated"] = True
     if len(skipped) > cap:
+        detail["skipped_truncated"] = True
+    # `run_workspace_cleanup` already applied the cap, so its flags (or the count itself) carry
+    # the truth: a capped list of 50 with a count of 73 is truncated even though `len <= cap`
+    # (V29/L1 T1.4 — the flags must survive a producer that capped before handing them over).
+    if bool(outcome.get("removed_truncated")):
+        detail["removed_truncated"] = True
+    if bool(outcome.get("skipped_truncated")):
         detail["skipped_truncated"] = True
 
     total = detail["count"] + detail["kept"]

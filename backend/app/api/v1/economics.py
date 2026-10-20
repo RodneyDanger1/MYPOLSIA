@@ -1,4 +1,7 @@
-"""GET /api/v1/economics/context — the honest macro-context route (wave V9, seat b7).
+"""Economics routes — the honest macro-context read and the display-only FX conversion.
+
+`GET /economics/context` (wave V9, seat b7) is the macro-context route; `GET /economics/convert`
+(V29/L4) converts ONE amount for display and never writes an invoice total.
 
 NOT wired into `app/main.py` by this seat: the parent wires the economics router at settle
 (V9-D3, the pin/wiring ownership split — same as planner/invoices).  Until then this router is
@@ -20,11 +23,12 @@ NOT a live-prices oracle (no public API publishes live service-market prices).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import refusal_guard, verify_api_key
-from app.services import economics_service
+from app.services import economics_service, fx_service
 
 router = APIRouter(prefix="/economics", tags=["economics"], dependencies=[Depends(verify_api_key)])
 
@@ -78,3 +82,39 @@ async def get_economics_context() -> EconomicsContextResponse:
     with refusal_guard():
         context = await economics_service.get_context()
     return EconomicsContextResponse.model_validate(context)
+
+
+class FxConvertResponse(BaseModel):
+    """One display-only conversion (V29/L4) — the wire spells the pair `from`/`to`.
+
+    `source` is the exact Frankfurter URL the rate came from, or `"identity"` for a same-currency
+    conversion (which makes no network call and carries `date: null`).  `cached: true` means the
+    rate was served from the in-process 6 h cache and `fetched_at` is the ORIGINAL fetch stamp.
+    """
+
+    amount: float
+    from_currency: str = Field(alias="from")
+    to_currency: str = Field(alias="to")
+    rate: float
+    converted: float
+    date: str | None
+    source: str
+    fetched_at: str
+    cached: bool
+
+
+@router.get("/convert", response_model=FxConvertResponse)
+async def convert_currency(
+    amount: float = Query(ge=0, le=1_000_000_000_000),
+    from_currency: str = Query(alias="from", min_length=3, max_length=3),
+    to_currency: str = Query(alias="to", min_length=3, max_length=3),
+) -> FxConvertResponse:
+    """Convert an amount for DISPLAY only (invoices never rewrite a stored total).
+
+    The service is sync (the tool runners are sync), so it runs in a worker thread rather than
+    blocking the event loop.  A code the rate source does not know is the caller's `E_VALIDATION`,
+    never dressed up as an upstream fault.
+    """
+    with refusal_guard():
+        result = await run_in_threadpool(fx_service.convert, amount, from_currency, to_currency)
+    return FxConvertResponse.model_validate(result)

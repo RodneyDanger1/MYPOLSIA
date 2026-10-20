@@ -78,6 +78,9 @@ def _run(db: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         **os.environ,
         "DATABASE_URL": f"sqlite+aiosqlite:///{db.as_posix()}",
         "CLAUDE_CLI_MOCK": "true",
+        # V29 parent fix: never let this test touch the repo's real data/sites or data/trash.
+        "POLSIA_SITES_DIR": str(db.parent / "sites"),
+        "POLSIA_TRASH_DIR": str(db.parent / "trash"),
     }
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],

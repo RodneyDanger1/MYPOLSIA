@@ -45,11 +45,13 @@ from app.api.v1 import (
     pricing,
     prospects,  # wave V27 (L5): the owner-managed prospect CRM — CRUD over `prospects`
     schedules,
+    signals,  # wave V29 (L5): read-only market signals (fixed keyless feeds)
     site,
     sites,  # wave V24 (L3): the website builder — generate + list sites (files under data/sites)
     social,
     support,
     tasks,
+    trust,  # wave V29 (L6): domain/TLS health + link status
     vision,  # wave V26 (L4): POST /vision/describe — on-demand model description of one attachment
     ws,
 )
@@ -493,6 +495,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(planner.router)    # V9 (B1): the idea planner — propose/confirm/status (owner)
     api_v1.include_router(invoices.router)   # V9 (B4): invoices v1 — create/list/get/send/void (owner)
     api_v1.include_router(economics.router)  # V9 (B7): keyless macro context — inflation/CPI/FX (owner)
+    api_v1.include_router(signals.router)    # V29 (L5): fixed keyless feed headlines (owner)
+    api_v1.include_router(trust.router)      # V29 (L6): DoH/TLS + Wayback link status (owner)
     api_v1.include_router(data.router)       # wave V10 (H1/D7): the data portability surface — export ZIP + guarded wipe (owner)
     # wave V24 (L3): the website builder — POST generate / GET list, disk-backed (data/sites/<slug>/
     # meta.json).  The router is included BEFORE the /sites static mount so the /api/v1 prefix is

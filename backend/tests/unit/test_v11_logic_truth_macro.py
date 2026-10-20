@@ -58,10 +58,10 @@ def test_tools_claim_for_a_tool_less_agent_under_deepseek_stays_honest(monkeypat
     """An agent with an EMPTY registry allowlist gets no tool claim (the runtime requests no
     tools for it — the unchanged path)."""
     from app.agents import deepseek_runtime
-    from app.agents.social_media.agent import SocialMediaAgent
+    from app.agents.ads_management.agent import AdsManagementAgent
 
     monkeypatch.setattr(deepseek_runtime, "available", lambda: True)
-    doctrine = SocialMediaAgent().layers_for({"title": "post"}, {"company": {"name": "Co"}})[
+    doctrine = AdsManagementAgent().layers_for({"title": "campaign"}, {"company": {"name": "Co"}})[
         "tool_doctrine"
     ].text
 

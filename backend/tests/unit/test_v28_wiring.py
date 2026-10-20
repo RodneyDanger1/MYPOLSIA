@@ -10,7 +10,7 @@ recording it in prose, so the audit cannot rot:
 2. **UI → route** — every multi-segment API path a page or hook builds resolves to a real route,
    so a renamed endpoint cannot linger as a dead call in the UI.  Single-segment literals are page
    links (`/tasks` is both a page and the API path) and are not judged.
-3. **Tools** — `TOOL_SPECS`, `_RUNNERS` and `TOOL_GUIDANCE` name the same twelve tools, and the
+3. **Tools** — `TOOL_SPECS`, `_RUNNERS` and `TOOL_GUIDANCE` name the same seventeen tools, and the
    policy firewall's union of `agent_tools` is exactly that set: no advertised-but-unrunnable tool,
    no allowlisted-but-nonexistent tool, and every tool has an owner that production can start.
 4. **Beat** — every `beat_schedule` entry names a task the worker registers, carries a schedule,
@@ -52,6 +52,10 @@ API_ONLY: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/outreach/unsubscribe"): (
         "Recipient-facing HTML page behind the one-click unsubscribe link in outgoing email "
         "(signed token, no login). It is consumed by a mail client's browser, not by the SPA."
+    ),
+    ("GET", "/api/v1/trust/link"): (
+        "Agent tool `link_status` only. A model checks a cited URL before sending it; no page "
+        "renders a link-health card, so no browser call exists by design."
     ),
 }
 

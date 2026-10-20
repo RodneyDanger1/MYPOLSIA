@@ -12,7 +12,10 @@ export type SiteSummary = {
   /** The pages this site actually has, in order. Absent = V24 site (only `index.html`). */
   pages?: string[];
   template?: string;
-  /** A bare hostname recorded with the site — recorded, NOT verified (no DNS check anywhere). */
+  /** A bare hostname recorded with the site.  Still only a RECORD in `meta.json` — the site
+   *  service never resolves it — but since V29/L6 the `/sites` row mounts `SiteHealthBadge`, which
+   *  asks `GET /api/v1/trust/domain` for a live DNS + certificate verdict.  Absent/null = a local
+   *  site, which has no domain to check and makes no call. */
   custom_domain?: string | null;
 };
 

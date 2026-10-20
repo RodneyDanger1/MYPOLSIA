@@ -128,7 +128,10 @@ def test_web_search_ships_exactly_for_the_market_intelligence_agent():
         if "web_search" in cap.agent_tools
     }
     assert holders == {"competitor_research"}
-    assert tool_registry.tools_for("competitor_research") == ("web_fetch", "web_search")
+    # V29: the four research/trust reads follow web_search, append-only.
+    assert tool_registry.tools_for("competitor_research") == (
+        "web_fetch", "web_search", "research_fetch", "signals_read",
+        "domain_health", "link_status")
 
 
 # ── success: the frozen result shape ────────────────────────────────────────────────────────
@@ -396,5 +399,6 @@ def test_an_unknown_tool_still_names_the_full_known_set():
     # LIVE set (this is a registry-vocabulary pin, not a search pin).
     for name in ("web_fetch", "web_search", "macro_snapshot", "pricing_catalog", "phone_read",
                  "code_write", "code_read", "code_list",
-                 "github_repo", "github_branch", "github_commit", "github_pr"):
+                 "github_repo", "github_branch", "github_commit", "github_pr",
+                 "research_fetch", "fx_convert", "signals_read", "domain_health", "link_status"):
         assert name in message

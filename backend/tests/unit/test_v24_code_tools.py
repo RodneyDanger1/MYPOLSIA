@@ -123,7 +123,7 @@ def test_the_allowlist_grants_the_code_tools_to_code_generation_only():
     # The orchestrator DECISION (evidence quoted in the lane RECEIPT): it plans from the context
     # it is given and must not act; a workspace reader would widen a planner into an actor.
     assert tool_registry.tools_for("orchestrator") == (
-        "macro_snapshot", "pricing_catalog", "phone_read")
+        "macro_snapshot", "pricing_catalog", "phone_read", "signals_read", "fx_convert")
     holders = {
         agent_type for agent_type, cap in pf.AGENT_CAPABILITIES.items()
         if set(cap.agent_tools) & {"code_write", "code_read", "code_list"}

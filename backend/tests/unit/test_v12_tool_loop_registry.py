@@ -117,15 +117,15 @@ def test_the_real_agents_invocation_is_the_signal_this_loop_reads():
 
 
 def test_a_no_tool_agent_stays_byte_identical_through_the_real_producer():
-    """email_outreach has an empty allowlist -> no `tools` field, no extra envelope keys.
+    """ads_management has an empty allowlist -> no `tools` field, no extra envelope keys.
 
-    (V20/L2 moved customer_support onto `phone_read`, so the canonical no-tools agent is a
-    genuinely tool-less one: email_outreach.)
+    (V29 gave social_media `signals_read` and email_outreach `link_status`, so the canonical
+    genuinely tool-less agent is ads_management.)
     """
     from app.agents.crew_factory import get_agent_class
 
-    agent = get_agent_class("email_outreach")()
-    assert tool_registry.tools_for("email_outreach") == ()
+    agent = get_agent_class("ads_management")()
+    assert tool_registry.tools_for("ads_management") == ()
     inv = agent._build_invocation("do the thing", json_schema=SUMMARY_SCHEMA,
                                   runtime_tools=())
 
@@ -150,10 +150,11 @@ def test_real_registry_specs_are_what_ride_the_request():
     assert server.requests[0]["body"]["tools"] == tool_registry.TOOL_SPECS
     assert {spec["function"]["name"] for spec in tool_registry.TOOL_SPECS} == {
         # V20/L2: phone_read.  V24/L2: web_search + the three code tools (8 frozen names).
-        # V25/L2: the GitHub quartet (12 frozen names — source control behind the firewall).
+        # V25/L2: the GitHub quartet (12 frozen names).  V29: five research/trust reads (17).
         "web_fetch", "web_search", "macro_snapshot", "pricing_catalog",
         "phone_read", "code_write", "code_read", "code_list",
         "github_repo", "github_branch", "github_commit", "github_pr",
+        "research_fetch", "fx_convert", "signals_read", "domain_health", "link_status",
     }
 
 
@@ -177,13 +178,13 @@ def test_real_registry_pricing_catalog_round_trip_for_an_allowed_agent():
 
 
 def test_real_registry_denies_a_tool_outside_the_agents_allowlist():
-    """social_media has NO tools: the firewall refuses by name and the run stays honest."""
+    """ads_management has NO tools: the firewall refuses by name and the run stays honest."""
     server = _Scripted(
         _completion(None, finish="tool_calls",
                     tool_calls=[_tool_call("c1", "macro_snapshot", "{}")]),
         _completion('{"summary": "worked without it"}'),
     )
-    result, envelope = _run(server, allowed_tools=("pricing_catalog",), agent_type="social_media")
+    result, envelope = _run(server, allowed_tools=("pricing_catalog",), agent_type="ads_management")
 
     refusal = json.loads(server.tool_result(1))
     assert refusal["ok"] is False

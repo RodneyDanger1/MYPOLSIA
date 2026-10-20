@@ -6,7 +6,7 @@ import { NOT_MEASURED, absoluteStamp } from "@/components/dashboard/format";
 import { FinanceListPanel, type FinanceColumn } from "@/components/finance/FinanceListPanel";
 import { FinanceSummaryGrid } from "@/components/finance/FinanceSummaryGrid";
 import { HumanRateCard } from "@/components/finance/HumanRateCard";
-import { centsText, countText, textOrDash, usdText } from "@/components/finance/format";
+import { centsText, countText, moneyCentsText, textOrDash, usdText } from "@/components/finance/format";
 import { IdleNotice, ListSkeleton, ReadError, SummarySkeleton } from "@/components/finance/states";
 import { isIdleSummary } from "@/components/finance/summary";
 import type { ExpenseRow, RevenueSnapshotRow, StripeEventRow } from "@/components/finance/types";
@@ -63,13 +63,13 @@ const EXPENSE_COLUMNS: FinanceColumn<ExpenseRow>[] = [
   { key: "date", label: "Date", value: (row) => row.date },
   { key: "category", label: "Category", value: (row) => row.category },
   { key: "vendor", label: "Vendor", value: (row) => row.vendor },
-  { key: "amount", label: "Amount", value: (row) => centsText(row.amount_cents) },
+  { key: "amount", label: "Amount", value: (row) => moneyCentsText(row.amount_cents, row.currency) },
 ];
 
 const EVENT_COLUMNS: FinanceColumn<StripeEventRow>[] = [
   { key: "received", label: "Received", value: (row) => absoluteStamp(row.processed_at) },
   { key: "type", label: "Type", value: (row) => row.event_type },
-  { key: "amount", label: "Amount", value: (row) => centsText(row.amount_cents) },
+  { key: "amount", label: "Amount", value: (row) => moneyCentsText(row.amount_cents, row.currency) },
   { key: "customer", label: "Customer", value: (row) => textOrDash(row.customer_id) },
 ];
 

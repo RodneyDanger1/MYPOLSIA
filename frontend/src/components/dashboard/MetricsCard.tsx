@@ -1,5 +1,5 @@
 /**
- * Unwired since the U1 dashboard rebuild — zero non-test imports as of wave U4; kept per the campaign no-delete rule; wire-vs-retire decision recorded in REQUESTS.
+ * Unwired since the U1 dashboard rebuild — zero non-test imports as of wave U4; kept per the campaign no-delete rule; wire-vs-retire decision recorded in REQUESTS. V29 decision: keep + label, not mounted anywhere (wave-v29/DECISIONS.md).
  */
 interface MetricsCardProps {
   title: string;

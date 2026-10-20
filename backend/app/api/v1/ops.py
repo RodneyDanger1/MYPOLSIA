@@ -276,7 +276,10 @@ async def read_capabilities() -> CapabilityManifestResponse:
 # manual surface:
 #
 #   POST  body optional; `apply` defaults to FALSE (dry run).  `{"apply": true}` deletes.
-#         Returns {runs_dir, count, kept, removed, skipped, policy, applied} — exactly.
+#         Returns {runs_dir, count, kept, removed, skipped, policy, applied} — plus
+#         `removed_truncated` / `skipped_truncated` ONLY when the 50-name cap actually cut a list
+#         (V29/L1 T1.4; `response_model_exclude_none` keeps the seven-key shape otherwise, and the
+#         GET below serves `null` for them rather than excluding its own `{"data": null}`).
 #   GET   the last recorded result (the newest activity row this server wrote) or {"data": null}.
 #
 # The body is parsed BY HAND, not through a FastAPI body model: the app's RequestValidationError
@@ -310,7 +313,17 @@ class RunWorkspaceCleanupSkip(BaseModel):
 
 
 class RunWorkspaceCleanupResult(BaseModel):
-    """The seven-key contract.  `removed` is "would remove" when `applied` is false."""
+    """The seven-key contract, plus two OPTIONAL truncation flags.
+
+    `removed` is "would remove" when `applied` is false.  The counts are always exact; the NAME
+    lists are capped at `RUN_WORKSPACE_CLEANUP_NAME_CAP` (50) so a mass expiry stays a bounded
+    activity row.  `removed_truncated`/`skipped_truncated` say that a list really WAS capped:
+    `true` only when the cap bit, and no claim otherwise — the POST body omits them
+    (`response_model_exclude_none`, which keeps its frozen seven-key shape) while the GET serves
+    `null` (`{"data": null}` must stay a measured absence, so that route cannot exclude `None`).
+    Neither `false`, neither `null` nor absent ever means "zero" (V29/L1 T1.4: the response model
+    used to drop the flags, so a capped list read exactly like a complete one).
+    """
 
     runs_dir: str
     count: int
@@ -319,6 +332,8 @@ class RunWorkspaceCleanupResult(BaseModel):
     skipped: list[RunWorkspaceCleanupSkip]
     policy: RunWorkspaceCleanupPolicy
     applied: bool
+    removed_truncated: bool | None = None
+    skipped_truncated: bool | None = None
 
 
 class RunWorkspaceCleanupRecord(BaseModel):
@@ -396,7 +411,8 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
     return apply, root
 
 
-@router.post("/run-workspace-cleanup", response_model=RunWorkspaceCleanupResult)
+@router.post("/run-workspace-cleanup", response_model=RunWorkspaceCleanupResult,
+             response_model_exclude_none=True)
 async def run_workspace_cleanup_route(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> RunWorkspaceCleanupResult:

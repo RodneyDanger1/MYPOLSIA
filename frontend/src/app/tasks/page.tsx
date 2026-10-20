@@ -96,6 +96,10 @@ function TasksPageContent() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
   const [offBoard, setOffBoard] = useState<OffBoardOpen | null>(null);
+  /** V29/L2: a failed by-id read is retryable. Bumping this re-runs the by-id effect even when the
+   *  current state is the miss (the effect is keyed to `fetchingId`, which is null for a miss), so
+   *  Retry re-issues the read instead of being a no-op. */
+  const [retrySeq, setRetrySeq] = useState(0);
 
   // `useSearchParams` answers null where no provider is mounted (the hook's own source says so;
   // several suites render this page unmocked) — that is "no param in the URL", never a crash.
@@ -156,8 +160,8 @@ function TasksPageContent() {
     setOffBoard({ kind: "fetching", id: requestedTaskId });
   }, [rawTaskParam, requestedTaskId, rows]);
 
-  // The by-id read itself, keyed to the FETCHING id alone (not to `rows`): a later board
-  // refresh must not cancel an in-flight read.
+  // The by-id read itself, keyed to the FETCHING id and the Retry counter (not to `rows`): a later
+  // board refresh must not cancel an in-flight read, and a Retry on the miss must run it again.
   const fetchingId = offBoard?.kind === "fetching" ? offBoard.id : null;
   useEffect(() => {
     if (fetchingId === null) return;
@@ -191,7 +195,7 @@ function TasksPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [fetchingId]);
+  }, [fetchingId, retrySeq]);
 
   // The open task: from the loaded rows when the board carries it, else the by-id fetch's row —
   // never a fabricated stand-in for either.
@@ -253,6 +257,19 @@ function TasksPageContent() {
                 : `Could not open task #${offBoard.id}`}
             </p>
             <p className="mt-1 text-sm text-ink">{offBoard.message}</p>
+            {/* V29/L2 T2.1: the miss is retryable. Re-entering `fetching` gives the by-id effect a
+                non-null id again; `retrySeq` is the dependency that makes a repeat click a re-read. */}
+            <Button
+              size="sm"
+              className="mt-2"
+              data-testid="task-deep-link-retry"
+              onClick={() => {
+                setOffBoard({ kind: "fetching", id: offBoard.id });
+                setRetrySeq((n) => n + 1);
+              }}
+            >
+              Retry
+            </Button>
           </div>
         ) : null}
 

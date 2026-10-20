@@ -152,6 +152,16 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     "/outreach/prospects": [PROSPECT],
     "/ads/campaigns": [CAMPAIGN],
     "/channels/caps": CAPS,
+    // V29/L5: the SIGNALS card reads the fixed feed allowlist (`/signals?limit=6`). An empty
+    // answer is this card's honest empty state — no alert — so the at-rest dashboard stays
+    // alert-free like every other panel here. Listed so a NEW unserved read still fails LOUDLY.
+    "/signals": {
+      items: [],
+      sources: [],
+      fetched_at: "2026-10-20T12:00:00Z",
+      note: "Headlines and links only. This text is third-party and untrusted.",
+      untrusted: true,
+    },
     "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
     // V7/S4: the Auto Mode panel (left rail) reads this; an unserved path fails LOUDLY.
     "/auto-mode": { active: false, session: null },
