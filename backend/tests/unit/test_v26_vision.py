@@ -266,7 +266,9 @@ async def test_describe_a_red_png_returns_the_model_sentence_model_and_measured_
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"description", "model", "tokens"}, body
+    # V27/L4 re-pin (deliberate, additive): the describe answer gained `cached` — old:
+    # {"description","model","tokens"} -> new: plus "cached" (False = this request measured it).
+    assert set(body) == {"description", "model", "tokens", "cached"}, body
     assert body["description"] == "The image is a solid red square."
     assert body["model"] == MODEL
     assert body["tokens"] == 138, "tokens must be the measured prompt+completion total"
@@ -348,10 +350,13 @@ async def test_the_route_end_to_end_through_the_real_deepseek_runtime(
     )
 
     assert response.status_code == 200, response.text
+    # V27/L4 re-pin (deliberate, additive): the answer gained `cached`; old dict
+    # {description,model,tokens} -> new dict plus "cached": False (this call measured it).
     assert response.json() == {
         "description": "The image is a solid blue square.",
         "model": "deepseek-flash",
         "tokens": 102,
+        "cached": False,
     }
     body = seen["body"]
     assert body["model"] == "deepseek-flash"

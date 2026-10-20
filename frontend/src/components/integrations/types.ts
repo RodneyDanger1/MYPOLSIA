@@ -28,7 +28,7 @@ export type ProviderStatus = {
   source: ProviderSource;
   /** `true` for stripe / meta_ads / google_ads: status only, credentials live in the env. */
   read_only: boolean;
-  /** `true` when this build wires a read-only probe (github, render). */
+  /** `true` when this build wires a read-only probe (github, render, sendgrid, stripe). */
   testable: boolean;
   secrets: SecretStatus[];
 };

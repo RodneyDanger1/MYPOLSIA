@@ -3,6 +3,7 @@
 import { absoluteStamp } from "@/components/dashboard/format";
 import { Button } from "@/components/ui";
 import { SiteDeployControl, type DeployBoard } from "@/components/sites/SiteDeployControl";
+import { SiteLifecycleControl, type LifecycleBoard } from "@/components/sites/SiteLifecycleControl";
 import { SitePages } from "@/components/sites/SitePages";
 import { bytesText, type SiteSummary } from "@/components/sites/types";
 
@@ -18,6 +19,9 @@ import { bytesText, type SiteSummary } from "@/components/sites/types";
  * previews the exact Render call first, and — when Render is not configured — no button at all.
  * `deploy` is optional so the list itself stays usable without a deploy board (and testable in
  * isolation), but the `/sites` page always passes one.
+ *
+ * Wave V27 adds the lifecycle surface (`SiteLifecycleControl`): Regenerate, the two-step Delete and
+ * a Sitemap link for a site that has one.  `lifecycle` is optional for the same reason as `deploy`.
  */
 export function SiteList({
   rows,
@@ -25,12 +29,14 @@ export function SiteList({
   onSelect,
   onCopy,
   deploy,
+  lifecycle,
 }: {
   rows: SiteSummary[];
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
   onCopy: (site: SiteSummary) => void;
   deploy?: DeployBoard;
+  lifecycle?: LifecycleBoard;
 }) {
   return (
     <ul className="divide-y divide-line border border-line" data-testid="sites-list">
@@ -70,6 +76,9 @@ export function SiteList({
               </div>
             </div>
             <SitePages site={site} />
+            {lifecycle ? (
+              <SiteLifecycleControl site={site} name={name} lifecycle={lifecycle} />
+            ) : null}
             {deploy ? <SiteDeployControl slug={site.slug} name={name} deploy={deploy} /> : null}
           </li>
         );

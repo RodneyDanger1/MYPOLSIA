@@ -21,6 +21,11 @@ from app.models.support import SupportInboxItem
 from app.models.task import AgentRun, Task, TaskAttachment
 from app.models.types import json_type, string_list_type
 
+# V27/L4: the vision memory table.  Registered here because `Base.metadata` only knows a table
+# once its module is imported — alembic/env.py, tests/conftest.py and every `create_all` path
+# import THIS package, not the individual modules.
+from app.models.vision import VisionDescriptionRow
+
 __all__ = [
     "AdCampaign",
     "AdMetric",
@@ -45,6 +50,7 @@ __all__ = [
     "Task",
     "TaskAttachment",
     "TaskSchedule",
+    "VisionDescriptionRow",
     "json_type",
     "string_list_type",
 ]

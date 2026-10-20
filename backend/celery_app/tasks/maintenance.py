@@ -64,20 +64,49 @@ tick hands nothing to the broker.  ACCEPTANCE IS NOT DELIVERY (E7 F-03): `.delay
 means the broker took the publish, so a message accepted then lost leaves the row `pending` and
 marker-less — `reconcile_stranded_pending_tasks` covers that population too, through the
 `rearmed_at` stamp the clear leaves behind (any `source`, unclaimed, older than one window).
+
+`cleanup_run_workspaces` is the seventh job (V27/L2): V26 shipped
+`tool_registry.cleanup_expired_run_workspaces` (policy: keep the newest 20 run directories under
+`<workspace>/runs/`, max age 72 h) and NOTHING called it, so a run workspace outlived its policy
+forever.  This daily tick is the caller: it invokes the registry function with the NAMED defaults
+(imported from the registry, never re-declared here), records ONE activity row carrying the counts,
+the run names and the policy — never a file's contents and never a path inside a run — and returns
+the same shape the owner route serves.  `plan_expired_run_workspaces` is the read-only twin the
+route's dry run needs; it imports the registry's constants, its run-id charset and its link guard,
+so the preview and the delete cannot disagree about what "expired" means (pinned by
+`tests/unit/test_v27_retention.py::test_the_preview_and_the_delete_agree_on_identical_trees`).
 """
 from __future__ import annotations
 
 import logging
+import os
+import time
 from datetime import datetime, timedelta
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
+from app.agents.tool_registry import (
+    _RUN_ID_RE,
+    CODE_WORKSPACE_DEFAULT,
+    RUN_RETENTION_KEEP_LATEST,
+    RUN_RETENTION_MAX_AGE_HOURS,
+    RUN_WORKSPACE_SUBDIR,
+    _tree_contains_link,
+    cleanup_expired_run_workspaces,
+)
 from app.config import settings
 from app.core import redis_client
+from app.core.errors import E_CONFIG, E_VALIDATION, PolsiaError
 from app.core.events import publish_stats
 from app.core.timeutil import UTC, as_bound_instant, now_utc
 from app.services.task_service import requeue_stale_claims
 from celery_app.tasks._common import run_async
 from celery_app.worker import app
+
+if TYPE_CHECKING:  # annotation-only: the task module keeps its runtime imports lazy
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models.report import ActivityLog
 
 logger = logging.getLogger(__name__)
 
@@ -715,3 +744,299 @@ async def _clear_paused_markers(task_ids: list[int]) -> None:
             merged.pop(PAUSED_RELEASE_KEY, None)
             row.metadata_json = merged
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# run-workspace retention (V27/L2) — the daily caller for the V26 cleanup
+#
+# The POLICY lives in `app/agents/tool_registry.cleanup_expired_run_workspaces` (keep the newest
+# `RUN_RETENTION_KEEP_LATEST` = 20 run directories, max age `RUN_RETENTION_MAX_AGE_HOURS` = 72 h).
+# This module never re-declares it: the delete path CALLS that function, and the preview path
+# imports its constants, its run-id charset and its link guard.  The two paths can therefore only
+# disagree if the registry's own rule changes under both of them — and
+# `test_the_preview_and_the_delete_agree_on_identical_trees` measures the agreement on identical
+# trees, so a drift is a failing test rather than a wrong delete.
+# ---------------------------------------------------------------------------
+
+#: The activity row's action — the /ops panel's "last result" reads exactly this.
+RUN_WORKSPACE_CLEANUP_ACTION = "run_workspace_cleanup"
+#: The agent_type on the row: this is system maintenance, not agent work.
+RUN_WORKSPACE_CLEANUP_AGENT = "system"
+#: How many NAMES an activity row carries.  Counts are always exact; a mass expiry keeps the row
+#: bounded (`removed_truncated` / `skipped_truncated` say so) instead of writing an unbounded blob.
+RUN_WORKSPACE_CLEANUP_NAME_CAP = 50
+
+
+def _runs_dir_for(workspace_root: str | Path | None) -> Path:
+    """`<workspace>/runs`, resolved — the SAME base the registry function resolves at call time.
+
+    Read from `settings.code_workspace_dir` when `workspace_root` is None (the V26 function's own
+    at-call-time rule; tests and the route's drill seam pass a temp root instead).  A root that
+    cannot be resolved is the registry's `E_CONFIG` class, named here with the same remedy.
+    """
+    if workspace_root is None:
+        raw = getattr(settings, "code_workspace_dir", CODE_WORKSPACE_DEFAULT)
+        text = raw.strip() if isinstance(raw, str) else ""
+        candidate = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
+    else:
+        if not isinstance(workspace_root, (str, Path)):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"run workspace cleanup: workspace_root must be a path string "
+                f"(got {type(workspace_root).__name__})",
+                how_to_fix="pass a directory path, or omit workspace_root for the configured one",
+                context={"workspace_root": repr(workspace_root)[:200]},
+            )
+        candidate = Path(workspace_root).expanduser()
+    try:
+        base = candidate.resolve()
+    except (OSError, ValueError) as exc:
+        raise PolsiaError(
+            E_CONFIG,
+            f"run workspace cleanup: the workspace root {str(candidate)!r} cannot be resolved "
+            f"({type(exc).__name__}: {exc})",
+            how_to_fix="set CODE_WORKSPACE_DIR to a directory this process can read",
+            context={"workspace_root": str(candidate)},
+        ) from exc
+    return base / RUN_WORKSPACE_SUBDIR
+
+
+def plan_expired_run_workspaces(
+    *, workspace_root: str | Path | None = None, now: float | None = None
+) -> dict[str, Any]:
+    """The V26 policy PREVIEWED — the same candidates, the same skips, zero deletions.
+
+    `cleanup_expired_run_workspaces` has one behaviour: delete.  A dry run therefore cannot call
+    it, and the alternative — a second set of keep/age numbers — is exactly what this lane forbids.
+    This function walks the same immediate children with the SAME imported constants, the SAME
+    `_RUN_ID_RE` charset and the SAME `_tree_contains_link` guard, and answers the same
+    `{runs_dir, removed, count, kept, skipped, policy}` shape with `removed` meaning "would be
+    removed".  `run_workspace_cleanup(apply=False)` is its only caller.
+
+    Never raises for an absent `runs/` (an empty answer, not an error) and refuses a linked
+    `runs/` outright — the registry's own two shapes, so a preview can never claim a delete that
+    the applied pass would refuse to perform.
+    """
+    clock = time.time() if now is None else float(now)
+    policy: dict[str, object] = {
+        "keep_latest": RUN_RETENTION_KEEP_LATEST,
+        "max_age_hours": float(RUN_RETENTION_MAX_AGE_HOURS),
+    }
+    runs_dir = _runs_dir_for(workspace_root)
+    empty: dict[str, object] = {
+        "runs_dir": str(runs_dir), "removed": [], "count": 0, "kept": 0, "skipped": [],
+        "policy": policy,
+    }
+    if not runs_dir.exists():
+        return empty
+
+    is_junction = getattr(os.path, "isjunction", None)
+    if runs_dir.is_symlink() or (callable(is_junction) and is_junction(runs_dir)):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"run workspace cleanup: {str(runs_dir)!r} is a link or junction — refusing to "
+            "preview or delete anything through it",
+            how_to_fix="remove the link under the workspace root by hand, then retry",
+            context={"runs_dir": str(runs_dir)},
+        )
+    if not runs_dir.is_dir():
+        raise PolsiaError(
+            E_CONFIG,
+            f"run workspace cleanup: {str(runs_dir)!r} exists but is not a directory",
+            how_to_fix="point CODE_WORKSPACE_DIR at a directory (or remove the file in the way)",
+            context={"runs_dir": str(runs_dir)},
+        )
+
+    candidates: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
+    with os.scandir(runs_dir) as entries:
+        for entry in entries:
+            try:
+                if entry.is_symlink() or (callable(is_junction) and is_junction(entry.path)):
+                    skipped.append({"name": entry.name, "reason": "link"})
+                    continue
+                if not entry.is_dir(follow_symlinks=False):
+                    skipped.append({"name": entry.name, "reason": "not_a_directory"})
+                    continue
+                if not _RUN_ID_RE.match(entry.name):
+                    skipped.append({"name": entry.name, "reason": "invalid_name"})
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+            except OSError as exc:  # an unreadable entry is never previewed as deletable
+                skipped.append(
+                    {"name": entry.name, "reason": f"stat_failed:{type(exc).__name__}"}
+                )
+                continue
+            candidates.append(
+                {"name": entry.name, "path": Path(entry.path), "mtime": float(stat.st_mtime)}
+            )
+
+    newest_first = sorted(
+        candidates, key=lambda item: (item["mtime"], item["name"]), reverse=True
+    )
+    protected = {str(item["name"]) for item in newest_first[:RUN_RETENTION_KEEP_LATEST]}
+    cutoff = clock - float(RUN_RETENTION_MAX_AGE_HOURS) * 3600.0
+    resolved_runs = runs_dir.resolve()
+    removed: list[str] = []
+    for item in newest_first:
+        name = str(item["name"])
+        path = item["path"]
+        assert isinstance(path, Path)  # populated above; mypy cannot read the dict shape
+        if name in protected:
+            continue
+        mtime = item["mtime"]
+        assert isinstance(mtime, (int, float))  # populated above; mypy cannot read the dict shape
+        if float(mtime) >= cutoff:
+            continue
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError) as exc:
+            skipped.append({"name": name, "reason": f"resolve_failed:{type(exc).__name__}"})
+            continue
+        if resolved == resolved_runs or resolved_runs not in resolved.parents:
+            skipped.append({"name": name, "reason": "outside_runs"})
+            continue
+        if _tree_contains_link(resolved):
+            skipped.append({"name": name, "reason": "contains_link"})
+            continue
+        removed.append(name)
+
+    return {
+        "runs_dir": str(runs_dir),
+        "removed": removed,
+        "count": len(removed),
+        "kept": len(candidates) - len(removed),
+        "skipped": skipped,
+        "policy": policy,
+    }
+
+
+def run_workspace_cleanup(
+    *, apply: bool, workspace_root: str | Path | None = None, now: float | None = None
+) -> dict[str, Any]:
+    """Preview (`apply=False`) or delete (`apply=True`) under `<workspace>/runs/`.
+
+    The applied path is the V26 registry function itself, called with the NAMED defaults imported
+    from it; the preview path is `plan_expired_run_workspaces`.  `applied` states which happened —
+    the caller never has to infer it from the counts.  Blocks on the filesystem; the route calls
+    it off the event loop (`run_in_threadpool`).
+    """
+    if not isinstance(apply, bool):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"run workspace cleanup: apply must be a boolean (got {type(apply).__name__})",
+            how_to_fix="pass apply=true to delete, apply=false (or omit) to preview",
+            context={"apply": repr(apply)[:40]},
+        )
+    if apply:
+        outcome = cleanup_expired_run_workspaces(
+            workspace_root=workspace_root,
+            keep_latest=RUN_RETENTION_KEEP_LATEST,
+            max_age_hours=RUN_RETENTION_MAX_AGE_HOURS,
+        )
+    else:
+        outcome = plan_expired_run_workspaces(workspace_root=workspace_root, now=now)
+
+    # Both producers answer the registry's own keys; the casts name that contract for mypy
+    # (`cleanup_expired_run_workspaces` returns `dict[str, object]`).  A missing key here is a
+    # broken producer and must fail loudly, not be defaulted into a fabricated zero.
+    removed_raw = cast(list[object], outcome["removed"])
+    skipped_raw = cast(list[dict[str, str]], outcome["skipped"])
+    policy_raw = cast(dict[str, object], outcome["policy"])
+    return {
+        "runs_dir": str(outcome["runs_dir"]),
+        "removed": [str(name) for name in removed_raw],
+        "count": int(cast(int, outcome["count"])),
+        "kept": int(cast(int, outcome["kept"])),
+        "skipped": [
+            {"name": str(item["name"]), "reason": str(item["reason"])} for item in skipped_raw
+        ],
+        "policy": {
+            "keep_latest": int(cast(int, policy_raw["keep_latest"])),
+            "max_age_hours": float(cast(float, policy_raw["max_age_hours"])),
+        },
+        "applied": apply,
+    }
+
+
+async def record_run_workspace_cleanup(
+    db: AsyncSession, outcome: dict[str, Any], *, trigger: str
+) -> ActivityLog:
+    """Write the ONE activity row for a cleanup: counts, run names and the policy.
+
+    Names only — the row is on the agent-visible feed, so it carries no file's contents and no
+    path INSIDE a run directory.  `runs_dir` is the operation's scope (a directory), the same value
+    the route returns.  The list is capped at `RUN_WORKSPACE_CLEANUP_NAME_CAP` with an explicit
+    `*_truncated` flag, so a mass expiry stays bounded without a silent truncation.
+    """
+    from app.services.activity_service import log_activity
+
+    removed = [str(name) for name in outcome["removed"]]
+    skipped = [dict(item) for item in outcome["skipped"]]
+    cap = RUN_WORKSPACE_CLEANUP_NAME_CAP
+    policy = outcome["policy"]
+    applied = bool(outcome["applied"])
+    detail: dict[str, Any] = {
+        "runs_dir": str(outcome["runs_dir"]),
+        "count": int(outcome["count"]),
+        "kept": int(outcome["kept"]),
+        "removed": removed[:cap],
+        "skipped": skipped[:cap],
+        "policy": {
+            "keep_latest": int(policy["keep_latest"]),
+            "max_age_hours": float(policy["max_age_hours"]),
+        },
+        "applied": applied,
+        "trigger": trigger,
+    }
+    if len(removed) > cap:
+        detail["removed_truncated"] = True
+    if len(skipped) > cap:
+        detail["skipped_truncated"] = True
+
+    total = detail["count"] + detail["kept"]
+    summary = (
+        f"run workspace cleanup ({'applied' if applied else 'dry run'}): "
+        f"{detail['count']} of {total} run workspace(s) "
+        f"{'removed' if applied else 'would be removed'}; "
+        f"keep newest {detail['policy']['keep_latest']}, "
+        f"max age {detail['policy']['max_age_hours']:g} h"
+    )
+    return await log_activity(
+        db,
+        RUN_WORKSPACE_CLEANUP_AGENT,
+        RUN_WORKSPACE_CLEANUP_ACTION,
+        summary=summary,
+        detail=detail,
+    )
+
+
+@app.task(name="celery_app.tasks.maintenance.cleanup_run_workspaces")
+def cleanup_run_workspaces() -> dict[str, Any]:
+    """Daily (V27/L2) — apply the run-workspace retention policy and record it.
+
+    The beat entry is `run-workspace-cleanup` in `celery_app/beat_schedule.py`.  The registry
+    function does the deletion (never re-implemented here); the activity row is written in the
+    SAME call, so "it ran" and "it is on the feed" cannot diverge.
+    """
+    return run_async(_cleanup_run_workspaces())
+
+
+async def _cleanup_run_workspaces() -> dict[str, Any]:
+    from app.core.database import get_session_factory
+
+    outcome = run_workspace_cleanup(apply=True)
+    async with get_session_factory()() as db:
+        entry = await record_run_workspace_cleanup(db, outcome, trigger="beat")
+        activity_id = int(entry.id)
+        await db.commit()
+
+    result = {**outcome, "status": "completed", "activity_id": activity_id}
+    logger.info(
+        "run workspace cleanup: applied=%s removed=%s kept=%s runs_dir=%s",
+        result["applied"],
+        result["count"],
+        result["kept"],
+        result["runs_dir"],
+    )
+    return result

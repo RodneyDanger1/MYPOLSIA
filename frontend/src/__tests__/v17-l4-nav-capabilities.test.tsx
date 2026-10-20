@@ -15,6 +15,9 @@
  *
  * V25/L5 re-pin: the list moved 17 -> 18 when the Ops (God Mode) route was added before
  * /capabilities; Capabilities is still before Settings.
+ *
+ * V27/L5 re-pin: the list moved 18 -> 19 when the Prospects route was added right after
+ * /outreach; Capabilities is still before Settings.
  */
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
@@ -26,7 +29,7 @@ describe("nav table — the capabilities route (16th)", () => {
     expect(items[0].icon).toBeDefined();
   });
 
-  it("is the eighteen-route IA, /capabilities in the system cluster before Settings", () => {
+  it("is the nineteen-route IA, /capabilities in the system cluster before Settings", () => {
     expect(NAV_ITEMS.map((item) => item.href)).toEqual([
       "/dashboard",
       "/agents",
@@ -35,6 +38,9 @@ describe("nav table — the capabilities route (16th)", () => {
       "/schedules",
       "/social",
       "/outreach",
+      // V27/L5 moved the list 18 -> 19 in the SAME edit that added the Prospects route, right
+      // after /outreach; the /capabilities position below is unchanged.
+      "/prospects",
       "/support",
       "/phone",
       "/ads",
@@ -54,6 +60,6 @@ describe("nav table — the capabilities route (16th)", () => {
       "/capabilities",
       "/settings",
     ]);
-    expect(NAV_ITEMS).toHaveLength(18);
+    expect(NAV_ITEMS).toHaveLength(19);
   });
 });

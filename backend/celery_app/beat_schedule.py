@@ -1,4 +1,4 @@
-"""Beat schedule — the 15 periodic entries, loaded by `celery_config.beat_schedule`.
+"""Beat schedule — the 17 periodic entries, loaded by `celery_config.beat_schedule`.
 
 The uploaded repo declared these entries in this file but never installed them
 (measured: declared 5 / effective 0, FINDINGS §10), and `cleanup_old_activity` had no
@@ -24,6 +24,9 @@ Rule used here:
   next tick of the same job, so a backlog collapses instead of replaying;
 * the 03:00 retention cleanup: **3 h** — a pure cleanup may run late, but it must not
   drift into the 06:00 morning cycle;
+* the 04:15 run-workspace retention sweep (V27/L2): **daily, expires 6 h** — the same
+  late-but-not-into-the-next-day rule; the V26 registry policy (newest 20, max age 72 h)
+  is applied by `maintenance.cleanup_run_workspaces`;
 * the task-lease sweep: **every 5 min, expires 4 min (below the interval)** — its period
   is set against the 900 s claim lease rather than the wall clock (a dead worker's claim
   must not stay unreachable for a whole cycle), so a tick older than its own slot
@@ -132,6 +135,16 @@ beat_schedule = {
         "task": "celery_app.tasks.maintenance.cleanup_old_activity",
         "schedule": crontab(minute=0, hour=3),
         "options": {"queue": "maintenance", "expires": 10800},
+    },
+    # 04:15 UTC daily (V27/L2): the run-workspace retention sweep.  V26 shipped
+    # `tool_registry.cleanup_expired_run_workspaces` (keep the newest 20 run directories, max age
+    # 72 h) with NO caller anywhere, so a run workspace could outlive its own policy forever.  The
+    # task is the caller.  `expires` (6 h) keeps a backlog from replaying yesterday's sweep into
+    # today's — a pure cleanup may run late, but it must not drift into the next day's policy.
+    "run-workspace-cleanup": {
+        "task": "celery_app.tasks.maintenance.cleanup_run_workspaces",
+        "schedule": crontab(minute=15, hour=4),
+        "options": {"queue": "maintenance", "expires": 21600},
     },
     # Every 5 min: recover tasks whose claiming worker died (claim lease expiry). The interval
     # is strictly SHORTER than the 900 s lease (settings.task_claim_lease_seconds), so a claim

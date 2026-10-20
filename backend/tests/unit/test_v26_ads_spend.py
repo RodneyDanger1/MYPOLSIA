@@ -73,7 +73,8 @@ def test_migration_0015_is_child_of_0014_and_the_single_head() -> None:
     graph = _revision_graph()
     assert "0015" in graph, "migration 0015 is missing"
     assert graph["0015"] == "0014", "0015's down_revision must be 0014 (one chain)"
-    assert "0015" not in set(graph.values()), "another revision revises 0015 — the chain forks"
+    # V27/L4: 0016 (`0016_vision_descriptions.py`) is 0015's intended child — one chain, one head.
+    assert [r for r, down in graph.items() if down == "0015"] == ["0016"]
 
 
 def _pre_0015_sqlite_db(path) -> None:

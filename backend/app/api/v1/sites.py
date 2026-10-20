@@ -22,6 +22,15 @@ Wave V26 (lane L5) is ADDITIVE on the same routes:
     The generated `sitemap.xml` is built from THIS request's `request.base_url`, so a site created
     through nginx lists the URLs a visitor actually gets.
 
+Wave V27 (lane L1) adds the owner-managed lifecycle:
+    DELETE /api/v1/sites/{slug} -> 200 {slug, deleted: true}; the site's directory and `meta.json`
+         are removed.  An unknown slug is `E_NOT_FOUND`; a slug that is not a plain site name or a
+         directory that resolves outside `data/sites` (traversal, absolute, link) is `E_VALIDATION`.
+    POST   /api/v1/sites/{slug}/regenerate -> 200 {slug, url, bytes, title, created_at, pages,
+         template, custom_domain}; the three pages, `styles.css` and `sitemap.xml` are re-rendered
+         from the CURRENT company profile with the site's stored template/custom_domain, keeping its
+         slug, title and `created_at`.  A legacy single-page site regenerates to the full V26 shape.
+
 The disk is the one source of truth (`services/site_service`): a site exists iff its directory holds
 a complete `meta.json`, and the LIST is written from those files — there is no second registry to
 drift.  The generated files are served by the `StaticFiles` mount at `/sites` (wired in `main.py`)
@@ -41,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.services import deploy_service
-from app.services.site_service import generate_site, list_sites
+from app.services.site_service import delete_site, generate_site, list_sites, regenerate_site
 
 router = APIRouter(prefix="/sites", tags=["sites"], dependencies=[Depends(verify_api_key)])
 
@@ -91,6 +100,26 @@ class SiteSummaryResponse(BaseModel):
         default=None,
         description="the bare hostname recorded for this site — recorded, not verified",
     )
+
+
+class SiteDeletedResponse(BaseModel):
+    """`DELETE /sites/{slug}` — the site that was removed (its directory and `meta.json` are gone)."""
+
+    slug: str
+    deleted: bool
+
+
+class SiteRegeneratedResponse(BaseModel):
+    """`POST /sites/{slug}/regenerate` — the rebuilt site's record, with its identity preserved."""
+
+    slug: str
+    url: str
+    bytes: int
+    title: str
+    created_at: str
+    pages: list[str]
+    template: str
+    custom_domain: str | None = None
 
 
 class DeployRequest(BaseModel):
@@ -224,3 +253,38 @@ async def list_site_rows(
     with refusal_guard():
         rows = list_sites(slug=slug)
     return [SiteSummaryResponse.model_validate(row) for row in rows]
+
+
+@router.delete("/{slug}", response_model=SiteDeletedResponse)
+async def delete_site_route(slug: str) -> SiteDeletedResponse:
+    """Remove one site's directory — its pages, `styles.css`, sitemap and `meta.json`.
+
+    The disk is the site's only record, so the removed directory is a removed site everywhere: the
+    list, the `StaticFiles` mount and any later read.  Refusals by name: `E_NOT_FOUND` when the slug
+    is already gone (a second delete is honest, not a 200), `E_VALIDATION` for a slug/path that is
+    not a direct child of `data/sites` (traversal, absolute or a link), `E_STORAGE` when the
+    filesystem refuses the removal.
+    """
+    with refusal_guard():
+        result = delete_site(slug)
+    return SiteDeletedResponse.model_validate(result)
+
+
+@router.post("/{slug}/regenerate", response_model=SiteRegeneratedResponse)
+async def regenerate_site_route(
+    slug: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> SiteRegeneratedResponse:
+    """Rebuild one site from the CURRENT company profile, keeping its identity.
+
+    Writes all three pages, the stored template's `styles.css` and — from this request's
+    `base_url` — `sitemap.xml`.  `slug`, `title`, `created_at`, `template` and `custom_domain` are
+    preserved: a rebuild is not a rename or a re-creation, and the stored domain remains a RECORD
+    (nothing here resolves DNS).  A legacy V24 site becomes the full V26 shape.
+
+    Refusals by name: `E_CONFIG` with no company profile/name, `E_NOT_FOUND` for an unknown slug,
+    `E_VALIDATION` for a path outside `data/sites` or a stored template/domain that is no longer
+    valid, `E_STORAGE` when a file cannot be written.
+    """
+    with refusal_guard():
+        result = await regenerate_site(db, slug, base_url=str(request.base_url))
+    return SiteRegeneratedResponse.model_validate(result)

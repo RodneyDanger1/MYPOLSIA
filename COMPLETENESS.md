@@ -1,5 +1,35 @@
 # COMPLETENESS — MYPOLSIA, the honest final statement
 
+> **V27 settlement (2026-10-19, this commit).** Six lanes: site delete/regenerate, retention
+> automation, SendGrid/Stripe read-only probes, vision memory (migration 0016), owner-managed
+> prospect CRM, and proof/docs. Measured on the settled tree: backend **3,337 tests / 0 failed /
+> 0 errors / 13 skipped** (`wave-v27/v-settle/gate2.xml`), jest **108 suites / 1,017 tests**
+> (`jest-full.log`), live drill **41/41** (`v27-live.log`) plus the V26 drill **42/42**
+> (`v26-drill.log`) and the carried V25 drills **45/45** + **17/17**; migration head **0016**
+> applied to live PostgreSQL. **Residuals still open:** SendGrid/Stripe live probes need real
+> keys (owner-gated); drill-created site *directories* are counted by the cleanup script but not
+> deleted (rows only); a cache hit reuses another task's stored description without writing a
+> history row for the reading task; real Render/GitHub/ad/Stripe actions remain owner-gated.
+>
+> **V26 settlement (2026-10-19, commit `d6bd944`).** Six lanes: agents-page truth, integrations &
+> secrets, run workspaces, vision on demand, sites 2.0, proof/cleanup. Measured on the settled tree:
+> backend **3,226 tests / 0 failed / 0 errors / 13 skipped** (`wave-v26/v-settle/gate3.xml`;
+> `gate3.log` `EXIT=0`), jest **104 suites / 983 tests** (`jest-final.log`, `EXIT=0`), live drill
+> **42/42** (`v26-live.log`) plus the carried V25 drills **45/45** (`v-live.log`) and **17/17**
+> (`v25-extra.log`); migration head **0015** applied to live PostgreSQL. What V26 closed: the
+> hidden-tab "Loading agent status…" skeleton, Settings → Integrations over the one secret store
+> (masked status, save/clear, named test refusals, no value in any response), per-run code
+> workspaces with bounded retention, vision **Describe** on demand (never writes the task result),
+> Sites 2.0 (three script-free pages + absolute `sitemap.xml` + recorded custom domain with a 422
+> refusal), and ads spend nullable with no default. **Residuals still open:** real Render deploys
+> and authenticated GitHub writes are owner-gated (`E_CONFIG` without keys); custom domains are
+> recorded, never DNS-verified; vision needs a configured model; ads writes remain unproven.
+> **BLOCKED:** coverage %, mypy file count, ruff/tsc output and the Playwright suite count are not in
+> the V26 settle evidence and are not claimed. The V22/V23 narrative below is retained as written;
+> its "uncommitted wave" note is historical — the tree has since settled through V24 (`51affcf`),
+> V25 (`7faa6dd`) and V26 (`d6bd944`), and the served frontend is the V26 rebuild the live drill
+> exercised.
+
 Audit wave **V22** (8 seats: W1 wiring · W2 honesty · L1 tools persistence · L2 phone thread view ·
 L3 wiring fixes · L4 proof/coverage · L5 docs · L6 verifier). Base commit `4f6a834`.
 **V23 pass at 2026-10-19 13:09 CDT** closed the five remaining product asks in §7 — items 6, 8, 9,
@@ -8,7 +38,7 @@ backend **2,745 tests / 0 failed / 0 errors / 13 skipped**, jest **23 suites / 2
 bytes, ruff clean; per-lane verdicts **PASS / PASS-WITH-NOTES** (the two notes are LOW traceability
 accuracy only). The wave is still **uncommitted**, `0011` is not live, and the five live checks are
 the parent's.
-Written **2026-10-19 09:50 CDT; last updated 13:09 CDT**. This file is built only from what is on
+Written **2026-10-19 09:50 CDT; last updated 19:43 CDT (V26 settle)**. This file is built only from what is on
 disk; every sentence below names its evidence. Anything not yet receipted is marked **in flight (no
 receipt at this write)** — never presented as done.
 

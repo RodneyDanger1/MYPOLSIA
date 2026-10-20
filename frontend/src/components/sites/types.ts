@@ -134,6 +134,28 @@ export function validateCustomDomain(value: string): string | null {
   return null;
 }
 
+/* ── V27: the owner-managed lifecycle (delete + regenerate) ────────────────────────────────── */
+/** `DELETE /api/v1/sites/{slug}` — the site whose directory and `meta.json` were removed.
+ *  `deleted: true` is the server's confirmation; a refusal is an `ApiError`, never this shape. */
+export type SiteDeleted = {
+  slug: string;
+  deleted: boolean;
+};
+
+/** `POST /api/v1/sites/{slug}/regenerate` — the rebuilt site's record.
+ *  `slug`, `title`, `created_at`, `template` and `custom_domain` are preserved by the server;
+ *  `bytes` is the real total of the files it just rewrote. */
+export type SiteRegenerated = {
+  slug: string;
+  url: string;
+  bytes: number;
+  title: string;
+  created_at: string;
+  pages: string[];
+  template: string;
+  custom_domain: string | null;
+};
+
 /** The absolute URL for Open/Copy: the API serves a site-root-relative path (`/sites/<slug>/`). */
 export function absoluteSiteUrl(url: string): string {
   if (typeof window === "undefined") return url;

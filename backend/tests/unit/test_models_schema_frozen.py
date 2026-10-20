@@ -167,6 +167,15 @@ revenue fix left spend as the last conflated money field.  Row change: `spend_us
 `2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9` ->
 `b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (V27/L4, 2026-10-19): `vision_descriptions` — the vision cache/history table
+(`backend/alembic/versions/0016_vision_descriptions.py`) — is a NEW table with eight columns: the
+attachment FK (ON DELETE CASCADE), the task FK (ON DELETE CASCADE), the bytes' sha256, the model's
+description, the model id, the measured token count (nullable), and `created_at` with its `now()`
+default. 23 tables -> 24; two explicit indexes.  No existing row changed.  Old canonical sha256
+`b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff` ->
+`0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -185,7 +194,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff"
+DDL_SHA256 = "0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -212,6 +221,7 @@ FROZEN_TABLE_NAMES = (
     'task_attachments',
     'task_schedules',
     'tasks',
+    'vision_descriptions',
 )
 
 # table -> ((column, type, nullable, python_default, server_default, indexes, unique), ...)
@@ -560,6 +570,18 @@ FROZEN_COLUMNS = {
         ('attempts', 'INTEGER', True, '0', '0', '', False),
         ('dedupe_key', 'VARCHAR(255)', True, '', '', 'ix_tasks_dedupe_key', True),
     ),
+    # V27/L4 (0016): the vision description memory — one row per model answer, keyed by the
+    # attachment bytes' sha256 + model for the cache and by task_id for the history read.
+    'vision_descriptions': (
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('attachment_id', 'INTEGER', False, '', '', '', False),
+        ('task_id', 'INTEGER', False, '', '', 'ix_vision_descriptions_task_id', False),
+        ('sha256', 'VARCHAR(64)', False, '', '', 'ix_vision_descriptions_sha256', False),
+        ('description', 'TEXT', False, '', '', '', False),
+        ('model', 'VARCHAR(120)', True, '', '', '', False),
+        ('tokens', 'INTEGER', True, '', '', '', False),
+        ('created_at', 'DATETIME', False, '', 'now()', '', False),
+    ),
 }
 
 FROZEN_UNIQUE_CONSTRAINTS = {
@@ -585,6 +607,9 @@ FROZEN_INDEXES = {
     ('ix_support_inbox_items_task_id', ('task_id',), False),
     # V25/L1 (0013): the attachments read (list + the per-task cap aggregate).
     ('ix_task_attachments_task_id', ('task_id',), False),
+    # V27/L4 (0016): the vision memory reads — cache lookup (sha256) and task history (task_id).
+    ('ix_vision_descriptions_sha256', ('sha256',), False),
+    ('ix_vision_descriptions_task_id', ('task_id',), False),
     ('ix_tasks_created_at', ('created_at',), False),
     ('ix_tasks_dedupe_key', ('dedupe_key',), True),
     ('ix_tasks_pending_queue', ('status', 'priority', 'scheduled_date'), False),

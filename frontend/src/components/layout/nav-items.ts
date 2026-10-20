@@ -17,6 +17,7 @@ import {
   ShieldAlert,
   Target,
   Twitter,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -28,7 +29,8 @@ import type { LucideIcon } from "lucide-react";
  * aid3 MATCH-VS-BEAT C2 forbids re-adding a sidebar). Our clone routes the live pages plus the
  * owner-requested operator surfaces added by V11 unit 2 (Invoices, Schedules, Support) — the
  * count claim moves with the table (eleven -> sixteen; V17/L4 added Capabilities; V24/L3 added
- * Sites, so seventeen; V25/L5 added Ops, so eighteen), labels stay as short as the live menu items.
+ * Sites, so seventeen; V25/L5 added Ops, so eighteen; V27/L5 added Prospects, so nineteen), labels
+ * stay as short as the live menu items.
  */
 export type NavItem = {
   /** App Router path. */
@@ -49,6 +51,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/schedules", label: "Schedules", icon: CalendarClock },
   { href: "/social", label: "Social", icon: Twitter },
   { href: "/outreach", label: "Outreach", icon: Mail },
+  // V27/L5: the owner-managed prospect CRM — the WRITABLE sibling of the read-only Outreach
+  // surface (add / correct / remove a row), so it sits right after it. The count claim above
+  // moves eighteen -> nineteen with this row.
+  { href: "/prospects", label: "Prospects", icon: Users },
   // V11 unit 2: the support inbox mirror (wiring audit F4) — the customer_support channel had no
   // in-app view until this wave.
   { href: "/support", label: "Support", icon: LifeBuoy },

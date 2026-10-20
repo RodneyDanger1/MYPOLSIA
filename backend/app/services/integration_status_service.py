@@ -31,10 +31,19 @@ THE VALUE NEVER LEAVES
 
 TEST-CONNECTION IS A REAL READ-ONLY PROBE, OR A NAMED REFUSAL
 -------------------------------------------------------------
-    github  -> GET https://api.github.com/user                     (Bearer token)
-    render  -> GET https://api.render.com/v1/services?limit=1      (Bearer token)
+    github   -> GET https://api.github.com/user                     (Bearer token)
+    render   -> GET https://api.render.com/v1/services?limit=1      (Bearer token)
+    sendgrid -> GET https://api.sendgrid.com/v3/scopes              (Bearer API key)
+    stripe   -> GET https://api.stripe.com/v1/balance               (Bearer secret key)
 
-Both are bounded at `PROBE_TIMEOUT_S` (10 s, the brief's ceiling), follow no redirects, and
+V27/L3 added the last two.  `/v3/scopes` proves a SendGrid key authenticates without sending
+mail or reading customer data, and its success detail carries only the NUMBER of scopes (the
+list is not needed to prove the key).  `/v1/balance` proves a Stripe secret key (test-mode keys
+included) authenticates without a write; the success detail says the endpoint answered 200 and
+deliberately does NOT print the amounts — money is not a credential, but it is not evidence a
+key works either.
+
+All four are bounded at `PROBE_TIMEOUT_S` (10 s, the brief's ceiling), follow no redirects, and
 read at most `MAX_PROBE_BYTES`.  Failure mapping uses the codes that already exist in
 `app/core/errors.py` — no new code, so the status-table census (`test_r29_status_parity`)
 does not move:
@@ -44,11 +53,11 @@ does not move:
     5xx / timeout / wire   -> E_UPSTREAM  (502)
     unknown provider       -> E_NOT_FOUND (404)
 
-`sendgrid`, `stripe`, `meta_ads` and `google_ads` have NO read-only probe in this build.  A
-test on them refuses BY NAME with `E_VALIDATION` (422) and a message that says no probe is
-wired — it never fabricates a success.  (There is deliberately no `E_UNSUPPORTED` constant:
-inventing one would change `HTTP_STATUS_BY_CODE` and move the pinned status census, so the
-request-level refusal rides the existing `E_VALIDATION` instead.)
+`meta_ads` and `google_ads` still have NO read-only probe in this build.  A test on them refuses
+BY NAME with `E_VALIDATION` (422) and a message that says no probe is wired — it never fabricates
+a success.  (There is deliberately no `E_UNSUPPORTED` constant: inventing one would change
+`HTTP_STATUS_BY_CODE` and move the pinned status census, so the request-level refusal rides the
+existing `E_VALIDATION` instead.)
 
 THE TEST SEAM
 -------------
@@ -86,12 +95,16 @@ MAX_PROBE_BYTES = 64 * 1024
 
 GITHUB_USER_URL = "https://api.github.com/user"
 RENDER_SERVICES_URL = "https://api.render.com/v1/services?limit=1"
+SENDGRID_SCOPES_URL = "https://api.sendgrid.com/v3/scopes"
+STRIPE_BALANCE_URL = "https://api.stripe.com/v1/balance"
 
 #: `None` in production; tests install an `httpx.MockTransport` (a LABELLED test double).
 _TRANSPORT: Any = None
 
 _PROBE_GITHUB = "github_user"
 _PROBE_RENDER = "render_services"
+_PROBE_SENDGRID = "sendgrid_scopes"
+_PROBE_STRIPE = "stripe_balance"
 
 
 @dataclass(frozen=True)
@@ -122,10 +135,10 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ("RENDER_API_KEY", "RENDER_SERVICE_ID"),
     ),
     "sendgrid": ProviderSpec(
-        "sendgrid", "SendGrid", ("SENDGRID_API_KEY",), False, None, ("SENDGRID_API_KEY",)
+        "sendgrid", "SendGrid", ("SENDGRID_API_KEY",), False, _PROBE_SENDGRID, ("SENDGRID_API_KEY",)
     ),
     "stripe": ProviderSpec(
-        "stripe", "Stripe", ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"), True, None,
+        "stripe", "Stripe", ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"), True, _PROBE_STRIPE,
         ("STRIPE_SECRET_KEY",),
     ),
     "meta_ads": ProviderSpec(
@@ -407,10 +420,15 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
 
 
 def _require_configured(spec: ProviderSpec) -> dict[str, str]:
-    """Every credential the probe needs, or `E_CONFIG` naming the missing one(s)."""
+    """Every credential the PROBE needs (`spec.required`), or `E_CONFIG` naming the missing one(s).
+
+    `required`, not `secrets`: `STRIPE_WEBHOOK_SECRET` is status-only — a balance probe that
+    refused without it would invent a dependency the endpoint does not have.  For github and
+    render the two tuples are identical, so their behaviour is unchanged.
+    """
     resolved: dict[str, str] = {}
     missing: list[str] = []
-    for name in spec.secrets:
+    for name in spec.required:
         value = secret_store.get_secret(name)
         if value:
             resolved[name] = value
@@ -463,7 +481,7 @@ async def test_provider(provider: Any) -> dict[str, Any]:
         )
 
     resolved = _require_configured(spec)
-    token = resolved[spec.secrets[0]]
+    token = resolved[spec.required[0]]
 
     if spec.probe == _PROBE_GITHUB:
         document = await _probe_json(spec.provider, GITHUB_USER_URL, token)
@@ -473,12 +491,42 @@ async def test_provider(provider: Any) -> dict[str, Any]:
             detail += f" as {login}"
         return {"ok": True, "provider": spec.provider, "detail": detail}
 
-    document = await _probe_json(spec.provider, RENDER_SERVICES_URL, token)
-    count = len(document) if isinstance(document, list) else None
-    detail = "GET https://api.render.com/v1/services?limit=1 answered 200"
-    if count is not None:
-        detail += f" with {count} service(s) visible"
-    return {"ok": True, "provider": spec.provider, "detail": detail}
+    if spec.probe == _PROBE_RENDER:
+        document = await _probe_json(spec.provider, RENDER_SERVICES_URL, token)
+        count = len(document) if isinstance(document, list) else None
+        detail = "GET https://api.render.com/v1/services?limit=1 answered 200"
+        if count is not None:
+            detail += f" with {count} service(s) visible"
+        return {"ok": True, "provider": spec.provider, "detail": detail}
+
+    if spec.probe == _PROBE_SENDGRID:
+        document = await _probe_json(spec.provider, SENDGRID_SCOPES_URL, token)
+        scopes = document.get("scopes") if isinstance(document, dict) else None
+        detail = f"GET {SENDGRID_SCOPES_URL} answered 200 — key accepted"
+        if isinstance(scopes, list):
+            # The COUNT proves the key; the scope list is not needed and is not reproduced.
+            detail += f" ({len(scopes)} scopes)"
+        return {"ok": True, "provider": spec.provider, "detail": detail}
+
+    if spec.probe == _PROBE_STRIPE:
+        # The body is read and discarded ON PURPOSE: amounts are not evidence a key works.
+        await _probe_json(spec.provider, STRIPE_BALANCE_URL, token)
+        return {
+            "ok": True,
+            "provider": spec.provider,
+            "detail": (
+                f"GET {STRIPE_BALANCE_URL} answered 200 — balance endpoint answered 200; "
+                "amounts were not read out"
+            ),
+        }
+
+    raise PolsiaError(
+        E_VALIDATION,
+        f"{spec.provider}: this build names probe {spec.probe!r} but has no handler for it — "
+        "refusing rather than reporting a result nobody can produce",
+        how_to_fix="this is an internal registry inconsistency; remove the probe name or add a handler",
+        context={"provider": spec.provider, "probe": spec.probe},
+    )
 
 
 __all__ = [
@@ -489,6 +537,8 @@ __all__ = [
     "PROVIDER_ORDER",
     "ProviderSpec",
     "RENDER_SERVICES_URL",
+    "SENDGRID_SCOPES_URL",
+    "STRIPE_BALANCE_URL",
     "clear_provider_secrets",
     "list_provider_status",
     "provider_status",

@@ -386,7 +386,8 @@ def test_models_compile_to_pg_types_and_sqlite_types():
     assert "JSON" in sqlite_ddl and "ARRAY" not in sqlite_ddl
     assert "metadata JSONB" in pg_ddl or "metadata JSON" in pg_ddl
     # wave V25 (L1): 22 -> 23 — `task_attachments` (image input for tasks) joined the schema.
-    assert len(Base.metadata.tables) == 23, sorted(Base.metadata.tables)
+    # wave V27 (L4): 23 -> 24 — `vision_descriptions` joined via migration 0016.
+    assert len(Base.metadata.tables) == 24, sorted(Base.metadata.tables)
     # 17 -> 18: `support_inbox_items`, added by alembic 0004 (R17) — the CS inbox ingest the
     # RD12 receipt §7 names as the remaining schema decision.  It has its own migration, which
     # is what section 11's "the migration declares" clause is about; the pinned COUNT moves

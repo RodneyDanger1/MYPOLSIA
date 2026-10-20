@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { OpsApprovals } from "@/components/ops/OpsApprovals";
+import { OpsRetention } from "@/components/ops/OpsRetention";
 import { OpsRunsTable } from "@/components/ops/OpsRunsTable";
 import { OpsSwitches } from "@/components/ops/OpsSwitches";
 import { OpsTriggers } from "@/components/ops/OpsTriggers";
@@ -55,6 +56,10 @@ export default function OpsPage() {
       </div>
 
       <OpsTriggers tick={tick} onRetry={bump} />
+
+      {/* V27/L2: the run-workspace retention panel — the manual surface for the daily beat task.
+          Additive, same Ops* card language; reads its own last-result route on mount only. */}
+      <OpsRetention />
     </div>
   );
 }

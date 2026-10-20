@@ -43,6 +43,7 @@ from app.api.v1 import (
     phone,  # wave V16 (E5/P-02, frozen H-P1): the owner's phone — read-only /phone/* surface
     planner,
     pricing,
+    prospects,  # wave V27 (L5): the owner-managed prospect CRM — CRUD over `prospects`
     schedules,
     site,
     sites,  # wave V24 (L3): the website builder — generate + list sites (files under data/sites)
@@ -470,6 +471,10 @@ def create_app() -> FastAPI:
     api_v1.include_router(finance.router)    # /stripe/webhook is unauthenticated
     api_v1.include_router(social.router)
     api_v1.include_router(outreach.router)
+    # wave V27 (L5): the owner-managed prospect CRM — GET/POST /prospects and
+    # GET/PATCH/DELETE /prospects/{id}.  It reads and writes the SAME `prospects` table the
+    # outreach read above serves; the outreach routes/service stay untouched.
+    api_v1.include_router(prospects.router)
     api_v1.include_router(ads.router)
     api_v1.include_router(support.router)   # R17: the customer-support inbox ingest (owner's API)
     api_v1.include_router(ops.router)       # R22: activity publish breaker stats + reset (owner)

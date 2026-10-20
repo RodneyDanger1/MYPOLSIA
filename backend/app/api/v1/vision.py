@@ -1,20 +1,24 @@
-"""`POST /api/v1/vision/describe` — vision on demand (V26 / L4, F4).
+"""Vision routes — on demand (V26 / L4, F4) and memory (V27 / L4).
 
-ONE route, deliberately: the operator points at an attachment (or at a task whose single image
-it is) and gets back what the vision model sees.  There is no history route and no persistence
-— the description is model output rendered for the operator, never the task's result.
+TWO routes, both thin:
 
-The body is parsed HERE from the raw request bytes (not by FastAPI's body model) so that a
-malformed or ambiguous body is the repo's NAMED `E_VALIDATION` refusal in the standard envelope,
-with `X-Polsia-Error-Code`, instead of FastAPI's uncoded `{"detail": [...]}` 422.  The declared
-schema still reaches OpenAPI through `VisionDescribeRequest` in `app.schemas.vision`.
+* `POST /api/v1/vision/describe` — the operator points at an attachment (or at a task whose
+  single image it is) and gets back what the vision model sees.  V27 adds `cached`: `true` means
+  the sentence was served from `vision_descriptions` with NO provider call in this request.
+* `GET /api/v1/vision/descriptions?task_id=<id>` — the task's stored descriptions, newest
+  first.  `task_id` is the contract (there is deliberately no per-attachment history route).
+
+The describe body is parsed HERE from the raw request bytes (not by FastAPI's body model) and
+the history `task_id` from the raw query string, so a malformed request is the repo's NAMED
+`E_VALIDATION` refusal in the standard envelope, with `X-Polsia-Error-Code`, instead of
+FastAPI's uncoded `{"detail": [...]}` 422.  The declared schemas still reach OpenAPI through
+`app.schemas.vision`.
 
 Auth is the existing `verify_api_key` dependency, applied at the router so it runs before the
-body is read.  Every refusal comes from `vision_service` through `refusal_guard`.
+body/query is read.  Every refusal comes from `vision_service` through `refusal_guard`.
 
-WIRING (the parent adds this at integration — `app/main.py` is lane L2's file):
-    from app.api.v1 import (..., vision, ...)
-    api_v1.include_router(vision.router)
+WIRING: the router is already mounted by `app/main.py` (`api_v1.include_router(vision.router)`,
+V26).  V27 adds no include — it adds the second handler to the same router.
 """
 from __future__ import annotations
 
@@ -26,8 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.schemas.vision import VisionDescribeResponse, parse_describe_body
-from app.services.vision_service import describe
+from app.schemas.vision import (
+    SHA256_PREFIX_LEN,
+    VisionDescribeResponse,
+    VisionDescriptionOut,
+    parse_describe_body,
+    parse_history_task_id,
+)
+from app.services.vision_service import describe, history
 
 router = APIRouter(
     prefix="/vision",
@@ -64,7 +74,7 @@ async def describe_attachment(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> VisionDescribeResponse:
-    """Describe one image attachment: `{description, model, tokens}` or a named refusal."""
+    """Describe one image attachment: `{description, model, tokens, cached}` or a named refusal."""
     with refusal_guard():
         parsed = parse_describe_body(await _json_body(request))
         result = await describe(
@@ -74,4 +84,28 @@ async def describe_attachment(
         description=result.description,
         model=result.model,
         tokens=result.tokens,
+        cached=result.cached,
     )
+
+
+@router.get("/descriptions", response_model=list[VisionDescriptionOut])
+async def list_descriptions(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> list[VisionDescriptionOut]:
+    """One task's stored descriptions, newest first — `?task_id=<id>` or a named refusal."""
+    with refusal_guard():
+        task_id = parse_history_task_id(request.query_params.get("task_id"))
+        rows = await history(db, task_id=task_id)
+    return [
+        VisionDescriptionOut(
+            id=int(row.id),
+            attachment_id=int(row.attachment_id),
+            sha256_prefix=str(row.sha256 or "")[:SHA256_PREFIX_LEN],
+            description=row.description,
+            model=row.model,
+            tokens=row.tokens,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]

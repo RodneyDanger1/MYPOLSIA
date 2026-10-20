@@ -524,16 +524,33 @@ export default function SettingsPage() {
   );
 
   // Q-24: "not read yet" is a skeleton with `aria-busy`, never the bare word "Loading…".
+  // V27: the heading and the STATIC tab strip render immediately; only the panel waits for data.
+  // Before this, a slow /config hid the tabs entirely and the e2e settings spec timed out under
+  // load (the tab strip is static chrome, not data). The skeleton stays inside the card, so
+  // "not read yet" is still an aria-busy skeleton, never a fake form.
   if (loading) {
     return (
       <div className="max-w-2xl space-y-4">
         {heading}
-        <div aria-busy="true" className="space-y-2">
-          <p className="ui-label text-ink-muted">Loading company configuration…</p>
-          {[0, 1, 2].map((key) => (
-            <div key={key} className="h-[49px] animate-pulse border border-line bg-surface" />
-          ))}
-        </div>
+        <section className="card-surface">
+          <div className="px-4 pt-3">
+            <TabStrip
+              idPrefix="settings"
+              tabs={TAB_DEFS}
+              active={tab}
+              onSelect={setTab}
+              ariaLabel="Settings sections"
+            />
+          </div>
+          <div className="p-4" aria-busy="true">
+            <p className="ui-label text-ink-muted">Loading company configuration…</p>
+            <div className="mt-2 space-y-2">
+              {[0, 1, 2].map((key) => (
+                <div key={key} className="h-[49px] animate-pulse border border-line bg-surface" />
+              ))}
+            </div>
+          </div>
+        </section>
       </div>
     );
   }

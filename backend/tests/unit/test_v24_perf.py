@@ -399,9 +399,13 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         assert revision, f"unparsable revision header: {path.name}"
         graph[revision] = None if down in (None, "None") else down
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    # V25: the head moved 0012 -> 0014 (L1's 0013_task_attachments, L4's 0014_ads_nullable_revenue);
-    # V26/L6: 0015 (`0015_ads_spend_nullable.py`) is 0014's only child — head 0014 -> 0015.
+    # V25: the head moved 0012 -> 0014; V26/L6: 0014 -> 0015; V27/L4: 0015 -> 0016.
     # V24's 0012 -> 0011 leg is unchanged and still asserted below.
-    assert heads == ["0015"], f"expected a single head (0015), found {heads}"
+    assert heads == ["0016"], f"expected a single head (0016), found {heads}"
     assert graph["0012"] == "0011"
-    assert graph["0013"] == "0012" and graph["0014"] == "0013" and graph["0015"] == "0014"
+    assert (
+        graph["0013"] == "0012"
+        and graph["0014"] == "0013"
+        and graph["0015"] == "0014"
+        and graph["0016"] == "0015"
+    )

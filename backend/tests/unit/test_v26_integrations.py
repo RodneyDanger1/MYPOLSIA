@@ -161,7 +161,11 @@ async def test_status_lists_the_six_frozen_providers_masked_and_unconfigured(
         assert entry["configured"] is False
         assert entry["source"] == "none"
         assert entry["read_only"] is (entry["provider"] in READ_ONLY)
-        assert entry["testable"] is (entry["provider"] in {"github", "render"})
+        # V27/L3: SendGrid and Stripe gained real read-only probes; the two ad providers
+        # still refuse a test by name (no read endpoint wired).
+        assert entry["testable"] is (
+            entry["provider"] in {"github", "render", "sendgrid", "stripe"}
+        )
         assert entry["secrets"], "a provider with no secrets is not a provider"
         for secret in entry["secrets"]:
             assert set(secret) == {"name", "configured", "source", "masked"}
@@ -360,19 +364,27 @@ async def test_render_without_a_service_id_is_E_CONFIG_naming_it(
 # ── 5. untestable providers refuse by name — never a fabricated success ────────────────────
 
 @pytest.mark.asyncio
-async def test_sendgrid_refuses_the_probe_by_name_without_any_request(
+async def test_google_ads_refuses_the_probe_by_name_without_any_request(
     api_client, auth_headers, monkeypatch
 ) -> None:
-    await _save(api_client, auth_headers, "sendgrid", {"SENDGRID_API_KEY": FAKE_SENDGRID})
+    # V27/L3: SendGrid gained a real read-only probe (`GET /v3/scopes`), so the "no probe is
+    # wired" pin moves to google_ads, which still has no read endpoint in this build.
+    monkeypatch.setenv("GOOGLE_ADS_DEVELOPER_TOKEN", "fake-google-dev-v26")
+    monkeypatch.setenv("GOOGLE_ADS_CLIENT_ID", "fake-google-client-v26")
+    monkeypatch.setenv("GOOGLE_ADS_REFRESH_TOKEN", "fake-google-refresh-v26")
+    monkeypatch.setenv("GOOGLE_ADS_CUSTOMER_ID", "1234567890")
+    monkeypatch.setattr(settings, "google_ads_developer_token", "fake-google-dev-v26")
+    monkeypatch.setattr(settings, "google_ads_client_id", "fake-google-client-v26")
+    monkeypatch.setattr(settings, "google_ads_refresh_token", "fake-google-refresh-v26")
+    monkeypatch.setattr(settings, "google_ads_customer_id", "1234567890")
     wire = Wire({}).install(monkeypatch)
-    response = await api_client.post("/api/v1/integrations/sendgrid/test", headers=auth_headers)
+    response = await api_client.post("/api/v1/integrations/google_ads/test", headers=auth_headers)
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["error"]["code"] == E_VALIDATION
-    assert "sendgrid" in body["error"]["message"].lower()
+    assert "google_ads" in body["error"]["message"].lower()
     assert "probe" in body["error"]["message"].lower()
     assert body["ok"] is False
-    assert FAKE_SENDGRID not in response.text
     assert wire.calls == []
 
 

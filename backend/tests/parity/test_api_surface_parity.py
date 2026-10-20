@@ -217,6 +217,18 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/integrations/{provider}", ("PUT",)),
     ("/api/v1/integrations/{provider}/test", ("POST",)),
     ("/api/v1/vision/describe", ("POST",)),
+    # wave V27 (L1/L2/L4/L5): ten NEW route pins added deliberately WITH the routes —
+    # site delete/regenerate, the owner retention surface, vision history, prospect CRUD.
+    ("/api/v1/sites/{slug}", ("DELETE",)),
+    ("/api/v1/sites/{slug}/regenerate", ("POST",)),
+    ("/api/v1/ops/run-workspace-cleanup", ("GET",)),
+    ("/api/v1/ops/run-workspace-cleanup", ("POST",)),
+    ("/api/v1/vision/descriptions", ("GET",)),
+    ("/api/v1/prospects", ("GET",)),
+    ("/api/v1/prospects", ("POST",)),
+    ("/api/v1/prospects/{prospect_id}", ("DELETE",)),
+    ("/api/v1/prospects/{prospect_id}", ("GET",)),
+    ("/api/v1/prospects/{prospect_id}", ("PATCH",)),
 ]
 
 # FastAPI's own surface, held as a separate state (see the docs-routes decision in the docstring).

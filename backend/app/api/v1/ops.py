@@ -15,6 +15,12 @@ classes and external channels — DERIVED at request time from `policy_firewall.
 derivation renders the agents' own context blocks and the orchestrator's fleet map, so this
 surface cannot disagree with what the runtime enforces or with what agents are told.
 
+...plus POST/GET /api/v1/ops/run-workspace-cleanup (V27/L2): the owner's manual surface for the
+V26 run-workspace retention policy (`tool_registry.cleanup_expired_run_workspaces` — keep the
+newest 20 run directories under `<workspace>/runs/`, max age 72 h).  The POST is a DRY RUN unless
+the body says `{"apply": true}`; the GET serves the last recorded result (or an honest null).
+The automatic caller is the daily beat task `celery_app.tasks.maintenance.cleanup_run_workspaces`.
+
 WHY this file exists: `events.publish_stats()` and `reset_publish_breaker()` shipped with the
 activity circuit breaker (the "a skip is never silent" contract, `app/core/events.py:44-61`) and
 had ZERO production callers — the counters and the recovery lever were reachable only from tests.
@@ -33,20 +39,24 @@ counters and nothing else — no DB row, no external call, nothing that can refu
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
 from app.core import events, redis_client
-from app.core.errors import E_REDIS, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_REDIS, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_window, iso_utc, today_in
+from app.models.report import ActivityLog
 from app.models.task import AgentRun
+from app.schemas.common import UtcDatetime
 from app.schemas.ops import (
     AgentQualityResponse,
     CapabilityManifestResponse,
@@ -57,6 +67,8 @@ from app.services import capability_manifest
 from app.services.query_helpers import fetch_rows
 
 router = APIRouter(prefix="/ops", tags=["ops"], dependencies=[Depends(verify_api_key)])
+
+logger = logging.getLogger(__name__)
 
 
 @router.get("/events/stats", response_model=EventPublishStatsResponse)
@@ -253,4 +265,213 @@ async def read_capabilities() -> CapabilityManifestResponse:
     with refusal_guard():
         return CapabilityManifestResponse.model_validate(
             capability_manifest.capability_manifest()
+        )
+
+
+# ── POST/GET /ops/run-workspace-cleanup (V27/L2) ─────────────────────────────────────────────
+#
+# V26 shipped `tool_registry.cleanup_expired_run_workspaces` — keep the newest 20 run directories
+# under `<workspace>/runs/`, max age 72 h — with NO caller.  The daily beat task is the automatic
+# caller (`celery_app.tasks.maintenance.cleanup_run_workspaces`); these two routes are the owner's
+# manual surface:
+#
+#   POST  body optional; `apply` defaults to FALSE (dry run).  `{"apply": true}` deletes.
+#         Returns {runs_dir, count, kept, removed, skipped, policy, applied} — exactly.
+#   GET   the last recorded result (the newest activity row this server wrote) or {"data": null}.
+#
+# The body is parsed BY HAND, not through a FastAPI body model: the app's RequestValidationError
+# handler serves the framework's uncoded `{"detail": [...]}` shape for ordinary 422s, and this
+# verb's contract says a bad body is the NAMED `E_VALIDATION` (code + fix hint), like every other
+# refusal in the product.  Nothing is deleted before the body is fully validated.
+#
+# `workspace_root` is the DRILL SEAM: the live acceptance run seeds a temp root and points the
+# route at it.  Omitted, the task and the route both read `settings.code_workspace_dir` at call
+# time.  The registry function still only ever touches `<root>/runs/`, still refuses a linked
+# `runs/`, and still never follows a link out of the workspace.
+#
+# The policy is NOT declared here.  `run_workspace_cleanup` (the maintenance module this lane also
+# owns) calls the V26 function for the applied path and imports its constants for the preview, so
+# the two paths cannot drift (pinned in `tests/unit/test_v27_retention.py`).  The import is lazy
+# so the API process loads the worker task modules only when this surface is first used.
+
+
+class RunWorkspaceCleanupPolicy(BaseModel):
+    """The V26 registry policy, as served: newest `keep_latest`, max age `max_age_hours`."""
+
+    keep_latest: int
+    max_age_hours: float
+
+
+class RunWorkspaceCleanupSkip(BaseModel):
+    """One run-directory-shaped entry deliberately NOT deleted, and why."""
+
+    name: str
+    reason: str
+
+
+class RunWorkspaceCleanupResult(BaseModel):
+    """The seven-key contract.  `removed` is "would remove" when `applied` is false."""
+
+    runs_dir: str
+    count: int
+    kept: int
+    removed: list[str]
+    skipped: list[RunWorkspaceCleanupSkip]
+    policy: RunWorkspaceCleanupPolicy
+    applied: bool
+
+
+class RunWorkspaceCleanupRecord(BaseModel):
+    """The last recorded run: its activity row, when it was written, and who triggered it."""
+
+    activity_id: int
+    created_at: UtcDatetime | None
+    trigger: str
+    result: RunWorkspaceCleanupResult
+
+
+class RunWorkspaceCleanupLastResponse(BaseModel):
+    """`{data: ...}`; null is a measured absence (nothing recorded yet), never zeroed counts."""
+
+    data: RunWorkspaceCleanupRecord | None
+
+
+#: The only keys the body may carry.  Anything else is refused by name (no silent ignore).
+_CLEANUP_BODY_KEYS = frozenset({"apply", "workspace_root"})
+
+
+async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
+    """`(apply, workspace_root)` — or a NAMED `E_VALIDATION`, before anything is touched.
+
+    An ABSENT body is the dry run (`False, None`): the safe default must not require a payload.
+    A present body must be a JSON object with at most the two documented keys; `apply` must be a
+    real JSON boolean (no string/int coercion — `{"apply": "yes"}` is a mistake, not consent) and
+    `workspace_root` a non-blank string when present.
+    """
+    raw = await request.body()
+    if not raw or not raw.strip():
+        return False, None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise PolsiaError(
+            E_VALIDATION,
+            "the request body is not valid JSON",
+            how_to_fix='send {"apply": false|true} (or no body at all for a dry run)',
+            context={"reason": str(exc)[:200]},
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"the request body must be a JSON object (got {type(payload).__name__})",
+            how_to_fix='send {"apply": false|true}',
+            context={"type": type(payload).__name__},
+        )
+    unknown = sorted(set(payload) - _CLEANUP_BODY_KEYS)
+    if unknown:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"the request body carries unknown key(s): {', '.join(unknown)}",
+            how_to_fix='send only {"apply": boolean} and, for a drill, {"workspace_root": string}',
+            context={"unknown": unknown},
+        )
+    apply = payload.get("apply", False)
+    if not isinstance(apply, bool):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"`apply` must be a JSON boolean (got {type(apply).__name__})",
+            how_to_fix="pass true to delete the expired run directories, false (or omit) to preview",
+            context={"apply": repr(apply)[:40]},
+        )
+    root = payload.get("workspace_root")
+    if root is not None:
+        if not isinstance(root, str) or not root.strip():
+            raise PolsiaError(
+                E_VALIDATION,
+                "`workspace_root` must be a non-blank string when present",
+                how_to_fix="pass a directory path, or omit workspace_root for the configured one",
+                context={"workspace_root": repr(root)[:200]},
+            )
+        root = root.strip()
+    return apply, root
+
+
+@router.post("/run-workspace-cleanup", response_model=RunWorkspaceCleanupResult)
+async def run_workspace_cleanup_route(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> RunWorkspaceCleanupResult:
+    """Dry-run by default; `{"apply": true}` deletes the expired run directories.
+
+    The filesystem work runs off the event loop (`run_in_threadpool`) — deleting a tree is
+    blocking.  Both outcomes write ONE activity row (counts + run names + policy, never file
+    contents), which is what `GET` serves and what the `/ops` panel renders.  A dry run is also
+    recorded: "the owner looked" is an operator fact, and it deletes nothing.
+    """
+    from celery_app.tasks.maintenance import record_run_workspace_cleanup, run_workspace_cleanup
+
+    with refusal_guard():
+        apply, workspace_root = await _cleanup_body(request)
+        outcome = await run_in_threadpool(
+            run_workspace_cleanup, apply=apply, workspace_root=workspace_root
+        )
+        entry = await record_run_workspace_cleanup(db, outcome, trigger="owner")
+        activity_id = int(entry.id)
+        await db.commit()
+
+    logger.info(
+        "owner run-workspace cleanup: applied=%s count=%s kept=%s activity=%s",
+        outcome["applied"], outcome["count"], outcome["kept"], activity_id,
+    )
+    return RunWorkspaceCleanupResult.model_validate(outcome)
+
+
+@router.get("/run-workspace-cleanup", response_model=RunWorkspaceCleanupLastResponse)
+async def read_last_run_workspace_cleanup(
+    db: AsyncSession = Depends(get_db),
+) -> RunWorkspaceCleanupLastResponse:
+    """The newest recorded cleanup — or `{data: null}` when none has run yet.
+
+    An unreadable stored detail is a NAMED `E_DB` refusal, not a null: null means "never ran",
+    and serving it for a corrupt row would erase the difference between absence and damage.
+    """
+    from celery_app.tasks.maintenance import RUN_WORKSPACE_CLEANUP_ACTION
+
+    with refusal_guard():
+        row = (
+            await db.execute(
+                select(ActivityLog)
+                .where(ActivityLog.action == RUN_WORKSPACE_CLEANUP_ACTION)
+                .order_by(ActivityLog.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if row is None:
+            return RunWorkspaceCleanupLastResponse(data=None)
+
+        detail = row.detail if isinstance(row.detail, dict) else None
+        if detail is None:
+            raise PolsiaError(
+                E_DB,
+                f"activity row {row.id} carries no readable run-workspace cleanup detail",
+                how_to_fix="inspect the activity_log row; the panel cannot render a result it cannot read",
+                context={"activity_id": int(row.id)},
+            )
+        try:
+            result = RunWorkspaceCleanupResult.model_validate(detail)
+        except ValidationError as exc:
+            raise PolsiaError(
+                E_DB,
+                f"activity row {row.id} is not the run-workspace cleanup shape this server writes",
+                how_to_fix="inspect the activity_log row's detail JSON",
+                context={"activity_id": int(row.id), "errors": exc.errors()[:5]},
+            ) from exc
+
+        trigger = detail.get("trigger")
+        return RunWorkspaceCleanupLastResponse(
+            data=RunWorkspaceCleanupRecord(
+                activity_id=int(row.id),
+                created_at=row.created_at,
+                trigger=trigger if isinstance(trigger, str) else "unknown",
+                result=result,
+            )
         )

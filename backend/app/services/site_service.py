@@ -25,6 +25,18 @@ it still lists and serves `index.html` + `styles.css`, and `about.html`/`contact
 real 404s (a page is never fabricated for a site that predates it).  V26 generation always writes
 all three pages.
 
+Wave V27 adds the owner-managed lifecycle on the same disk contract:
+  * `delete_site` removes `<root>/<slug>/` — the site's files and `meta.json` — and is the named
+    `E_NOT_FOUND` when the site is already gone.  The target is RESOLVED and must be a direct child
+    of the sites root, so a traversal slug, an absolute path or a directory link pointing elsewhere
+    is `E_VALIDATION`; the removal walks with `follow_symlinks=False`, so a link inside a site is
+    unlinked, never traversed.
+  * `regenerate_site` re-renders the three pages, `styles.css` and (when the API supplies
+    `base_url`) `sitemap.xml` from the CURRENT company profile, reusing the site's stored
+    `template` / `custom_domain` and keeping its slug, title and `created_at`.  A legacy V24 site
+    regenerates to the full V26 shape (`template` defaults to `classic`).  `bytes` is rewritten from
+    the files actually written; every other `meta.json` key (e.g. `last_deploy`) is preserved.
+
 The generated page, in the order it is assembled:
   * `title` — the caller's title, else the company name;
   * `tagline` — the caller's tagline, else the profile's value prop / description / mission;
@@ -936,6 +948,205 @@ def record_deploy(
     return record
 
 
+# ── lifecycle: delete + regenerate (wave V27) ───────────────────────────────────────────────
+def _resolve_site_directory(slug: str, *, root: Path | None) -> tuple[str, Path]:
+    """The site's own directory, PROVEN to be a direct child of the sites root.
+
+    `validate_slug` already refuses traversal (`..`), absolutes and path separators by the frozen
+    `[a-z0-9-]{2,48}` contract.  This adds the filesystem half: a directory whose RESOLVED path is
+    not `<root>/<slug>` is refused by name — so a symbolic link (or an NTFS junction) planted under
+    the sites root can never aim a delete or a rewrite at anything outside it.  The unresolved path
+    is returned, so callers act on the site's own name rather than on a resolved target.
+    """
+    validated = validate_slug(slug)
+    sites_root = _resolve_root(root)
+    directory = sites_root / validated
+    if directory.is_symlink():
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site directory for slug {validated!r} is a symbolic link; refusing to follow it",
+            how_to_fix="remove the link and let Polsia own the site directory, or pick another slug",
+            context={"slug": validated, "path": str(directory), "reason": "symlink"},
+        )
+    try:
+        resolved_root = sites_root.resolve()
+        resolved = directory.resolve()
+    except OSError as exc:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site path for slug {validated!r} could not be resolved ({type(exc).__name__})",
+            how_to_fix="check the sites directory and retry",
+            context={"slug": validated, "path": str(directory)},
+        ) from exc
+    if resolved.parent != resolved_root or resolved.name != validated:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site path for slug {validated!r} resolves outside the sites directory",
+            how_to_fix="use a slug the sites directory owns; a site path is never followed elsewhere",
+            context={"slug": validated, "path": str(directory), "resolved": str(resolved)},
+        )
+    return validated, directory
+
+
+def _remove_tree(directory: Path) -> None:
+    """Remove `directory` WITHOUT ever following a link (symbolic link or NTFS junction).
+
+    `os.scandir` is asked `follow_symlinks=False`; a link is removed as a link (`unlink` for a
+    symlink, `rmdir` for a junction) and only a real directory is recursed into.  So a link planted
+    inside a site cannot turn a delete into a delete of its target.
+    """
+    for entry in os.scandir(directory):
+        is_junction = getattr(entry, "is_junction", None)
+        if entry.is_symlink():
+            os.unlink(entry.path)
+        elif callable(is_junction) and is_junction():
+            os.rmdir(entry.path)  # removes the reparse point, never the target
+        elif entry.is_dir(follow_symlinks=False):
+            _remove_tree(Path(entry.path))
+        else:
+            os.unlink(entry.path)
+    os.rmdir(directory)
+
+
+def _write_text_atomic(path: Path, content: str) -> int:
+    """Write `content` temp-file-then-`os.replace`; return the REAL byte count written.
+
+    A reader (the static mount, a second worker) sees the old file or the new one, never a torn
+    one.  A failed write is `E_STORAGE` naming the file — never a silent no-op that would let the
+    route claim a rebuild it did not perform.
+    """
+    temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        temp.write_text(content, encoding="utf-8", newline="\n")
+        os.replace(temp, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):  # best-effort cleanup of the temp file
+            temp.unlink(missing_ok=True)
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not write the site file {path.name!r}: {type(exc).__name__}: {exc}",
+            how_to_fix=f"make sure the site directory is writable ({path.parent}) and retry",
+            context={"path": str(path)},
+        ) from exc
+    return path.stat().st_size
+
+
+def delete_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
+    """Remove one site's directory (files + `meta.json`); `{slug, deleted: true}` on success.
+
+    Refusals by name: `E_VALIDATION` for a slug that is not a plain site name or whose directory
+    resolves outside the sites root (see `_resolve_site_directory`), `E_NOT_FOUND` when the site is
+    already gone (no readable `meta.json`), `E_STORAGE` when the filesystem refuses the removal.
+    The DELETE is the site's whole record: `meta.json` lives inside the directory, so a removed
+    directory is a removed site in the list, the static mount and every reader at once.
+    """
+    validated, directory = _resolve_site_directory(slug, root=root)
+    if not (directory / "meta.json").is_file():
+        raise PolsiaError(
+            E_NOT_FOUND,
+            f"no site exists for slug {validated!r}",
+            how_to_fix="list the sites (GET /api/v1/sites) and use a slug it returns",
+            context={"slug": validated},
+        )
+    try:
+        _remove_tree(directory)
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"could not delete site {validated!r}: {type(exc).__name__}: {exc}",
+            how_to_fix=f"make sure the site directory is writable ({directory}) and retry",
+            context={"slug": validated, "path": str(directory)},
+        ) from exc
+    return {"slug": validated, "deleted": True}
+
+
+async def regenerate_site(
+    db: AsyncSession,
+    slug: str,
+    *,
+    root: Path | None = None,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Re-render one site from the CURRENT company profile; return its refreshed record.
+
+    The site's stored `template` (else `classic`, which is what a legacy site was built as) and
+    `custom_domain` are reused, and its slug, title and `created_at` are kept — a rebuild is not a
+    rename or a re-creation.  Every generated file is rewritten atomically; `bytes` is the REAL
+    total of the files written, and the stored `meta.json` keys this module does not own (e.g.
+    `last_deploy`) are preserved.
+
+    Refusals by name: `E_CONFIG` with no company row/name, `E_NOT_FOUND` for an unknown slug,
+    `E_VALIDATION` for a slug/path outside the sites root or a stored template/domain that is no
+    longer valid, `E_STORAGE` when a file cannot be written.
+    """
+    company = await get_company(db)
+    if company is None:
+        raise PolsiaError(
+            E_CONFIG,
+            "no company profile exists, so there is nothing to rebuild a site from",
+            how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
+            context={"missing": "company"},
+        )
+    fields = _profile_fields(company)
+    if not fields["name"]:
+        raise PolsiaError(
+            E_CONFIG,
+            "the company profile has no name, so the page has no author to name",
+            how_to_fix="set the company name in settings (PUT /api/v1/config) and retry",
+            context={"missing": ["name"]},
+        )
+
+    validated, site_dir = _resolve_site_directory(slug, root=root)
+    meta = _load_meta(validated, root)
+    stored_template = meta.get("template")
+    template = validate_template(stored_template if isinstance(stored_template, str) else None)
+    stored_domain = meta.get("custom_domain")
+    domain = validate_custom_domain(stored_domain if isinstance(stored_domain, str) else None)
+    title = _clean(meta.get("title")) or fields["name"]
+
+    rendered = render_pages(
+        company,
+        title=title,
+        tagline=None,
+        sender_email=fields["contact_email"],
+        template=template,
+        slug=validated,
+        base_url=base_url,
+    )
+    sizes = {
+        filename: _write_text_atomic(site_dir / filename, content)
+        for filename, content in rendered.items()
+    }
+    total = sum(sizes.values())
+
+    refreshed = dict(meta)
+    refreshed.update(
+        {
+            "slug": validated,
+            "title": title,
+            "bytes": total,
+            "pages": list(PAGES),
+            "template": template,
+            "custom_domain": domain,
+            "seo": build_seo(company, title=title, tagline=None),
+        }
+    )
+    _write_text_atomic(
+        site_dir / "meta.json",
+        json.dumps(refreshed, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    return {
+        "slug": validated,
+        "url": f"/sites/{validated}/",
+        "bytes": total,
+        "title": title,
+        "created_at": str(refreshed.get("created_at") or ""),
+        "pages": list(PAGES),
+        "template": template,
+        "custom_domain": domain,
+    }
+
+
 def list_sites(*, slug: str | None = None, root: Path | None = None) -> list[dict[str, Any]]:
     """Every site with a complete `meta.json`, NEWEST first (created_at desc, slug asc).
 
@@ -1105,6 +1316,7 @@ __all__ = [
     "STYLES_FILE",
     "TEMPLATES",
     "build_seo",
+    "delete_site",
     "derive_slug",
     "generate_site",
     "list_sites",
@@ -1112,6 +1324,7 @@ __all__ = [
     "read_site",
     "read_site_meta",
     "record_deploy",
+    "regenerate_site",
     "render_pages",
     "render_site",
     "render_sitemap",

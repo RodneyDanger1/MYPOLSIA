@@ -1,8 +1,14 @@
-# NEXTSTEPS — everything remaining, in full detail (maintained through wave V23)
+# NEXTSTEPS — everything remaining, in full detail (maintained through wave V26)
 Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
 ## 0. Where things stand (V19 close at base `c2e1261`; V20 open at base `8fa2b38`)
+- **Wave V26 is SETTLED and committed** at `d6bd944` — six lanes (agents truth · integrations/secrets ·
+  run workspaces · vision on demand · sites 2.0 · proof/cleanup). Gates: backend
+  **3,226 / 0 / 0 / 13**, jest **104 suites / 983**, live drill **42/42** plus carried V25 drills
+  **45/45** and **17/17**, migration head **0015**. Full detail and the open residuals: §4d.
+- **V1–V25 are landed and committed** (V24 at `51affcf`, V25 at `7faa6dd`); the V23 bullet below is
+  retained as its historical record and is superseded by §4b–§4d.
 - **Landed & committed (pushed):** V1–V19 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
   agent orchestration, firewalled tool-calling (DeepSeek-first runtime), compliance-gated outreach,
   Stripe billing/webhooks, finance & planning, memory layer, activity feed, ops console, hardened nginx,
@@ -679,6 +685,80 @@ Five lanes landed on `7faa6dd`; gates on the settled tree: backend **3,106 / 0 f
   localhost (set `API_KEY` + `NEXT_PUBLIC_API_KEY` and rebuild the frontend image — they must match).
 - **`GOOGLE_ADS_CLIENT_SECRET`** stays RESERVED with no reader (D14 decision) until a Google Ads API
   client is shipped; `CELERY_WORKER_CONCURRENCY` stays compose-owned (`--concurrency=4`).
+
+## 4d. Wave V26 settlement (2026-10-19) — agents truth, integrations/secrets, vision on demand, run workspaces, sites 2.0, ads spend NULL
+
+Six lanes landed on `d6bd944`; the tree is verified and the stack is live.
+
+**Gates on the settled tree:** backend **3,226 / 0 failed / 0 errors / 13 skipped**
+(`wave-v26/v-settle/gate3.xml`; `gate3.log` `EXIT=0`), jest **104 suites / 983 tests**
+(`jest-final.log`, `EXIT=0`), live drill **42/42** (`v26-live.log`) plus the carried V25 drills
+**45/45** (`v-live.log`) and **17/17** (`v25-extra.log`); migration head **0015** applied to live
+PostgreSQL. **BLOCKED / not claimed:** the Playwright suite count at settle (no V26 suite log exists
+in `v-settle/`), coverage, the mypy file count and ruff/tsc output — none of them is in the settle
+evidence, so none is stated here.
+
+**What is now true (live-drilled unless named):**
+- **Agents page truth (L1).** The hook's mount read is no longer skipped in a hidden tab, `loading`
+  reaches a terminal state on success/error/empty, `visibilitychange` refetches, and the page has an
+  honest empty state plus a Retry. Live: a forced-hidden mount rendered **9 agent cards** with
+  `loading:false`; before the fix it stayed on 9 skeletons and "Loading agent status…" forever.
+- **Integrations & secrets (L2).** Settings → Integrations over the existing secret store for
+  GitHub/Render/SendGrid (writable) and Stripe/Meta/Google (read-only status): masked status only,
+  save/clear, read-only probes with named refusals, an audit row per action with no secret in it.
+  Live: save a fake token → 200 and the response never carries the value; masked status only;
+  test-connection refused by name **401 `E_AUTH`**; clear → `configured:false`; unknown provider 404.
+- **Run context (L3).** `agent_runs.id` reaches `invoke()` and `execute_tool()`; code tools write
+  under `workspace/runs/<id>/`; a run without an id keeps the shared root byte-identically; bounded
+  retention keeps the newest 20 / 72 h and never touches the shared root. Live: run **263** wrote
+  files under `runs/263`.
+- **Vision on demand (L4).** `POST /vision/describe` for one attachment (or a single-image task),
+  returning description/model/tokens with named `E_CONFIG/E_NOT_FOUND/E_VALIDATION/E_UPSTREAM`
+  refusals and **never** writing the task result; the attachment row gains a Describe action and a
+  labelled inline answer. Live: red → red, blue → blue, missing attachment 404 `E_NOT_FOUND`.
+- **Sites 2.0 (L5).** Three pages (`index.html`, `about.html`, `contact.html`), three script-free
+  presets, SEO meta, `sitemap.xml` with absolute locs, a recorded (never DNS-verified) custom
+  domain; legacy single-page sites keep serving. Live: all three pages 200, script-free, sitemap
+  lists three, scheme/path domain refused **422**, legacy site still 200.
+- **Proof & cleanup (L6).** Migration **0015** makes `ad_metrics.spend_usd` nullable with no default
+  and backfills old zeros to NULL; `record_ads_run` persists omission as NULL; the drill cleanup
+  script is dry-run by default with `--apply` and purges tagged rows only; Playwright specs for
+  attachments, `/ops` and deploy refusal. Live: `spend_usd` has no column default, no `ad_metrics`
+  rows (honest empty), cleanup dry-run reports a row count and deletes nothing.
+
+**Honest residuals still open:** a real Render deploy and real authenticated GitHub writes are
+owner-gated (no keys on this host; both refuse `E_CONFIG`); custom domains are recorded, never
+DNS-verified, and no DNS/provisioning is shipped; ads writes remain unproven and the live ads table
+is empty (the NULL-vs-0 discipline is unit-pinned and the DDL proves the column); vision needs a
+configured model (`E_CONFIG` otherwise) and its descriptions are never persisted; the code workspace
+retention keeps the shared root for runs without an id.
+
+## 4e. Wave V27 settlement (2026-10-19) — site lifecycle, retention, integration probes, vision memory, prospect CRM
+
+Six lanes on `d6bd944`, settled by the parent. Measured: backend **3,337 / 0 failed / 0 errors /
+13 skipped** (`wave-v27/v-settle/gate2.xml`), jest **108 suites / 1,017 tests**
+(`jest-full.log`), live drill **41/41** (`v27-live.log`), V26 drill **42/42** on the V27 build
+(`v26-drill.log`), carried V25 drills **45/45 + 17/17**, migration **0016** on live Postgres.
+
+- **L1** `DELETE /sites/{slug}` + `POST /sites/{slug}/regenerate` (three pages + sitemap from the
+  current profile; slug/title/created_at/template/domain/last_deploy preserved) and the list's
+  two-step Delete / Regenerate / Sitemap controls.
+- **L2** the V26 run-workspace retention policy now has callers: a daily 04:15 UTC beat task and
+  owner `POST/GET /ops/run-workspace-cleanup` (dry run by default) + an `/ops` panel.
+- **L3** SendGrid (`/v3/scopes`) and Stripe (`/v1/balance`) are genuinely testable, read-only and
+  bounded; meta/google ads still refuse by name.
+- **L4** migration 0016 `vision_descriptions`; describe serves `cached:true` for identical bytes +
+  model with zero provider calls; `GET /vision/descriptions?task_id=` history and the panel block.
+- **L5** owner-managed prospects CRUD + `/prospects` page + nav entry (normalised unique email,
+  named duplicate refusal), every nav count re-pinned.
+- **L6** four Playwright specs for the V26 surfaces + docs truth refresh.
+
+**Parent fixes:** all cross-lane pins, the vision-history `taskId` prop, and the Settings tab-strip
+race (static tabs now render before `/config` resolves — the V26 CI e2e flake).
+
+**Residuals:** SendGrid/Stripe live probes need real keys (owner-gated); `backend/scripts/cleanup_drill_data.py`
+purges tagged ROWS but only counts site directories; a vision cache hit writes no history row for the
+reading task; real GitHub/Render/ad/Stripe actions remain owner-gated.
 
 ## 5. Where everything lives
 - App: `backend/` (FastAPI + Celery), `frontend/` (Next.js), `nginx/`, `docker-compose.yml`, `Makefile`.

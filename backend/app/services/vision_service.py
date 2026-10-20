@@ -1,24 +1,39 @@
-"""V26 / L4 — vision on demand: describe ONE task attachment with the DeepSeek runtime.
+"""V26 / L4 — vision on demand; V27 / L4 — vision memory.  Describe ONE task attachment.
 
 The route (`app.api.v1.vision`) is thin; this module owns the work:
 
 1. RESOLVE the attachment — by `attachment_id`, or by `task_id` when that task has exactly
    ONE image attachment.  Ambiguity (more than one image) is `E_VALIDATION` and says how many
    there are; an unknown id and a task with no images are `E_NOT_FOUND`.
-2. LOAD its bytes through `task_attachment_service.image_parts([row])` — the existing seam
+2. REQUIRE the key.  A describe is a paid call unless memory already holds the answer, but the
+   route's contract is unchanged: with no DeepSeek key configured the answer is `E_CONFIG`
+   naming `DEEPSEEK_API_KEY`, before anything is read from disk or sent anywhere.
+3. LOOK UP MEMORY (V27) — `(sha256, model)` in `vision_descriptions`.  A hit returns the STORED
+   sentence with `cached=True` and makes ZERO provider calls.  The digest is copied from
+   `task_attachments.sha256` (measured at upload); this module only re-hashes if a hand-written
+   row carries no usable digest.
+4. LOAD its bytes through `task_attachment_service.image_parts([row])` — the existing seam
    that re-reads the blob, re-sniffs the magic bytes and builds the runtime's
    `{mime, data_uri, size_bytes}` payload.  Nothing here re-implements sniffing or path
    building, and the blob's presence is checked up front (a row whose file is gone is
    `E_NOT_FOUND`: the attachment the caller named cannot be described).
-3. CALL `deepseek_runtime.invoke(...)` — the public seam — with a fixed, honest prompt at the
+5. CALL `deepseek_runtime.invoke(...)` — the public seam — with a fixed, honest prompt at the
    deployment's vision model.  No tools are passed: a describe is one plain completion.
-4. RETURN `{description, model, tokens}`.
+6. STORE the measurement (V27) — attachment_id, task_id, sha256, description, model, tokens,
+   created_at — and return `{description, model, tokens, cached=False}`.
 
-WHAT THIS MODULE NEVER DOES: it never writes.  The description is model output for the
-operator to read, not the task's result — `Task.result_summary` and the attachment row are
-left untouched (pinned by `test_describe_never_overwrites_the_task_result_or_the_attachment_row`).
-`tokens` is measured-or-null: the runtime's envelope reports `input_tokens`/`output_tokens`
-per run, and if either is absent the total is `None` (never a fabricated 0).
+The cache key is `(sha256, model)` because a description measured by a different model is not
+this model's measurement; a row from another model is a miss and is re-measured, never served
+as if it were the same thing.  A hit writes no new row, so repeated describes of one image do
+not grow the table.
+
+WHAT THIS MODULE NEVER DOES: it never writes the TASK.  `Task.result_summary` and the
+attachment row are left untouched (pinned by
+`test_describe_never_overwrites_the_task_result_or_the_attachment_row` and
+`test_describe_with_memory_still_never_overwrites_the_task_result`).  The description's only
+storage is its own `vision_descriptions` row.  `tokens` is measured-or-null: the runtime's
+envelope reports `input_tokens`/`output_tokens` per run, and if either is absent the total is
+`None` (never a fabricated 0) — stored as NULL and served as null, including from a cache hit.
 
 Refusals reuse the repo's existing codes only:
   * `E_CONFIG`     — no DeepSeek key configured; the message names `DEEPSEEK_API_KEY`;
@@ -31,11 +46,16 @@ Refusals reuse the repo's existing codes only:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import claude_cli, deepseek_runtime  # noqa: F401  (deepseek_runtime is the seam doc)
@@ -52,6 +72,7 @@ from app.core.errors import (
     PolsiaError,
 )
 from app.models.task import Task
+from app.models.vision import VisionDescriptionRow
 from app.services import secret_store
 from app.services import task_attachment_service as attachments
 
@@ -77,14 +98,27 @@ VISION_PROMPT = (
 #: and `_scrub` below re-checks (defence in depth, never the key in a message).
 _DETAIL_LIMIT = 300
 
+#: An attachment row carries the digest measured at upload; a 64-hex value is used as-is and
+#: is never recomputed (the brief: do not re-hash inside the describe path if the row has it).
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
 
 @dataclass(frozen=True)
 class VisionDescription:
-    """The model's answer plus its provenance.  `tokens is None` means UNMEASURED."""
+    """The model's answer plus its provenance.  `tokens is None` means UNMEASURED.
+
+    `cached` is part of the measurement's story, not decoration: `True` means this sentence was
+    read from `vision_descriptions` and the provider was NOT called for this request.
+    """
 
     description: str
     model: str
     tokens: int | None
+    cached: bool = False
+    #: The `vision_descriptions` row this sentence lives in (the row just written, or the row
+    #: the cache served).  `None` only if a caller builds the dataclass directly.
+    description_id: int | None = None
+    created_at: datetime | None = None
 
 
 def _scrub(text: str, secret: str) -> str:
@@ -319,16 +353,101 @@ def _call_model(parts: list[dict[str, Any]], key: str) -> VisionDescription:
     )
 
 
+# ── memory: the sha256 cache + the task history (V27 / L4) ──────────────────────────────────
+
+def _recorded_sha256(row: Any) -> str | None:
+    """The digest the attachment row already carries — or None when it is not a usable digest.
+
+    `task_attachments.sha256` is measured at upload from the exact bytes that were sniffed and
+    stored, so the describe path reads it instead of hashing up to 5 MiB again.  Only a row that
+    carries no usable digest (hand-written) falls back to hashing the bytes it is about to send.
+    """
+    value = str(getattr(row, "sha256", "") or "").strip().lower()
+    return value if _SHA256_RE.fullmatch(value) else None
+
+
+async def _cached_description(db: AsyncSession, *, sha256: str) -> VisionDescriptionRow | None:
+    """Newest stored sentence for (bytes digest, the model we would ask) — or None.
+
+    Matching the model too is the point: a sentence measured by another model is a different
+    measurement, so it is a miss (and is re-measured), never served as if it were the same.
+    """
+    stmt = (
+        select(VisionDescriptionRow)
+        .where(
+            VisionDescriptionRow.sha256 == sha256,
+            VisionDescriptionRow.model == VISION_MODEL,
+        )
+        .order_by(VisionDescriptionRow.id.desc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+def _from_stored(record: VisionDescriptionRow) -> VisionDescription:
+    """A stored row -> the answer shape, marked as served from memory."""
+    return VisionDescription(
+        description=record.description,
+        model=str(record.model or VISION_MODEL),
+        tokens=record.tokens,
+        cached=True,
+        description_id=int(record.id),
+        created_at=record.created_at,
+    )
+
+
+async def _store_description(
+    db: AsyncSession, *, row: Any, sha256: str, measured: VisionDescription
+) -> VisionDescriptionRow:
+    """Persist one just-measured sentence; the caller's session commits (route `get_db`)."""
+    record = VisionDescriptionRow(
+        attachment_id=int(row.id),
+        task_id=int(row.task_id),
+        sha256=sha256,
+        description=measured.description,
+        model=measured.model,
+        tokens=measured.tokens,
+    )
+    db.add(record)
+    await db.flush()
+    return record
+
+
+async def history(db: AsyncSession, *, task_id: int) -> list[VisionDescriptionRow]:
+    """One task's stored descriptions, NEWEST FIRST — or `E_NOT_FOUND` for an unknown task.
+
+    `created_at` is the database clock and may collide at second resolution, so `id` is the
+    tiebreaker: two descriptions written in the same instant are still returned in write order.
+    """
+    task = await db.get(Task, int(task_id))
+    if task is None:
+        raise _refuse(
+            E_NOT_FOUND,
+            f"vision history: task {task_id} does not exist",
+            task_id=int(task_id),
+        )
+    stmt = (
+        select(VisionDescriptionRow)
+        .where(VisionDescriptionRow.task_id == int(task_id))
+        .order_by(
+            VisionDescriptionRow.created_at.desc(),
+            VisionDescriptionRow.id.desc(),
+        )
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 # ── public entry point ─────────────────────────────────────────────────────────────────────
 
 async def describe(
     db: AsyncSession, *, attachment_id: int | None = None, task_id: int | None = None
 ) -> VisionDescription:
-    """Describe one attachment (see the module docstring).  READ-ONLY apart from the model call."""
-    row = await _resolve_attachment(db, attachment_id=attachment_id, task_id=task_id)
+    """Describe one attachment (see the module docstring).
 
-    # The seam re-reads and re-sniffs up to 5 MiB; keep it off the event loop.
-    parts = await asyncio.to_thread(attachments.image_parts, [row])
+    Writes at most ONE row — the `vision_descriptions` measurement — and never the task.  A
+    cache hit writes nothing and calls the provider zero times.
+    """
+    row = await _resolve_attachment(db, attachment_id=attachment_id, task_id=task_id)
 
     key = (secret_store.get_deepseek_api_key() or "").strip()
     if not key:
@@ -339,14 +458,52 @@ async def describe(
             missing=DEEPSEEK_ENV_VAR,
         )
 
-    description = await asyncio.to_thread(_call_model, parts, key)
+    sha256 = _recorded_sha256(row)
+    if sha256 is not None:
+        cached = await _cached_description(db, sha256=sha256)
+        if cached is not None:
+            logger.info(
+                "vision describe: attachment %s served from memory (row %s, %s) — no provider call",
+                getattr(row, "id", "?"),
+                cached.id,
+                cached.model,
+            )
+            return _from_stored(cached)
+
+    # The seam re-reads and re-sniffs up to 5 MiB; keep it off the event loop.
+    parts = await asyncio.to_thread(attachments.image_parts, [row])
+
+    if sha256 is None:
+        # A hand-written row with no usable digest: hash the very bytes being sent, then give
+        # memory the same chance it gets on the normal path before paying for a call.
+        payload = base64.b64decode(parts[0]["data_uri"].split(",", 1)[1])
+        sha256 = hashlib.sha256(payload).hexdigest()
+        cached = await _cached_description(db, sha256=sha256)
+        if cached is not None:
+            logger.info(
+                "vision describe: attachment %s served from memory after hashing its bytes",
+                getattr(row, "id", "?"),
+            )
+            return _from_stored(cached)
+
+    measured = await asyncio.to_thread(_call_model, parts, key)
+    stored = await _store_description(db, row=row, sha256=sha256, measured=measured)
     logger.info(
-        "vision describe: attachment %s described by %s (%s tokens)",
+        "vision describe: attachment %s described by %s (%s tokens), stored as row %s",
         getattr(row, "id", "?"),
-        description.model,
-        description.tokens if description.tokens is not None else "unmeasured",
+        measured.model,
+        measured.tokens if measured.tokens is not None else "unmeasured",
+        stored.id,
     )
-    return description
+    # `created_at` is the database clock and is not needed in the describe answer; the row's
+    # id is what the caller can use to find it again in the history.
+    return VisionDescription(
+        description=measured.description,
+        model=measured.model,
+        tokens=measured.tokens,
+        cached=False,
+        description_id=int(stored.id) if stored.id is not None else None,
+    )
 
 
 __all__ = [
@@ -355,4 +512,5 @@ __all__ = [
     "VISION_PROMPT",
     "VisionDescription",
     "describe",
+    "history",
 ]

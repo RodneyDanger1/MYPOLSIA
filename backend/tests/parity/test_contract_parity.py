@@ -56,6 +56,18 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("DELETE", "/api/v1/integrations/{provider}"),
     ("POST", "/api/v1/integrations/{provider}/test"),
     ("POST", "/api/v1/vision/describe"),
+    # wave V27 (L1/L2/L4/L5): site lifecycle, retention, vision history and the prospect CRM —
+    # documented by their routers and V27 tests. Ten NEW pins added with the routes.
+    ("DELETE", "/api/v1/sites/{slug}"),
+    ("POST", "/api/v1/sites/{slug}/regenerate"),
+    ("GET", "/api/v1/ops/run-workspace-cleanup"),
+    ("POST", "/api/v1/ops/run-workspace-cleanup"),
+    ("GET", "/api/v1/vision/descriptions"),
+    ("GET", "/api/v1/prospects"),
+    ("POST", "/api/v1/prospects"),
+    ("GET", "/api/v1/prospects/{prospect_id}"),
+    ("PATCH", "/api/v1/prospects/{prospect_id}"),
+    ("DELETE", "/api/v1/prospects/{prospect_id}"),
     ("GET", "/api/v1/agents/status"),
     ("POST", "/api/v1/agents/{agent_type}/trigger"),
     # T02/D1 (build/decisions/DECISIONS.md): the approvals channel's mint — owner-authenticated,
@@ -191,6 +203,11 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # V11 unit 2 (parent-surgical): the read-only SANDBOX_MODE flag behind the UI banner
     # (documented by app/api/v1/ops.py and tests/unit/api/test_v11_ops_sandbox.py).
     ("GET", "/api/v1/ops/sandbox"),
+    # V27/L2: the owner's run-workspace retention surface — POST is a dry run unless the body says
+    # {"apply": true}; GET serves the last recorded result for the /ops panel (documented by
+    # app/api/v1/ops.py and tests/unit/test_v27_retention.py). Count 66 -> 68 on /api/v1.
+    ("GET", "/api/v1/ops/run-workspace-cleanup"),
+    ("POST", "/api/v1/ops/run-workspace-cleanup"),
     # wave V9 settle (V9-D3, parent): the planner / invoices / economics routes — documented by
     # app/api/v1/planner.py, app/api/v1/invoices.py, app/api/v1/economics.py and their unit
     # suites; verified live in app.routes (checked 2026-10-14). Count 51 -> 60.
@@ -249,6 +266,10 @@ DOCUMENTED_SCHEDULE_ENTRIES = {
     # wave v15 / E3 (3-03): the paused-release re-arm (every 5 min; §B7 + decision #2 — the
     # resume half of the paused-dispatch contract; marker `tasks.metadata.paused_release`).
     "paused-release-rearm",
+    # V27/L2: the run-workspace retention sweep (daily 04:15 UTC; the V26 registry policy
+    # keep-newest-20 / max-age-72 h had NO caller until this entry — the same "declared but never
+    # scheduled" class the task-path set below exists to catch).
+    "run-workspace-cleanup",
 }
 
 # The upload DECLARED this task and never scheduled it (the maintenance module ships in the upload
@@ -275,6 +296,9 @@ REQUIRED_SCHEDULED_TASKS = {
     # "declared but never scheduled" defect class; pinned by task path like their siblings.
     "celery_app.tasks.maintenance.close_stale_agent_runs",
     "celery_app.tasks.maintenance.rearm_paused_released_tasks",
+    # V27/L2: the run-workspace retention task — V26 shipped the registry function with no caller;
+    # this pin keeps the daily beat entry from silently disappearing again.
+    "celery_app.tasks.maintenance.cleanup_run_workspaces",
 }
 
 # Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus

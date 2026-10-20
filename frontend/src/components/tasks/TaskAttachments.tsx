@@ -222,6 +222,7 @@ export function TaskAttachments({
                 <AttachmentDescribe
                   attachmentId={row.id}
                   filename={row.filename}
+                  taskId={taskId}
                   className="mt-2"
                 />
               </span>

@@ -60,6 +60,10 @@ const MENU_ROUTES = [
   "/schedules",
   "/social",
   "/outreach",
+  // V27/L5 moved this pin 18 -> 19 in the SAME edit that added the Prospects route (the writable
+  // prospect CRM sits with its read-only Outreach sibling). The dropdown is generated from
+  // NAV_ITEMS, so the count here is a claim about the real table.
+  "/prospects",
   "/support",
   // V16/W3 moved this pin 14 -> 15 in the SAME commit that added the Phone route (the owner's
   // phone-link surface sits with the comms cluster). The dropdown is generated from NAV_ITEMS,
@@ -139,7 +143,7 @@ describe("topbar control cluster", () => {
 });
 
 describe("MENU nav dropdown", () => {
-  it("is collapsed until pressed, then carries all eighteen routes", async () => {
+  it("is collapsed until pressed, then carries all nineteen routes", async () => {
     const user = userEvent.setup();
     render(<Topbar />);
 
@@ -152,7 +156,7 @@ describe("MENU nav dropdown", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const nav = screen.getByRole("navigation", { name: "Main" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(18);
+    expect(links).toHaveLength(19);
     expect(links.map((link) => link.getAttribute("href"))).toEqual([...MENU_ROUTES]);
     for (const item of NAV_ITEMS) {
       expect(within(nav).getByRole("link", { name: new RegExp(item.label, "i") })).toBeInTheDocument();
@@ -218,10 +222,10 @@ describe("MENU nav dropdown", () => {
     expect(nav).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: /dashboard/i })).toHaveFocus();
 
-    // Eighteen items, so eighteen tabs leave the panel (the pin moved with the nav table).
+    // Nineteen items, so nineteen tabs leave the panel (the pin moved with the nav table).
     // 15s budget: 19 sequential focus moves in jsdom measured over the default 5s on a loaded
     // machine (raw/green-frontend.txt), which is slowness, not a focus-management defect.
-    for (let i = 0; i < 18; i += 1) {
+    for (let i = 0; i < 19; i += 1) {
       await user.tab();
     }
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
@@ -446,7 +450,7 @@ describe("design tokens", () => {
 });
 
 describe("MenuNav standalone", () => {
-  it("renders the same eighteen routes as the shared nav table", async () => {
+  it("renders the same nineteen routes as the shared nav table", async () => {
     const user = userEvent.setup();
     render(<MenuNav />);
     await user.click(screen.getByTestId("nav-menu-trigger"));
