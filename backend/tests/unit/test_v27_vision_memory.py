@@ -46,7 +46,6 @@ import zlib
 
 import pytest
 import pytest_asyncio
-from alembic import command
 from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -55,6 +54,7 @@ from httpx import ASGITransport, AsyncClient
 # `create_all` (also registered by `app/models/__init__.py`, V27/L4 — this import keeps the
 # dependency visible in the suite that needs it).
 import app.models.vision  # noqa: F401,E402
+from alembic import command
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
 HEADERS = {"X-API-Key": "test-key"}
