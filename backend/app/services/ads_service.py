@@ -339,6 +339,9 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
     is what keeps the two states apart.  The read side (`api/v1/ads.py::_metric_response`) serves
     NULL as `null` and computes ROAS only from a measured revenue/spend pair.
 
+    V26/L6: `spend_usd` now follows the SAME law (alembic 0015 dropped its `DEFAULT '0'`).  A run
+    that reports no spend persists an explicit NULL; a reported `0` is a measured `$0.00` day.
+
     IDEMPOTENCY (the beat re-runs every 6h): campaigns dedupe on the provider's own id
     (`platform`+`external_id`; `(platform, name)` fallback when no id was reported) and existing
     rows are REUSED, never updated; metrics dedupe on `(campaign_id, date)` — the key the shipped
@@ -562,13 +565,13 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
             for field in ("spend_usd", "revenue_usd"):
                 value = item.get(field)
                 if value is None:
-                    if field == "revenue_usd":
-                        # V25/L4: the column is nullable with NO default (alembic 0014), so an
-                        # unreported revenue is persisted as an EXPLICIT NULL.  Writing it (rather
-                        # than omitting the key) is what keeps "not measured" from silently
-                        # becoming the column default again if a server default is ever re-added.
-                        money[field] = None
-                    # spend_usd keeps the pre-existing shape: omitted -> the column's own default.
+                    # V25/L4 + V26/L6: BOTH money columns are nullable with NO default (alembic
+                    # 0014 for revenue, 0015 for spend), so an unreported value is persisted as
+                    # an EXPLICIT NULL.  Writing the key (rather than omitting it) is what keeps
+                    # "not measured" from silently becoming a column default again — the pre-0015
+                    # branch here deferred spend to `DEFAULT '0'`, which is exactly the
+                    # conflation 0015 removes.
+                    money[field] = None
                     continue
                 try:
                     converted = _as_column_decimal(value)

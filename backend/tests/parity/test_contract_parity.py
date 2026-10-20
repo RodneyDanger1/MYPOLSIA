@@ -47,6 +47,15 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/tasks/{task_id}/attachments"),
     ("GET", "/api/v1/attachments/{attachment_id}"),
     ("DELETE", "/api/v1/attachments/{attachment_id}"),
+    # wave V26 (L2/L4): the integrations surface (masked status, save/clear, read-only test) and
+    # vision describe — documented by app/api/v1/integrations.py, app/api/v1/vision.py and their
+    # V26 tests. Six NEW pins added deliberately WITH the routes.
+    ("GET", "/api/v1/integrations"),
+    ("GET", "/api/v1/integrations/{provider}"),
+    ("PUT", "/api/v1/integrations/{provider}"),
+    ("DELETE", "/api/v1/integrations/{provider}"),
+    ("POST", "/api/v1/integrations/{provider}/test"),
+    ("POST", "/api/v1/vision/describe"),
     ("GET", "/api/v1/agents/status"),
     ("POST", "/api/v1/agents/{agent_type}/trigger"),
     # T02/D1 (build/decisions/DECISIONS.md): the approvals channel's mint — owner-authenticated,

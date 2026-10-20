@@ -26,6 +26,9 @@ type Banner = { agent: string; text: string; isError: boolean };
  *   - On 202 the server's `message` is shown verbatim and the roster is REMOUNTED (via `key`),
  *     which performs a fresh `GET /agents/status` — the Q-20 "no refetch after a trigger" fix,
  *     without touching the shared hook or adding a second poller.
+ *   - V26/F1: the SAME remount key is the failed-read Retry — a failed status poll renders the
+ *     named error plus `Retry`, which bumps `refreshSeq` and therefore performs a real fresh
+ *     read. No second poller, no hook-contract change.
  *   - A refusal shows `ApiError.display` (code + how_to_fix) in the `role="alert"` banner; the
  *     success styling is never reused for it (`data-tone` pins the two apart).
  */
@@ -86,6 +89,7 @@ export default function AgentsPage() {
         onRunRequest={(agentType) => setConfirmAgent(agentType)}
         onRunCancel={() => setConfirmAgent(null)}
         onRunConfirm={(agentType) => void trigger(agentType)}
+        onRetry={() => setRefreshSeq((n) => n + 1)}
       />
     </div>
   );

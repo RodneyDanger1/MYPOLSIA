@@ -186,9 +186,14 @@ class BasePolsiaAgent(ABC):
         self.task_title: str = ""
         self.task_attachment_refs: list[dict[str, Any]] = []
         self.task_images: list[dict[str, Any]] = []
+        # V26/L3 — the run's identity (`agent_runs.id` as text), published by the worker on the
+        # task dict.  Empty means "this run owns no id" and `_real_call` omits the keyword
+        # entirely, so an id-less run keeps the pre-V26 invoke signature and the shared
+        # workspace root.
+        self.run_id: str = ""
 
     def set_run_context(self, task: dict[str, Any] | None) -> None:
-        """Publish the run's task title and image attachments for the invoke seam (V25/L1).
+        """Publish the run's task title, images and run id for the invoke seam (V25/L1, V26/L3).
 
         Called from `timed_run` (every dispatched run) and `collect_structured` (direct callers)
         so the title cannot be available on one path and missing on the other.  The image payloads
@@ -196,12 +201,21 @@ class BasePolsiaAgent(ABC):
         a repair re-prompt must not re-read them just because `collect_structured` runs again.
         A missing/unreadable blob raises its own named refusal from the service — the run fails
         with that name rather than continuing as if no image had been attached.
+
+        V26/L3: `task["run_id"]` is the worker's `agent_runs.id`; it is published verbatim so
+        `_real_call` can hand it to the runtime, which scopes the code tools to
+        `runs/<id>/`.  Absent means "no id" and every pre-V26 behaviour is unchanged.
         """
         data = task or {}
         title = str(data.get("title") or "").strip()[:512]
         raw_refs = data.get("attachments")
         refs = [ref for ref in raw_refs if isinstance(ref, dict)] if isinstance(raw_refs, list) else []
-        if title == self.task_title and refs == self.task_attachment_refs:
+        # V26/L3: the worker's `agent_runs.id`, verbatim (no truncation — an unsafe id must be
+        # REFUSED by the registry, never silently rewritten into a different path segment).
+        raw_run_id = data.get("run_id")
+        run_id = str(raw_run_id).strip() if raw_run_id is not None else ""
+        if (title == self.task_title and refs == self.task_attachment_refs
+                and run_id == self.run_id):
             return
         images: list[dict[str, Any]] = []
         if refs:
@@ -211,6 +225,7 @@ class BasePolsiaAgent(ABC):
         self.task_title = title
         self.task_attachment_refs = refs
         self.task_images = images
+        self.run_id = run_id
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -536,11 +551,16 @@ class BasePolsiaAgent(ABC):
             if runtime is not None:
                 # V25/L1: the run's context rides the SAME invoke seam, keyword-only and
                 # defaulted, so a title/image-less run calls the runtime exactly as before.
-                return runtime.invoke(
-                    inv,
-                    task_title=self.task_title or None,
-                    images=self.task_images or None,
-                )
+                # V26/L3: the run id is added ONLY when this run owns one — a run without an
+                # id calls `invoke` with the pre-V26 signature (old doubles stay valid) and the
+                # registry keeps the shared workspace root byte-identical.
+                runtime_kwargs: dict[str, Any] = {
+                    "task_title": self.task_title or None,
+                    "images": self.task_images or None,
+                }
+                if self.run_id:
+                    runtime_kwargs["run_id"] = self.run_id
+                return runtime.invoke(inv, **runtime_kwargs)
             return claude_cli.invoke(inv, executable=self.cli_path)
 
         result, attempts = claude_cli.run_with_retries(dispatch, classify=self._retryable)

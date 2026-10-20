@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { readErrorText } from "@/components/dashboard/states";
 import { Button, cn } from "@/components/ui";
+import { AttachmentDescribe } from "@/components/vision/AttachmentDescribe";
 
 import {
   ATTACHMENT_ACCEPT,
@@ -216,6 +217,13 @@ export function TaskAttachments({
                 {previewFailed[row.id] ? (
                   <span className="block text-xs text-alert">preview unavailable — the image is still attached</span>
                 ) : null}
+                {/* V26/L4: vision on demand — model output, rendered inline and never saved
+                    to the task.  Additive: upload/remove above and below are unchanged. */}
+                <AttachmentDescribe
+                  attachmentId={row.id}
+                  filename={row.filename}
+                  className="mt-2"
+                />
               </span>
               <Button
                 size="sm"

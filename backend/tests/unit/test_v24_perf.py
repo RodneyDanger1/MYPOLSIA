@@ -96,7 +96,11 @@ async def test_channel_snapshot_uses_two_statements_for_seven_channels(async_db_
 
 async def test_channel_snapshot_counts_are_per_channel_and_windowed(async_db_session):
     """Correctness pin for the rewrite: per-channel, day vs trailing hour, drafts excluded."""
-    now = datetime.now(UTC)
+    # V26: fixed mid-day anchor — the old `datetime.now(UTC)` made this pin fail for the first
+    # 15 minutes after UTC midnight (now-15min falls into yesterday while `hour` still counts it).
+    # The logic under test is pure given `now`; a fixed anchor removes the clock dependency
+    # without weakening any count.
+    now = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
     await _seed_social(async_db_session, now)
 
     snapshot = await channel_sends_snapshot(
@@ -396,7 +400,8 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         graph[revision] = None if down in (None, "None") else down
     heads = sorted(r for r in graph if r not in set(graph.values()))
     # V25: the head moved 0012 -> 0014 (L1's 0013_task_attachments, L4's 0014_ads_nullable_revenue);
+    # V26/L6: 0015 (`0015_ads_spend_nullable.py`) is 0014's only child — head 0014 -> 0015.
     # V24's 0012 -> 0011 leg is unchanged and still asserted below.
-    assert heads == ["0014"], f"expected a single head (0014), found {heads}"
+    assert heads == ["0015"], f"expected a single head (0015), found {heads}"
     assert graph["0012"] == "0011"
-    assert graph["0013"] == "0012" and graph["0014"] == "0013"
+    assert graph["0013"] == "0012" and graph["0014"] == "0013" and graph["0015"] == "0014"

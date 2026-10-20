@@ -276,9 +276,13 @@ async def test_generate_site_writes_the_files_and_reports_the_real_byte_count(
     assert result["slug"] == "launch-page"
     assert result["url"] == "/sites/launch-page/"
     site_dir = tmp_path / "launch-page"
-    html_bytes = (site_dir / "index.html").read_bytes()
-    css_bytes = (site_dir / "styles.css").read_bytes()
-    assert result["bytes"] == len(html_bytes) + len(css_bytes)
+    # V26/L5 (old -> new): `bytes` used to count index.html + styles.css only.  V26 sites also
+    # write about.html, contact.html and sitemap.xml, and the field is the real total of every
+    # written file except meta.json (which carries the number itself).
+    written = sum(
+        entry.stat().st_size for entry in site_dir.iterdir() if entry.name != "meta.json"
+    )
+    assert result["bytes"] == written
     assert result["bytes"] > 0
     meta = json.loads((site_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["slug"] == "launch-page"

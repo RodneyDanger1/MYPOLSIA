@@ -549,4 +549,5 @@ async def test_the_mapped_metric_insert_can_write_the_migrated_schema(head_sessi
     # 0014 makes revenue nullable with no default, so an unset revenue is None and the generated
     # ROAS is None too (a bare metric day has no revenue measurement to divide).
     assert stored.revenue_usd is None
-    assert (stored.cpc, stored.roas) == (Decimal("0.000000"), None)
+    # V26/L6 (0015): spend has no default — an unset spend leaves CPC unmeasured (None), not $0.
+    assert (stored.cpc, stored.roas) == (None, None)

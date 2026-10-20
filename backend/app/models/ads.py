@@ -90,9 +90,11 @@ class AdMetric(Base):
     impressions: Mapped[int | None] = mapped_column(Integer, server_default="0", default=0)
     clicks: Mapped[int | None] = mapped_column(Integer, server_default="0", default=0)
     conversions: Mapped[int | None] = mapped_column(Integer, server_default="0", default=0)
-    spend_usd: Mapped[Decimal | None] = mapped_column(
-        Numeric(14, 4), server_default="0", default=0
-    )
+    # V26/L6 (migration 0015): spend is the second measured money column and absence is a REAL
+    # state too — NULLABLE with NO default of any kind.  Before 0015 the column carried
+    # `DEFAULT '0'`, so an omitted spend persisted as a stored zero that no run had measured;
+    # `record_ads_run` now writes NULL when the run reports none and a reported `0` stays `0`.
+    spend_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
     # V25/L4: `revenue_usd` is the measured money column, and absence is a REAL state now.  It is
     # NULLABLE with NO default (alembic 0014; the pre-0014 shape was `NOT NULL DEFAULT 0`, which
     # made "never measured" indistinguishable from "measured $0").  An unreported revenue is

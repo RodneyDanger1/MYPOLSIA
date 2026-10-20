@@ -93,6 +93,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import time
 from contextvars import ContextVar
 from html.parser import HTMLParser
 from pathlib import Path
@@ -198,6 +199,13 @@ RUN_WORKSPACE_SUBDIR = "runs"
 #: no drive letter and no control character can be expressed, so the id is safe by construction.
 RUN_ID_MAX_CHARS = 64
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+#: V26/L3 retention policy — BOUNDED and NAMED: a run directory is expired only when it is
+#: older than `RUN_RETENTION_MAX_AGE_HOURS` AND outside the newest `RUN_RETENTION_KEEP_LATEST`
+#: directories.  The count bound means a clock jump cannot wipe recent runs; the age bound means
+#: the count bound cannot let stale trees live forever.  No cron wiring here: this lane ships the
+#: policy + the callable; the beat entry is out of scope (reported in the receipt).
+RUN_RETENTION_KEEP_LATEST = 20
+RUN_RETENTION_MAX_AGE_HOURS = 72.0
 
 # ── GitHub source control (V25/L2) ─────────────────────────────────────────────────────────
 #: The four registry names, in the order the allowlist advertises them (read -> branch ->
@@ -1825,6 +1833,155 @@ def _tree_contains_link(root: Path) -> bool:
     return False
 
 
+def cleanup_expired_run_workspaces(
+    *,
+    workspace_root: str | Path | None = None,
+    keep_latest: int = RUN_RETENTION_KEEP_LATEST,
+    max_age_hours: float = RUN_RETENTION_MAX_AGE_HOURS,
+    now: float | None = None,
+) -> dict[str, object]:
+    """Delete EXPIRED run workspaces under `<root>/runs/`; never anything else.
+
+    THE POLICY (bounded, named — `RUN_RETENTION_KEEP_LATEST` = 20, `RUN_RETENTION_MAX_AGE_HOURS`
+    = 72.0): a run directory is expired when BOTH hold —
+
+      * its modification time is older than `max_age_hours` before `now` (default: wall clock);
+      * it is NOT among the newest `keep_latest` run directories by modification time.
+
+    The count bound protects recent work from a clock jump; the age bound keeps the count bound
+    from letting old trees live forever.  Only immediate child DIRECTORIES of `<root>/runs/`
+    whose name matches the run-id charset are candidates: a file under `runs/`, a directory with
+    a foreign name, the shared root itself and any sibling of `runs/` are never touched.  Links
+    and junctions are never followed — a linked `runs/` refuses outright, and a linked run
+    directory (or one whose tree contains a link) is SKIPPED by name, not traversed.
+
+    `workspace_root` defaults to `settings.code_workspace_dir` (read at CALL time, the
+    `cleanup_run_workspace` rule); tests pass a temp root.  `now` is epoch seconds, injectable so
+    the age leg is deterministic.  Returns `{runs_dir, removed, count, kept, skipped, policy}`:
+    `removed` is the list of run names deleted, `kept` the number of run directories that
+    survived, `skipped` a list of `{name, reason}` for candidates deliberately not deleted.
+    Raising `E_VALIDATION` for a bad argument or a linked `runs/` deletes nothing.
+    """
+    if not isinstance(keep_latest, int) or isinstance(keep_latest, bool) or keep_latest < 0:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_expired_run_workspaces: keep_latest must be a non-negative int "
+            f"(got {keep_latest!r})",
+            how_to_fix="pass the number of newest run directories to keep (0 is allowed)",
+            context={"keep_latest": repr(keep_latest)},
+        )
+    if (not isinstance(max_age_hours, (int, float)) or isinstance(max_age_hours, bool)
+            or max_age_hours < 0):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_expired_run_workspaces: max_age_hours must be a non-negative number "
+            f"(got {max_age_hours!r})",
+            how_to_fix="pass the age bound in hours (0 is allowed)",
+            context={"max_age_hours": repr(max_age_hours)},
+        )
+    clock = time.time() if now is None else float(now)
+    policy: dict[str, object] = {"keep_latest": keep_latest,
+                                 "max_age_hours": float(max_age_hours)}
+
+    if workspace_root is None:
+        from app.config import settings
+
+        raw = getattr(settings, "code_workspace_dir", CODE_WORKSPACE_DEFAULT)
+        text = raw.strip() if isinstance(raw, str) else ""
+        candidate_base = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
+    else:
+        candidate_base = Path(workspace_root).expanduser()
+    try:
+        base = candidate_base.resolve()
+    except (OSError, ValueError) as exc:
+        raise PolsiaError(
+            E_CONFIG,
+            f"cleanup_expired_run_workspaces: the workspace root {str(candidate_base)!r} cannot "
+            f"be resolved ({type(exc).__name__}: {exc})",
+            how_to_fix="set CODE_WORKSPACE_DIR to a directory this process can read",
+            context={"workspace_root": str(candidate_base)},
+        ) from exc
+
+    runs_dir = base / RUN_WORKSPACE_SUBDIR
+    empty: dict[str, object] = {"runs_dir": str(runs_dir), "removed": [], "count": 0,
+                                "kept": 0, "skipped": [], "policy": policy}
+    if not runs_dir.exists():
+        return empty
+    is_junction = getattr(os.path, "isjunction", None)
+    if runs_dir.is_symlink() or (callable(is_junction) and is_junction(runs_dir)):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"cleanup_expired_run_workspaces: {str(runs_dir)!r} is a link or junction — "
+            "refusing to enumerate or delete anything through it",
+            how_to_fix="remove the link under the workspace root by hand, then retry",
+            context={"runs_dir": str(runs_dir)},
+        )
+    if not runs_dir.is_dir():
+        raise PolsiaError(
+            E_CONFIG,
+            f"cleanup_expired_run_workspaces: {str(runs_dir)!r} exists but is not a directory",
+            how_to_fix="point CODE_WORKSPACE_DIR at a directory (or remove the file in the way)",
+            context={"runs_dir": str(runs_dir)},
+        )
+
+    candidates: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
+    with os.scandir(runs_dir) as entries:
+        for entry in entries:
+            try:
+                if entry.is_symlink() or (callable(is_junction) and is_junction(entry.path)):
+                    skipped.append({"name": entry.name, "reason": "link"})
+                    continue
+                if not entry.is_dir(follow_symlinks=False):
+                    skipped.append({"name": entry.name, "reason": "not_a_directory"})
+                    continue
+                if not _RUN_ID_RE.match(entry.name):
+                    skipped.append({"name": entry.name, "reason": "invalid_name"})
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+            except OSError as exc:  # an unreadable entry is never deleted blind
+                skipped.append({"name": entry.name, "reason": f"stat_failed:{type(exc).__name__}"})
+                continue
+            candidates.append({"name": entry.name, "path": Path(entry.path),
+                               "mtime": float(stat.st_mtime)})
+
+    newest_first = sorted(candidates, key=lambda item: (item["mtime"], item["name"]),
+                          reverse=True)
+    protected = {str(item["name"]) for item in newest_first[:keep_latest]}
+    cutoff = clock - float(max_age_hours) * 3600.0
+    removed: list[str] = []
+    for item in newest_first:
+        name = str(item["name"])
+        path = item["path"]
+        assert isinstance(path, Path)  # populated above; mypy cannot read the dict shape
+        if name in protected:
+            continue
+        mtime = item["mtime"]
+        assert isinstance(mtime, (int, float))  # populated above; mypy cannot read the dict shape
+        if float(mtime) >= cutoff:
+            continue
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError) as exc:
+            skipped.append({"name": name, "reason": f"resolve_failed:{type(exc).__name__}"})
+            continue
+        if resolved == runs_dir or runs_dir.resolve() not in resolved.parents:
+            skipped.append({"name": name, "reason": "outside_runs"})
+            continue
+        if _tree_contains_link(resolved):
+            skipped.append({"name": name, "reason": "contains_link"})
+            continue
+        try:
+            shutil.rmtree(resolved)
+        except OSError as exc:
+            skipped.append({"name": name, "reason": f"rmtree_failed:{type(exc).__name__}"})
+            continue
+        removed.append(name)
+
+    return {"runs_dir": str(runs_dir), "removed": removed, "count": len(removed),
+            "kept": len(candidates) - len(removed), "skipped": skipped, "policy": policy}
+
+
 # ---------------------------------------------------------------------------
 # macro_snapshot / pricing_catalog — the existing services, passed through
 # ---------------------------------------------------------------------------
@@ -2182,6 +2339,8 @@ __all__ = [
     "PHONE_READ_LIMIT_MAX",
     "PHONE_READ_THREADS_MAX",
     "RUN_ID_MAX_CHARS",
+    "RUN_RETENTION_KEEP_LATEST",
+    "RUN_RETENTION_MAX_AGE_HOURS",
     "RUN_WORKSPACE_SUBDIR",
     "SEARCH_COUNT_DEFAULT",
     "SEARCH_COUNT_MAX",
@@ -2190,6 +2349,7 @@ __all__ = [
     "SEARCH_URL",
     "TOOL_GUIDANCE",
     "TOOL_SPECS",
+    "cleanup_expired_run_workspaces",
     "cleanup_run_workspace",
     "execute_tool",
     "tools_for",

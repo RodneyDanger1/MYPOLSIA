@@ -3,6 +3,7 @@
 import { absoluteStamp } from "@/components/dashboard/format";
 import { Button } from "@/components/ui";
 import { SiteDeployControl, type DeployBoard } from "@/components/sites/SiteDeployControl";
+import { SitePages } from "@/components/sites/SitePages";
 import { bytesText, type SiteSummary } from "@/components/sites/types";
 
 /**
@@ -68,6 +69,7 @@ export function SiteList({
                 </Button>
               </div>
             </div>
+            <SitePages site={site} />
             {deploy ? <SiteDeployControl slug={site.slug} name={name} deploy={deploy} /> : null}
           </li>
         );

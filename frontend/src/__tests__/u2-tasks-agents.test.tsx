@@ -481,6 +481,16 @@ describe("agents roster (agents-page.md ACC 1-6)", () => {
   it("says a rows-less success out loud instead of implying a configured roster", async () => {
     mockGet.mockResolvedValue([]);
     render(<AgentsPage />);
-    expect(await screen.findByText("The status endpoint returned no agent rows.")).toBeInTheDocument();
+    // V26/L1 re-pin (deliberate): the empty-state copy changed with the brief's honest
+    // "no agents reported" wording. Old -> new:
+    //   "The status endpoint returned no agent rows."
+    //   -> "No agents reported — the status endpoint answered successfully with an empty list."
+    // The pin's intent is unchanged and is now checked harder: still no card, and the empty
+    // answer is still not allowed to look like a failure.
+    expect(
+      await screen.findByText(/no agents reported — the status endpoint answered successfully with an empty list\./i),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

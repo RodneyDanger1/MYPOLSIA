@@ -883,6 +883,13 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                                      attempt=int(task.attempts or 0))
         await db.commit()
         run_id = run.id
+    # V26/L3 (F3) — the run row's id is the run's identity for the workspace seam.  Publish it
+    # on the task dict the agent receives (the one carrier every dispatched run already reads:
+    # `BasePolsiaAgent.set_run_context` → `deepseek_runtime.invoke(run_id=...)` →
+    # `execute_tool(run_id=...)`), so the three code tools write under
+    # `data/workspace/runs/<run_id>/` instead of the shared root.  A string on purpose: the id
+    # becomes ONE path segment and the registry validates its charset before any path exists.
+    task_dict["run_id"] = str(run_id)
 
     # ── 3. heartbeat the lease while the agent runs ──────────────────────────
     stop_heartbeat = asyncio.Event()

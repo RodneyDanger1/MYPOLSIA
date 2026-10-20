@@ -86,6 +86,7 @@ import re
 import subprocess
 import threading
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -797,6 +798,41 @@ def secret_status(name: str) -> dict[str, Any]:
     return {"configured": False, "source": _SOURCE_NONE, "masked": "…"}
 
 
+def secret_statuses(names: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Masked status for several names, reading the store file ONCE (V26/L2, additive).
+
+    `secret_status` above parses the store per call; the Integrations panel reports six
+    providers' variables at once, and a dozen reads of the same file is a pointless cost.  The
+    precedence, the masking and the three-key shape are IDENTICAL to `secret_status` — this is
+    that function's loop over one document, not a second implementation with its own rules.
+    Names are validated by the same `_checked_secret_name` regex, so a caller still cannot
+    address a path or a blank.
+    """
+    checked = [_checked_secret_name(name) for name in names]
+    document = _read_secrets_document(_resolve_secrets_file())
+    statuses: dict[str, dict[str, Any]] = {}
+    for key in checked:
+        stored = document.get(key)
+        if isinstance(stored, str) and stored.strip():
+            statuses[key] = {
+                "configured": True,
+                "source": _SOURCE_STORED,
+                "masked": mask_secret(stored.strip()),
+            }
+            continue
+        env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+        text = env_value.strip() if isinstance(env_value, str) else ""
+        if text:
+            statuses[key] = {
+                "configured": True,
+                "source": _SOURCE_ENV,
+                "masked": mask_secret(text),
+            }
+        else:
+            statuses[key] = {"configured": False, "source": _SOURCE_NONE, "masked": "…"}
+    return statuses
+
+
 __all__ = [
     "DEEPSEEK_ENV_VAR",
     "DEEPSEEK_MODELS_URL",
@@ -811,6 +847,7 @@ __all__ = [
     "get_secret",
     "mask_secret",
     "secret_status",
+    "secret_statuses",
     "set_deepseek_api_key",
     "set_secret",
     "verify_deepseek_key",

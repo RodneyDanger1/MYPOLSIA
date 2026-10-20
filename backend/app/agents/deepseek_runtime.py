@@ -581,7 +581,8 @@ def _assistant_tool_echo(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execute_tool_calls(
-    calls: Any, *, agent_type: str, url: str, task_title: str | None = None
+    calls: Any, *, agent_type: str, url: str, task_title: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run every call of ONE tool_calls turn -> (`role:"tool"` messages, names that reached it).
 
@@ -595,6 +596,13 @@ def _execute_tool_calls(
 
     A STRUCTURALLY broken call — one that cannot be answered with a `tool_call_id` — is
     off-contract, so it raises `E_CLI_JSON` instead of being guessed at.
+
+    V26/L3: `run_id` is the calling RUN's id (an `agent_runs.id` as text, or any caller-supplied
+    id). It rides the SAME frozen signature as a keyword-only, defaulted addition and is
+    forwarded to `execute_tool` ONLY when the run HAS one — a run without an id (and every
+    pre-V26 executor double) sees the pre-V25 signature, and the registry keeps the shared
+    workspace root byte-identical. The id is validated by the registry before it becomes a path
+    segment; the runtime never builds a path from it.
     """
     tool_messages: list[dict[str, Any]] = []
     reached: list[str] = []
@@ -649,6 +657,12 @@ def _execute_tool_calls(
             tool_kwargs: dict[str, Any] = {"agent_type": agent_type}
             if isinstance(task_title, str) and task_title.strip():
                 tool_kwargs["task_title"] = task_title.strip()
+            # V26/L3: the run's id rides the same additive rule — forwarded only when present,
+            # so an id-less run keeps the pre-V25 executor signature exactly.  A non-string id
+            # is forwarded on purpose: `execute_tool` owns the E_VALIDATION refusal for it, and
+            # silently dropping it would run the tool at the wrong (shared) root.
+            if run_id is not None and (not isinstance(run_id, str) or run_id.strip()):
+                tool_kwargs["run_id"] = run_id
             try:
                 text = registry.execute_tool(name, arguments, **tool_kwargs)
             except Exception as exc:  # noqa: BLE001 - the seam says "never throws"; a violation is NAMED, never fatal
@@ -1157,6 +1171,7 @@ def invoke(
     agent_type: str | None = None,
     task_title: str | None = None,
     images: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
 ) -> claude_cli.InvokeResult:
     """Run one DeepSeek chat completion for `inv`; same shape as `claude_cli.invoke`.
 
@@ -1173,6 +1188,12 @@ def invoke(
     message, and the loop is bounded at `TOOL_LOOP_MAX_ITERATIONS` provider calls (a run still
     asking for tools there refuses BY NAME). `tools=` / `agent_type=` override the derivation for
     a caller that does not come through `base_agent`.
+
+    V26/L3: `run_id` is the calling run's identity (`agent_runs.id` as text). It is OPTIONAL,
+    keyword-only and defaulted, and is forwarded through the tool loop to
+    `execute_tool(run_id=...)` only when present; the three code tools then scope their
+    workspace to `<settings.code_workspace_dir>/runs/<id>/`. Absent, the run reads and writes
+    the shared workspace root exactly as before (byte-identical request/result shapes).
     """
     key = (api_key if api_key is not None else _resolve_api_key() or "").strip() or ""
     if not key:
@@ -1285,7 +1306,8 @@ def invoke(
                         extra={"tools_used": list(tools_used)},
                     )
                 tool_messages, reached = _execute_tool_calls(
-                    calls, agent_type=tool_agent_type, url=url, task_title=task_title
+                    calls, agent_type=tool_agent_type, url=url, task_title=task_title,
+                    run_id=run_id,
                 )
                 for name in reached:
                     _record_tool_name(tools_used, name)

@@ -388,7 +388,10 @@ class AdMetricRow(BaseModel):
     impressions: int = Field(default=0, ge=0)
     clicks: int = Field(default=0, ge=0)
     conversions: int = Field(default=0, ge=0)
-    spend_usd: float = Field(default=0.0, ge=0.0)
+    # V26/L6: `ad_metrics.spend_usd` is nullable with NO default (alembic 0015).  An omitted
+    # spend must stay None through validation — a 0.0 default here re-conflated "not reported"
+    # with a measured $0 before the writer ever saw it.
+    spend_usd: float | None = Field(default=None, ge=0.0)
     # D17/R33: `ad_metrics.revenue_usd` is the real money column both engines hold (`Numeric(14,4)
     # DEFAULT '0' NOT NULL`, alembic 0002:203-207 / 0003:71) and the input `roas` is GENERATED
     # from (`models/ads.py:75-87`).  The persist path maps it (`ads_service.record_ads_run`, the

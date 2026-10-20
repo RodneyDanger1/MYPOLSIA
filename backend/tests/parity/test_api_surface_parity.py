@@ -209,6 +209,14 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # route below (never "unknown").  NEW pin added deliberately WITH the mount.
     ("/sites", None),
     ("/ws/activity", None),                                    # websocket: methods is None
+    # wave V26 (L2/L4): six NEW route pins added deliberately WITH the routes — the integrations
+    # surface (masked status list + one, save/clear, read-only test probe) and vision describe.
+    ("/api/v1/integrations", ("GET",)),
+    ("/api/v1/integrations/{provider}", ("DELETE",)),
+    ("/api/v1/integrations/{provider}", ("GET",)),
+    ("/api/v1/integrations/{provider}", ("PUT",)),
+    ("/api/v1/integrations/{provider}/test", ("POST",)),
+    ("/api/v1/vision/describe", ("POST",)),
 ]
 
 # FastAPI's own surface, held as a separate state (see the docs-routes decision in the docstring).

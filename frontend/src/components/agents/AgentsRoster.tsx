@@ -29,14 +29,16 @@ export const AGENT_DESCRIPTIONS: Record<string, string> = {
 
 /**
  * The 9-row roster (agents-page.md R2). The list comes from `GET /agents/status`, which answers
- * with exactly the nine registry rows even on an empty DB — so the only "missing list" case is a
- * FAILED poll, rendered as the named failure and never as an empty "no agents" claim.
+ * with exactly the nine registry rows even on an empty DB — so a FAILED poll is rendered as the
+ * named failure (with a Retry that re-reads) and an empty answer is stated as an empty answer,
+ * never as a failure and never as a stuck spinner. V26/F1: the hook's mount read runs even in a
+ * background tab, so this component reaches one of the four states on every mount.
  *
  * The hooks live here (not in the page) on purpose: the page remounts this component (via `key`)
- * after a successful trigger, which is how the Q-20 "no refetch after a trigger" fix is
- * delivered without a second poller or a change to the shared status hook. The toolbox read
- * (`useAgentToolbox`) rides the same mount: ONE `GET /ops/capabilities` feeds every row's
- * expandable Tools section, never one request per agent.
+ * after a successful trigger — and again after `onRetry` — which is how the Q-20 "no refetch after
+ * a trigger" fix and V26/F1's error retry are delivered without a second poller or a change to the
+ * shared status hook. The toolbox read (`useAgentToolbox`) rides the same mount: ONE
+ * `GET /ops/capabilities` feeds every row's expandable Tools section, never one request per agent.
  */
 export function AgentsRoster({
   pending,
@@ -44,6 +46,7 @@ export function AgentsRoster({
   onRunRequest,
   onRunCancel,
   onRunConfirm,
+  onRetry,
 }: {
   /** Per-agent in-flight map (Q-20): one slow trigger never disables another row's button. */
   pending: Record<string, boolean>;
@@ -51,6 +54,8 @@ export function AgentsRoster({
   onRunRequest: (agentType: string) => void;
   onRunCancel: () => void;
   onRunConfirm: (agentType: string) => void;
+  /** V26/F1: the page remounts this roster under a new `key`, which performs a fresh status read. */
+  onRetry: () => void;
 }) {
   const { statuses, loading, error } = useAgentStatus();
   // ONE capabilities read for the whole roster (not one per row); the helper copy above is not
@@ -69,18 +74,29 @@ export function AgentsRoster({
   }
 
   if (error) {
-    // The registry is 9 fixed rows; a failed poll must never render as an empty roster.
+    // The registry is 9 fixed rows; a failed poll must never render as an empty roster. V26/F1:
+    // the failure is readable AND retryable — `onRetry` remounts this roster under a new key, so
+    // the click goes back to the wire instead of just clearing the sentence.
     return (
-      <p role="alert" className="border border-alert bg-surface p-3 text-sm text-ink">
-        Could not load agent status: {error}
-      </p>
+      <div className="space-y-2">
+        <p role="alert" className="border border-alert bg-surface p-3 text-sm text-ink">
+          Could not load agent status: {error}
+        </p>
+        <Button size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
     );
   }
 
   if (statuses.length === 0) {
-    // Cannot happen with today's endpoint (it serves nine rows on an empty DB), but a success
-    // carrying no rows must not masquerade as "no agents configured" — it is said as it is.
-    return <p className="ui-label text-ink-muted">The status endpoint returned no agent rows.</p>;
+    // V26/F1: a success carrying no rows is an honest empty answer, said as such — never a
+    // spinner, never an error, and never a fabricated roster.
+    return (
+      <p className="ui-label text-ink-muted">
+        No agents reported — the status endpoint answered successfully with an empty list.
+      </p>
+    );
   }
 
   return (

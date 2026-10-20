@@ -1,10 +1,19 @@
-/** The wire shapes of the website builder (`GET/POST /api/v1/sites`). */
+/** The wire shapes of the website builder (`GET/POST /api/v1/sites`).
+ *
+ *  Wave V26 adds `pages`, `template` and `custom_domain` to a summary row — OPTIONAL on purpose: a
+ *  site whose `meta.json` predates V26 genuinely has none of them, and the UI must not fabricate a
+ *  link (or a "null" template) for a page/provider that site never had. */
 export type SiteSummary = {
   slug: string;
   title: string;
   url: string;
   created_at: string;
   bytes: number;
+  /** The pages this site actually has, in order. Absent = V24 site (only `index.html`). */
+  pages?: string[];
+  template?: string;
+  /** A bare hostname recorded with the site — recorded, NOT verified (no DNS check anywhere). */
+  custom_domain?: string | null;
 };
 
 /** The frozen 201 body — where the site is and how many bytes were written. */
@@ -66,7 +75,64 @@ export type DeployResponse = {
 export type SiteDraft = {
   title: string;
   tagline: string;
+  /** The chosen preset id, or "" when the operator left the default — omitted from the body so the
+   *  server's own default (`classic`) applies rather than a client-side copy of it. */
+  template: string;
+  /** A bare hostname, or "" when none was typed. Validated before the call, sent verbatim. */
+  custom_domain: string;
 };
+
+/* ── V26: template presets + the domain field's own validation ─────────────────────────────── */
+export type SiteTemplateId = "classic" | "modern" | "bold";
+
+/** The server's default preset (`site_service.DEFAULT_TEMPLATE`). */
+export const DEFAULT_TEMPLATE: SiteTemplateId = "classic";
+
+/** The three presets the picker offers — the SAME ids the backend renders (`TEMPLATES`). */
+export const TEMPLATE_PRESETS: ReadonlyArray<{
+  id: SiteTemplateId;
+  label: string;
+  note: string;
+}> = [
+  { id: "classic", label: "Classic", note: "Clean, light, editorial." },
+  { id: "modern", label: "Modern", note: "Wide, rounded, teal accent." },
+  { id: "bold", label: "Bold", note: "Heavy type, high contrast." },
+];
+
+/**
+ * The domain field's inline check — the same structural rules the backend enforces, so an obvious
+ * mistake is caught before a round trip. `null` means "acceptable" ("" included).
+ *
+ * This is NOT a DNS check and never claims to be one: the label beside the field says the hostname
+ * is recorded, not verified.
+ */
+export function validateCustomDomain(value: string): string | null {
+  const domain = value.trim();
+  if (domain === "") return null;
+  const bare = "Enter a bare hostname such as example.com";
+  if (/[^\x20-\x7e]/.test(value)) return `${bare} — ASCII letters, digits, dots and dashes only.`;
+  if (domain.includes("://") || domain.includes("/")) {
+    return `${bare} — no http://, no path.`;
+  }
+  if (/[?#:;@[\]\s]/.test(domain)) {
+    return `${bare} — no port, query, fragment, spaces or sign-in.`;
+  }
+  if (domain.startsWith(".") || domain.endsWith(".")) {
+    return `${bare} — no leading or trailing dot.`;
+  }
+  if (domain.includes("..")) return `${bare} — no empty labels ("..").`;
+  if (domain.length > 253) return `${bare} — the whole name is limited to 253 characters.`;
+  const labels = domain.split(".");
+  if (labels.length < 2) return `${bare} — a domain needs at least two labels.`;
+  for (const label of labels) {
+    if (label.length === 0) return `${bare} — no empty labels.`;
+    if (label.length > 63) return `${bare} — each label is limited to 63 characters.`;
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)) {
+      return `${bare} — labels use letters, digits and dashes only (no edge dash).`;
+    }
+  }
+  return null;
+}
 
 /** The absolute URL for Open/Copy: the API serves a site-root-relative path (`/sites/<slug>/`). */
 export function absoluteSiteUrl(url: string): string {

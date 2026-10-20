@@ -118,15 +118,16 @@ def test_the_migration_chain_is_linear_with_a_single_head():
     """
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0014"], f"expected a single head (0014), found {heads}"
+    # V26/L6: head 0014 -> 0015 (`0015_ads_spend_nullable.py`) — deliberate re-pin.
+    assert heads == ["0015"], f"expected a single head (0015), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0014"
+    cursor: str | None = "0015"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
+        "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
         "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
@@ -324,7 +325,7 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
         # V25: 0013 (L1, task_attachments) and 0014 (L4, ads nullable revenue) — deliberate re-pin;
         # the 0005/0006 legs below are unchanged.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

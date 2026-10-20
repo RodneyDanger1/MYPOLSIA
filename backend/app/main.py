@@ -34,6 +34,7 @@ from app.api.v1 import (
     economics,
     finance,
     health,
+    integrations,  # wave V26 (L2): Settings → Integrations — masked status, save/clear, test
     invoices,
     memory,
     notifications,
@@ -48,6 +49,7 @@ from app.api.v1 import (
     social,
     support,
     tasks,
+    vision,  # wave V26 (L4): POST /vision/describe — on-demand model description of one attachment
     ws,
 )
 from app.api.v1.runs import (
@@ -457,9 +459,11 @@ def create_app() -> FastAPI:
     # wave V25 (L1): the id-addressed attachment byte surface (`/api/v1/attachments/{id}`) —
     # the sibling router of `tasks.router`; its `/tasks/{id}/attachments` routes ride above.
     api_v1.include_router(tasks.attachments_router)
+    api_v1.include_router(vision.router)  # wave V26 (L4): vision on demand
     api_v1.include_router(agents.router)
     api_v1.include_router(chat.router)       # wave V8 (C1): the owner <-> Polsia chat (message/confirm/history)
     api_v1.include_router(config.router)
+    api_v1.include_router(integrations.router)  # wave V26 (L2): masked status + save/clear + read-only test
     api_v1.include_router(dashboard.router)
     api_v1.include_router(memory.router)
     api_v1.include_router(notifications.router)  # wave U2: the bell's task-derived feed (derived, no table)

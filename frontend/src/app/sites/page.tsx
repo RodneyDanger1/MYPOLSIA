@@ -89,6 +89,11 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
  * deploy (`{dry_run: false}`).  The badge then reports the Render deploy id; it never says
  * "deployed" for a deploy Render has not acknowledged.  When the server answers
  * `configured: false`, the row renders NO deploy button and names the missing variables.
+ *
+ * Wave V26 (Sites 2.0) adds the template picker (three named presets), each row's real page list
+ * (`pages` from `meta.json`, so a V24 site shows only its index and no invented links), and the
+ * custom-domain field.  The domain is a RECORD: it is stored with the site and shown with the
+ * wording "recorded, not verified" — nothing in this page resolves DNS or implies the host is live.
  */
 export default function SitesPage() {
   const [rows, setRows] = useState<SiteSummary[] | null>(null);
@@ -241,9 +246,19 @@ export default function SitesPage() {
     setBusy(true);
     setCreateError(null);
     setCopied(null);
-    const body: { title?: string; tagline?: string } = {};
+    // V26: `template` is sent only when the operator picked a non-default preset, and
+    // `custom_domain` only when one was typed — blank boxes stay omitted so the server's own
+    // defaults (classic, no domain) apply instead of a client-side copy of them.
+    const body: {
+      title?: string;
+      tagline?: string;
+      template?: string;
+      custom_domain?: string;
+    } = {};
     if (draft.title) body.title = draft.title;
     if (draft.tagline) body.tagline = draft.tagline;
+    if (draft.template) body.template = draft.template;
+    if (draft.custom_domain) body.custom_domain = draft.custom_domain;
     try {
       const created = await api.post<SiteCreated>("/sites", body);
       setSelectedSlug(created.slug);

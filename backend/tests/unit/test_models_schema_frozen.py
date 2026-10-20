@@ -158,6 +158,15 @@ had already grown to 22 by V24; this revision adds the attachment table).  No ex
 Old canonical sha256 `519a31651b505dc2cc2e11325200fed0e2aebd95d5b470bb4b25db3cbfba8eda` ->
 `2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (V26/L6, 2026-10-19): `ad_metrics.spend_usd` is now NULLABLE with NO
+default, carried by `backend/alembic/versions/0015_ads_spend_nullable.py`.  Rationale: the column
+kept the pre-0014 `DEFAULT '0'`, so a writer that omitted spend stored a measured `$0`; 0014's
+revenue fix left spend as the last conflated money field.  Row change: `spend_usd`
+`('NUMERIC(14, 4)', True, '', '', '', False)`.  No other row changed.  Old canonical sha256
+`2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9` ->
+`b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -176,7 +185,7 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "2beb3eb9011c11945ff143143cdeb2ece422bdb5b5de33e64c1d2b18998696e9"
+DDL_SHA256 = "b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -236,7 +245,8 @@ FROZEN_COLUMNS = {
         ('impressions', 'INTEGER', True, '0', '0', '', False),
         ('clicks', 'INTEGER', True, '0', '0', '', False),
         ('conversions', 'INTEGER', True, '0', '0', '', False),
-        ('spend_usd', 'NUMERIC(14, 4)', True, '0', '0', '', False),
+        # V26/L6: nullable with NO default (alembic 0015) — NULL is "not measured", 0 is a measured zero
+        ('spend_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         # V25/L4: nullable with NO default — NULL is "not measured", 0 is a measured zero
         ('revenue_usd', 'NUMERIC(14, 4)', True, '', '', '', False),
         # R31: GENERATED on both engines (`COMPUTED: <expr>` marker) — writable Floats before

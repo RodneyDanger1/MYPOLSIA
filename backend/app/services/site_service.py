@@ -1,10 +1,29 @@
-"""The website builder (wave V24, lane L3): generate + host a real static site.
+"""The website builder (wave V24, lane L3; multi-page in wave V26, lane L5): generate + host a site.
 
-`generate_site` writes `data/sites/<slug>/{index.html,styles.css,meta.json}` from the company
-profile and returns the slug/url/byte count; `list_sites`/`read_site` are the disk-backed reads the
-API serves.  There is **one source of truth — the filesystem**: `meta.json` beside each site is what
-the list is built from, so the API process, a restarted process and the static mount can never
-disagree about which sites exist (no database table to drift from the files).
+`generate_site` writes `data/sites/<slug>/{index.html,about.html,contact.html,styles.css,sitemap.xml,
+meta.json}` from the company profile and returns the slug/url/byte count; `list_sites`/`read_site`
+are the disk-backed reads the API serves.  There is **one source of truth — the filesystem**:
+`meta.json` beside each site is what the list is built from, so the API process, a restarted process
+and the static mount can never disagree about which sites exist (no database table to drift from
+the files).
+
+Wave V26 adds Sites 2.0 on top of the same disk contract:
+  * THREE pages — `index.html` (the V24 hero/profile page), `about.html` (description + mission) and
+    `contact.html` (the profile's contact details, no form and no POST);
+  * three SCRIPT-FREE visual presets — `classic`, `modern`, `bold` — selected by `template`; each
+    renders the same three pages against its own generated `styles.css` and carries a
+    `t-<preset>` body hook;
+  * `meta.json` gains `pages` (always all three), `template`, `custom_domain` (a bare hostname, or
+    null) and `seo {title, description, og_image}`; every V24 key is preserved;
+  * `sitemap.xml` — one absolute `<loc>` per page, built from the `base_url` the API layer supplies
+    (`request.base_url`), XML-escaped, with no fabricated `<lastmod>`;
+  * `validate_custom_domain` — a bare hostname only, stored as a RECORD: nothing here resolves DNS
+    and no wording may claim verification.
+
+A site created before V26 keeps working unchanged: its `meta.json` simply has none of the new keys,
+it still lists and serves `index.html` + `styles.css`, and `about.html`/`contact.html` on it are
+real 404s (a page is never fabricated for a site that predates it).  V26 generation always writes
+all three pages.
 
 The generated page, in the order it is assembled:
   * `title` — the caller's title, else the company name;
@@ -38,6 +57,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -62,7 +82,24 @@ SLUG_MIN, SLUG_MAX = 2, 48
 MAX_TITLE = 120
 MAX_TAGLINE = 240
 
-_FILES = ("index.html", "styles.css")
+#: The frozen V26 page set — every new generation writes all three, in this order.
+PAGES = ("index.html", "about.html", "contact.html")
+STYLES_FILE = "styles.css"
+SITEMAP_FILE = "sitemap.xml"
+
+#: The frozen template preset ids; `classic` is the default and the V24 look.
+TEMPLATES = ("classic", "modern", "bold")
+DEFAULT_TEMPLATE = "classic"
+
+#: Every file a V26 site writes.  `sitemap.xml` is skipped when no `base_url` was supplied (its
+#: `<loc>` values must be absolute; a path-only sitemap would be a lie about the site's address).
+_FILES = (*PAGES, STYLES_FILE, SITEMAP_FILE)
+
+#: Domain bounds (DNS limits): the whole name and each label.
+DOMAIN_MAX = 253
+DOMAIN_LABEL_MAX = 63
+_DOMAIN_LABEL = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$")
+
 
 
 # ── small helpers ────────────────────────────────────────────────────────────────────────────
@@ -130,6 +167,10 @@ def _profile_fields(company: CompanyConfig) -> dict[str, str]:
         "target_market": _clean(company.target_market),
         "website_url": _clean(company.website_url),
         "contact_email": _clean(company.notification_email),
+        # V26 contact page: the sender identity the profile already carries (Wave V8).  Both are
+        # business-card facts — the page is public on purpose and prints only what the owner set.
+        "sender_legal_name": _clean(company.sender_legal_name),
+        "sender_postal_address": _clean(company.sender_postal_address),
     }
 
 
@@ -246,6 +287,23 @@ footer p { margin: 0 0 0.25rem; }
 
 footer a { color: var(--accent); }
 
+/* V26: the cross-page header is CSS-only (no script, no external font). */
+.site-header { padding-bottom: 1.5rem; }
+
+.site-nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.25rem; }
+
+.site-nav a { color: var(--accent); font-weight: 600; }
+
+.site-nav a[aria-current="page"] { color: var(--ink); text-decoration: none; }
+
+.contact-list { margin: 0; }
+
+.contact-list dt { font-weight: 700; }
+
+.contact-list dd { margin: 0 0 0.75rem; }
+
+.note { color: var(--muted); }
+
 @media (max-width: 30rem) {
   .page { padding: 1.75rem 1rem 2.25rem; }
 }
@@ -264,20 +322,314 @@ footer a { color: var(--accent); }
 """
 
 
-def render_site(
+#: V26 template treatments.  Each one is APPENDED to the shared stylesheet and scoped to the
+#: page's own `body.t-<preset>` hook, so the three presets are three real, script-free looks while
+#: the structural CSS (and the V24 look of `classic`) stays one reviewed source.
+_TEMPLATE_EXTRAS: dict[str, str] = {
+    "classic": "",
+    "modern": """
+body.t-modern {
+  --accent: #0f766e;
+  --accent-ink: #ffffff;
+  --paper: #fbfefd;
+  --muted: #4d635e;
+  --line: #cfe3dd;
+}
+body.t-modern .page { max-width: 72rem; }
+body.t-modern .site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+body.t-modern .brand { margin: 0; }
+body.t-modern .hero {
+  padding: 2rem 1.5rem;
+  background: #eef7f4;
+  border-bottom: 0;
+  border-radius: 1rem;
+}
+body.t-modern .button { border-radius: 999px; padding-inline: 1.5rem; }
+""",
+    "bold": """
+body.t-bold {
+  --accent: #d9471b;
+  --accent-ink: #ffffff;
+  --paper: #fffdf5;
+  --muted: #4a4a4f;
+  --line: #1a1a1c;
+}
+body.t-bold .page { max-width: 58rem; }
+body.t-bold h1 { text-transform: uppercase; font-weight: 800; letter-spacing: -0.01em; }
+body.t-bold .site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 0.35rem solid var(--accent);
+}
+body.t-bold .brand { margin: 0; }
+body.t-bold .hero { border-bottom: 0; border-top: 0.5rem solid var(--accent); padding-top: 1.5rem; }
+body.t-bold .button {
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+""",
+}
+
+
+def _styles(template: str) -> str:
+    """The preset's `styles.css`: the shared sheet plus that preset's scoped treatment."""
+    extra = _TEMPLATE_EXTRAS[template]
+    return _STYLES + (f"\n{extra}" if extra else "")
+
+
+def validate_template(template: str | None) -> str:
+    """The preset VERBATIM when it is one of the frozen ids, else the named `E_VALIDATION`."""
+    value = _clean(template) or DEFAULT_TEMPLATE
+    if value not in TEMPLATES:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site template {template!r} is not one of: {', '.join(TEMPLATES)}",
+            how_to_fix=f"choose one of the template presets ({', '.join(TEMPLATES)}); omit it for "
+            f"{DEFAULT_TEMPLATE!r}",
+            context={"field": "template", "template": template, "allowed": list(TEMPLATES)},
+        )
+    return value
+
+
+def validate_custom_domain(domain: str | None) -> str | None:
+    """A bare hostname, or None for an absent value; anything else is the named `E_VALIDATION`.
+
+    This is a RECORD, not a DNS check: nothing here resolves the name, proves ownership or claims
+    the host is live.  The rules are deliberately structural — labels `[a-zA-Z0-9-]` (no leading or
+    trailing dash), dots between labels, no scheme, no path/query/fragment, no port, no userinfo, no
+    whitespace, no leading/trailing dot, no empty label, at least two labels, DNS length bounds.
+    The value is stored VERBATIM (case included): a validator that silently rewrote the record
+    would be reporting a hostname the caller never supplied.
+    """
+    if domain is None:
+        return None
+    if not isinstance(domain, str):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"custom domain {domain!r} is not a hostname string",
+            how_to_fix="send a bare hostname such as example.com, or null for none",
+            context={"field": "custom_domain", "custom_domain": domain, "reason": "not a string"},
+        )
+    if domain == "":
+        return None
+
+    reason = ""
+    if len(domain) > DOMAIN_MAX:
+        reason = f"longer than {DOMAIN_MAX} characters"
+    elif any(character.isspace() for character in domain):
+        reason = "whitespace"
+    elif "://" in domain or "/" in domain:
+        reason = "a scheme or path (send the hostname only)"
+    elif any(character in domain for character in "?#:;@[]"):
+        reason = "a port, query, fragment or userinfo (send the hostname only)"
+    elif domain.startswith(".") or domain.endswith("."):
+        reason = "a leading or trailing dot"
+    elif ".." in domain:
+        reason = "an empty label ('..')"
+    else:
+        labels = domain.split(".")
+        if len(labels) < 2:
+            reason = "a single label (a domain needs at least two, e.g. example.com)"
+        else:
+            for label in labels:
+                if not label:
+                    reason = "an empty label"
+                    break
+                if len(label) > DOMAIN_LABEL_MAX:
+                    reason = f"a label longer than {DOMAIN_LABEL_MAX} characters"
+                    break
+                if not _DOMAIN_LABEL.fullmatch(label):
+                    reason = (
+                        f"label {label!r} outside [a-zA-Z0-9-], or starting/ending with a dash"
+                    )
+                    break
+
+    if reason:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"custom domain {domain!r} is not a bare hostname ({reason})",
+            how_to_fix="enter a bare hostname such as example.com — no scheme, path, port, spaces "
+            "or trailing dot; it is recorded, not verified",
+            context={"field": "custom_domain", "custom_domain": domain, "reason": reason},
+        )
+    return domain
+
+
+def _normalise_base_url(base_url: str | None) -> str:
+    """`http(s)://host[:port][/prefix]` with no trailing slash; anything else is refused by name."""
+    text = _clean(base_url)
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme.lower() not in ("http", "https")
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"site base url {base_url!r} is not an absolute http(s) URL",
+            how_to_fix="supply the request's own base URL (http://host/), with no query or fragment",
+            context={"field": "base_url", "base_url": base_url},
+        )
+    return text.rstrip("/")
+
+
+def render_sitemap(base_url: str, slug: str, pages: Sequence[str] = PAGES) -> str:
+    """The site's `sitemap.xml`: one ABSOLUTE `<loc>` per page, XML-escaped, no `<lastmod>`.
+
+    `base_url` is the API layer's `request.base_url` — this module never guesses a public host, so
+    the sitemap says exactly where the site is reachable through the caller's own origin.  A
+    `<lastmod>` is omitted rather than derived from the clock: a fabricated date is worse than no
+    date, and `meta.json` (not the page) owns `created_at`.
+    """
+    base = _normalise_base_url(base_url)
+    validated = validate_slug(slug)
+    for page in pages:
+        if page not in PAGES:
+            raise PolsiaError(
+                E_VALIDATION,
+                f"sitemap page {page!r} is not one of the generated pages",
+                how_to_fix=f"list only {', '.join(PAGES)}",
+                context={"field": "pages", "page": page},
+            )
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for page in pages:
+        path = f"/sites/{validated}/" if page == "index.html" else f"/sites/{validated}/{page}"
+        lines += ["  <url>", f"    <loc>{_esc(base + path)}</loc>", "  </url>"]
+    lines.append("</urlset>")
+    return "\n".join(lines) + "\n"
+
+
+def build_seo(
+    company: CompanyConfig,
+    *,
+    title: str | None = None,
+    tagline: str | None = None,
+    og_image: str | None = None,
+) -> dict[str, Any]:
+    """The `seo` record stored in `meta.json`: `<title>`, description, OG image (or null).
+
+    The description follows the SAME fallback chain as the hero tagline, so the tag the page prints
+    and the record it stores cannot disagree.  `og_image` is null unless a caller supplies one: the
+    company schema has no logo/image column, and pointing `og:image` at an invented URL would be a
+    fabricated asset.
+    """
+    fields = _profile_fields(company)
+    page_title = _clean(title) or fields["name"]
+    description = (
+        _clean(tagline)
+        or _first_line(fields["value_prop"])
+        or _first_line(fields["description"])
+        or _first_line(fields["mission"])
+    )
+    return {"title": page_title, "description": description, "og_image": og_image or None}
+
+
+def _nav(active: str) -> list[str]:
+    """The shared CSS-only page nav; `aria-current` marks the page the visitor is on."""
+    links = (
+        ("index.html", "Home", "index"),
+        ("about.html", "About", "about"),
+        ("contact.html", "Contact", "contact"),
+    )
+    parts = ['<nav class="site-nav" aria-label="Pages">']
+    for href, label, key in links:
+        current = ' aria-current="page"' if key == active else ""
+        parts.append(f'<a href="{href}"{current}>{label}</a>')
+    parts.append("</nav>")
+    return parts
+
+
+def _cta(contact: str) -> str:
+    """One CTA: a `mailto:` link ONLY when an address exists, else the plain line."""
+    if contact:
+        return f'<p class="cta"><a class="button" href="mailto:{_esc(contact)}">Get in touch</a></p>'
+    return '<p class="cta cta-note">Get in touch to learn more.</p>'
+
+
+def _document(
+    *,
+    template: str,
+    page_title: str,
+    description: str,
+    og_image: str | None,
+    name: str,
+    active: str,
+    main: list[str],
+    website_line: str,
+) -> str:
+    """One complete HTML document: escaped head, CSS-only header/nav, main, footer. No script."""
+    parts: list[str] = [
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{_esc(page_title)}</title>",
+    ]
+    if description:
+        parts.append(f'<meta name="description" content="{_esc(description)}">')
+    parts.append('<meta property="og:type" content="website">')
+    parts.append(f'<meta property="og:title" content="{_esc(page_title)}">')
+    if description:
+        parts.append(f'<meta property="og:description" content="{_esc(description)}">')
+    if og_image:
+        parts.append(f'<meta property="og:image" content="{_esc(og_image)}">')
+    parts += [
+        '<link rel="stylesheet" href="styles.css">',
+        "</head>",
+        f'<body class="t-{template}">',
+        '<div class="page">',
+        '<header class="site-header">',
+    ]
+    if name:
+        parts.append(f'<p class="brand">{_esc(name)}</p>')
+    parts.extend(_nav(active))
+    parts.append("</header>")
+    parts.extend(main)
+    parts.append("<footer>")
+    if name:
+        parts.append(f"<p>{_esc(name)}</p>")
+    if website_line:
+        parts.append(website_line)
+    parts.append("</footer>")
+    parts += ["</div>", "</body>", "</html>", ""]
+    return "\n".join(parts)
+
+
+def render_pages(
     company: CompanyConfig,
     *,
     title: str | None = None,
     tagline: str | None = None,
     sender_email: str | None = None,
+    template: str = DEFAULT_TEMPLATE,
+    slug: str | None = None,
+    base_url: str | None = None,
+    og_image: str | None = None,
 ) -> dict[str, str]:
-    """`{filename: content}` for one site — pure, deterministic, every value escaped.
+    """`{filename: content}` for a V26 site — pure, deterministic, every value escaped.
 
-    `sender_email` overrides the profile's contact address (pass `""` to force the no-address
-    variant); when it is `None` the company profile's own contact field is used, so the CTA rule is
-    one rule: an address that EXISTS renders a `mailto:` link, nothing else renders the plain
-    get-in-touch line with no address at all.
+    Always the three pages + `styles.css`; `sitemap.xml` too when `base_url` (and a slug, which the
+    caller already validated for the directory) is supplied.  `sender_email` overrides the profile's
+    contact address (pass `""` to force the no-address variant); when it is `None` the company
+    profile's own contact field is used.
     """
+    chosen = validate_template(template)
     fields = _profile_fields(company)
     name = fields["name"]
 
@@ -288,7 +640,7 @@ def render_site(
         or _first_line(fields["description"])
         or _first_line(fields["mission"])
     )
-    # The about section carries the profile prose that the hero did NOT already say: the value
+    # The index's about section carries the profile prose the hero did NOT already say: the value
     # proposition, description and mission, de-duplicated and with any sentence equal to the
     # tagline dropped — a page that repeats itself reads generated.  When the profile has no prose
     # at all the section is OMITTED, never filled with a placeholder this generator invented.
@@ -296,58 +648,161 @@ def render_site(
     for candidate in (fields["value_prop"], fields["description"], fields["mission"]):
         if candidate and candidate != hero_tagline and candidate not in about_paragraphs:
             about_paragraphs.append(candidate)
+    mission = fields["mission"]
     target_market = fields["target_market"]
     contact = _clean(sender_email) if sender_email is not None else fields["contact_email"]
-
-    parts: list[str] = [
-        "<!DOCTYPE html>",
-        '<html lang="en">',
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>{_esc(page_title)}</title>",
-    ]
-    if hero_tagline:
-        parts.append(f'<meta name="description" content="{_esc(hero_tagline)}">')
-    parts += ['<link rel="stylesheet" href="styles.css">', "</head>", "<body>", '<div class="page">']
-
-    parts += ['<header class="hero">']
-    if name:
-        parts.append(f'<p class="brand">{_esc(name)}</p>')
-    parts.append(f"<h1>{_esc(page_title)}</h1>")
-    if hero_tagline:
-        parts.append(f'<p class="tagline">{_esc(hero_tagline)}</p>')
-    if contact:
-        parts.append(
-            f'<p class="cta"><a class="button" href="mailto:{_esc(contact)}">Get in touch</a></p>'
-        )
-    else:
-        parts.append('<p class="cta cta-note">Get in touch to learn more.</p>')
-    parts.append("</header>")
-
-    parts.append("<main>")
-    if about_paragraphs:
-        parts.append('<section id="about">')
-        parts.append("<h2>About</h2>")
-        parts.extend(f"<p>{_esc(paragraph)}</p>" for paragraph in about_paragraphs)
-        parts.append("</section>")
-    if target_market:
-        parts.append('<section id="who-we-serve">')
-        parts.append("<h2>Who we serve</h2>")
-        parts.append(f"<p>{_esc(target_market)}</p>")
-        parts.append("</section>")
-    parts.append("</main>")
-
-    parts.append("<footer>")
-    if name:
-        parts.append(f"<p>{_esc(name)}</p>")
     website_line = _website_line(fields["website_url"])
-    if website_line:
-        parts.append(website_line)
-    parts.append("</footer>")
-    parts += ["</div>", "</body>", "</html>", ""]
-    html_document = "\n".join(parts)
-    return {"index.html": html_document, "styles.css": _STYLES}
+    seo = build_seo(company, title=page_title, tagline=tagline, og_image=og_image)
+    description = str(seo["description"])
+
+    index_main: list[str] = ['<main>', '<section class="hero">', f"<h1>{_esc(page_title)}</h1>"]
+    if hero_tagline:
+        index_main.append(f'<p class="tagline">{_esc(hero_tagline)}</p>')
+    index_main.append(_cta(contact))
+    index_main.append("</section>")
+    if about_paragraphs:
+        index_main += ['<section id="about">', "<h2>About</h2>"]
+        index_main += [f"<p>{_esc(paragraph)}</p>" for paragraph in about_paragraphs]
+        index_main.append("</section>")
+    if target_market:
+        index_main += [
+            '<section id="who-we-serve">',
+            "<h2>Who we serve</h2>",
+            f"<p>{_esc(target_market)}</p>",
+            "</section>",
+        ]
+    index_main.append("</main>")
+
+    about_title = f"About {name}" if name else "About"
+    about_description = (
+        _first_line(fields["description"]) or _first_line(fields["mission"]) or description
+    )
+    about_main: list[str] = ["<main>", '<section id="about">', "<h2>About</h2>"]
+    about_prose = [
+        paragraph
+        for paragraph in (fields["value_prop"], fields["description"])
+        if paragraph and paragraph != hero_tagline
+    ]
+    if about_prose:
+        about_main += [f"<p>{_esc(paragraph)}</p>" for paragraph in about_prose]
+    else:
+        about_main.append(
+            '<p class="note">A company description has not been written yet.</p>'
+        )
+    about_main.append("</section>")
+    if mission and mission not in about_prose:
+        about_main += [
+            '<section id="mission">',
+            "<h2>Mission</h2>",
+            f"<p>{_esc(mission)}</p>",
+            "</section>",
+        ]
+    if target_market:
+        about_main += [
+            '<section id="who-we-serve">',
+            "<h2>Who we serve</h2>",
+            f"<p>{_esc(target_market)}</p>",
+            "</section>",
+        ]
+    about_main.append("</main>")
+
+    contact_title = f"Contact {name}" if name else "Contact"
+    contact_description = f"Contact details for {name}." if name else "Contact details."
+    contact_main: list[str] = ["<main>", '<section id="contact">', "<h2>Contact</h2>"]
+    details: list[tuple[str, str]] = []
+    if contact:
+        details.append(("Email", f'<a href="mailto:{_esc(contact)}">{_esc(contact)}</a>'))
+    if fields["website_url"]:
+        website = fields["website_url"]
+        if urlsplit(website).scheme.lower() in ("http", "https"):
+            details.append(
+                ("Website", f'<a href="{_esc(website)}" rel="noopener">{_esc(website)}</a>')
+            )
+        else:
+            details.append(("Website", _esc(website)))
+    if fields["sender_postal_address"]:
+        details.append(("Address", _esc(fields["sender_postal_address"])))
+    if fields["sender_legal_name"]:
+        details.append(("Legal name", _esc(fields["sender_legal_name"])))
+    if details:
+        contact_main.append('<dl class="contact-list">')
+        for label, value in details:
+            contact_main.append(f"<dt>{label}</dt>")
+            contact_main.append(f"<dd>{value}</dd>")
+        contact_main.append("</dl>")
+        note = (
+            "This page has no form: write to the address above."
+            if contact
+            else "This page has no form."
+        )
+        contact_main.append(f'<p class="note">{note}</p>')
+    else:
+        contact_main.append(
+            '<p class="note">No contact details have been added to the company profile yet.</p>'
+        )
+    contact_main.append("</section>")
+    contact_main.append("</main>")
+
+    files = {
+        "index.html": _document(
+            template=chosen,
+            page_title=page_title,
+            description=description,
+            og_image=seo["og_image"],
+            name=name,
+            active="index",
+            main=index_main,
+            website_line=website_line,
+        ),
+        "about.html": _document(
+            template=chosen,
+            page_title=about_title,
+            description=about_description,
+            og_image=seo["og_image"],
+            name=name,
+            active="about",
+            main=about_main,
+            website_line=website_line,
+        ),
+        "contact.html": _document(
+            template=chosen,
+            page_title=contact_title,
+            description=contact_description,
+            og_image=seo["og_image"],
+            name=name,
+            active="contact",
+            main=contact_main,
+            website_line=website_line,
+        ),
+        STYLES_FILE: _styles(chosen),
+    }
+    if base_url is not None:
+        if slug is None:
+            raise PolsiaError(
+                E_VALIDATION,
+                "a sitemap needs the site's slug",
+                how_to_fix="pass the validated slug alongside base_url",
+                context={"field": "slug"},
+            )
+        files[SITEMAP_FILE] = render_sitemap(base_url, slug, PAGES)
+    return files
+
+
+def render_site(
+    company: CompanyConfig,
+    *,
+    title: str | None = None,
+    tagline: str | None = None,
+    sender_email: str | None = None,
+) -> dict[str, str]:
+    """The V24 single-page pair — kept for its existing callers and its `{index, styles}` contract.
+
+    V26 generation calls `render_pages`; this wrapper renders the same classic index page so the two
+    cannot drift, and deliberately does NOT return the extra pages (a caller of the old API asked
+    for one page and gets one page).
+    """
+    files = render_pages(company, title=title, tagline=tagline, sender_email=sender_email)
+    return {"index.html": files["index.html"], STYLES_FILE: files[STYLES_FILE]}
 
 
 # ── reads ────────────────────────────────────────────────────────────────────────────────────
@@ -387,17 +842,32 @@ def _load_meta(slug: str, root: Path | None) -> dict[str, Any]:
 
 
 def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
-    """One site's `meta.json` as the wire row; an unknown slug is the named `E_NOT_FOUND`."""
+    """One site's `meta.json` as the wire row; an unknown slug is the named `E_NOT_FOUND`.
+
+    V26 sites also report `pages`, `template` and `custom_domain`.  Those keys are ADDED ONLY WHEN
+    THE META FILE CARRIES THEM: a V24 `meta.json` has no such keys, and the row for it stays exactly
+    the five frozen V24 keys instead of inventing `pages` for a site that has one page.
+    """
     validated = validate_slug(slug)
     meta = _load_meta(validated, root)
     try:
-        return {
+        row: dict[str, Any] = {
             "slug": validated,
             "title": str(meta.get("title") or ""),
             "url": f"/sites/{validated}/",
             "created_at": str(meta.get("created_at") or ""),
             "bytes": int(meta.get("bytes") or 0),
         }
+        pages = meta.get("pages")
+        if isinstance(pages, list) and pages and all(isinstance(page, str) for page in pages):
+            row["pages"] = list(pages)
+        template = meta.get("template")
+        if isinstance(template, str) and template in TEMPLATES:
+            row["template"] = template
+        if "custom_domain" in meta:
+            domain = meta.get("custom_domain")
+            row["custom_domain"] = domain if isinstance(domain, str) and domain else None
+        return row
     except (TypeError, ValueError) as exc:
         # A meta.json this module did not write (e.g. `"bytes": "lots"`) is not a site the API can
         # honestly describe: the same named refusal as an unreadable file, never a raw 500.
@@ -502,14 +972,23 @@ async def generate_site(
     slug: str | None = None,
     title: str | None = None,
     tagline: str | None = None,
+    template: str | None = None,
+    custom_domain: str | None = None,
     root: Path | None = None,
+    base_url: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     """Build `<root>/<slug>/` from the company profile; return `{slug,url,bytes,title,created_at}`.
 
+    V26: the directory holds the three pages, one preset stylesheet and — when `base_url` (the API
+    layer's `request.base_url`) is supplied — a `sitemap.xml`; `meta.json` records `pages`,
+    `template`, `custom_domain` and `seo` beside every V24 key, and `bytes` is the REAL total of the
+    files written.
+
     Refusals by name: `E_CONFIG` when there is no company row (or no name to put on the page),
-    `E_VALIDATION` for an invalid slug / over-long title or tagline / a slug that already exists.
-    `created_at` is a test seam only; production takes the clock.
+    `E_VALIDATION` for an invalid slug / over-long title or tagline / unknown template preset /
+    malformed custom domain / a slug that already exists.  `custom_domain` is RECORDED, never
+    DNS-verified.  `created_at` is a test seam only; production takes the clock.
     """
     company = await get_company(db)
     if company is None:
@@ -545,6 +1024,9 @@ async def generate_site(
             context={"field": "tagline", "length": len(page_tagline), "max": MAX_TAGLINE},
         )
 
+    chosen_template = validate_template(template)
+    domain = validate_custom_domain(custom_domain)
+
     slug_text = (
         validate_slug(slug) if slug is not None else derive_slug(title, fallback=fields["name"])
     )
@@ -559,11 +1041,14 @@ async def generate_site(
             context={"slug": slug_text, "reason": "collision"},
         )
 
-    rendered = render_site(
+    rendered = render_pages(
         company,
         title=page_title,
         tagline=page_tagline or None,
         sender_email=fields["contact_email"],
+        template=chosen_template,
+        slug=slug_text,
+        base_url=base_url,
     )
     try:
         site_dir.mkdir(parents=False, exist_ok=False)
@@ -577,13 +1062,26 @@ async def generate_site(
 
     sizes: dict[str, int] = {}
     for filename in _FILES:
+        content = rendered.get(filename)
+        if content is None:
+            continue  # no sitemap without a base_url: a path-only <loc> would be a lie
         target = site_dir / filename
-        target.write_text(rendered[filename], encoding="utf-8", newline="\n")
+        target.write_text(content, encoding="utf-8", newline="\n")
         sizes[filename] = target.stat().st_size
 
     stamp = created_at or datetime.now(UTC).isoformat(timespec="seconds")
     total = sum(sizes.values())
-    meta = {"slug": slug_text, "title": page_title, "created_at": stamp, "bytes": total}
+    meta = {
+        "slug": slug_text,
+        "title": page_title,
+        "created_at": stamp,
+        "bytes": total,
+        # ── V26 (frozen keys) ──────────────────────────────────────────────────────────────
+        "pages": list(PAGES),
+        "template": chosen_template,
+        "custom_domain": domain,  # recorded, NOT DNS-verified
+        "seo": build_seo(company, title=page_title, tagline=page_tagline or None),
+    }
     (site_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -599,8 +1097,14 @@ async def generate_site(
 
 
 __all__ = [
+    "DEFAULT_TEMPLATE",
+    "PAGES",
     "SITES_ROOT",
+    "SITEMAP_FILE",
     "SLUG_PATTERN",
+    "STYLES_FILE",
+    "TEMPLATES",
+    "build_seo",
     "derive_slug",
     "generate_site",
     "list_sites",
@@ -608,6 +1112,10 @@ __all__ = [
     "read_site",
     "read_site_meta",
     "record_deploy",
+    "render_pages",
     "render_site",
+    "render_sitemap",
+    "validate_custom_domain",
     "validate_slug",
+    "validate_template",
 ]

@@ -200,7 +200,8 @@ def test_migration_0013_creates_the_table_cascade_and_index_then_round_trips(mon
     command.upgrade(cfg, "head")
     con = sqlite3.connect(db_path.as_posix())
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        # V26/L6: head 0014 -> 0015 (`0015_ads_spend_nullable.py`) — deliberate re-pin.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='task_attachments'"
         ).fetchone() is not None

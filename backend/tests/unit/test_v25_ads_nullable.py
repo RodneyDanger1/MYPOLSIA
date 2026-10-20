@@ -77,11 +77,12 @@ def _revision_graph() -> dict[str, str | None]:
 
 
 def test_migration_0014_is_child_of_0013_and_nothing_revises_it() -> None:
-    """Single head: 0014 sits on L1's 0013, and no revision names 0014 as its parent."""
+    """Single head: 0014 sits on L1's 0013, and 0015 (V26/L6 spend nullable) is its only child."""
     graph = _revision_graph()
     assert "0014" in graph, graph
     assert graph["0014"] == "0013", "0014's down_revision must be L1's 0013 (one chain)"
-    assert "0014" not in set(graph.values()), "another revision revises 0014 — the chain forks"
+    # V26/L6: 0015 (`0015_ads_spend_nullable.py`) is 0014's intended child — one chain, one head.
+    assert [r for r, down in graph.items() if down == "0014"] == ["0015"]
     # 0013 is L1's file; when it has landed, it must point at 0012 and be the ONLY parent of 0014.
     if "0013" in graph:
         assert graph["0013"] == "0012", graph

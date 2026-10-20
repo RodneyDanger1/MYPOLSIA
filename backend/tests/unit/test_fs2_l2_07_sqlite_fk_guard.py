@@ -111,7 +111,8 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
         # update (old -> new: "0011" -> "0012"), the guard legs below are unchanged.
         # V25 (L1+L4): the chain head moved 0012 -> 0014 (`0013_task_attachments.py`,
         # `0014_ads_nullable_revenue.py`) — deliberate re-pin; the guard legs below are unchanged.
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0014"
+        # V26/L6: head 0014 -> 0015 (`0015_ads_spend_nullable.py`) — deliberate re-pin.
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0015"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1

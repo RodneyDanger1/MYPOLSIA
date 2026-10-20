@@ -5,6 +5,7 @@ import { CapabilitiesSection } from "@/components/capabilities/CapabilitiesSecti
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
+import { IntegrationsSection } from "@/components/settings/IntegrationsSection";
 import { KpiEditor } from "@/components/settings/KpiEditor";
 import { NightTaskSection, type NightDraft } from "@/components/settings/NightTaskSection";
 import {
@@ -757,6 +758,11 @@ export default function SettingsPage() {
           purpose — the pinned u3/u7 suites assert the tab list is exactly the four above and that
           `tabpanel` is singular, so these are plain sections, not tabs. None of them fires a
           request on mount (same tests pin that too): every read/write below is click-triggered. */}
+      {/* V26/L2 (F2): the integrations surface — credentials the V25 GitHub/Render adapters
+          read, with masked status and a real read-only test. A below-card section, NOT a fifth
+          tab: the tab list is pinned at four by u3/u7, and u11 pins that opening Settings issues
+          exactly one read, so the panel reads its status only on "Check status". */}
+      <IntegrationsSection />
       <DataSection />
       <PricingSection />
       <SitePackageSection />

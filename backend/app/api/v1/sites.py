@@ -1,4 +1,4 @@
-"""POST/GET /api/v1/sites — build and list the static sites (wave V24, lane L3).
+"""POST/GET /api/v1/sites — build and list the static sites (wave V24, lane L3; V26, lane L5).
 
 Frozen interface (V24-PLAN):
     POST /api/v1/sites  {title?, tagline?, slug?} -> 201 {slug, url, bytes}
@@ -11,6 +11,16 @@ Wave V25 (lane L3) adds the Render deploy surface on top of the same disk-backed
          `E_VALIDATION` for a slug that does not exist.
     GET  /api/v1/sites/{slug}/deploy -> {slug, configured, missing, service_id, last_deploy|null};
          `E_NOT_FOUND` for a slug that does not exist.
+
+Wave V26 (lane L5) is ADDITIVE on the same routes:
+    POST /api/v1/sites  {title?, tagline?, template?, custom_domain?, slug?} -> the same 201 body.
+         `template` is one of `classic` (default), `modern`, `bold`; `custom_domain` is a bare
+         hostname RECORDED as-is on the site — this API never resolves DNS and never claims the
+         domain is verified or live.  Both refusals are the named `E_VALIDATION`.
+    GET  /api/v1/sites -> each V26 row also carries `pages`, `template` and `custom_domain`; a V24
+         row (whose `meta.json` predates those keys) keeps exactly the five frozen V24 keys.
+    The generated `sitemap.xml` is built from THIS request's `request.base_url`, so a site created
+    through nginx lists the URLs a visitor actually gets.
 
 The disk is the one source of truth (`services/site_service`): a site exists iff its directory holds
 a complete `meta.json`, and the LIST is written from those files — there is no second registry to
@@ -25,8 +35,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Body, Depends, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
@@ -44,6 +54,14 @@ class SiteCreateRequest(BaseModel):
     title: str | None = None
     tagline: str | None = None
     slug: str | None = None
+    template: str | None = Field(
+        default=None,
+        description="template preset: classic (default), modern or bold",
+    )
+    custom_domain: str | None = Field(
+        default=None,
+        description="bare hostname recorded with the site — recorded, not verified (no DNS check)",
+    )
 
 
 class SiteCreatedResponse(BaseModel):
@@ -55,13 +73,24 @@ class SiteCreatedResponse(BaseModel):
 
 
 class SiteSummaryResponse(BaseModel):
-    """One row of the disk-backed list (`meta.json`), as the list route serves it."""
+    """One row of the disk-backed list (`meta.json`), as the list route serves it.
+
+    `pages`/`template`/`custom_domain` are V26 additions and stay OPTIONAL: a site whose `meta.json`
+    predates V26 has none of them, and the route omits absent values (`response_model_exclude_none`)
+    so a V24 row is byte-for-byte the five-key row it always was.
+    """
 
     slug: str
     title: str
     url: str
     created_at: str
     bytes: int
+    pages: list[str] | None = None
+    template: str | None = None
+    custom_domain: str | None = Field(
+        default=None,
+        description="the bare hostname recorded for this site — recorded, not verified",
+    )
 
 
 class DeployRequest(BaseModel):
@@ -157,25 +186,41 @@ async def get_deploy_state(slug: str) -> DeployStateResponse:
 
 @router.post("", status_code=201, response_model=SiteCreatedResponse)
 async def create_site(
-    payload: SiteCreateRequest, db: AsyncSession = Depends(get_db)
+    payload: SiteCreateRequest, request: Request, db: AsyncSession = Depends(get_db)
 ) -> SiteCreatedResponse:
     """Generate `data/sites/<slug>/` from the company profile and return its address.
 
+    V26 writes three pages (index/about/contact), the chosen template's stylesheet and — from this
+    request's `base_url` — a `sitemap.xml`.  `custom_domain` is recorded with the site exactly as
+    sent (a bare hostname); it is never resolved or marked verified here.
+
     Refusals by name (never a fabricated success): `E_CONFIG` with no company profile/name,
-    `E_VALIDATION` for a malformed slug, an over-long title/tagline, or a slug that already exists.
+    `E_VALIDATION` for a malformed slug, an over-long title/tagline, an unknown template preset, a
+    malformed custom domain, or a slug that already exists.
     """
     with refusal_guard():
         result = await generate_site(
-            db, slug=payload.slug, title=payload.title, tagline=payload.tagline
+            db,
+            slug=payload.slug,
+            title=payload.title,
+            tagline=payload.tagline,
+            template=payload.template,
+            custom_domain=payload.custom_domain,
+            base_url=str(request.base_url),
         )
     return SiteCreatedResponse.model_validate(result)
 
 
-@router.get("", response_model=list[SiteSummaryResponse])
+@router.get("", response_model=list[SiteSummaryResponse], response_model_exclude_none=True)
 async def list_site_rows(
     slug: str | None = Query(default=None, description="read exactly this slug (404 when absent)")
 ) -> list[SiteSummaryResponse]:
-    """Every built site, newest first; `?slug=` reads one and refuses `E_NOT_FOUND` if it is gone."""
+    """Every built site, newest first; `?slug=` reads one and refuses `E_NOT_FOUND` if it is gone.
+
+    `response_model_exclude_none` keeps a V24 row at its five frozen keys: the V26 fields are absent
+    from that site's `meta.json`, and "absent" must not be rendered as `null` (which would claim the
+    site HAS a template and lost it).
+    """
     with refusal_guard():
         rows = list_sites(slug=slug)
     return [SiteSummaryResponse.model_validate(row) for row in rows]
