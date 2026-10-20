@@ -90,9 +90,11 @@ def _seed_tree(root: Path, *, recent: int = 20, old: int = 4) -> tuple[list[str]
         name = f"run-old-{index:02d}"
         target = runs / name
         target.mkdir()
+        (target / "output.txt").write_text(f"{SENTINEL} {index}", encoding="utf-8")
+        # Write the file BEFORE utime: on Linux, creating an entry inside a directory updates the
+        # directory's mtime to now, so setting the age first silently made an "old" dir recent.
         age_h = 100.0 + index * 10.0
         os.utime(target, (now - age_h * 3600, now - age_h * 3600))
-        (target / "output.txt").write_text(f"{SENTINEL} {index}", encoding="utf-8")
         old_names.append(name)
 
     # A plain file and a foreign-named directory under runs/ are NEVER candidates.

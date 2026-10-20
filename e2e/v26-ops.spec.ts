@@ -62,12 +62,19 @@ test.describe("V26/L6 — /ops cockpit", () => {
     // The ledger's rows: exactly the page the API served (same limit, newest first).
     const table = page.getByTestId("ops-runs-table");
     await expect(table).toBeVisible();
-    const rows = table.locator("tbody tr");
-    await expect
-      .poll(async () => rows.count(), {
-        message: `/ops must render the ${ledger.items.length} run(s) GET /runs?limit=${OPS_RUN_LIMIT} serves`,
-      })
-      .toBe(ledger.items.length);
+    if (ledger.items.length === 0) {
+      // An empty ledger renders ONE honest empty-state row inside the table body; demanding zero
+      // rows would treat the empty state itself as a defect (V28/e2e-drift fix).
+      await expect(table.getByText("No runs recorded yet", { exact: false })).toBeVisible();
+      await expect(count).toHaveText("0 runs in the ledger");
+    } else {
+      const rows = table.locator("tbody tr");
+      await expect
+        .poll(async () => rows.count(), {
+          message: `/ops must render the ${ledger.items.length} run(s) GET /runs?limit=${OPS_RUN_LIMIT} serves`,
+        })
+        .toBe(ledger.items.length);
+    }
 
     if (ledger.items.length > 0) {
       const newest = ledger.items[0]!;
