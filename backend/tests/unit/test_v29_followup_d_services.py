@@ -148,7 +148,9 @@ def test_a_dns_outage_is_not_cached_so_recovery_is_visible(monkeypatch):
     """
     state = {"fail": True}
     _doh_stub(monkeypatch, state)
-    monkeypatch.setattr(trust_service, "_tls", lambda host: dict(HEALTHY_TLS))
+    # A3/S1 (F-27): `_tls` now takes the vetted address the socket dials; the stub only cares
+    # that the leg ran at all.
+    monkeypatch.setattr(trust_service, "_tls", lambda host, address: dict(HEALTHY_TLS))
 
     first = trust_service.check_domain("example.com")
     assert first["cached"] is False
@@ -175,7 +177,7 @@ def test_a_tls_failure_is_not_cached_so_recovery_is_visible(monkeypatch):
     state = {"fail": False, "tls_fail": True}
     _doh_stub(monkeypatch, state)
 
-    def tls(host: str) -> dict[str, Any]:
+    def tls(host: str, address: str) -> dict[str, Any]:
         if state["tls_fail"]:
             return {
                 "ok": False,

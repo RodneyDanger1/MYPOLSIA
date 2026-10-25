@@ -94,7 +94,10 @@ def _tls_stub(
     reason: str | None = None,
     calls: list[str] | None = None,
 ):
-    def fake(host: str) -> dict[str, Any]:
+    # A3/S1 (F-27): `_tls` now takes the VETTED address the socket must dial, so the leg's
+    # replacement has to accept it.  The stub still keys on the host — that is the name TLS
+    # verifies against, which is what this pin is about.
+    def fake(host: str, address: str) -> dict[str, Any]:
         if calls is not None:
             calls.append(host)
         return {"ok": ok, "not_after": not_after, "days_left": days_left, "reason": reason}
@@ -317,7 +320,9 @@ def test_a_301_is_followed_to_the_final_url(monkeypatch: pytest.MonkeyPatch):
     _wayback_stub(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://example.com/":
+        # A3/S1 (F-27): the socket dials the vetted address and the NAME travels in `Host`, so the
+        # hop is identified by its path on the pin, not by the URL's host.
+        if request.url.raw_path == b"/" and request.headers["host"] == "example.com":
             return httpx.Response(301, headers={"Location": "https://www.example.com/final"},
                                   request=request)
         return httpx.Response(200, headers={"Content-Type": "text/html"}, request=request)
@@ -369,7 +374,9 @@ def test_head_405_falls_back_to_get_on_the_same_url(monkeypatch: pytest.MonkeyPa
 
     assert result["status"] == 200
     assert [call["method"] for call in calls] == ["HEAD", "GET"]
-    assert calls[0]["url"] == calls[1]["url"] == "https://example.com/page"
+    # A3/S1 (F-27): the GET fallback re-requests the SAME resource — now provably the same
+    # VETTED address as the HEAD, not merely the same URL string.
+    assert calls[0]["url"] == calls[1]["url"] == f"https://{PUBLIC_V4}/page"
 
 
 def test_a_404_is_a_real_answer_with_ok_false(monkeypatch: pytest.MonkeyPatch):

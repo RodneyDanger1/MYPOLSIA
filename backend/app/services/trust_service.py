@@ -22,11 +22,27 @@ Two entry points:
   `169.254.169.254` is refused before the second request is ever sent.  Redirects are followed by
   hand (`follow_redirects=False`) precisely so the guard can see every `Location`.
 
-Both are cached in-process for 1 h; a result that carries a failed leg (a DNS transport error, a
-partial family, or any TLS failure) is NEVER stored, so a recovered source is visible on the next
-call.  A cache hit keeps the ORIGINAL `checked_at` (provenance is never restamped) and sets
-`cached: true`.  No result is invented: `archived: null` means "the archive could not be asked",
-never "there is no snapshot".
+Neither leg dials a NAME.  `check_domain`'s TLS socket targets the DoH answer the module's own
+predicate vetted, and `check_link`'s HTTP socket targets the answer `_resolve_public` returned —
+both keep the name for the `Host` header and for TLS SNI (`server_hostname`), so the certificate
+is still verified against the host while the TCP dial goes to an address a guard approved.  A
+second resolution at connect time is how a vetted public name reaches a private address (F-27).
+
+Two exported helpers for callers that fetch for themselves (`web_fetch`, CONTRACTS §4.15):
+
+* `resolve_egress(host, port)` — the ONE egress decision: the port must be 80/443 and every
+  address the name resolves to (Cloudflare DoH, never the OS resolver) must be globally routable
+  (`is_global`, so RFC 6598 shared space and multicast are refused).  A mixed answer is refused
+  whole.
+* `pinned_http_get(url, *, timeout, max_bytes, headers=None)` — GET through one of those
+  addresses, `Host`/SNI preserved, no redirect following, and a body past `max_bytes` refused by
+  name instead of truncated.
+
+`check_domain` and `check_link` are cached in-process for 1 h; a result that carries a failed leg (a
+DNS transport error, a partial family, or any TLS failure) is NEVER stored, so a recovered source is
+visible on the next call.  A cache hit keeps the ORIGINAL `checked_at` (provenance is never
+restamped) and sets `cached: true`.  No result is invented: `archived: null` means "the archive could
+not be asked", never "there is no snapshot".
 
 Sync on purpose: the V29 tool runners are sync (`tool_registry._RUNNERS`), and the routes call
 these through `starlette.concurrency.run_in_threadpool`.
@@ -39,19 +55,24 @@ import re
 import socket
 import ssl
 import time
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_EGRESS_BLOCKED, E_UPSTREAM, E_VALIDATION, PolsiaError
 from app.core.timeutil import now_utc
 
 DOH_URL = "https://cloudflare-dns.com/dns-query"
 WAYBACK_URL = "https://archive.org/wayback/available"
 #: The page the badge/route asks for; a real contact string is kinder to the archive and to DoH.
 USER_AGENT = "MYPOLSIA/1.0 (+site and link health check; one request per hour per target)"
+
+#: The named refusal of `resolve_egress` / `pinned_http_get` (CONTRACTS §4.15, frozen).
+#: Registered in `app/core/errors.py` (one code, one home) — a bare IP or a name that resolves
+#: into private/loopback/link-local/RFC 6598 space, or a non-web port, raises it.
 
 TIMEOUT_S = 8.0
 TLS_TIMEOUT_S = 8.0
@@ -207,6 +228,11 @@ def _link_target(value: Any) -> str:
 
 # ── the SSRF guard ───────────────────────────────────────────────────────────────────────────
 
+#: RFC 6598 shared address space: neither `is_private` nor `is_reserved`, and not globally
+#: routable — it carries Alibaba Cloud's instance-metadata service at 100.100.100.200.  Named
+#: here so the refusal says what the range actually is instead of calling it "reserved".
+SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
 
 def _address_label(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
     """The reason an address is not public, or None when it is.  Order matters for the message."""
@@ -222,6 +248,8 @@ def _address_label(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | N
         return "reserved"
     if ip.is_private:
         return "private"
+    if ip.version == 4 and ip in SHARED_ADDRESS_SPACE:
+        return "shared (RFC 6598)"
     if not ip.is_global:
         return "reserved"
     return None
@@ -241,13 +269,29 @@ def _public_address(text: str, host: str) -> str:
     if label is not None:
         raise PolsiaError(
             E_VALIDATION,
-            f"link_status: the host {host} is a {label} address ({ip}) — private addresses are "
-            "refused",
-            how_to_fix="check a public URL; loopback, private and link-local hosts are never "
-                       "fetched",
+            f"link_status: the host {host} is a {label} address ({ip}) — non-public addresses "
+            "are refused",
+            how_to_fix="check a public URL; loopback, private, link-local, multicast, shared and "
+                       "reserved hosts are never fetched",
             context={"field": "url", "host": host, "address": str(ip), "reason": label},
         )
     return str(ip)
+
+
+def _vetted_addresses(answers: Iterable[str], host: str) -> list[str]:
+    """The IP answers in `answers`, every one of them vetted public.
+
+    A non-address answer (a CNAME target, an empty string) is skipped — it is not a destination —
+    while ANY non-public IP refuses the whole answer set (`_public_address` raises).
+    """
+    vetted: list[str] = []
+    for text in answers:
+        try:
+            ipaddress.ip_address(text)
+        except ValueError:
+            continue  # a CNAME or other non-address answer: not a destination
+        vetted.append(_public_address(text, host))
+    return vetted
 
 
 def _resolve_public(host: str, port: int) -> list[str]:
@@ -288,12 +332,7 @@ def _resolve_public(host: str, port: int) -> list[str]:
                 how_to_fix="retry; if it persists the name is misconfigured",
                 context={"field": "url", "host": host, "port": port, "status": status},
             )
-        for text in answer:
-            try:
-                ipaddress.ip_address(text)
-            except ValueError:
-                continue  # a CNAME or other non-address answer: not a destination
-            addresses.append(_public_address(text, host))
+        addresses.extend(_vetted_addresses(answer, host))
     if not addresses:
         raise PolsiaError(
             E_UPSTREAM,
@@ -302,6 +341,76 @@ def _resolve_public(host: str, port: int) -> list[str]:
             context={"field": "url", "host": host},
         )
     return addresses
+
+
+def _egress_host(value: Any) -> str:
+    """A bare host or IP literal to resolve, or the named `E_EGRESS_BLOCKED` refusal."""
+    def refuse(reason: str) -> PolsiaError:
+        return PolsiaError(
+            E_EGRESS_BLOCKED,
+            f"egress: {value!r} is not a host to resolve ({reason})",
+            how_to_fix="pass a bare hostname or IP literal — no scheme, path, port or sign-in part",
+            context={"host": value if isinstance(value, str) else None, "reason": reason},
+        )
+
+    if not isinstance(value, str):
+        raise refuse("not a string")
+    text = value.strip()
+    if not text:
+        raise refuse("empty")
+    try:
+        # An IP literal IS its own destination; the address predicate still vets it below.
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        pass
+    if len(text) > 253:
+        raise refuse("longer than 253 characters")
+    if "://" in text:
+        raise refuse("a scheme is not allowed")
+    for char, reason in (("/", "no path"), ("?", "no query"), ("#", "no fragment"),
+                         ("@", "no sign-in part"), (":", "no port — pass it as `port`")):
+        if char in text:
+            raise refuse(reason)
+    for char in text:
+        if char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F:
+            raise refuse("a space or control character cannot be part of a host")
+    return text.lower()
+
+
+def resolve_egress(host: str, port: int) -> list[str]:
+    """Every address `host` may be dialled at on `port`, or the named `E_EGRESS_BLOCKED`.
+
+    The ONE egress decision (CONTRACTS §4.15), so `web_fetch` and this module cannot disagree:
+    the port must be a web port (`ALLOWED_PORTS`), and every address the name resolves to — via
+    Cloudflare DoH, never the OS resolver — must be globally routable.  `is_global` is the
+    positive question, and the special ranges are denied FIRST so the refusal can name them and
+    so multicast (`is_global` is True for `224.0.0.1`) stays refused (A2A1-01).
+
+    A mixed answer is refused whole: a name that returns one public and one shared address has no
+    safe destination.  The returned addresses are what a pinned socket must dial; nothing here
+    re-resolves at connect time (F-27), and a refusal is never an empty list (fail closed).
+    """
+    name = _egress_host(host)
+    if port not in ALLOWED_PORTS:
+        raise PolsiaError(
+            E_EGRESS_BLOCKED,
+            f"egress: port {port!r} on {name!r} is not allowed — only port 80 or 443 may be "
+            "dialled",
+            how_to_fix="use the host's public 80/443 address",
+            context={"host": name, "port": port, "allowed_ports": list(ALLOWED_PORTS)},
+        )
+    try:
+        addresses = _resolve_public(name, int(port))
+    except PolsiaError as exc:
+        # One code for the caller to catch, with the cause kept in `context["refused_by"]`: a
+        # private answer and a dead resolver both mean "no vetted address, so nothing is dialled".
+        raise PolsiaError(
+            E_EGRESS_BLOCKED,
+            f"egress: refusing {name!r}:{port} — {exc.message}",
+            how_to_fix=exc.how_to_fix,
+            context={**exc.context, "host": name, "port": port, "refused_by": exc.code},
+        ) from exc
+    return list(dict.fromkeys(addresses))
 
 
 # ── Cloudflare DoH ──────────────────────────────────────────────────────────────────────────
@@ -382,11 +491,18 @@ def _doh_leg(host: str, rrtype: str) -> tuple[list[str], int | None, str | None]
 # ── TLS ─────────────────────────────────────────────────────────────────────────────────────
 
 
-def _read_cert(host: str) -> dict[str, Any]:
-    """The peer certificate of `host:443` — the ONLY function that opens a socket."""
+def _read_cert(host: str, address: str) -> dict[str, Any]:
+    """The peer certificate of `host:443`, fetched from `address` — the ONLY function that dials.
+
+    `address` is the vetted A/AAAA answer the caller already holds; the socket dials THAT, while
+    TLS still verifies the certificate against `host` (`server_hostname`).  Dialling the hostname
+    instead let the OS resolver pick an address no guard had seen (F-27): a name whose DoH answer
+    is loopback was connected to over port 443 on this host.  `address` is required — there is no
+    spelling of this call that dials an unvetted name.
+    """
     context = ssl.create_default_context()
     with (
-        socket.create_connection((host, TLS_PORT), timeout=TLS_TIMEOUT_S) as raw,
+        socket.create_connection((address, TLS_PORT), timeout=TLS_TIMEOUT_S) as raw,
         context.wrap_socket(raw, server_hostname=host) as tls,
     ):
         cert = tls.getpeercert()
@@ -421,10 +537,13 @@ def _cert_fields(cert: Any, *, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
-def _tls(host: str) -> dict[str, Any]:
-    """The TLS leg.  EVERY failure is a returned field — never an exception."""
+def _tls(host: str, address: str) -> dict[str, Any]:
+    """The TLS leg, dialled at `address` with `host` as the verified name.
+
+    EVERY failure is a returned field — never an exception.
+    """
     try:
-        cert = _read_cert(host)
+        cert = _read_cert(host, address)
     except ssl.SSLCertVerificationError as exc:
         message = getattr(exc, "verify_message", "") or type(exc).__name__
         return {"ok": False, "not_after": None, "days_left": None,
@@ -494,7 +613,19 @@ def check_domain(host: str) -> dict[str, Any]:
     elif not has_address:
         tls = _tls_unreachable("no address to connect to (the name has no A/AAAA answer)")
     else:
-        tls = _tls(name)
+        try:
+            # The answers are vetted with the module's own predicate BEFORE any socket exists, and
+            # the socket then dials one of THOSE addresses — never the name (F-27).
+            vetted = _vetted_addresses((*a, *aaaa), name)
+        except PolsiaError as exc:
+            # The contract of this module: a refusal is a FIELD, never an exception.  Nothing is
+            # dialled — a private answer is not "unreachable", it is out of policy.
+            tls = _tls_unreachable(f"refused: {exc.message}")
+        else:
+            tls = (
+                _tls(name, vetted[0]) if vetted
+                else _tls_unreachable("no address to connect to (the name has no A/AAAA answer)")
+            )
 
     if reason is None and tls["ok"] is not True:
         reason = tls["reason"]
@@ -519,49 +650,241 @@ def check_domain(host: str) -> dict[str, Any]:
     return result
 
 
-# ── check_link ──────────────────────────────────────────────────────────────────────────────
+# ── pinned HTTP (CONTRACTS §4.15) ───────────────────────────────────────────────────────────
 
 
-def _fetch_headers(url: str) -> tuple[int, str | None]:
-    """HEAD, falling back to GET on `405`; returns (status, Location).  Body is never read."""
-    headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+def _host_header(host: str, port: int, scheme: str) -> str:
+    """The `Host` value for a pinned request: the NAME, with the port only when not default."""
+    literal = f"[{host}]" if ":" in host else host
+    default = 443 if scheme == "https" else 80
+    return literal if port == default else f"{literal}:{port}"
+
+
+def _sni_extension(scheme: str, host: str) -> dict[str, Any]:
+    """httpcore verifies TLS against `sni_hostname` (or the URL host) — keep the NAME."""
+    return {"sni_hostname": host} if scheme == "https" else {}
+
+
+def _pinned_headers(
+    headers: dict[str, str] | None, host: str, port: int, scheme: str
+) -> dict[str, str]:
+    """The caller's headers plus OUR `Host`: the pin owns that field, so a caller may not set it.
+
+    A caller-supplied `Host` that disagreed with the pin would send one name on the wire while the
+    certificate was verified against another, so it is refused by name rather than silently
+    replaced.
+    """
+    if headers is not None and any(key.lower() == "host" for key in headers):
+        raise PolsiaError(
+            E_VALIDATION,
+            "pinned_http_get: the Host header is derived from the url and may not be passed",
+            how_to_fix="drop the Host header from `headers`; the pin sets it from the url",
+            context={"field": "headers", "header": "Host"},
+        )
+    merged = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+    if headers:
+        merged.update(headers)
+    merged["Host"] = _host_header(host, port, scheme)
+    return merged
+
+
+def _pinned_url(url: str, address: str) -> httpx.URL:
+    """`url` with its HOST replaced by a vetted `address`; path, query and port untouched.
+
+    The request therefore dials `address` (httpcore connects to `request.url.host`) while the
+    `Host` header and `sni_hostname` still name the host, so a virtual host answers as itself and
+    a second DNS resolution never happens at connect time (F-27).
+    """
     try:
-        with _CLIENT(timeout=TIMEOUT_S, follow_redirects=False) as client:
-            status, location = _request_headers(client, "HEAD", url, headers)
-            if status == 405:
-                # Some servers refuse HEAD outright; the GET is the same resource, not a retry.
-                status, location = _request_headers(client, "GET", url, headers)
-    except httpx.InvalidURL as exc:
+        return httpx.URL(url).copy_with(host=address)
+    except (httpx.InvalidURL, TypeError, ValueError) as exc:
         # Defense in depth behind `_link_target`: httpx builds its own URL object and refuses
-        # characters `urllib.parse` accepted.  `InvalidURL` is not an `httpx.HTTPError`, so this
-        # must be its own handler or the caller's bad URL leaks as an internal failure.
+        # characters `urllib.parse` accepted, and `InvalidURL` is not an `httpx.HTTPError`.
         raise PolsiaError(
             E_VALIDATION,
             f"link_status: {url!r} cannot be sent over HTTP ({exc})",
             how_to_fix="remove the unsendable characters (percent-encode them) and retry",
             context={"field": "url", "leg": "http"},
         ) from exc
+
+
+def _read_bounded(response: httpx.Response, *, max_bytes: int, url: str) -> bytes:
+    """The body, refusing the moment it passes `max_bytes` — a refusal, never a truncation."""
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise PolsiaError(
+                E_UPSTREAM,
+                f"pinned_http_get: the response from {url} exceeded max_bytes={max_bytes} "
+                f"({total} bytes read) — refused, not truncated",
+                how_to_fix=(
+                    f"raise max_bytes above {total} to accept this body, or fetch a lighter URL"
+                ),
+                context={"url": url, "reason": "body_exceeds_max_bytes",
+                         "max_bytes": max_bytes, "bytes_read": total},
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def pinned_http_get(
+    url: str,
+    *,
+    timeout: float,
+    max_bytes: int,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    """GET `url` over a socket pinned to an address `resolve_egress` vetted (CONTRACTS §4.15).
+
+    The name is resolved ONCE (`resolve_egress`, DoH + `is_global` + the port allowlist) and the
+    request then dials one of those addresses — `Host` and TLS SNI still name the host, so the
+    certificate is verified against it.  Redirects are NOT followed: the caller re-checks every
+    hop (`web_fetch` re-passes the floor per hop).  A body past `max_bytes` is a named refusal,
+    never a truncated answer.  A refused connection on one vetted address moves to the next one
+    in the same answer — still without resolving anything again.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise PolsiaError(
+            E_VALIDATION,
+            "pinned_http_get: a non-empty url is required",
+            how_to_fix='pass {"url": "https://..."}',
+            context={"field": "url", "reason": "empty or not a string"},
+        )
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"pinned_http_get: max_bytes must be a positive integer (got {max_bytes!r})",
+            how_to_fix="pass a positive byte bound",
+            context={"field": "max_bytes", "max_bytes": max_bytes},
+        )
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"pinned_http_get: timeout must be a positive number of seconds (got {timeout!r})",
+            how_to_fix="pass a positive timeout in seconds",
+            context={"field": "timeout", "timeout": timeout},
+        )
+    target = url.strip()
+    try:
+        parsed = urlparse(target)
+    except ValueError as exc:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"pinned_http_get: {target!r} is not a URL ({exc})",
+            how_to_fix="fix the URL shape (scheme, host, port)",
+            context={"field": "url", "leg": "http"},
+        ) from exc
+    if parsed.scheme not in ("http", "https"):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"pinned_http_get: {target!r} is not http(s) — only http:// and https:// are fetched",
+            how_to_fix="use an absolute http:// or https:// URL",
+            context={"field": "url", "leg": "http"},
+        )
+    if not parsed.hostname:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"pinned_http_get: {target!r} has no host to fetch",
+            how_to_fix="pass an absolute http(s) URL",
+            context={"field": "url", "leg": "http"},
+        )
+    if parsed.username or parsed.password:
+        raise PolsiaError(
+            E_VALIDATION,
+            "pinned_http_get: credentials in a URL are refused",
+            how_to_fix="move the credentials to the integration's own configuration",
+            context={"field": "url", "leg": "http"},
+        )
+    host = parsed.hostname
+    port = _port_of(parsed)
+    request_headers = _pinned_headers(headers, host, port, parsed.scheme)
+    addresses = resolve_egress(host, port)
+    extensions = _sni_extension(parsed.scheme, host)
+    failures: list[str] = []
+    with _CLIENT(timeout=float(timeout), follow_redirects=False) as client:
+        for address in addresses:
+            pinned = _pinned_url(target, address)
+            try:
+                with client.stream("GET", pinned, headers=request_headers,
+                                   extensions=extensions) as response:
+                    body = _read_bounded(response, max_bytes=max_bytes, url=target)
+                    return response.status_code, dict(response.headers), body
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # A connection the address refused says nothing about the others in the answer.
+                failures.append(f"{address}: {type(exc).__name__}")
+                continue
+            except httpx.TimeoutException as exc:
+                raise PolsiaError(
+                    E_UPSTREAM,
+                    f"pinned_http_get: {target} timed out after {float(timeout):g}s",
+                    how_to_fix="retry once; the host is slow or unreachable",
+                    context={"url": target, "leg": "http", "address": address},
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise PolsiaError(
+                    E_UPSTREAM,
+                    f"pinned_http_get: the request to {target} failed: {type(exc).__name__}",
+                    how_to_fix="check the URL and retry; the host may refuse this client",
+                    context={"url": target, "leg": "http", "address": address},
+                ) from exc
+    raise PolsiaError(
+        E_UPSTREAM,
+        f"pinned_http_get: no vetted address for {host} accepted a connection "
+        f"({'; '.join(failures)})",
+        how_to_fix="retry; the host may be down, or every vetted address refused the connection",
+        context={"url": target, "host": host, "addresses": addresses, "failures": failures},
+    )
+
+
+# ── check_link ──────────────────────────────────────────────────────────────────────────────
+
+
+def _fetch_headers(url: str, address: str) -> tuple[int, str | None]:
+    """HEAD (GET on `405`) dialling `address`; returns (status, Location).  Body is never read.
+
+    `address` is the vetted answer `_walk` already holds — the same pin as `pinned_http_get`, so
+    the guard's answer and the socket's destination cannot differ (F-27).
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    headers = _pinned_headers({"Accept": "*/*"}, host, _port_of(parsed), parsed.scheme)
+    pinned = _pinned_url(url, address)
+    extensions = _sni_extension(parsed.scheme, host)
+    try:
+        with _CLIENT(timeout=TIMEOUT_S, follow_redirects=False) as client:
+            status, location = _request_headers(client, "HEAD", pinned, headers, extensions)
+            if status == 405:
+                # Some servers refuse HEAD outright; the GET is the same resource, not a retry.
+                status, location = _request_headers(client, "GET", pinned, headers, extensions)
     except httpx.TimeoutException as exc:
         raise PolsiaError(
             E_UPSTREAM,
             f"link_status: {url} timed out after {TIMEOUT_S:g}s",
             how_to_fix="retry once; the host is slow or unreachable",
-            context={"url": url, "leg": "http"},
+            context={"url": url, "leg": "http", "address": address},
         ) from exc
     except httpx.HTTPError as exc:
         raise PolsiaError(
             E_UPSTREAM,
             f"link_status: the HTTP request to {url} failed: {type(exc).__name__}",
             how_to_fix="check the URL and retry; the host may refuse this client",
-            context={"url": url, "leg": "http"},
+            context={"url": url, "leg": "http", "address": address},
         ) from exc
     return status, location
 
 
 def _request_headers(
-    client: httpx.Client, method: str, url: str, headers: dict[str, str]
+    client: httpx.Client,
+    method: str,
+    url: httpx.URL,
+    headers: dict[str, str],
+    extensions: dict[str, Any],
 ) -> tuple[int, str | None]:
-    with client.stream(method, url, headers=headers) as response:
+    with client.stream(method, url, headers=headers, extensions=extensions) as response:
         return response.status_code, response.headers.get("location")
 
 
@@ -576,8 +899,10 @@ def _walk(target: str) -> tuple[int, str, list[str], str | None]:
     visited: list[str] = []
     for _hop in range(MAX_REDIRECTS + 1):
         parsed = urlparse(current)
-        _resolve_public(parsed.hostname or "", _port_of(parsed))
-        status, location = _fetch_headers(current)
+        # The answers are the destination: `_fetch_headers` dials one of them, so the socket can
+        # never reach an address this guard did not vet (F-27).
+        addresses = _resolve_public(parsed.hostname or "", _port_of(parsed))
+        status, location = _fetch_headers(current, addresses[0])
         if status not in REDIRECT_CODES or not location:
             return status, current, visited, None
         next_url = _link_target(urljoin(current, location))
@@ -679,4 +1004,13 @@ def check_link(url: str) -> dict[str, Any]:
     return result
 
 
-__all__ = ["check_domain", "check_link", "CACHE_TTL_S", "DOH_URL", "WAYBACK_URL"]
+__all__ = [
+    "check_domain",
+    "check_link",
+    "pinned_http_get",
+    "resolve_egress",
+    "CACHE_TTL_S",
+    "DOH_URL",
+    "E_EGRESS_BLOCKED",
+    "WAYBACK_URL",
+]
