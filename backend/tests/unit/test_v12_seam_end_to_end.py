@@ -274,14 +274,18 @@ def test_case_c_doctrine_names_only_callable_registry_tools(monkeypatch):
 # ── Hostile pass: the activation reader fails CLOSED on hostile/absent shapes ─────────────────
 
 def test_hostile_malformed_argv_can_never_activate_the_loop():
-    """A malformed, empty or deny-globbed argv resolves to NO tools — never to the registry's
-    specs by accident (the fail-closed rulebook of the activation reader)."""
+    """A malformed or empty argv resolves to NO tools — never to the registry's specs by accident
+    (the fail-closed rulebook of the activation reader)."""
     from app.agents.deepseek_runtime import _allowed_tools_from_argv
 
     assert _allowed_tools_from_argv(["--allowedTools"]) == ()             # flag, no value
     assert _allowed_tools_from_argv(["--allowedTools", ""]) == ()         # empty value
     assert _allowed_tools_from_argv(["--allowedTools", " , "]) == ()      # blanks only
+    # A6-01: a CLI deny glob is a CLI-namespace rule and does NOT cancel a named REGISTRY tool
+    # (`AgentCapability` keeps the two namespaces separate).  The fail-closed property this test
+    # exists for is preserved by the three assertions above: no `--allowedTools`, an empty one, or
+    # blanks only -> no tools.
     assert _allowed_tools_from_argv(
-        ["--disallowedTools", "*", "--allowedTools", "web_fetch"]) == ()  # the deny glob wins
+        ["--disallowedTools", "*", "--allowedTools", "web_fetch"]) == ("web_fetch",)
     assert _allowed_tools_from_argv(
         ["--allowedTools", "web_fetch,,macro_snapshot,"]) == ("web_fetch", "macro_snapshot")

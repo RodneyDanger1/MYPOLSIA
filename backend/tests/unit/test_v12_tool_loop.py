@@ -439,13 +439,18 @@ def test_arguments_already_parsed_as_an_object_are_used_as_is(registry):
     assert registry.calls == [("web_fetch", {"url": "https://x.test"}, "competitor_research")]
 
 
-def test_a_blanket_denial_wins_over_an_allowlist(registry):
-    """`--disallowedTools *` is the explicit no-tools form: it vetoes even a non-empty allowlist."""
+def test_a_cli_deny_glob_does_not_veto_a_named_registry_tool(registry):
+    """A6-01: `--disallowedTools *` is CLI permission-rule language — it vetoes every CLI tool,
+    NOT a named REGISTRY tool carried in `--allowedTools` (the two namespaces are deliberately
+    separate; see `policy_firewall.AgentCapability.agent_tools`).  The fail-closed shape this test
+    used to pin (a bare `*` deny meaning "no tools") is the EMPTY allowlist, and it is still
+    pinned by `test_tools_off_sends_no_tools_field_and_adds_no_envelope_keys` above.
+    """
     server = _Scripted(_completion("no tools for this one"))
     result = _invoke(server, _make_inv(allowed_tools=("web_fetch",), denied=("*",)))
 
-    assert "tools" not in server.requests[0]["body"]
-    assert "tools_used" not in json.loads(result.stdout)
+    assert "tools" in server.requests[0]["body"]        # the named registry tool activates
+    assert json.loads(result.stdout)["tools_used"] == []  # a measured zero, not an absence
 
 
 def test_a_throwing_execute_tool_never_escapes_the_runtime(monkeypatch):

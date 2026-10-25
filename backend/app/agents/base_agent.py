@@ -45,8 +45,17 @@ from app.agents.context_assembler import (
     Layer,
     assemble,
     budgets_for_total,
+    measure_tokens,
+    untrusted_blocks,
 )
-from app.agents.policy_firewall import AGENT_CAPABILITIES, AgentCapability
+from app.agents.policy_firewall import (
+    AGENT_CAPABILITIES,
+    AgentCapability,
+    RunTaint,
+    close_quarantine,
+    set_run_taint,
+    unterminated_quarantine,
+)
 from app.config import settings
 from app.core.errors import E_AGENT_BAD_OUTPUT, E_CONFIG, ERROR_HINTS, PolsiaError
 
@@ -160,6 +169,83 @@ def _envelope_actions(result: claude_cli.InvokeResult) -> list[dict[str, Any]]:
         return []
     raw = env.get(deepseek_runtime.ACTION_KEY)
     return [record for record in raw if isinstance(record, dict)] if isinstance(raw, list) else []
+
+
+#: The marker a budget cut leaves in the prompt (F-24) — the assembler's OWN wording, so a layer
+#: cut here is indistinguishable from a layer cut there, in the prompt and in the run's warnings.
+TRUNCATION_MARKER = "\n[... truncated to fit context budget ...]"
+
+
+@dataclass(frozen=True)
+class CallerQuarantine:
+    """What the `extra_context` guard did to ONE caller-pre-wrapped layer (F-24).
+
+    `truncated` means the layer was cut to its budget, so the run record must still carry the cut
+    in `context_warnings` (never a silent loss); `forced_sources` names every opener the block scan
+    cannot parse at all — the model reads that content, so the run is tainted BY NAME.
+    """
+
+    layer: Layer
+    truncated: bool = False
+    forced_sources: tuple[str, ...] = ()
+
+
+def guard_caller_quarantine(layer: Layer | None, limit_tokens: int) -> CallerQuarantine:
+    """Clip a caller-pre-wrapped layer to its budget WITHOUT ever leaving a fence open (F-24).
+
+    `extra_context` is the only layer that arrives already wrapped by a caller
+    (`competitor_research`, `company_planner`, `customer_support`, `finance`, `ads_management`),
+    and `context_assembler.assemble` cuts an over-budget layer at a character offset — it cannot
+    know the text it is cutting is a quarantine block.  Measured (F-24): a 4,700-char block lost
+    its `</untrusted>`, the block regex (which requires the close) found nothing to scan, and the
+    run was declared clean while the poison cue was in the prompt.
+
+    So the layer's OWNER clips it first: close whatever the cut opened, and taint the run by name
+    when an opener is unparseable (no `source=`/`content_id=`) and therefore invisible to the
+    scan.  A payload inside its budget and balanced is returned byte-identical.
+    """
+    if layer is None:
+        return CallerQuarantine(Layer("extra_context", 0))
+    body = layer.body().strip()
+    if not body:
+        return CallerQuarantine(layer)
+
+    text = body
+    truncated = False
+    if measure_tokens(body) > limit_tokens:
+        truncated = True
+        # Same starting point as the assembler's own char budget (limit * 4 * 0.92), then shrink
+        # until the WHOLE text — marker plus any close this guard must add — measures inside the
+        # budget.  That is what stops the assembler's truncation from running (and cutting a fence)
+        # a second time.
+        cut = body[: max(64, int(limit_tokens * 4 * 0.92))]
+        while True:
+            text = close_quarantine(cut + TRUNCATION_MARKER)
+            if not cut or measure_tokens(text) <= limit_tokens:
+                break
+            cut = cut[: int(len(cut) * 0.9)]
+    if unterminated_quarantine(text):
+        # The caller's payload arrived with a stray opener, or the cut exposed one: close it, so
+        # the doctrine holds for everything after it and the scan below sees a whole block.
+        text = close_quarantine(text)
+    forced: tuple[str, ...] = ()
+    if "<untrusted" in text and not untrusted_blocks(text):
+        # An opener the regex cannot parse guards content nothing ever scans.  Fail closed, by
+        # name — the packet's rule: a block the scan cannot see is still content the model reads.
+        forced = (f"unterminated:{layer.name}",)
+    if text == body:
+        return CallerQuarantine(layer, forced_sources=forced)
+    return CallerQuarantine(
+        Layer(
+            layer.name,
+            layer.budget_tokens,
+            text=text,
+            pinned=layer.pinned,
+            volatile=layer.volatile,
+        ),
+        truncated=truncated,
+        forced_sources=forced,
+    )
 
 
 @dataclass
@@ -471,7 +557,30 @@ class BasePolsiaAgent(ABC):
         budgets = budgets_for_total(
             settings.planner_context_token_budget, weights=CONTEXT_LAYER_WEIGHTS
         )
-        return assemble(layers, budgets=budgets, label=self.agent_type)
+        # F-24: the caller's quarantined material is clipped by its OWNER, so a budget cut can
+        # never leave a `<untrusted>` block open for the scan to miss (see the guard).
+        guard = guard_caller_quarantine(layers.get("extra_context"), budgets["extra_context"])
+        layers["extra_context"] = guard.layer
+        assembled = assemble(layers, budgets=budgets, label=self.agent_type)
+        if guard.truncated:
+            # The assembler warned about every cut IT made; this one is ours, and a silent
+            # truncation of untrusted material is exactly what the run record must never carry.
+            assembled.warnings.append(
+                f"extra_context: hard-truncated to ~{budgets['extra_context']} tokens"
+            )
+        if guard.forced_sources:
+            # `assemble()` published the run's taint from the blocks it could scan; this run's
+            # owner has the LAST word, because it is the layer that knows an opener was
+            # unparseable.  Fail closed: taint now, name the source, never leave the verdict to a
+            # regex that never saw it.
+            taint = RunTaint(
+                tainted=True,
+                sources=sorted({*(assembled.taint.sources if assembled.taint else []),
+                                *guard.forced_sources}),
+            )
+            assembled.taint = taint
+            set_run_taint(taint)
+        return assembled
 
     def build_prompt(self, task: dict[str, Any], context: dict[str, Any]) -> str:
         """The SPEC-AGENTS §1.10 shape: agent instructions + the rendered company context."""
@@ -524,7 +633,13 @@ class BasePolsiaAgent(ABC):
             new_session_id=None,
             allowed_tools=(() if tool_less else
                            (cap.allowed_tools if runtime_tools is None else runtime_tools)),
-            disallowed_tools=(("*",) if tool_less else cap.denied_tools),
+            # F-03: a DeepSeek-bound invocation carries REGISTRY names in `allowed_tools` above;
+            # the CLI deny list is permission-rule language for an argv that will never be
+            # spawned, so it is omitted there (the namespaces are separate —
+            # policy_firewall.AgentCapability).  The CLI path keeps it unchanged: `runtime_tools`
+            # is None exactly when no DeepSeek key is set.
+            disallowed_tools=(() if runtime_tools is not None else
+                              (("*",) if tool_less else cap.denied_tools)),
             tools_available=("" if tool_less else cap.tools_available),
             permission_mode="dontAsk",
             model=os.getenv("POLSIA_CLAUDE_MODEL") or None,
@@ -1005,9 +1120,12 @@ def _top_level_coercions(model: type[BaseModel]) -> dict[str, type]:
 __all__ = [
     "DEFAULT_MOCK_RESPONSE",
     "RUN_META_KEYS",
+    "TRUNCATION_MARKER",
     "BasePolsiaAgent",
+    "CallerQuarantine",
     "business_state_lines",
     "context_memories",
+    "guard_caller_quarantine",
     "is_mock_mode",
     "parse_json_object",
     "truthy",

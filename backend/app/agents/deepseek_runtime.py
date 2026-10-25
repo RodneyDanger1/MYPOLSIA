@@ -387,17 +387,22 @@ def _tool_registry():
 
 
 def _allowed_tools_from_argv(argv: list[str]) -> tuple[str, ...]:
-    """The CALLING AGENT's tool list, exactly as `claude_cli.build_invocation` renders it.
+    """The CALLING AGENT's REGISTRY tool list, exactly as `claude_cli.build_invocation` renders it.
 
-    `--allowedTools a,b` comes from `AgentCapability.allowed_tools`; `--disallowedTools` from
-    `denied_tools`, where a literal `*` is the explicit no-tools form (`base_agent` passes it on
-    the tool-less path). This is the ONLY activation signal this runtime reads — it never adds a
-    tool of its own. An empty list therefore means the request stays byte-identical to the
-    pre-loop runtime, and no agent gains a tool by accident: the REGISTRY enforces the allowlist.
+    F-03: `--allowedTools a,b` is the ONE activation signal this runtime reads.  A DeepSeek-bound
+    invocation fills it from `tool_registry.tools_for(agent_type)`; an empty/absent flag therefore
+    means the run is tool-less (the CLI path, or an agent with no grant) and the request stays
+    byte-identical to the pre-loop runtime.  This runtime never adds a tool of its own — the
+    REGISTRY enforces the allowlist.
+
+    `--disallowedTools` is CLI permission-rule language (`Bash`, `mcp__*`) and does NOT speak for
+    the registry namespace: `AgentCapability.denied_tools=("*",)` means "no CLI tool", not "no
+    registry tool" — the two live in deliberately separate namespaces (see
+    `policy_firewall.AgentCapability`'s own comment).  Reading the CLI deny list here made a bare
+    `*` disable the five registry tools of the ONLY agent that carries one (the orchestrator),
+    while `tool_registry.execute_tool` -> `decide()` allowed every one of them.  The rule was also
+    redundant: a tool-less run already has no `--allowedTools`, so it could only ever misfire.
     """
-    denied = {part.strip() for part in (_flag_arg(argv, "--disallowedTools") or "").split(",")}
-    if "*" in denied:
-        return ()
     raw = _flag_arg(argv, "--allowedTools") or ""
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
@@ -961,7 +966,13 @@ def _post_completion(
         raise PolsiaError(
             E_CLI_TIMEOUT,
             f"deepseek API exceeded {timeout_s}s (request aborted; the turn is unfinished)",
-            how_to_fix="raise deepseek_timeout_seconds in Settings, or shrink the task",
+            # F-18: `timeout_s` is the SMALLER of this run's own deadline and the provider-wide
+            # setting, so the remedy names both instead of promising that the setting alone helps.
+            how_to_fix=(
+                f"this call was bounded at {timeout_s}s — the smaller of this run's own deadline "
+                "(Invocation.timeout_s, set by the agent's timeout) and deepseek_timeout_seconds "
+                "in Settings; raise deepseek_timeout_seconds, or shrink the task"
+            ),
             context={"timeout_s": timeout_s, "url": url, "runtime": "deepseek"},
         ) from None
     except httpx.TransportError as exc:
@@ -1212,6 +1223,25 @@ def _timeout_seconds() -> int:
     except (TypeError, ValueError):
         timeout = DEEPSEEK_DEFAULT_TIMEOUT_SECONDS
     return timeout if timeout > 0 else DEEPSEEK_DEFAULT_TIMEOUT_SECONDS
+
+
+def _call_timeout_seconds(inv: claude_cli.Invocation) -> int:
+    """The wall clock for ONE provider call: the invocation's own bound, capped by the setting.
+
+    F-18: `base_agent` sets `Invocation.timeout_s` (its `self.timeout`, the CLI's wall clock) and
+    this path read only the provider-wide `deepseek_timeout_seconds`, so a caller that asked for
+    7 s got 300 s — and a 4-call tool loop got 4 x 300 s inside one Celery task whose soft limit
+    is 840 s.  `min` keeps every shipped run byte-identical (invocation 300, setting 300 -> 300)
+    while honouring a caller that asked for less; the setting stays the DEFAULT for an invocation
+    that carries none.  An unparseable or non-positive value is the setting, never an unbounded
+    wait — a zero deadline would mean "no deadline" to httpx, the opposite of a bound.
+    """
+    configured = _timeout_seconds()
+    try:
+        requested = int(inv.timeout_s)
+    except (TypeError, ValueError):
+        return configured
+    return max(1, min(configured, requested)) if requested > 0 else configured
 
 
 def _max_tokens() -> int:
@@ -1468,7 +1498,10 @@ def invoke(
     # carries the agent's identity in `schema_name`, and a direct caller can be explicit.
     tool_agent_type = (agent_type if agent_type is not None else inv.schema_name or "").strip()
     model_id = _model_for(model)
-    timeout_s = _timeout_seconds()
+    # F-18: the invocation's own wall clock bounds each provider call (capped by the setting), so
+    # a caller that asked for 7 s is not held for the provider-wide 300 s — in every call of a
+    # tool loop, not just the first.
+    timeout_s = _call_timeout_seconds(inv)
     url = f"{_base_url()}{CHAT_COMPLETIONS_PATH}"
     messages = _messages_for(
         plan,

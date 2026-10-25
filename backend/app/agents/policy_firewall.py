@@ -355,6 +355,32 @@ def wrap_untrusted(source: str, content_id: str, text: str, *, max_chars: int = 
     )
 
 
+def unterminated_quarantine(text: str) -> bool:
+    """True when `text` carries `<untrusted` openers without matching `</untrusted>` closes.
+
+    F-24: the block scan (`context_assembler.untrusted_blocks`) only sees a block that carries
+    BOTH tags, so an opener left hanging is content the model reads and the scan never inspects —
+    the quarantine guard inverts.  A budget truncation is exactly how a caller-pre-wrapped block
+    loses its close: the cut lands inside it.
+    """
+    return text.count("<untrusted") > text.count("</untrusted>")
+
+
+def close_quarantine(text: str) -> str:
+    """Append the missing `</untrusted>` closes, so no opener the model reads is left open.
+
+    F-24: the `extra_context` budget hard-truncated a caller-pre-wrapped block and dropped its
+    close tag; the block regex requires the close, so the run was declared CLEAN while the poison
+    cue was in the prompt.  Closing what the cut opened restores the fence AND the scan (the block
+    becomes visible to `flag_injection_heuristics` again).  Balanced text is returned unchanged,
+    so a caller's bytes are never rewritten for no reason.
+    """
+    missing = text.count("<untrusted") - text.count("</untrusted>")
+    if missing <= 0:
+        return text
+    return text + "\n</untrusted>" * missing
+
+
 _INJECTION_CUES = (
     re.compile(r"ignore (all |any )?(previous|prior|above) (instructions|rules)", re.I),
     re.compile(r"disregard (your|the) (instructions|system prompt)", re.I),
@@ -1151,6 +1177,7 @@ __all__ = [
     "canonical_payload",
     "cancel_run",
     "capability_for",
+    "close_quarantine",
     "configured_approval_secret",
     "current_run_approval",
     "current_run_cancellation",
@@ -1170,6 +1197,7 @@ __all__ = [
     "set_run_approval",
     "set_run_channel_sends",
     "set_run_taint",
+    "unterminated_quarantine",
     "value_cents",
     "verify_approval",
     "wrap_untrusted",
