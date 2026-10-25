@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.schemas.common import TimestampedORM, UtcDatetime
+
+logger = logging.getLogger(__name__)
+
+#: The `tasks.metadata` keys the morning cycle persists for one planned task
+#: (`celery_app/tasks/daily_cycle.py:619-628` writes the first five flat on the bag; the second
+#: pass at :673-682 adds `depends_on_ids`, and :700-705 records `depends_on_cycle` for a stranded
+#: node it released as a root).  `TaskResponse.plan` mirrors exactly these keys — nothing is
+#: renamed, and a bag holding NONE of them is not a plan (`plan` is null, not an empty edge).
+PLAN_METADATA_KEYS: tuple[str, ...] = (
+    "plan_day",
+    "depends_on_titles",
+    "depends_on_ids",
+    "depends_on_cycle",
+    "depends_on_unresolved",
+    "side_effect",
+    "acceptance",
+    "estimate_usd",
+    "estimate_seconds",
+)
+
+#: The `tasks.metadata` key a parked run's required fingerprints are recorded under
+#: (`celery_app/tasks/agent_tasks.py:553` `APPROVAL_REQUIRED_KEY`, written at :1094).
+APPROVAL_REQUIRED_KEY = "approval_required"
 
 
 class TaskCreate(BaseModel):
@@ -63,6 +87,99 @@ class TaskResponse(TimestampedORM):
     cost_usd: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+
+    # ── S7-R1 / A5-02: the plan provenance + the parked-approval flag (ADDITIVE, computed) ────
+    # The bag is read by its ORM ATTRIBUTE name and EXCLUDED from the wire.  It must NOT be
+    # declared as `metadata`: on a SQLAlchemy declarative instance `task.metadata` IS the class's
+    # `MetaData` object, pydantic's `from_attributes` lookup finds it, and the response raises
+    # ValidationError on EVERY row (measured by the A5 seat; `models/task.py:93-99` explains why
+    # the attribute cannot carry the column's name).  Nor is the whole bag safe to serve:
+    # `metadata.approval_token` is the operator's CREDENTIAL (`task_service.py:347`,
+    # `agent_tasks.approval_token_from_metadata`).  So three computed fields expose exactly the
+    # shapes a client renders, and nothing else — the raw dict and the token stay off the wire.
+    metadata_json: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
+
+    @field_validator("metadata_json", mode="before")
+    @classmethod
+    def _the_bag_must_be_an_object(cls, value: Any) -> Any:
+        """`tasks.metadata` is a JSON column with no CHECK — a raw writer can put ANY JSON there.
+
+        A list/string/number is not a bag: it carries no plan and no parked approval, so it is
+        read as `None` (the plan is null and nothing is pending — both TRUE of that row) instead
+        of raising ValidationError and 500-ing the WHOLE task list for one schema-legal row, the
+        L1-11 defect class this repo has already paid for once.  The drop is named in the log,
+        never silent.
+        """
+        if value is None or isinstance(value, dict):
+            return value
+        logger.warning(
+            "code=task_metadata_not_an_object: tasks.metadata holds %s for this row; serving no "
+            "plan and no pending approval (the bag is not an object)", type(value).__name__,
+        )
+        return None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def plan(self) -> dict[str, Any] | None:
+        """The plan edge the orchestrator persisted on this row, or null for a task without one.
+
+        Mirrors the persisted keys (never renames them): `depends_on` is the RESOLVED DAG edge
+        (`depends_on_ids` -> ints the dependency release reads), `depends_on_cycle` says the plan
+        was not a DAG and this node was released as a root with its edges dropped, and the rest
+        are the TaskSpec fields the model stated.  A key the model never stated is served as
+        null — its absence is a fact, and a fabricated `0`/`[]` would state something else.
+        """
+        bag = self.metadata_json or {}
+        if not any(key in bag for key in PLAN_METADATA_KEYS):
+            return None
+        ids = bag.get("depends_on_ids")
+        cycle = bag.get("depends_on_cycle")
+        return {
+            "depends_on": [
+                dep for dep in ids
+                if isinstance(dep, int) and not isinstance(dep, bool)
+            ] if isinstance(ids, list) else [],
+            "depends_on_cycle": isinstance(cycle, list) and bool(cycle),
+            "depends_on_titles": bag.get("depends_on_titles"),
+            "depends_on_unresolved": bag.get("depends_on_unresolved"),
+            "plan_day": bag.get("plan_day"),
+            "side_effect": bag.get("side_effect"),
+            "acceptance": bag.get("acceptance"),
+            "estimate_usd": bag.get("estimate_usd"),
+            "estimate_seconds": bag.get("estimate_seconds"),
+        }
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def approval_required(self) -> bool:
+        """True when the row carries a PENDING approval (a non-empty parked fingerprint list).
+
+        `False` is a measured answer here, not an unknown one: a row whose run never parked
+        anything recorded no `approval_required` key at all, and an EMPTY list is a park the
+        approvals channel already cleared.  The flag is derived from the same list
+        `approval_fingerprints` serves, so the two can never disagree.
+        """
+        return bool(self.approval_fingerprints)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def approval_fingerprints(self) -> list[str]:
+        """The fingerprints an operator mints a token for (`POST /api/v1/approvals`), in order.
+
+        Narrowed to the ONE value the Approve control needs: an entry that is not an object
+        carrying a non-empty string fingerprint is dropped (never coerced into a token the
+        server would then reject), duplicates collapse the way `approval_requirements` dedupes
+        them, and the rest of the parked record — the action, ref, reason — is not served here.
+        """
+        raw = (self.metadata_json or {}).get(APPROVAL_REQUIRED_KEY)
+        if not isinstance(raw, list):
+            return []
+        found: list[str] = []
+        for item in raw:
+            value = item.get("fingerprint") if isinstance(item, dict) else None
+            if isinstance(value, str) and value.strip():
+                found.append(value.strip())
+        return list(dict.fromkeys(found))
 
 
 class TaskAttachmentResponse(TimestampedORM):

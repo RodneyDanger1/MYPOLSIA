@@ -106,8 +106,15 @@ class CodeGenerationAgent(BasePolsiaAgent):
                         ActionClass.EXTERNAL_IRREVERSIBLE,
                         "github",
                         action="open_pr",
+                        # A2A4-02: the gate hashes EXACTLY this dict into the approval fingerprint
+                        # the operator mints a token for, so it must carry the change that will
+                        # really be opened.  The old shape bound repo/branch/pr_title and left the
+                        # PR BODY UNBOUND — approving a PR description authorised any other body on
+                        # the same branch (measured by the A4 seat).  Every field rides here
+                        # untruncated, pr_body included.
                         payload={"action": "open_pr", "repo": repo, "branch": branch,
-                                 "pr_title": pr_title},
+                                 "pr_title": pr_title,
+                                 "pr_body": str(change.get("pr_body") or "")},
                         sends_today=sends_today_now,
                         sends_this_hour=sends_hour_now,
                     )

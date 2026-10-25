@@ -125,7 +125,13 @@ class SocialMediaAgent(BasePolsiaAgent):
                 ActionClass.EXTERNAL_REVERSIBLE,
                 platform,
                 action=action,
-                payload={"action": action, "content": content[:200], "ref": ref},
+                # A2A4-02: the gate hashes EXACTLY this dict into the approval fingerprint, so it
+                # must carry the payload that will really be sent.  The old `content[:200]` bound
+                # only the first 200 chars: two 280-char posts agreeing on chars 0-199 shared ONE
+                # token, and approving the first authorised the second (measured by the A4 seat).
+                # The full content, the target ref and the platform ride here; nothing is
+                # truncated before the fingerprint sees it.
+                payload={"action": action, "content": content, "ref": ref, "platform": platform},
                 sends_today=sends_today_now,
                 sends_this_hour=sends_hour_now,
             )

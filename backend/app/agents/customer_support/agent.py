@@ -275,7 +275,14 @@ class CustomerSupportAgent(BasePolsiaAgent):
                     "email",
                     action=proposed,
                     value_usd=0.0,
-                    payload={"action": proposed, "ref": ref},
+                    # A2A4-02: the gate hashes EXACTLY this dict into the approval fingerprint,
+                    # so it must carry the reply that will really be sent.  The old
+                    # `{action, ref}` shape left the BODY UNBOUND: a token for `inbox-7`
+                    # authorised ANY reply body to that message (measured by the A4 seat).
+                    # The full reply body and the recipient address ride here untruncated.
+                    payload={"action": proposed, "ref": ref,
+                             "body": str(reply.get("reply_body") or ""),
+                             "to": str(reply.get("from_address") or reply.get("from") or "")},
                     sends_today=sends_today_now,
                     sends_this_hour=sends_hour_now,
                 )

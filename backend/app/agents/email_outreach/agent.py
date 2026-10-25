@@ -125,8 +125,14 @@ class EmailOutreachAgent(BasePolsiaAgent):
                     ActionClass.EXTERNAL_REVERSIBLE,
                     "email",
                     action=action,
-                    payload={"action": action, "subject": str(email.get("subject") or "")[:200],
-                             "to_domain": to.split("@")[-1] if "@" in to else ""},
+                    # A2A4-02: the gate hashes EXACTLY this dict into the approval fingerprint,
+                    # so it must carry the mail that will really be sent.  The old shape hashed
+                    # `subject[:200]` with the BODY UNBOUND — approving one mail authorised any
+                    # body sent under a subject that agreed on its first 200 chars (and the
+                    # subject's own tail was invisible too).  Full subject, full body, and the
+                    # recipient address (`to`) all ride here untruncated.
+                    payload={"action": action, "subject": str(email.get("subject") or ""),
+                             "body": str(email.get("body") or ""), "to": to},
                     sends_today=sends_today_now,
                     sends_this_hour=sends_hour_now,
                 )
