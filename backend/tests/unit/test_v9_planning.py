@@ -137,8 +137,11 @@ async def test_cash_block_measured_readings(api_client, auth_headers, async_db_s
     async_db_session.add(RevenueSnapshot(snapshot_date=today, stripe_balance_cents=12345))
     async_db_session.add(ExpenseRecord(date=today, category="tools", vendor="n8n", amount_cents=4000, currency="usd"))
     async_db_session.add(ExpenseRecord(date=today, category="taxes", vendor="MN Revenue", amount_cents=1000, currency="usd"))
-    async_db_session.add(StripeEvent(stripe_event_id="evt_v9_in", event_type="charge.succeeded", amount_cents=10000))
-    async_db_session.add(StripeEvent(stripe_event_id="evt_v9_old", event_type="charge.succeeded", amount_cents=7777,
+    # A2A7-03 (wave A3 / S6): the Stripe fixtures carry the currency the only production writer
+    # (`finance_service.record_stripe_event`) normalises.  A NULL currency is "unknown", not usd,
+    # and the cash block now excludes — and COUNTS — it instead of summing it as dollars.
+    async_db_session.add(StripeEvent(stripe_event_id="evt_v9_in", event_type="charge.succeeded", amount_cents=10000, currency="usd"))
+    async_db_session.add(StripeEvent(stripe_event_id="evt_v9_old", event_type="charge.succeeded", amount_cents=7777, currency="usd",
                                      processed_at=utcnow() - timedelta(days=40)))
     await async_db_session.commit()
 

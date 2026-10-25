@@ -238,8 +238,8 @@ def test_an_empty_payload_reports_measured_zeros_not_an_error(monkeypatch, queue
     # zero-report assertion is preserved by popping that key first.
     memory = persistence.pop("memory")
     assert persistence == {
-        "ok": True, "campaigns_written": 0, "metrics_written": 0, "duplicates_skipped": 0,
-        "error": None,
+        "ok": True, "campaigns_written": 0, "campaigns_updated": 0,
+        "metrics_written": 0, "duplicates_skipped": 0, "error": None,
     }
     assert memory["ok"] is True, memory
     assert queue_db.count("memory_entries") == 1

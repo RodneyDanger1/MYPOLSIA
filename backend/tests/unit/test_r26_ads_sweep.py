@@ -242,7 +242,11 @@ async def test_create_campaign_passes_unknown_columns_through_and_returns_a_load
         select(AdCampaign.external_id, AdCampaign.goal, AdCampaign.total_spent_usd)
         .where(AdCampaign.id == row.id)
     )).one()
-    assert tuple(stored) == ("ext-1", "signups", Decimal("0.0000"))
+    # A2A7-01 re-pin (wave A3 / S6).  OLD: `("ext-1", "signups", Decimal("0.0000"))` — the
+    # `DEFAULT '0'` on `ad_campaigns.total_spent_usd` dressed a campaign nobody measured up as a
+    # MEASURED $0.00, which the finance summary then added to the owner's ad-spend card.
+    # NEW: the same row with the same reported budget, and an UNKNOWN spend (NULL) beside it.
+    assert tuple(stored) == ("ext-1", "signups", None)
 
 
 async def test_create_campaign_maps_a_constraint_violation_to_a_named_refusal(

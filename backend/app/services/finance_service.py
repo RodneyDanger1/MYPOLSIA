@@ -19,11 +19,12 @@ Three measured problems this module fixes:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, func, literal, select, true
+from sqlalchemy import and_, case, func, literal, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -171,10 +172,41 @@ async def list_stripe_events(db: AsyncSession, limit: int = 100) -> list[StripeE
     )
 
 
+#: The one currency every reported total is denominated in (A2A7-03 / A8-04).  A row in another
+#: currency is NOT converted here: `fx_service` can convert, but a converted total needs a stored
+#: rate and a rate date, which is an owner decision.  Until then the row is EXCLUDED and COUNTED,
+#: so no payload can present a mixed sum as exact dollars.
+REPORTING_CURRENCY = "usd"
+
+
+def reporting_currency_filter(column):
+    """The single currency predicate for every money sum that reaches the wire (A2A7-03).
+
+    `finance_service._normalize_currency` is the one normaliser on the WRITE side; this is its
+    read-side counterpart — every sum over `expense_records.amount_cents` or
+    `stripe_events.amount_cents` goes through this predicate instead of re-spelling the rule.
+
+    A NULL/blank currency is NOT usd: it is what a raw/ops writer leaves behind, i.e. "unknown",
+    and summing it as dollars would present an unstated unit as a measurement.  It is excluded
+    here and named by the caller's count (`foreign_*_rows`).
+    """
+    return func.lower(func.coalesce(column, "")) == REPORTING_CURRENCY
+
+
+def excluded_currency_filter(column):
+    """The complement reader: the rows a total LEFT OUT because their currency is not the reporting one."""
+    return func.lower(func.coalesce(column, "")) != REPORTING_CURRENCY
+
+
 async def get_finance_summary(db: AsyncSession, month: date | None = None) -> dict[str, Any]:
     """Every headline scalar in ONE statement.  Nothing measured ⇒ `None`, never 0.
 
-    Shape: the seven keys `GET /finance/summary` and `dashboard.summary` consume.
+    Shape: the seven pre-A2A7-03 keys `GET /finance/summary` and `dashboard.summary` consume,
+    plus `foreign_expenses_month_count` — the number of expense rows in the month that were
+    EXCLUDED from `total_expenses_month_cents` because their currency is not
+    `REPORTING_CURRENCY` (A2A7-03).  The exclusion is counted, never silent, and nothing is
+    converted: a converted total needs a stored rate and rate date (an owner decision).
+
     Every money field is `int`/`Decimal` when measured and `None` when not — no
     `or 0` and no `coalesce(..., 0)` may collapse "not measured" into a fake zero on
     this path (the response model and the frontend both keep the two states apart).
@@ -196,9 +228,23 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
     expenses = (
         # No coalesce here: SUM over zero rows is NULL ("nothing measured"), and a 0
         # would be an invented reading — the same collapse the `or 0` on the return
-        # dict below used to ship.
+        # dict below used to ship.  A2A7-03: USD-only, and the excluded rows are counted
+        # beside it so the payload says the total is scoped.
         select(func.sum(ExpenseRecord.amount_cents))
-        .where(ExpenseRecord.date >= month_start, ExpenseRecord.date < month_end)
+        .where(
+            ExpenseRecord.date >= month_start,
+            ExpenseRecord.date < month_end,
+            reporting_currency_filter(ExpenseRecord.currency),
+        )
+        .scalar_subquery()
+    )
+    foreign_expenses = (
+        select(func.count())
+        .where(
+            ExpenseRecord.date >= month_start,
+            ExpenseRecord.date < month_end,
+            excluded_currency_filter(ExpenseRecord.currency),
+        )
         .scalar_subquery()
     )
     ad_spend = select(func.sum(AdCampaign.total_spent_usd)).scalar_subquery()
@@ -211,6 +257,7 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
             latest.c.stripe_balance_cents,
             latest.c.snapshot_date.label("last_snapshot_date"),
             expenses.label("total_expenses_month_cents"),
+            foreign_expenses.label("foreign_expenses_month_count"),
             ad_spend.label("total_ad_spend_usd"),
         )
         .select_from(anchor.outerjoin(latest, true()))
@@ -237,9 +284,86 @@ async def get_finance_summary(db: AsyncSession, month: date | None = None) -> di
         "total_expenses_month_cents": (
             int(row.total_expenses_month_cents) if row.total_expenses_month_cents is not None else None
         ),
+        "foreign_expenses_month_count": int(row.foreign_expenses_month_count or 0),
         "total_ad_spend_usd": money(row.total_ad_spend_usd),
         "last_snapshot_date": row.last_snapshot_date,
     }
+
+
+@dataclass(frozen=True)
+class SpendTruth:
+    """What the day's ledger can say, with the three states kept apart (A1-03 / A8-02 / F-19).
+
+    `total is None` = UNKNOWN: at least one run that ENDED never wrote a cost, so no cap can be
+    enforced from this number (never a measured `$0.00`).  `finished_unpriced` is that count;
+    `in_flight` is the runs still open — their cost is bounded by the per-run cap, not guessed
+    into the total — and an ABSENT day is a measured `Decimal("0")`.
+    """
+
+    total: Decimal | None
+    per_agent: dict[str, Decimal]
+    finished_unpriced: int
+    in_flight: int
+    measured_runs: int
+
+
+async def day_spend_truth(db: AsyncSession) -> SpendTruth:
+    """MEASURED AI spend for the company-local day, with the unmeasured rows COUNTED (A1-03).
+
+    The defect this replaces: `coalesce(sum(agent_runs.cost_usd), 0)` (`_common.day_spend_by_agent`)
+    cannot tell an ABSENT day from a day whose finished runs never wrote a cost, and `SUM` ignores
+    the NULLs — so an unpriced served-model alias (F-19) or a failed attempt whose measurement was
+    dropped (F-20) read as `$0.00` and the day never filled up.
+
+    Three states, stated:
+    * `total` is a MEASURED `Decimal` when every finished run wrote a cost (a reported `0` is a
+      measured zero and counts);
+    * `total is None` when at least one finished run has no cost — `finished_unpriced` says how
+      many, and the caller REFUSES rather than spending against an invented zero;
+    * an open run (`ended_at IS NULL`) is NOT lost accounting: it is counted in `in_flight` and
+      its cost is bounded by the policy's per-run cap, so it neither refuses a gate nor adds a
+      fabricated number to `total`.
+
+    The window is `timeutil.day_window` — half-open `[start, end)` and dialect-bound, the same
+    window `get_ai_spend_summary` reads (a future-dated `started_at` cannot inflate today).  An
+    agent with NO measured cost is ABSENT from `per_agent`: a `Decimal("0")` entry would be the
+    same fabricated zero one level down (`unmeasured_spend_agents` below is the precedent).
+    """
+    start, end = day_window(db)
+    finished_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_not(None))
+    open_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_(None))
+    grouped = (
+        select(
+            AgentRun.agent_type,
+            func.sum(AgentRun.cost_usd).label("measured"),
+            func.count().label("runs"),
+            func.sum(case((finished_unpriced, 1), else_=0)).label("finished_unpriced"),
+            func.sum(case((open_unpriced, 1), else_=0)).label("in_flight"),
+        )
+        .where(AgentRun.started_at >= start, AgentRun.started_at < end)
+        .group_by(AgentRun.agent_type)
+    )
+    try:
+        rows = (await db.execute(grouped)).all()
+    except SQLAlchemyError as exc:
+        raise db_refusal("day spend truth", exc) from exc
+
+    per_agent: dict[str, Decimal] = {}
+    unpriced_total = in_flight_total = measured_runs = 0
+    for agent_type, measured, runs, unpriced_runs, open_runs in rows:
+        unpriced_total += int(unpriced_runs or 0)
+        in_flight_total += int(open_runs or 0)
+        measured_runs += int(runs) - int(unpriced_runs or 0) - int(open_runs or 0)
+        converted = money(measured)
+        if converted is not None:
+            per_agent[str(agent_type)] = converted
+    return SpendTruth(
+        total=None if unpriced_total else sum(per_agent.values(), Decimal("0")),
+        per_agent=per_agent,
+        finished_unpriced=unpriced_total,
+        in_flight=in_flight_total,
+        measured_runs=measured_runs,
+    )
 
 
 async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
@@ -930,7 +1054,11 @@ async def _flip_invoices_safely(
 
 __all__ = [
     "FAILED_PAYMENT_EVENT_TYPES",
+    "REPORTING_CURRENCY",
+    "SpendTruth",
     "apply_failed_payment_to_invoices",
+    "day_spend_truth",
+    "excluded_currency_filter",
     "extract_payment_intent_id",
     "get_ai_spend_summary",
     "get_finance_summary",
@@ -942,5 +1070,6 @@ __all__ = [
     "recent_failed_payments",
     "record_expense",
     "record_stripe_event",
+    "reporting_currency_filter",
     "upsert_revenue_snapshot",
 ]

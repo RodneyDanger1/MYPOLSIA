@@ -387,27 +387,43 @@ def _proposal_sync(profile: dict[str, Any], research: dict[str, Any]) -> dict[st
 async def _gate_planner_budget(db: AsyncSession, agent_type: str, *, step: str) -> None:
     """The day-cap gate in front of a planner agent step — the worker choke point's policy.
 
-    Read through the CALLER's session (`day_spend_by_agent(db)`): the check sees the same
-    company-local day and the same committed spend the request already has in view.  A
+    Read through the CALLER's session (`finance_service.day_spend_truth`): the check sees the
+    same company-local day and the same committed spend the request already has in view.  A
     `BudgetStop` (`E_BUDGET_EXCEEDED`, or `E_POLICY_DENIED` for the kill switch) is re-raised
     as the named refusal WITH its how_to_fix — and nothing has run when it raises.
+
+    A1-03 / A8-02 / F-19: the day's spend is UNMEASURED when a run that ENDED wrote no cost — an
+    unpriced served-model alias, or a failed attempt whose measurement was dropped — and an
+    unmeasured day REFUSES here.  The previous read (`_common.day_spend_by_agent`) coalesced
+    those NULLs to `$0.00`, so the planner spent against a number nobody had measured.  A run
+    still IN FLIGHT is not lost accounting: it is counted (`in_flight`), its cost is bounded by
+    the policy's per-run cap, and it does not refuse.
     """
     from app.agents.accounting import BudgetStop, authorize, budget_policy_from_settings
     from app.agents.policy_firewall import kill_grade_from_env
 
-    # Lazy import, app-side precedent `support_inbox_service`: the shared spend reader lives
-    # with the worker machinery; everything else here is dependency-light.
-    from celery_app.tasks._common import day_spend_by_agent
+    # Lazy import, app-side precedent `support_inbox_service`: the money reader lives in the
+    # finance service (where the owner's spend card reads), so the gate and the card cannot
+    # disagree about what "the day's spend" means.
+    from app.services.finance_service import day_spend_truth
 
     policy = budget_policy_from_settings(kill_switch=kill_grade_from_env() == "freeze")
-    total, per_agent = await day_spend_by_agent(db)
+    truth = await day_spend_truth(db)
     try:
+        if truth.total is None:
+            raise BudgetStop(
+                f"the day's AI spend is UNMEASURED: {truth.finished_unpriced} finished run(s) "
+                f"recorded no cost, so the ${policy.day_limit_usd:.2f} cap cannot be enforced "
+                f"(measured so far: ${sum(truth.per_agent.values(), Decimal('0')):.4f})",
+                unmeasured_runs=truth.finished_unpriced,
+                measured_runs=truth.measured_runs,
+            )
         authorize(
             policy,
             agent_type=agent_type,
             est_cost_usd=policy.per_run_cap_usd,
-            day_spent_usd=total,
-            agent_spent_usd=per_agent.get(agent_type, 0.0),
+            day_spent_usd=float(truth.total),
+            agent_spent_usd=float(truth.per_agent.get(agent_type, Decimal("0"))),
         )
     except BudgetStop as exc:
         raise PolsiaError(

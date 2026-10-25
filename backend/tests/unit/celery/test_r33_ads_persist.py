@@ -114,8 +114,8 @@ def test_both_tables_are_written_and_the_engine_computes_the_ratios(queue_db):
         _metric(revenue_usd=Decimal("12.3456")),
     ]})
     assert report == {
-        "ok": True, "campaigns_written": 1, "metrics_written": 1, "duplicates_skipped": 0,
-        "error": None,
+        "ok": True, "campaigns_written": 1, "campaigns_updated": 0,
+        "metrics_written": 1, "duplicates_skipped": 0, "error": None,
     }
     campaigns, metrics = _read(queue_db)
     assert (campaigns[0].platform, campaigns[0].external_id) == ("google_ads", "g-100")
@@ -154,8 +154,8 @@ def test_rerunning_the_same_payload_writes_nothing_new(queue_db):
 
     second = _write(queue_db, payload)
     assert second == {
-        "ok": True, "campaigns_written": 0, "metrics_written": 0, "duplicates_skipped": 3,
-        "error": None,
+        "ok": True, "campaigns_written": 0, "campaigns_updated": 0,
+        "metrics_written": 0, "duplicates_skipped": 3, "error": None,
     }
     assert queue_db.count("ad_campaigns") == 1
     assert queue_db.count("ad_metrics") == 2
@@ -388,8 +388,8 @@ def test_the_dispatcher_returns_the_honest_zero_for_an_empty_payload(queue_db):
     report = queue_db.run(_persist_run_artifacts(None, "ads_management", {}))
     memory = report.pop("memory")
     assert report == {
-        "ok": True, "campaigns_written": 0, "metrics_written": 0, "duplicates_skipped": 0,
-        "error": None,
+        "ok": True, "campaigns_written": 0, "campaigns_updated": 0,
+        "metrics_written": 0, "duplicates_skipped": 0, "error": None,
     }
     assert memory["ok"] is False
     assert memory["error"]["code"] == "E_VALIDATION"

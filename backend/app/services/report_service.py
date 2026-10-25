@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import Text, cast, func, select
+from sqlalchemy import Text, and_, case, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,11 @@ from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.report import DailyReport
 from app.services import pricing_service
+from app.services.finance_service import (
+    REPORTING_CURRENCY,
+    excluded_currency_filter,
+    reporting_currency_filter,
+)
 from app.services.query_helpers import fetch_rows, fetch_scalar, json_or_none
 
 
@@ -273,13 +278,23 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
     `safe_harbor_note`, `sales_tax_note`, `tax_disclaimer` (the persistent line), and `reasons`
     for every null.
 
+    CURRENCY SCOPE (A2A7-03).  Every money figure here is denominated in `REPORTING_CURRENCY`
+    (`finance_service.reporting_currency_filter` — the ONE definition of the rule, shared with
+    `get_finance_summary`).  A row in another currency is EXCLUDED, never converted (a converted
+    figure needs a stored rate and rate date — an owner decision) and never silently dropped:
+    `foreign_currency_rows` counts them, and each affected field is named in `reasons` under
+    `<field>.currency` (the `burn_line_items.<category>` precedent).  A NULL currency is
+    "unknown", not usd, so it is excluded and counted the same way.
+
     Null-honesty, stated per field:
     * `cash_on_hand` — the newest revenue snapshot's Stripe balance; none recorded -> null.
-    * `out_30d` — summed expense records in the window; no rows -> UNMEASURED (null), never 0.
-    * `in_30d` — summed money-in stripe events in the window; no events at all -> UNMEASURED
-      (the webhook may simply not be configured); events exist but none succeeded -> a measured 0.
-    * `tax_set_aside` — tax-categorised expenses in the window; a ledger with rows but no tax
-      category is a measured 0; an empty ledger is null.
+    * `out_30d` — summed USD expense records in the window; no rows -> UNMEASURED (null), never 0;
+      rows that all sit in another currency -> UNMEASURED (null) with that reason.
+    * `in_30d` — summed USD money-in stripe events in the window; no events at all -> UNMEASURED
+      (the webhook may simply not be configured); USD events exist but none succeeded -> a measured
+      0; money-in events that all sit in another currency -> UNMEASURED (null).
+    * `tax_set_aside` — USD tax-categorised expenses in the window; a USD ledger with rows but no
+      tax category is a measured 0; an empty (or entirely foreign) ledger is null.
     """
     reasons: dict[str, str] = {}
     today = today_in()
@@ -304,69 +319,188 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
     else:
         cash_on_hand = round(float(latest.stripe_balance_cents) / 100, 2)
 
+    # ONE pass over the window's expenses: how many rows exist at all (telemetry), how many are
+    # USD (the only ones summed), and how many were EXCLUDED for their currency.
     expense_rows = await fetch_rows(
         db,
-        select(func.count(), func.sum(ExpenseRecord.amount_cents)).where(
-            ExpenseRecord.date >= start
-        ),
+        select(
+            func.count().label("rows"),
+            func.sum(
+                case(
+                    (
+                        reporting_currency_filter(ExpenseRecord.currency),
+                        ExpenseRecord.amount_cents,
+                    ),
+                    else_=None,
+                )
+            ).label("usd_cents"),
+            func.sum(
+                case((reporting_currency_filter(ExpenseRecord.currency), 1), else_=0)
+            ).label("usd_rows"),
+            func.sum(
+                case((excluded_currency_filter(ExpenseRecord.currency), 1), else_=0)
+            ).label("foreign_rows"),
+        ).where(ExpenseRecord.date >= start),
         what="cash block expenses",
     )
-    expense_count, expense_cents = expense_rows[0] if expense_rows else (0, None)
+    expense_count, usd_expense_cents, usd_expense_count, foreign_expense_count = (
+        expense_rows[0] if expense_rows else (0, None, 0, 0)
+    )
+    usd_expense_count = int(usd_expense_count or 0)
+    foreign_expense_count = int(foreign_expense_count or 0)
+
     out_30d: float | None = None
     if not expense_count:
         reasons["out_30d"] = (
             f"no expense records in the last {CASH_WINDOW_DAYS} days — outflow is unmeasured"
         )
-    elif expense_cents is None:
+    elif not usd_expense_count:
+        reasons["out_30d"] = (
+            f"all {foreign_expense_count} expense record(s) in the last {CASH_WINDOW_DAYS} days "
+            f"are in another currency than {REPORTING_CURRENCY} — the USD outflow is unmeasured "
+            "(nothing was converted)"
+        )
+    elif usd_expense_cents is None:
         reasons["out_30d"] = "expense rows in the window carry no measured amounts"
     else:
-        out_30d = round(float(expense_cents) / 100, 2)
+        out_30d = round(float(usd_expense_cents) / 100, 2)
+    if foreign_expense_count and out_30d is not None:
+        reasons["out_30d.currency"] = (
+            f"{foreign_expense_count} expense record(s) in another currency were EXCLUDED from "
+            f"the USD outflow (nothing was converted)"
+        )
 
-    events_count = await fetch_scalar(
+    # The inflow read: every event in the window is telemetry ("did the webhook deliver?"), while
+    # the SUM counts only USD money-in events and the exclusions are counted separately.
+    event_rows = await fetch_rows(
         db,
-        select(func.count()).where(StripeEvent.processed_at >= start),
+        select(
+            func.count().label("rows"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            reporting_currency_filter(StripeEvent.currency),
+                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
+                        ),
+                        StripeEvent.amount_cents,
+                    ),
+                    else_=None,
+                )
+            ).label("usd_in_cents"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            reporting_currency_filter(StripeEvent.currency),
+                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("usd_in_rows"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            excluded_currency_filter(StripeEvent.currency),
+                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("foreign_in_rows"),
+        ).where(StripeEvent.processed_at >= start),
         what="cash block stripe telemetry",
     )
+    events_count, usd_in_cents, usd_in_count, foreign_in_count = (
+        event_rows[0] if event_rows else (0, None, 0, 0)
+    )
+    usd_in_count = int(usd_in_count or 0)
+    foreign_in_count = int(foreign_in_count or 0)
+
     in_30d: float | None = None
     if not events_count:
         reasons["in_30d"] = (
             f"no Stripe events in the last {CASH_WINDOW_DAYS} days — inflow is unmeasured "
             "(check that the webhook is configured)"
         )
-    else:
-        money_in = await fetch_scalar(
-            db,
-            select(func.sum(StripeEvent.amount_cents)).where(
-                StripeEvent.processed_at >= start,
-                StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
-            ),
-            what="cash block stripe money in",
+    elif not usd_in_count and foreign_in_count:
+        reasons["in_30d"] = (
+            f"the window's {foreign_in_count} money-in Stripe event(s) are in another currency "
+            f"than {REPORTING_CURRENCY} — the USD inflow is unmeasured (nothing was converted)"
         )
-        # Telemetry exists and none of it succeeded: a MEASURED zero, unlike the no-telemetry case.
-        in_30d = round(float(money_in or 0) / 100, 2)
+    else:
+        # A USD ledger with events and no USD money-in is a MEASURED zero, unlike the
+        # no-telemetry case above.
+        in_30d = round(float(usd_in_cents or 0) / 100, 2)
+        if foreign_in_count:
+            reasons["in_30d.currency"] = (
+                f"{foreign_in_count} money-in Stripe event(s) in another currency were EXCLUDED "
+                f"from the USD inflow (nothing was converted)"
+            )
+
+    tax_rows = await fetch_rows(
+        db,
+        select(
+            func.sum(
+                case(
+                    (
+                        reporting_currency_filter(ExpenseRecord.currency),
+                        ExpenseRecord.amount_cents,
+                    ),
+                    else_=None,
+                )
+            ).label("usd_cents"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            excluded_currency_filter(ExpenseRecord.currency),
+                            func.lower(ExpenseRecord.category).in_(TAX_EXPENSE_CATEGORIES),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("foreign_rows"),
+        ).where(
+            ExpenseRecord.date >= start,
+            func.lower(ExpenseRecord.category).in_(TAX_EXPENSE_CATEGORIES),
+        ),
+        what="cash block tax set aside",
+    )
+    usd_tax_cents, foreign_tax_count = tax_rows[0] if tax_rows else (None, 0)
+    foreign_tax_count = int(foreign_tax_count or 0)
 
     tax_set_aside: float | None = None
     if not expense_count:
         reasons["tax_set_aside"] = (
             f"no expense records in the last {CASH_WINDOW_DAYS} days — the tax set-aside is unmeasured"
         )
-    else:
-        tax_cents = await fetch_scalar(
-            db,
-            select(func.sum(ExpenseRecord.amount_cents)).where(
-                ExpenseRecord.date >= start,
-                func.lower(ExpenseRecord.category).in_(TAX_EXPENSE_CATEGORIES),
-            ),
-            what="cash block tax set aside",
+    elif not usd_expense_count:
+        reasons["tax_set_aside"] = (
+            f"the window's expense records are all in another currency than {REPORTING_CURRENCY} "
+            "— the USD tax set-aside is unmeasured (nothing was converted)"
         )
-        # Rows exist but no tax category: a measured 0 (nobody has set anything aside yet).
-        tax_set_aside = round(float(tax_cents or 0) / 100, 2)
+    else:
+        # A USD ledger with rows but no tax category: a measured 0 (nobody has set anything
+        # aside yet).  Foreign tax rows are excluded AND counted below.
+        tax_set_aside = round(float(usd_tax_cents or 0) / 100, 2)
+        if foreign_tax_count:
+            reasons["tax_set_aside.currency"] = (
+                f"{foreign_tax_count} tax-categorised expense(s) in another currency were "
+                f"EXCLUDED from the USD set-aside (nothing was converted)"
+            )
 
     return {
         "cash_on_hand": cash_on_hand,
         "in_30d": in_30d,
         "out_30d": out_30d,
         "tax_set_aside": tax_set_aside,
+        "foreign_currency_rows": foreign_expense_count + foreign_in_count,
         "next_tax_dates": [d.isoformat() for d in pricing_service.next_quarterly_tax_dates(today)],
         "safe_harbor_note": pricing_service.SAFE_HARBOR_NOTE,
         "sales_tax_note": pricing_service.SALES_TAX_NOTE,

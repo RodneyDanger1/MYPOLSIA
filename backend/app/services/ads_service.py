@@ -39,7 +39,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import Text, cast, select
+from sqlalchemy import Text, cast, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +53,10 @@ logger = logging.getLogger(__name__)
 #: The value set `ck_ad_campaigns_status` enforces on PostgreSQL (alembic `0002:103-104`) and that
 #: SQLite cannot carry; `create_campaign` asserts it so the two engines behave identically.
 AD_CAMPAIGN_STATUSES: tuple[str, ...] = ("active", "paused", "ended", "draft")
+
+#: The two campaign money columns.  `total_spent_usd` is a CUMULATIVE provider measure and
+#: `daily_budget_usd` a CURRENT setting; both are "measured or unknown", never "unknown as 0".
+_CAMPAIGN_MONEY: tuple[str, ...] = ("daily_budget_usd", "total_spent_usd")
 
 
 async def list_campaigns(
@@ -73,6 +77,17 @@ async def list_campaigns(
 async def create_campaign(
     db: AsyncSession, platform: str, name: str, **values: Any
 ) -> AdCampaign:
+    """Insert one campaign; a money column nobody supplied is UNKNOWN (NULL), not `$0.00`.
+
+    The two money columns still carry `DEFAULT '0'` in the shipped DDL and in the model
+    (`models/ads.py:53-58`; the migration that drops it is carried in the wave-A3 requests).
+    An ORM INSERT cannot carry an explicit `NULL` past a column default — measured:
+    `wave-a3/raw/S6/probe_explicit_null.out.txt`, `AdCampaign(total_spent_usd=None)` still
+    persists `Decimal('0.0000')` — so a campaign no run has measured would be born as a
+    *measured* `$0.00` and the owner's ad-spend card would add it.  The two states are kept
+    apart here, in the same transaction, before any caller can read the row: a supplied value
+    (including a reported `0`) is stored as given, an unsupplied one is restored to NULL.
+    """
     clean_platform = (platform or "").strip()
     clean_name = (name or "").strip()
     if not clean_platform or not clean_name:
@@ -108,6 +123,22 @@ async def create_campaign(
         ) from exc
     except SQLAlchemyError as exc:
         raise db_refusal("ad campaign insert", exc) from exc
+
+    # See the docstring: the column DEFAULT is not a measurement.  One UPDATE in the caller's
+    # transaction restores the honest NULL for whatever this caller did not report.
+    unreported = [field for field in _CAMPAIGN_MONEY if values.get(field) is None]
+    if unreported:
+        try:
+            await db.execute(
+                update(AdCampaign)
+                .where(AdCampaign.id == campaign.id)
+                .values({field: None for field in unreported})
+                .execution_options(synchronize_session=False)
+            )
+        except SQLAlchemyError as exc:
+            raise db_refusal("ad campaign money clear", exc) from exc
+        for field in unreported:
+            setattr(campaign, field, None)
     return campaign
 
 
@@ -314,6 +345,57 @@ def _register_campaign(
         ambiguous.add(external_id)
 
 
+def _campaign_money_values(item: dict[str, Any]) -> tuple[dict[str, Decimal | None], str | None]:
+    """(both money columns, refusal message) for one `campaigns[]` entry.
+
+    BOTH keys are always present in the returned dict.  `None` means "this run did not report
+    it" — a REAL state, exactly like `ad_metrics.spend_usd` after alembic 0015 — never the
+    column's `DEFAULT '0'`, which is the fabricated measured zero A2A7-01 removed.  A malformed
+    value refuses the whole entry by name (the metric money loop's rule) so a half-written money
+    pair can never be persisted.
+    """
+    from app.services.task_service import _as_column_decimal
+
+    values: dict[str, Decimal | None] = {}
+    for field in _CAMPAIGN_MONEY:
+        raw = item.get(field)
+        if raw is None:
+            values[field] = None
+            continue
+        try:
+            values[field] = _as_column_decimal(raw)
+        except (TypeError, ValueError, ArithmeticError):
+            return {}, f"campaign {field}={raw!r} is not numeric money"
+    return values, None
+
+
+def _refresh_campaign_money(
+    campaign: AdCampaign, item: dict[str, Any]
+) -> tuple[bool, str | None]:
+    """Write a REPEAT run's measurements onto the existing row → (changed, refusal message).
+
+    `total_spent_usd` is a CUMULATIVE provider measure and `daily_budget_usd` a CURRENT setting,
+    so both legitimately move between the 6h beats; freezing them at first sight is what made
+    the owner's ad-spend card stale forever (A2A7-01, mechanism 2).  Identity fields
+    (`name`, `status`, `external_id`) stay untouched — the dedupe docstring's "never updated"
+    rule is about identity, not about a measurement.
+
+    A field this run did NOT report leaves the stored value alone: an unreported number must
+    never erase a measured one, and an unchanged number is not a write (the beat re-reports the
+    same cumulative total every 6h, so `changed` must stay False for it).
+    """
+    values, bad_money = _campaign_money_values(item)
+    if bad_money is not None:
+        return False, bad_money
+    changed = False
+    for field, value in values.items():
+        if value is None or getattr(campaign, field) == value:
+            continue
+        setattr(campaign, field, value)
+        changed = True
+    return changed, None
+
+
 async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, Any]:
     """Persist what a finished `ads_management` run REALLY reported — the worker calls this.
 
@@ -344,24 +426,30 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
 
     IDEMPOTENCY (the beat re-runs every 6h): campaigns dedupe on the provider's own id
     (`platform`+`external_id`; `(platform, name)` fallback when no id was reported) and existing
-    rows are REUSED, never updated; metrics dedupe on `(campaign_id, date)` — the key the shipped
-    `uq_ad_metrics_campaign_date` unique index guards — with a savepoint + re-resolve rescue for
-    the raced unique violation (two ads runs over the same day), because without the savepoint a
-    failed flush would poison the session and lose the whole batch.
+    rows are REUSED — their IDENTITY (`name`, `status`, `external_id`) is never rewritten, while
+    their MEASUREMENTS are refreshed (`_refresh_campaign_money`: `total_spent_usd` is cumulative
+    and `daily_budget_usd` is a current setting, so freezing them at first sight made the owner's
+    ad-spend card stale forever — A2A7-01).  Metrics dedupe on `(campaign_id, date)` — the key
+    the shipped `uq_ad_metrics_campaign_date` unique index guards — with a savepoint + re-resolve
+    rescue for the raced unique violation (two ads runs over the same day), because without the
+    savepoint a failed flush would poison the session and lose the whole batch.
 
     Every unpersistable entry is skipped BY NAME in the report and the batch continues (the run
     stays alive); the FIRST skip is the report's `error` (ok=False), duplicates are NOT failures
     (a steady-state 6h beat produces them by design) and an empty payload is the honest zero:
-    `{ok: True, 0, 0, 0}` — a report of measured zeros, never an error.  Never raises: any
+    `{ok: True, 0, 0, 0, 0}` — a report of measured zeros, never an error.  Never raises: any
     batch-fatal failure (a session that may be poisoned, a refused read) comes back in `error`.
 
-    Returns `{"ok": bool, "campaigns_written": int, "metrics_written": int,
-    "duplicates_skipped": int, "error": None | {"code", "message"}}`, plus
+    Returns `{"ok": bool, "campaigns_written": int, "campaigns_updated": int,
+    "metrics_written": int, "duplicates_skipped": int, "error": None | {"code", "message"}}`, plus
     `"skipped_malformed": [{kind, index, code, message, ...}]` only when something was skipped.
+    `campaigns_written` counts INSERTS and `campaigns_updated` counts rows whose reported
+    measurement moved — a refreshed cumulative spend is a write the report must show.
     """
     report: dict[str, Any] = {
         "ok": True,
         "campaigns_written": 0,
+        "campaigns_updated": 0,
         "metrics_written": 0,
         "duplicates_skipped": 0,
         "error": None,
@@ -414,6 +502,15 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
                 report["duplicates_skipped"] += 1
                 if external_id is not None:
                     _register_campaign(by_external, ambiguous_external, external_id, existing)
+                # A2A7-01: the row is reused for its IDENTITY, but a cumulative measurement it
+                # reports again must move — otherwise the owner's ad-spend card is frozen at the
+                # first sighting.  Registered BEFORE the refusal below so a malformed money value
+                # cannot also orphan this campaign's metrics.
+                refreshed, bad_money = _refresh_campaign_money(existing, item)
+                if bad_money is not None:
+                    skip("campaign", index, E_VALIDATION, bad_money, platform=platform, name=name)
+                elif refreshed:
+                    report["campaigns_updated"] += 1
                 continue
 
             values: dict[str, Any] = {}
@@ -423,19 +520,13 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
                 # create_campaign asserts ck_ad_campaigns_status (SQLite cannot carry the CHECK);
                 # its refusal lands in the E_VALIDATION arm below, as an item skip.
                 values["status"] = item["status"]
-            bad_money = None
-            for field in ("daily_budget_usd", "total_spent_usd"):
-                value = item.get(field)
-                if value is None:
-                    continue  # not reported -> the column's own default; never fabricated
-                try:
-                    values[field] = _as_column_decimal(value)
-                except (TypeError, ValueError, ArithmeticError):
-                    bad_money = f"campaign {field}={value!r} is not numeric money"
-                    break
+            money_values, bad_money = _campaign_money_values(item)
             if bad_money is not None:
                 skip("campaign", index, E_VALIDATION, bad_money, platform=platform, name=name)
                 continue
+            # BOTH money keys are written, `None` included: an unsupplied number is UNKNOWN, and
+            # `create_campaign` restores the honest NULL over the column's `DEFAULT '0'`.
+            values.update(money_values)
 
             try:
                 # Savepoint: create_campaign's constraint refusal is preceded by a failed flush,
