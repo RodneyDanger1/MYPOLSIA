@@ -171,6 +171,9 @@ function answerWith(overrides: Record<string, unknown> = {}) {
     // V8b-D2 (parent): the Website card (left rail) reads the company row and a timed health
     // check; both unserved paths would fail LOUDLY. Listed AFTER /config/deepseek-key so the
     // startsWith scan keeps resolving the deeper key first.
+    // F-37 (wave A3): the Phone card asks `/config/phone` before /phone/summary. It must precede
+    // the bare "/config" key below, or the startsWith scan would answer it with the company row.
+    "/config/phone": { configured: true, available: true },
     "/config": { website_url: null },
     "/health": { status: "ok" },
     // V16/W3: the Phone card (left rail) reads the H-P1 summary — envelope `{ok, data}`; an

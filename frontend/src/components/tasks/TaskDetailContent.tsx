@@ -9,13 +9,18 @@ import { Button, Chip, cn } from "@/components/ui";
 import { api } from "@/lib/api";
 
 import { runThisTask } from "./actions";
-import { fingerprintsFrom } from "./approval";
+import { fingerprintsForTask } from "./approval";
 import { recoveryFor } from "./recovery";
 import { costUsdText, tokenText } from "./runTruth";
 import { errorText, statusChipClass, statusLabel } from "./status";
 import { TaskAttachments } from "./TaskAttachments";
 import { TaskStatusControl } from "./TaskStatusControl";
-import type { AgentTriggerResponse, ApprovalIssueResponse, TaskRow } from "./types";
+import {
+  planDependencies,
+  type AgentTriggerResponse,
+  type ApprovalIssueResponse,
+  type TaskRow,
+} from "./types";
 
 /**
  * The task detail BODY — every field and action of one task, in ONE place. Extracted from
@@ -62,7 +67,7 @@ export function TaskDetailContent({
     // the latch prevents a second enqueue of the same pending row.
     if (row.status !== "pending") setRunThisLatched(false);
   }, [row.status]);
-  const fingerprints = fingerprintsFrom(row.result_summary);
+  const fingerprints = fingerprintsForTask(row);
   /**
    * B3 (wave U3): ONE recovery grammar for this card's state — the footer below renders the
    * single action `recoveryFor` names (run / approve) or the stated reason why there is none.
@@ -72,6 +77,8 @@ export function TaskDetailContent({
    */
   const recovery = recoveryFor(row);
   const descriptionLines = splitDescription(row.description);
+  /** F-36: the dependency titles the plan recorded, in either spelling the server may serve. */
+  const planDeps = row.plan ? planDependencies(row.plan) : [];
 
   /**
    * The run action (runs under the label `recoveryFor` chose — `Run now` for a queued row,
@@ -179,6 +186,36 @@ export function TaskDetailContent({
         {row.source ? <MetaRow label="Source">{row.source}</MetaRow> : null}
         <MetaRow label="Priority">{row.priority ?? NOT_MEASURED}</MetaRow>
       </dl>
+
+      {/* ── F-36 / A5-02: the plan's provenance ─────────────────────────────────────────────
+          The orchestrator persists the TaskSpec edge the plan already carried on the task row's
+          metadata channel; `TaskResponse` narrows it to a COMPUTED `plan` field (never the raw
+          bag — that holds the approval token). A task created by hand has no plan, so this
+          section does not render and no "manual" chip is invented. Every key prints only when
+          the plan carried it: a missing estimate is absence, never a zero. */}
+      {row.plan ? (
+        <section className="mt-3" data-testid="plan-edge">
+          <p className="ui-label text-ink-muted">Planned by</p>
+          <dl className="mt-1 space-y-1 border border-line bg-surface-sunk p-3">
+            <MetaRow label="Depends on">
+              {planDeps.length > 0
+                ? planDeps.join(", ")
+                : "— the plan recorded no dependency"}
+            </MetaRow>
+            {typeof row.plan.estimate_usd === "number" ? (
+              <MetaRow label="Planned cost">
+                {`$${row.plan.estimate_usd.toFixed(2)} — the model's estimate, not spend`}
+              </MetaRow>
+            ) : null}
+            {typeof row.plan.side_effect === "string" && row.plan.side_effect.length > 0 ? (
+              <MetaRow label="Side effect">{row.plan.side_effect}</MetaRow>
+            ) : null}
+            {typeof row.plan.acceptance === "string" && row.plan.acceptance.length > 0 ? (
+              <MetaRow label="Acceptance">{row.plan.acceptance}</MetaRow>
+            ) : null}
+          </dl>
+        </section>
+      ) : null}
 
       {/* ── Run truth (B4, wave U3) ─────────────────────────────────────────────────────
           The measured facts off this task's rows, one layer under any price-shaped label

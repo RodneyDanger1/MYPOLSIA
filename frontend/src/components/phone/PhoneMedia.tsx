@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { PanelError, PanelSkeleton } from "@/components/dashboard/states";
 import { Button, SectionHeader } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 import { API_KEY } from "@/lib/api";
 
 import {
@@ -356,35 +357,12 @@ function MediaViewer({
     closeRef.current?.focus();
   }, []);
 
+  // F-40 / A2A3-01: Escape (from anywhere) and the Tab trap are the shared hook. This viewer's
+  // own handler bound both to the panel; the arrow-key walk below stays here — it is this
+  // surface's own verb, not the modal law.
+  useDialogFocusTrap(dialogRef, onClose);
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-    if (event.key === "Tab") {
-      const panel = dialogRef.current;
-      if (!panel) return;
-      const focusables = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !panel.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !panel.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-      return;
-    }
     if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName ?? "";
@@ -452,6 +430,11 @@ function MediaViewer({
           ) : null}
 
           {bytes.kind === "ready" && image && bytes.url ? (
+            // The bytes are a blob URL this component fetched with the owner key (a bare
+            // `<img src>` cannot send `X-API-Key`), so next/image cannot optimise them — the
+            // same suppression the two other blob-thumbnail surfaces carry (TaskAttachments,
+            // NewTaskDialog).
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               data-testid="phone-media-image"
               src={bytes.url}

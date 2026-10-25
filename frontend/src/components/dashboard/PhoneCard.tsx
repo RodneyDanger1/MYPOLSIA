@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui";
 import { parseSummary, type PhoneSummary } from "@/components/phone/phoneApi";
 import { PhoneUnavailable } from "@/components/phone/PhoneStates";
+import { usePhoneAvailability } from "@/components/phone/usePhoneAvailability";
 import { usePhoneRead } from "@/components/phone/usePhoneRead";
 
 import { PanelError, PanelSkeleton } from "./states";
@@ -12,8 +13,15 @@ import { PanelError, PanelSkeleton } from "./states";
 /**
  * The left rail's `Phone` card (wave V16 / seat W3) — the dashboard's H-P1 consumer.
  *
- * Reads exactly ONE route, `GET /api/v1/phone/summary` (envelope `{ok, data}`), and renders what
- * the store really holds:
+ * F-37: the card asks ONE config question first — `GET /api/v1/config/phone`
+ * (`{configured, available}`, 200 in every deployment, CONTRACTS §4.16). Only when that answer
+ * says `available: true` does it read `GET /api/v1/phone/summary` (envelope `{ok, data}`), which
+ * is the surface that refuses `E_PHONE_UNAVAILABLE` with 503 when no store is mounted. Before
+ * this gate the 503 was the first thing the browser saw on every dashboard load of a deployment
+ * that will never have a phone, which reddened the console on a page that was working correctly.
+ * A config read that FAILS is named and is NOT backfilled with a guess at the summary.
+ *
+ * The summary body renders what the store really holds:
  *   - `unread_total` — printed only when it is a number; a null/absent value is the malformed-read
  *     state ("numeric unread_total"), NEVER "0 unread";
  *   - the newest 3 threads — each row: the resolved name, unread count when > 0, `last_when`
@@ -22,10 +30,11 @@ import { PanelError, PanelSkeleton } from "./states";
  *   - `missed_calls_today` — every row the store reported today (masked number kept masked, the
  *     `when` string verbatim), capped at 3 with the remainder stated.
  *
- * Honest states, exactly like every other widget: not-read-yet is a skeleton; `E_PHONE_UNAVAILABLE`
- * (store not mounted) is the shared PHONE LINK UNAVAILABLE block — no rows, no counts; a
- * `store_status` answering anything but "ok" is the same block; any other failure is the panel
- * error naming the real message. Empty copy prints only after a successful, genuinely empty read.
+ * Honest states, exactly like every other widget: not-read-yet is a skeleton; an unavailable
+ * deployment is the shared PHONE LINK UNAVAILABLE block naming which fact is missing (unconfigured
+ * vs configured-but-unreadable); a `store_status` answering anything but "ok" is the same block;
+ * any other failure is the panel error naming the real message. Empty copy prints only after a
+ * successful, genuinely empty read.
  *
  * The whole card is read-only: this deployment's phone path is receive-only (the sending path is
  * an open owner offer in STANDING-ORDERS — not built, not pretended here).
@@ -35,6 +44,42 @@ const THREADS_SHOWN = 3;
 const MISSED_SHOWN = 3;
 
 export function PhoneCard() {
+  const availability = usePhoneAvailability();
+
+  if (availability.kind === "loading") {
+    return (
+      <Card title="Phone" aria-label="Phone">
+        <PanelSkeleton rows={2} />
+        <OpenPhoneLink />
+      </Card>
+    );
+  }
+
+  if (availability.kind === "failed" || !availability.data.available) {
+    return (
+      <Card title="Phone" aria-label="Phone">
+        <PhoneUnavailable
+          testId="phone-card-unavailable"
+          detail={
+            availability.kind === "failed"
+              ? `the deployment's phone availability could not be read — ${availability.detail}`
+              : availability.data.configured
+                ? "A Phone Link store is configured for this deployment, but it is not available to read (GET /config/phone answered configured: true, available: false) — nothing was read."
+                : "No Phone Link store is configured in this deployment (GET /config/phone answered configured: false, available: false) — nothing was read."
+          }
+        />
+        <OpenPhoneLink />
+      </Card>
+    );
+  }
+
+  return <PhoneSummaryCard />;
+}
+
+/** The summary read itself. It runs only when the config route said a store is mounted, so the
+ *  503 that used to fire on every dashboard load can no longer be the first thing the browser
+ *  sees. */
+function PhoneSummaryCard() {
   const summaryRead = usePhoneRead("/phone/summary", "summary", parseSummary);
 
   return (
@@ -63,10 +108,18 @@ export function PhoneCard() {
           <PhoneSummaryBody summary={summaryRead.data} />
         ) : null}
       </div>
-      <Link href="/phone" className="link ui-label">
-        OPEN PHONE
-      </Link>
+      <OpenPhoneLink />
     </Card>
+  );
+}
+
+/** The card's one standing link. Kept in every state: an unavailable deployment can still open
+ *  `/phone`, which states the same fact in the page's own words. */
+function OpenPhoneLink() {
+  return (
+    <Link href="/phone" className="link ui-label">
+      OPEN PHONE
+    </Link>
   );
 }
 

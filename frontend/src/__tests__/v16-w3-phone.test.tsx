@@ -124,7 +124,14 @@ const REFUSAL = () =>
 
 describe("dashboard Phone card (H-P1 consumer)", () => {
   function answerCard(overrides: Record<string, unknown> = {}) {
-    const paths: Record<string, unknown> = { "/phone/summary": ok(SUMMARY_DATA), ...overrides };
+    const paths: Record<string, unknown> = {
+      // F-37 (wave A3): the card asks this 200-when-absent config question BEFORE the summary.
+      // `available: true` keeps every case below exercising the summary path it was written for
+      // — including the 503 refusal case, which is the deployment that HAS a (broken) store.
+      "/config/phone": { configured: true, available: true },
+      "/phone/summary": ok(SUMMARY_DATA),
+      ...overrides,
+    };
     mockApiGet.mockImplementation((path: string) => {
       const value = paths[path];
       if (value === undefined) return Promise.reject(new Error(`unexpected read: ${path}`));

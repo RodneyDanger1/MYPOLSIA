@@ -29,6 +29,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { Button, cn } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 import { useActivityFeed, type FeedStatus } from "@/hooks/useActivityFeed";
 import type { ActivityEvent } from "@/lib/api";
 
@@ -210,6 +211,10 @@ export function ActivityStrip() {
 
   const closeOverlay = () => setOpen(false);
 
+  // F-40 / A2A3-01: the modal law (document-level Escape + a Tab trap) is the shared hook. The
+  // strip's own copy bound both to the panel; a click on the log's text left Escape dead.
+  useDialogFocusTrap(dialogRef, closeOverlay, open);
+
   const toggleLog = () => {
     if (open) closeOverlay();
     else openOverlay();
@@ -318,34 +323,6 @@ export function ActivityStrip() {
             aria-labelledby={titleId}
             data-testid="activity-log"
             className="card-surface my-4 flex w-full max-w-[637px] flex-col shadow-2xl"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                closeOverlay();
-                return;
-              }
-              // Tab is trapped inside the modal: focus must not walk into the page behind it.
-              if (e.key !== "Tab") return;
-              const panel = dialogRef.current;
-              if (!panel) return;
-              const focusables = Array.from(
-                panel.querySelectorAll<HTMLElement>(
-                  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-                ),
-              ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
-              if (focusables.length === 0) return;
-              const first = focusables[0];
-              const last = focusables[focusables.length - 1];
-              const active = document.activeElement;
-              if (e.shiftKey) {
-                if (active === first || !panel.contains(active)) {
-                  e.preventDefault();
-                  last.focus();
-                }
-              } else if (active === last || !panel.contains(active)) {
-                e.preventDefault();
-                first.focus();
-              }
-            }}
           >
             <header className="flex items-center gap-2 border-b border-line px-4 py-2">
               <h2 id={titleId} className="ui-label text-ink">

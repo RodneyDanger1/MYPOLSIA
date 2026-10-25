@@ -4,6 +4,7 @@ import { useEffect, useId, useRef } from "react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 
 import { TaskDetailContent } from "./TaskDetailContent";
 import type { TaskRow } from "./types";
@@ -48,6 +49,12 @@ export function TaskDetailSheet({
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Escape from anywhere (a click on the sheet's own text moves focus to <body>) and a Tab trap
+  // inside the panel — F-40 / A2A3-01. Focus-in/return stay here: this sheet returns to the
+  // control that opened it.
+  useDialogFocusTrap(panelRef, onClose);
 
   useEffect(() => {
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -63,12 +70,10 @@ export function TaskDetailSheet({
       style={{ backgroundColor: SCRIM }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") onClose();
-        }}
         className="card-surface my-4 w-full max-w-[637px] shadow-2xl"
       >
         <header className="flex items-center gap-2 border-b border-line px-4 py-2">

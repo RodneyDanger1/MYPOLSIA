@@ -14,6 +14,7 @@ import {
   WIDGETS,
 } from "@/components/dashboard/dashboardLayout";
 import { Switch, cn } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 
 /**
  * The Edit Dashboard sheet (wave V12-G1) — the live product's dashboard editor.
@@ -32,6 +33,12 @@ import { Switch, cn } from "@/components/ui";
 export function DashboardEditorSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const layout = useDashboardLayout();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // A2A3-01: this modal had no Tab trap at all, and its Escape lived on the panel — a click on
+  // the sheet's own text moved focus to <body> and the modal became unclosable by keyboard.
+  // `open` is passed because the component returns null while closed.
+  useDialogFocusTrap(panelRef, onClose, open);
 
   // Move focus into the sheet on open; return it to whatever opened the sheet
   // (the topbar EDIT button) on close — Esc must never strand the keyboard user.
@@ -53,17 +60,12 @@ export function DashboardEditorSheet({ open, onClose }: { open: boolean; onClose
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Edit Dashboard"
         data-testid="dashboard-editor"
         className="panel-pop max-h-[75vh] w-[460px] overflow-y-auto"
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            onClose();
-          }
-        }}
       >
         <div className="flex items-center justify-between border-b border-line px-3 py-2">
           <p className="ui-label text-ink">Edit Dashboard</p>

@@ -1,6 +1,37 @@
 import type { Task } from "@/lib/api";
 
 /**
+ * The plan edge the orchestrator persisted on the task row (`TaskResponse.plan`, F-36).
+ *
+ * Provenance, not a claim: the five keys the plan's own `TaskSpec` requires a model to state
+ * (`backend/app/schemas/agent_outputs.py`), narrowed at the API boundary by a computed field (it
+ * is NOT the raw `metadata` bag — that would serve the private `approval_token`). Every key is
+ * optional: the server omits an estimate the model never stated, and absence prints as absence —
+ * "the model did not price it" and "it costs nothing" are different facts.
+ */
+export type PlanEdge = {
+  depends_on?: string[];
+  /**
+   * The spelling the morning cycle persists TODAY (`celery_app/tasks/daily_cycle.py:619-628`
+   * writes `depends_on_titles` flat on the metadata bag). Read only when the served
+   * `depends_on` is absent: a client that printed "no dependency" while the row records one
+   * would be stating something false, so both spellings are honoured — one shape is rendered.
+   */
+  depends_on_titles?: string[];
+  side_effect?: string;
+  estimate_usd?: number;
+  estimate_seconds?: number;
+  acceptance?: string;
+};
+
+/** The dependency TITLES a plan edge records, in either spelling the server may serve. */
+export function planDependencies(plan: PlanEdge): string[] {
+  if (Array.isArray(plan.depends_on)) return plan.depends_on;
+  if (Array.isArray(plan.depends_on_titles)) return plan.depends_on_titles;
+  return [];
+}
+
+/**
  * The wire row these pages render. `GET /tasks` answers with the backend's `TaskResponse`
  * (`backend/app/schemas/task.py`), which carries fields the shared `Task` type stops short of;
  * declaring them here as OPTIONAL additions is additive (no shared file is changed) — the same
@@ -17,6 +48,12 @@ import type { Task } from "@/lib/api";
  *   * `completed_at` — set only when `status == "completed"`; a failed task did not complete;
  *   * `cost_usd` — the SUM of the task's runs-ledger costs; null = unmeasured, never zero;
  *   * `tokens_in` / `tokens_out` — the same NULL discipline as `cost_usd`.
+ *
+ * The two F-36 / A5-02 computed fields:
+ *   * `plan` — the plan edge (above); null when the task was not materialised by the orchestrator,
+ *     so a hand-made task renders no provenance section at all;
+ *   * `approval_required` — the STRUCTURED fingerprint list the worker parks on the row. The
+ *     Approve control reads this before the prose in `result_summary`.
  */
 export type TaskRow = Task & {
   description?: string | null;
@@ -27,6 +64,8 @@ export type TaskRow = Task & {
   cost_usd?: number | null;
   tokens_in?: number | null;
   tokens_out?: number | null;
+  plan?: PlanEdge | null;
+  approval_required?: { fingerprint: string }[] | null;
 };
 
 /** `POST /agents/{agent_type}/trigger` (agents.py:54-58, 202). */

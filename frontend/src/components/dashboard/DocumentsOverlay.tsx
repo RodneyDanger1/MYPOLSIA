@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
 
 import { Button, Tabs, type TabItem } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 import { api } from "@/lib/api";
 
 import { absoluteStamp } from "./format";
@@ -76,6 +76,10 @@ export function DocumentsOverlay({ open, onClose }: { open: boolean; onClose: ()
   const [list, setList] = useState<ReportsList | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // F-40 / A2A3-01: the modal law (document-level Escape + a Tab trap) is the shared hook; this
+  // overlay used to hand-roll both on the panel, so Escape died as soon as focus left it.
+  useDialogFocusTrap(panelRef, onClose, open);
+
   // Fresh read on every OPEN transition: the overlay keeps no cached answer between opens.
   useEffect(() => {
     if (!open) return;
@@ -120,36 +124,6 @@ export function DocumentsOverlay({ open, onClose }: { open: boolean; onClose: ()
       ? `${shown} OF ${total}${capped ? ` — showing the newest ${items.length}` : ""}`
       : null;
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    // Tab is trapped inside the dialog (the brief's a11y pin). The strip's roving tabIndex keeps
-    // exactly one tab in the tab order, so the trap walks: ✕ ↔ the active segment.
-    const panel = panelRef.current;
-    if (!panel) return;
-    const focusables = Array.from(
-      panel.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      ),
-    ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    const active = document.activeElement;
-    if (event.shiftKey) {
-      if (active === first || !panel.contains(active)) {
-        event.preventDefault();
-        last.focus();
-      }
-    } else if (active === last || !panel.contains(active)) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4"
@@ -163,7 +137,6 @@ export function DocumentsOverlay({ open, onClose }: { open: boolean; onClose: ()
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onKeyDown={onKeyDown}
         className="card-surface my-4 w-full max-w-[637px] shadow-2xl"
       >
         <header className="flex items-center gap-2 border-b border-line px-4 py-2">

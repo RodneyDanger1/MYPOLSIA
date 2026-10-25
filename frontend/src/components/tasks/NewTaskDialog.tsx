@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 import { api } from "@/lib/api";
 
 import { readErrorText } from "@/components/dashboard/states";
@@ -79,6 +80,10 @@ export function NewTaskDialog({
   const imagesFieldId = useId();
   const titleInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  // The modal law lives in ONE hook (F-40 / A2A3-01): Escape from anywhere, Tab trapped inside
+  // the panel. This dialog's own handler used to bind Escape to the panel, so a click on the
+  // dialog's text (focus -> <body>) left it unclosable by keyboard.
+  useDialogFocusTrap(dialogRef, onClose);
   const openerRef = useRef<HTMLElement | null>(null);
   const [title, setTitle] = useState("");
   const [agentType, setAgentType] = useState("");
@@ -210,34 +215,6 @@ export function NewTaskDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            onClose();
-            return;
-          }
-          // Tab is trapped inside the modal: focus must not walk into the page behind it.
-          if (e.key !== "Tab") return;
-          const panel = dialogRef.current;
-          if (!panel) return;
-          const focusables = Array.from(
-            panel.querySelectorAll<HTMLElement>(
-              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-            ),
-          ).filter((element) => !element.hasAttribute("disabled") && element.tabIndex >= 0);
-          if (focusables.length === 0) return;
-          const first = focusables[0];
-          const last = focusables[focusables.length - 1];
-          const active = document.activeElement;
-          if (e.shiftKey) {
-            if (active === first || !panel.contains(active)) {
-              e.preventDefault();
-              last.focus();
-            }
-          } else if (active === last || !panel.contains(active)) {
-            e.preventDefault();
-            first.focus();
-          }
-        }}
         className="card-surface my-4 w-full max-w-[560px] shadow-2xl"
       >
         <header className="flex items-center gap-2 border-b border-line px-4 py-2">

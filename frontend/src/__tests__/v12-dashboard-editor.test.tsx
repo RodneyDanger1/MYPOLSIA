@@ -108,6 +108,9 @@ const RESPONSES: Record<string, unknown> = {
   "/chat": { items: [], total: 0 },
   "/notifications": { items: [], count: 0 },
   "/config/deepseek-key": { configured: true, source: "stored", masked: "sk-…1234" },
+  // F-37 (wave A3): before the bare "/config" key, or the startsWith scan would answer the
+  // Phone card's `/config/phone` with the company row.
+  "/config/phone": { configured: true, available: true },
   "/config": { website_url: null },
   "/health": { status: "ok" },
   // V16/W3: the Phone card (left rail) reads the H-P1 summary — envelope `{ok, data}` in the
