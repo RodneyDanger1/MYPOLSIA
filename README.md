@@ -343,9 +343,11 @@ make shell-backend   # Open a shell in the backend container
 make migrate         # Run Alembic migrations
 make seed            # Seed company data
 make init-db         # migrate + seed
-make test            # Run unit + integration tests
+make test            # Run every shipped suite: unit + integration + parity + red-team
 make test-unit       # Unit tests only
-make lint            # Ruff + mypy + ESLint
+make test-parity     # Route/settings/refusal contract parity (CI runs it too)
+make test-redteam    # Adversarial suite (CI runs it too)
+make lint            # Ruff (app/ celery_app/ tests/ — the CI scope) + mypy + ESLint
 make reset-db        # Drop and recreate schema
 make smoke           # GET-only acceptance against the running stack (named PASS/FAIL, exit code)
 make smoke-dry       # Print the smoke plan; no request is made
@@ -619,7 +621,8 @@ rebuild.
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
   `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 107
-  method+path operations (V29 measurement from the app's own OpenAPI schema; the original 65-route
+  method+path operations (wave A3 measurement from the app's own OpenAPI schema; V29 measured
+  106, and wave A3's `GET /api/v1/config/phone` is the 107th. The original 65-route
   tree documented through V9 is pinned route-by-route in `backend/tests/parity/`).
 
 ## CI/CD
@@ -628,7 +631,7 @@ Three GitHub Actions workflows run automatically:
 
 | Workflow | Trigger | Jobs |
 |----------|---------|------|
-| `ci.yml` | PR + push to main | Lint (ruff, ESLint, and **mypy as a hard gate since V21** — the step carries no `|| true`), unit tests |
+| `ci.yml` | PR + push to main | Lint (ruff on `app/ celery_app/ tests/`, ESLint, and **mypy as a hard gate since V21** — the step carries no `|| true`), unit tests, the parity suite and the red-team suite — three separate pytest steps, so a red suite fails the job (F-44) |
 | `integration.yml` | Push to main | Integration tests (testcontainers), Playwright E2E |
 | `docker-build.yml` | Push to main | Build all images, health-check the stack |
 

@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore restore-drill smoke smoke-dry
+.PHONY: up down build logs shell-backend migrate seed init-db test test-unit test-integration test-parity test-redteam lint lint-backend lint-frontend e2e reset-db dev-backend dev-frontend dev-e2e backup restore restore-drill smoke smoke-dry
 
 up:
 	docker-compose up -d
@@ -29,10 +29,29 @@ test-unit:
 test-integration:
 	docker-compose exec backend pytest tests/integration/ -v -m integration
 
-test: test-unit test-integration
+# F-44: `tests/parity` (route/settings/refusal contract) and `tests/redteam` (adversarial) were
+# reachable by no entry point at all — `make test` ran unit + integration only, and no workflow
+# ran either suite, so 206 green tests (501a2af: 206 / 0 failed / 0 errors; the JUnit `skipped=1`
+# is the redteam F2 `xfail` marker) gated nothing.  These two targets name the SAME suite paths
+# ci.yml's backend-unit job runs (`python -m pytest tests/parity -q` / `tests/redteam -q`); the
+# trailing slash and `-v` are the file's existing local style.  No `-` prefix and no `|| true`:
+# a red suite must stop `make test`.
+test-parity:
+	docker-compose exec backend pytest tests/parity/ -v
 
+test-redteam:
+	docker-compose exec backend pytest tests/redteam/ -v
+
+# Every suite the repo ships runs here, so the local gate is not a subset of CI's.
+test: test-unit test-integration test-parity test-redteam
+
+# A2A5-03: the ruff scope below is CI's, exactly (`.github/workflows/ci.yml` backend-lint job:
+# `ruff check app/ celery_app/ tests/`).  It was `ruff check app/`, so a lint error in
+# `celery_app/` or `tests/` passed the documented local gate and failed the build after the
+# push.  Keep the two target lists identical — `tests/unit/test_b1_c_platform.py` parses both.
+# `mypy app/` was already the CI scope and is unchanged.
 lint-backend:
-	docker-compose exec backend ruff check app/
+	docker-compose exec backend ruff check app/ celery_app/ tests/
 	docker-compose exec backend mypy app/
 
 lint-frontend:

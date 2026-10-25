@@ -59,6 +59,17 @@ jobs:
         run: python -m pytest tests/unit -q
       - name: Unit tests with coverage report
         run: python -m pytest tests/unit -q --cov=app --cov-report=term-missing
+      # F-44: two thirds of the test entry points ran nowhere.  `tests/parity` (the route /
+      # settings / refusal contract) and `tests/redteam` (the adversarial suite) were green on
+      # every local run and executed by no workflow, so 206 tests (measured 2026-10-25 on
+      # 501a2af: 206 / 0 failed / 0 errors; JUnit `skipped=1` is the redteam F2 `xfail` marker,
+      # not a disabled test) could regress without reddening a build.
+      # Their own steps — not one combined `run:` — so a failure names the suite in the UI, and
+      # neither carries `continue-on-error`: a red suite has to red the job.
+      - name: Parity tests (tests/parity)
+        run: python -m pytest tests/parity -q
+      - name: Red-team tests (tests/redteam)
+        run: python -m pytest tests/redteam -q
 
   frontend:
     runs-on: ubuntu-latest
