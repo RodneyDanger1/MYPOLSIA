@@ -91,6 +91,7 @@ from celery_app.tasks._common import (
     enqueue_created,
     plan_bucket,
     run_async,
+    stamp_rearmed,
 )
 from celery_app.worker import app
 
@@ -132,6 +133,22 @@ _FIXED_MORNING_WORK: tuple[tuple[str, str, str, int], ...] = (
 # finds the committed claim and exits as a named skip.
 CYCLE_CLAIM_ACTION = "cycle_claimed"
 CYCLE_SKIP_ACTION = "cycle_tick_skipped"
+
+# ── F-21: a broker blip must not burn the company-local day ─────────────────────────────────
+# The claim above commits BEFORE any spend, so a fan-out the broker refuses used to leave the day
+# CLAIMED with its plan unrecorded and no tick left to try: `enqueue_created` raised, the cycle
+# aborted before its report, and every later tick of the window exited `already_claimed`.  These
+# two ledger actions are the re-arm and the recovery:
+#   * `cycle_rearmed` — ONE durable row per refused hand-off, carrying the ids that are still owed
+#     a delivery (the same rows `stamp_rearmed` marks for the stranded-row reconciler).  Its
+#     presence AFTER the day's claim is what RELEASES that claim (`_claim_cycle_tick`), so the day
+#     can be finished by its own next tick — and only by a tick of the SAME local day.
+#   * `cycle_recovered` — the catch-up's record: the hand-off was finished (from the plan already
+#     committed: no second model call, no second set of rows).  A re-arm followed by a recovery is
+#     finished business; a third tick sees `already_claimed` again.
+CYCLE_REARM_ACTION = "cycle_rearmed"
+CYCLE_RECOVERED_ACTION = "cycle_recovered"
+
 
 
 async def _claim_cycle_tick(
@@ -181,9 +198,33 @@ async def _claim_cycle_tick(
             )
         ).scalar_one_or_none()
         if existing is not None:
-            await db.rollback()
-            return False, int(existing)
+            # F-21: the claim is only HELD if no re-arm followed it.  A `cycle_rearmed` row written
+            # after this claim is the durable release of that claim — the day's hand-off is still
+            # owed, and the tick that writes the next claim is the one that finishes it.
+            released_by = (
+                await db.execute(
+                    select(ActivityLog.id)
+                    .where(
+                        ActivityLog.action == CYCLE_REARM_ACTION,
+                        ActivityLog.created_at >= claim_floor,
+                        ActivityLog.detail["cycle"].as_string() == cycle,
+                        ActivityLog.detail["day"].as_string() == day.isoformat(),
+                        ActivityLog.id > int(existing),
+                    )
+                    .order_by(ActivityLog.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if released_by is None:
+                await db.rollback()
+                return False, int(existing)
+        else:
+            released_by = None
 
+        rearm_detail: dict[str, Any] = {}
+        if released_by is not None:
+            # Record WHY this tick may claim again, so the ledger reads as claim -> re-arm -> claim.
+            rearm_detail["rearm_claim_id"] = int(released_by)
         claim = await log_activity(
             db,
             agent_type="orchestrator",
@@ -191,8 +232,13 @@ async def _claim_cycle_tick(
             summary=(
                 f"{cycle} cycle claimed for the company-local day {day.isoformat()} — committed "
                 "before any spend; a redelivered tick of this window skips here"
+                + (
+                    f" (re-claim after re-arm #{int(released_by)}: the day's hand-off was refused)"
+                    if released_by is not None
+                    else ""
+                )
             ),
-            detail={"cycle": cycle, "day": day.isoformat(), "window": window},
+            detail={"cycle": cycle, "day": day.isoformat(), "window": window, **rearm_detail},
         )
         claim_id = int(claim.id)
         # Durable NOW: the claim is its own committed transaction, written before the caller
@@ -234,6 +280,204 @@ async def _skip_claimed_cycle(
         "cycle": cycle,
         "day": day.isoformat(),
         "claim_id": claim_id,
+        "window": window,
+    }
+
+
+async def _cycle_rearm_owed(*, cycle: str, day: date) -> dict[str, Any] | None:
+    """The day's unfinished re-arm record — `None` when this day owes no catch-up (F-21).
+
+    Bounded to ONE company-local day by construction: the query asks for exactly `day`'s rows and
+    the caller passes TODAY's local date, so yesterday's re-arm can never be dispatched today.  The
+    answer is the LAST re-arm that no recovery followed: a re-arm, then a recovery, is finished
+    business and a third tick must not touch it again.
+    """
+    from sqlalchemy import select
+
+    from app.core.database import get_session_factory
+    from app.core.timeutil import as_bound_instant, day_bounds
+    from app.models.report import ActivityLog
+
+    async with get_session_factory()() as db:
+        local_day_start, _local_day_end = day_bounds(day)
+        floor = as_bound_instant(local_day_start - timedelta(hours=1), db)
+        rows = (
+            await db.execute(
+                select(ActivityLog.id, ActivityLog.action, ActivityLog.detail)
+                .where(
+                    ActivityLog.action.in_((CYCLE_REARM_ACTION, CYCLE_RECOVERED_ACTION)),
+                    ActivityLog.created_at >= floor,
+                    ActivityLog.detail["cycle"].as_string() == cycle,
+                    ActivityLog.detail["day"].as_string() == day.isoformat(),
+                )
+                .order_by(ActivityLog.id)
+            )
+        ).all()
+
+    owed: dict[str, Any] | None = None
+    for row_id, action, detail in rows:
+        if action == CYCLE_REARM_ACTION:
+            owed = {
+                "rearm_id": int(row_id),
+                "detail": detail if isinstance(detail, dict) else {},
+            }
+        elif action == CYCLE_RECOVERED_ACTION:
+            owed = None
+    return owed
+
+
+async def _still_undelivered(task_ids: list[int]) -> list[int]:
+    """The ids still owed a delivery: `pending`, unclaimed, still on disk (F-21's catch-up set)."""
+    from sqlalchemy import select
+
+    from app.core.database import get_session_factory
+    from app.models.task import Task
+
+    if not task_ids:
+        return []
+    async with get_session_factory()() as db:
+        rows = (
+            await db.execute(
+                select(Task.id)
+                .where(
+                    Task.id.in_(task_ids),
+                    Task.status == "pending",
+                    Task.claimed_at.is_(None),
+                )
+                .order_by(Task.id)
+            )
+        ).all()
+    return [int(row[0]) for row in rows]
+
+
+async def _rearm_cycle_tick(
+    *,
+    cycle: str,
+    day: date,
+    window: dict[str, Any],
+    claim_id: int | None,
+    task_ids: list[int],
+    reason: str,
+    code: str,
+) -> dict[str, Any]:
+    """Record that this day's hand-off is OWED, and mark the rows for the reconciler (F-21).
+
+    ONE committed transaction: the `cycle_rearmed` ledger row (the durable release of the day's
+    claim — see `_claim_cycle_tick`) plus `stamp_rearmed`'s per-row marker on the ids that were
+    never delivered.  `stamp_rearmed` is the shipped marker `maintenance._reconcile_stranded_pending`
+    reads, so the work is re-dispatched even if this process dies before the catch-up tick runs —
+    no second scheduler, no new table.
+    """
+    from app.core.database import get_session_factory
+    from app.services.activity_service import log_activity
+
+    ids = [int(task_id) for task_id in task_ids]
+    async with get_session_factory()() as db:
+        rearmed = await stamp_rearmed(db, ids, reason="cycle_publish_refused")
+        row = await log_activity(
+            db,
+            agent_type="orchestrator",
+            action=CYCLE_REARM_ACTION,
+            summary=(
+                f"{cycle} cycle fan-out refused for the company-local day {day.isoformat()} — "
+                f"{len(ids)} task(s) stay queued; the day's next tick finishes the hand-off"
+            ),
+            level="warning",
+            detail={
+                "cycle": cycle,
+                "day": day.isoformat(),
+                "window": window,
+                "reason": reason,
+                "code": code,
+                "claim_id": claim_id,
+                "task_ids": ids,
+                "rearmed": rearmed,
+            },
+        )
+        await db.commit()
+        rearm_id = int(row.id)
+    logger.warning(
+        "%s cycle: fan-out refused (%s) — re-armed %s task(s) as rearm #%s for day %s",
+        cycle, reason, len(ids), rearm_id, day,
+    )
+    return {"rearm_id": rearm_id, "task_ids": ids, "reason": reason}
+
+
+async def _catch_up_cycle(
+    *, cycle: str, day: date, window: dict[str, Any], claim_id: int | None, owed: dict[str, Any]
+) -> dict[str, Any]:
+    """Finish a refused hand-off from the plan that is ALREADY committed (F-21's catch-up).
+
+    The model call and the plan rows happened before the refusal, so nothing here re-plans: the
+    ids the re-arm recorded are re-dispatched (only those still `pending` and unclaimed — a row that
+    already ran is not sent twice), and the recovery is recorded so no later tick repeats it.  A
+    second broker refusal re-arms again and answers with a named `deferred` — never a crash, and
+    never a second model call.
+    """
+    from app.core.database import get_session_factory
+    from app.core.errors import E_REDIS, PolsiaError
+    from app.services.activity_service import log_activity
+
+    detail = owed.get("detail") or {}
+    recorded = [int(task_id) for task_id in detail.get("task_ids") or [] if isinstance(task_id, int)]
+    undelivered = await _still_undelivered(recorded)
+    dispatched: list[int] = []
+    if undelivered:
+        try:
+            await enqueue_created(undelivered, label=f"{cycle} cycle catch-up")
+            dispatched = undelivered
+        except PolsiaError as exc:
+            if exc.code != E_REDIS:
+                raise
+            rearm = await _rearm_cycle_tick(
+                cycle=cycle,
+                day=day,
+                window=window,
+                claim_id=claim_id,
+                task_ids=undelivered,
+                reason="broker_refused",
+                code=exc.code,
+            )
+            return {
+                "status": "deferred",
+                "reason": "broker_refused",
+                "cycle": cycle,
+                "day": day.isoformat(),
+                "task_ids": undelivered,
+                "rearm_id": rearm["rearm_id"],
+                "window": window,
+            }
+
+    async with get_session_factory()() as db:
+        await log_activity(
+            db,
+            agent_type="orchestrator",
+            action=CYCLE_RECOVERED_ACTION,
+            summary=(
+                f"{cycle} cycle hand-off recovered for {day.isoformat()} — {len(dispatched)} "
+                "task(s) re-queued from the committed plan (no second plan, no second model call)"
+            ),
+            level="success",
+            detail={
+                "cycle": cycle,
+                "day": day.isoformat(),
+                "window": window,
+                "rearm_id": owed.get("rearm_id"),
+                "task_ids": dispatched,
+                "already_done": [task_id for task_id in recorded if task_id not in dispatched],
+            },
+        )
+        await db.commit()
+    logger.info(
+        "%s cycle: catch-up dispatched %s task(s) for day %s (rearm #%s)",
+        cycle, len(dispatched), day, owed.get("rearm_id"),
+    )
+    return {
+        "status": "recovered",
+        "cycle": cycle,
+        "day": day.isoformat(),
+        "task_ids": dispatched,
+        "rearm_id": owed.get("rearm_id"),
         "window": window,
     }
 
@@ -443,6 +687,7 @@ async def _deny_cycle_tick(
 async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
+    from app.core.errors import E_REDIS, PolsiaError
     from app.models.task import Task
     from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
@@ -467,6 +712,22 @@ async def _morning_cycle() -> dict[str, Any]:
         "start": start.isoformat(),
         "end": end.isoformat(),
     }
+    # F-21: BEFORE the hour gate (and before any spend), ask whether TODAY's cycle owes a hand-off.
+    # A broker refusal re-arms the day (its plan and rows are already committed), and the next tick
+    # of the same company-local day finishes it FROM THAT PLAN — never a second plan, never a second
+    # model call.  The hour window cannot answer this: the refusal usually lands at the window's
+    # edge, so the tick that must retry is often the next hour's.  Bounded to `day` by construction.
+    owed = await _cycle_rearm_owed(cycle="morning", day=day)
+    if owed is not None:
+        claimed, claim_id = await _claim_cycle_tick(cycle="morning", day=day, window=window)
+        if not claimed:
+            return await _skip_claimed_cycle(
+                cycle="morning", day=day, window=window, claim_id=claim_id
+            )
+        return await _catch_up_cycle(
+            cycle="morning", day=day, window=window, claim_id=claim_id, owed=owed
+        )
+
     if not (start <= now < end):
         logger.info(
             "morning cycle skipped (outside_morning_window): now=%s window=[%s, %s) "
@@ -723,8 +984,27 @@ async def _morning_cycle() -> dict[str, Any]:
     # A group dispatches them independently (the upload ran the finance agent inline with
     # .apply(), serialising the whole cycle behind it). D2/T19 parity: a dead broker marks
     # the created rows failed instead of stranding them (see enqueue_created).
+    #
+    # F-21: a refused hand-off no longer ABORTS the cycle.  The rows are committed, the plan is
+    # in hand and the claim is already spent — so the refusal is RECORDED (a durable re-arm plus
+    # `stamp_rearmed`'s per-row marker) and the cycle's own report below still gets written.  The
+    # day's next tick finishes the hand-off from that plan; a blip must not cost the company day.
+    deferred: dict[str, Any] | None = None
     if dispatch_ids:
-        await enqueue_created(dispatch_ids, label="morning cycle")
+        try:
+            await enqueue_created(dispatch_ids, label="morning cycle")
+        except PolsiaError as exc:
+            if exc.code != E_REDIS:
+                raise
+            deferred = await _rearm_cycle_tick(
+                cycle="morning",
+                day=day,
+                window=window,
+                claim_id=claim_id,
+                task_ids=dispatch_ids,
+                reason="broker_refused",
+                code=exc.code,
+            )
 
     plan_text = str(plan.get("summary") or "Morning plan generated")
     async with session_factory() as db:
@@ -762,9 +1042,12 @@ async def _morning_cycle() -> dict[str, Any]:
                 "plan_entries": len(planned),
                 "plan_entries_dropped_by_cap": dropped_by_cap,
                 # F-02: the plan's SIZE and its hand-off are two different facts now that only
-                # the DAG's roots are dispatched at cycle time.
-                "dispatched": len(dispatch_ids),
+                # the DAG's roots are dispatched at cycle time.  F-21: a refused hand-off means
+                # NOTHING was dispatched, so the row says 0 and names the deferral rather than
+                # claiming a fan-out that did not happen.
+                "dispatched": 0 if deferred is not None else len(dispatch_ids),
                 "fanout": "celery_group",
+                "deferred": deferred is not None,
                 "day": day.isoformat(),
                 "utc_day": now.astimezone(UTC).date().isoformat(),
             },
@@ -783,6 +1066,27 @@ async def _morning_cycle() -> dict[str, Any]:
         dropped_by_cap,
         day,
     )
+    if deferred is not None:
+        # F-21: the cycle RAN (plan, rows, report, announcement); only its hand-off is owed.  The
+        # day's next tick finishes it from this plan — so the answer is a named deferral, not a
+        # crash and not a false `completed`.
+        return {
+            "status": "deferred",
+            "reason": "broker_refused",
+            "cycle": "morning",
+            "day": day.isoformat(),
+            "created": len(created),
+            "task_ids": created,
+            "deferred_task_ids": deferred["task_ids"],
+            "rearm_id": deferred["rearm_id"],
+            "queued": [],
+            "duplicates": duplicates,
+            "skipped": skipped,
+            "plan_entries": len(planned),
+            "plan_entries_dropped_by_cap": dropped_by_cap,
+            "plan_summary": plan_text,
+            "window": window,
+        }
     return {
         "status": "completed",
         "day": day.isoformat(),

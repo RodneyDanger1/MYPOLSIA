@@ -30,6 +30,7 @@ from typing import Any
 
 from app.config import settings
 from app.core.errors import (
+    E_ACTION_REPLAY_UNAVAILABLE,
     E_AGENT_BAD_OUTPUT,
     E_CLI_EXIT,
     E_CLI_JSON,
@@ -595,6 +596,602 @@ def approval_requirements(result: Any) -> list[dict[str, Any]]:
     return requirements
 
 
+# ── the approved payload: stored with the approval and REPLAYED on resume (F-14 leg B) ───────
+#: The `tasks.metadata` key carrying the exact items the owner approved, keyed by fingerprint
+#: (the shape A6's FIX-PACKETS §2 names).  The fingerprint names the ACTION — a canonical hash of
+#: class|channel|payload (`policy_firewall.fingerprint`) — and this key names the WORDS.  Producer:
+#: the parking branch of `_execute_agent_task`.  Consumer: `_approval_replay_plan` below, which
+#: performs these exact items on a resume instead of trusting a re-generated draft.  WHY it has to
+#: exist: D1 bound the token to the FULL body, so a re-worded draft can NEVER verify an old token —
+#: without the stored bytes a resume either re-parks forever or (worse) sends words the owner never
+#: saw under an approval minted for different ones.
+APPROVED_PAYLOAD_KEY = "approved_payload"
+
+#: The `tasks.metadata` key recording that a replay BEGAN for a fingerprint.  A send whose outcome
+#: is unknown is never re-sent automatically (a retry doubles the message): a marker with no
+#: outcome refuses the next resume BY NAME, and only an operator clear authorises a fresh attempt.
+APPROVAL_REPLAY_KEY = "approval_replay"
+
+#: The agent types whose parked action this worker can replay, and the provider seam each one uses.
+#: An agent outside this set cannot be replayed here: its resume refuses by name rather than
+#: falling back to a regenerated body.
+_REPLAYABLE_AGENT_TYPES = frozenset(
+    {"email_outreach", "customer_support", "social_media", "code_generation", "finance"}
+)
+
+#: Marker outcomes that mean "this send may have happened".  `gate_refused` is deliberately NOT
+#: here: the firewall answered before the provider was reachable, so nothing was sent and a later
+#: resume may reconsider the action.
+_SEND_MAY_HAVE_HAPPENED = frozenset({"sent", "provider_refused"})
+
+
+def _run_items(result: Any, key: str) -> list[dict[str, Any]]:
+    """The run's own item list under `key` (`[]` when absent, or not a list of objects)."""
+    raw = result.get(key) if isinstance(result, dict) else None
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def _project_gated_item(
+    agent_type: str, *, action: str, ref: str, result: Any, context: dict[str, Any] | None
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """`(payload, item)` for one gated receipt — the EXACT preimage the agent's own loop builds.
+
+    WHY a projection: `side_effect_receipt` carries the fingerprint, the ref and the audit record,
+    not the payload (the payload is the caller's).  The projection is SELF-CHECKED against the
+    receipt's fingerprint by `approved_payloads_for`, so a projection that drifts from an agent's
+    payload construction stores NO payload — the resume then refuses by name instead of sending a
+    body the owner did not approve.  Matching is by the receipt's own `ref`, which each agent
+    builds from the item it gated (the recipient address, the inbox message id, `post:<index>`, the
+    mention id, `<repo>#<branch>`, the PaymentIntent id).
+    """
+    if not ref:
+        return None
+    if agent_type == "email_outreach":
+        for item in _run_items(result, "emails"):
+            if str(item.get("prospect_email") or "") == ref:
+                return ({"action": action, "subject": str(item.get("subject") or ""),
+                         "body": str(item.get("body") or ""), "to": ref}, item)
+        return None
+    if agent_type == "customer_support":
+        for item in _run_items(result, "replies"):
+            if str(item.get("message_ref") or "") == ref:
+                to = str(item.get("from_address") or item.get("from") or "")
+                return ({"action": action, "ref": ref,
+                         "body": str(item.get("reply_body") or ""), "to": to}, item)
+        return None
+    if agent_type == "social_media":
+        # Two legs, two refs: a POST is `post:<index>` over `posts[]` (the index is the loop's own),
+        # a REPLY is the platform's mention id over `replies[]` (social_media/agent.py:210, :243).
+        for index, item in enumerate(_run_items(result, "posts")):
+            if ref != f"post:{index}":
+                continue
+            platform = str(item.get("platform") or "twitter")
+            return ({"action": action, "content": str(item.get("content") or ""),
+                     "ref": ref, "platform": platform}, {**item, "platform": platform})
+        for item in _run_items(result, "replies"):
+            if str(item.get("mention_id") or "").strip() != ref:
+                continue
+            return ({"action": action, "content": str(item.get("reply") or ""),
+                     "ref": ref, "platform": "twitter"},
+                    {**item, "platform": "twitter"})
+        return None
+    if agent_type == "code_generation":
+        default_repo = str(((context or {}).get("company") or {}).get("github_repo") or "")
+        for item in _run_items(result, "changes"):
+            repo = str(item.get("repo") or default_repo or "")
+            branch = str(item.get("branch") or (result.get("branch") if isinstance(result, dict)
+                                                else "") or "")
+            if f"{repo}#{branch}" != ref:
+                continue
+            if not repo or not branch or not item.get("pr_title"):
+                return None
+            return ({"action": "open_pr", "repo": repo, "branch": branch,
+                     "pr_title": str(item.get("pr_title") or ""),
+                     "pr_body": str(item.get("pr_body") or "")}, item)
+        return None
+    if agent_type == "finance":
+        for item in _run_items(result, "failed_payments"):
+            if str(item.get("payment_intent_id") or "").strip() != ref:
+                continue
+            return ({"action": "refund", "ref": ref,
+                     "event_id": str(item.get("event_id") or "")}, item)
+        return None
+    return None
+
+
+def approved_payloads_for(
+    agent_type: str, result: Any, *, context: dict[str, Any] | None = None
+) -> dict[str, dict[str, Any]]:
+    """The exact payloads a parked run's receipts name, keyed by fingerprint — never a guess.
+
+    Each record is `{agent_type, action, ref, channel, class, value_usd, payload, item, reason}`.
+    `payload` is present ONLY when `fingerprint(class, channel, payload)` reproduces the receipt's
+    own fingerprint — the self-check that makes this projection safe to replay.  Otherwise
+    `payload`/`item` stay None and `reason` names why (`no_projection`, `projection_mismatch`), so
+    the row is parked as UNREPLAYABLE instead of being sent from a fabricated payload.
+    """
+    from app.agents.policy_firewall import fingerprint
+
+    stored: dict[str, dict[str, Any]] = {}
+    for receipt in _run_items(result, "side_effects"):
+        if str(receipt.get("decision") or "") != "require_approval":
+            continue
+        fp = str(receipt.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        action_class = str(receipt.get("class") or "")
+        channel = str(receipt.get("channel") or "")
+        action = str(receipt.get("action") or "")
+        ref = str(receipt.get("ref") or "")
+        raw_value = receipt.get("value_usd")
+        try:
+            value_usd = float(raw_value) if raw_value is not None else 0.0
+        except (TypeError, ValueError):
+            # An unreadable figure is not a spend figure: the gate then sees 0.0 rather than an
+            # invented amount (the approval leg is what this record exists for).
+            value_usd = 0.0
+        record: dict[str, Any] = {
+            "agent_type": agent_type,
+            "action": action,
+            "ref": ref,
+            "channel": channel,
+            "class": action_class,
+            "value_usd": value_usd,
+            "payload": None,
+            "item": None,
+            "reason": "",
+        }
+        projected = _project_gated_item(
+            agent_type, action=action, ref=ref, result=result, context=context
+        )
+        if projected is None:
+            record["reason"] = "no_projection"
+        else:
+            payload, item = projected
+            if not action_class or fingerprint(action_class, channel, payload) != fp:
+                record["reason"] = "projection_mismatch"
+            else:
+                record["payload"] = payload
+                record["item"] = item
+        stored[fp] = record
+    return stored
+
+
+def approved_payloads(metadata: Any) -> dict[str, dict[str, Any]]:
+    """The stored approved payloads on a task row (`{}` when absent) — never a coerced value."""
+    if isinstance(metadata, dict):
+        raw = metadata.get(APPROVED_PAYLOAD_KEY)
+        if isinstance(raw, dict):
+            return {fp: record for fp, record in raw.items()
+                    if isinstance(fp, str) and isinstance(record, dict)}
+    return {}
+
+
+def parked_approval_fingerprints(metadata: Any) -> list[str]:
+    """The fingerprints a PARKED row recorded (`metadata.approval_required`) — its resume set."""
+    if isinstance(metadata, dict):
+        records = metadata.get(APPROVAL_REQUIRED_KEY)
+        if isinstance(records, list):
+            return [str(item.get("fingerprint") or "").strip() for item in records
+                    if isinstance(item, dict) and str(item.get("fingerprint") or "").strip()]
+    return []
+
+
+def approval_replays(metadata: Any) -> dict[str, dict[str, Any]]:
+    """The replay markers a row carries (`{}` when none) — the send-once ledger."""
+    if isinstance(metadata, dict):
+        raw = metadata.get(APPROVAL_REPLAY_KEY)
+        if isinstance(raw, dict):
+            return {fp: record for fp, record in raw.items()
+                    if isinstance(fp, str) and isinstance(record, dict)}
+    return {}
+
+
+def _send_may_have_happened(marker: Any) -> bool:
+    """True when a replay marker says a send BEGAN and its outcome is unknown (or was a send)."""
+    if not isinstance(marker, dict):
+        return False
+    outcome = marker.get("outcome")
+    return outcome is None or outcome in _SEND_MAY_HAVE_HAPPENED
+
+
+def unreplayable_approvals(metadata: Any) -> list[str]:
+    """The parked fingerprints this row cannot replay (no exact stored payload)."""
+    stored = approved_payloads(metadata)
+    unreplayable: list[str] = []
+    for fp in parked_approval_fingerprints(metadata):
+        record = stored.get(fp)
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("payload"), dict)
+            or not isinstance(record.get("item"), dict)
+        ):
+            unreplayable.append(fp)
+    return unreplayable
+
+
+def _approval_replay_plan(*, task_id: int, metadata: Any) -> dict[str, dict[str, Any]]:
+    """The approved actions a resume MUST replay — or a NAMED refusal (never a re-generation).
+
+    Only a row the worker PARKED (`metadata.approval_required`) has a resume set, and only the
+    exact payload the owner saw may be sent.  Two shapes refuse instead of falling back to the
+    agent: a parked fingerprint with no stored payload (re-generating would send words the owner
+    never saw under a token minted for different ones), and a fingerprint whose send already began
+    (its outcome may be unknown; a second send doubles the message).  A row with no parked set —
+    a token supplied out of band — keeps the pre-F-14 contract and returns `{}`.
+    """
+    from app.agents.policy_firewall import ActionClass
+
+    parked = parked_approval_fingerprints(metadata)
+    if not parked:
+        return {}
+    markers = approval_replays(metadata)
+    began = [fp for fp in parked if _send_may_have_happened(markers.get(fp))]
+    if began:
+        raise PolsiaError(
+            E_ACTION_REPLAY_UNAVAILABLE,
+            (
+                f"task {task_id}: the approved action(s) {began} already BEGAN on an earlier "
+                "attempt and its outcome is unknown; sending again could double the message"
+            ),
+            how_to_fix=(
+                f"confirm at the provider what really went out, then clear the fingerprint's "
+                f"entry from tasks.metadata['{APPROVAL_REPLAY_KEY}'] to authorise a fresh attempt "
+                "(nothing is re-sent automatically)"
+            ),
+            context={"task_id": task_id, "fingerprints": began, "marker": APPROVAL_REPLAY_KEY},
+        )
+    stored = approved_payloads(metadata)
+    unreplayable = unreplayable_approvals(metadata)
+    if unreplayable:
+        raise PolsiaError(
+            E_ACTION_REPLAY_UNAVAILABLE,
+            (
+                f"task {task_id}: the parked approval(s) {unreplayable} carry no stored payload, "
+                "so the action the owner approved cannot be replayed; re-running the agent would "
+                "send a REGENERATED body under an old approval"
+            ),
+            how_to_fix=(
+                f"the row was parked before tasks.metadata['{APPROVED_PAYLOAD_KEY}'] was written "
+                "(every row parked by this build carries it). Inspect the run's output, then "
+                "either re-run the task without the token (a fresh park stores the payload) or "
+                f"clear tasks.metadata['{APPROVAL_REQUIRED_KEY}'] and the token to authorise a "
+                "fresh run — nothing is re-sent automatically"
+            ),
+            context={"task_id": task_id, "fingerprints": unreplayable,
+                     "marker": APPROVED_PAYLOAD_KEY},
+        )
+    plan: dict[str, dict[str, Any]] = {}
+    for fp in parked:
+        record = dict(stored[fp])
+        if record.get("agent_type") not in _REPLAYABLE_AGENT_TYPES:
+            raise PolsiaError(
+                E_ACTION_REPLAY_UNAVAILABLE,
+                (
+                    f"task {task_id}: this worker has no replay leg for agent "
+                    f"{record.get('agent_type')!r}; the approved action cannot be performed "
+                    "without re-generating it"
+                ),
+                how_to_fix="perform the approved action from its run output, or re-run the task "
+                           "without a token; nothing is re-sent automatically",
+                context={"task_id": task_id, "fingerprint": fp,
+                         "agent_type": record.get("agent_type")},
+            )
+        try:
+            ActionClass(str(record.get("class") or ""))
+        except ValueError as exc:
+            raise PolsiaError(
+                E_ACTION_REPLAY_UNAVAILABLE,
+                f"task {task_id}: the stored approval {fp} names an unknown action class "
+                f"{record.get('class')!r}",
+                how_to_fix="inspect tasks.metadata['approved_payload'] for that fingerprint",
+                context={"task_id": task_id, "fingerprint": fp, "class": record.get("class")},
+            ) from exc
+        plan[fp] = record
+    return plan
+
+
+async def _stamp_replay_started(task_id: int, fingerprints: list[str], *, worker: str) -> None:
+    """Record that these replays are BEGINNING — committed BEFORE any provider is reachable.
+
+    The marker is the whole "never double a message" rule: a process that dies mid-send leaves the
+    stamp, and the next resume refuses by name (`_approval_replay_plan`) instead of sending twice.
+    Its own committed transaction, so the marker cannot be lost with the run's rollback.
+    """
+    from app.core.database import get_session_factory
+    from app.core.timeutil import now_utc
+    from app.services.task_service import get_task
+
+    stamp = now_utc().isoformat()
+    async with get_session_factory()() as db:
+        row = await get_task(db, task_id)
+        if row is None:
+            raise PolsiaError(
+                E_NOT_FOUND,
+                f"task {task_id} vanished before its approved payload could be replayed",
+                context={"task_id": task_id},
+            )
+        merged = dict(row.metadata_json or {})
+        markers = dict(merged.get(APPROVAL_REPLAY_KEY) or {})
+        for fp in fingerprints:
+            markers[fp] = {"started_at": stamp, "worker": worker}
+        merged[APPROVAL_REPLAY_KEY] = markers
+        row.metadata_json = merged
+        await db.commit()
+
+
+async def _perform_approved_action(
+    agent_type: str, record: dict[str, Any], *, context: dict[str, Any]
+) -> tuple[bool, dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Perform ONE stored approved item through the ONE send path its agent already uses.
+
+    Returns `(performed, {result_key: [item]}, provider_result)`.  The provider call runs OFF the
+    loop (`asyncio.to_thread`) exactly like the agent's run does, because the two compliance
+    senders own a coroutine of their own and the integration adapters are blocking.  No new egress
+    is created here: every branch calls the shipped sender the agent's own loop calls, so the
+    compliance footer, the opt-out gate, the caps and the provider adapters are the same ones.
+    """
+    payload = dict(record.get("payload") or {})
+    item = dict(record.get("item") or {})
+    # ONE annotation for the item each branch shapes (mypy: a per-branch `out: dict[...]`
+    # is a redefinition of the same local).
+    out: dict[str, Any]
+    if agent_type == "email_outreach":
+        from app.agents.email_outreach.compliance_send import send_outreach_email as sender
+
+        provider = await asyncio.to_thread(
+            sender,
+            to=str(payload.get("to") or ""),
+            subject=str(payload.get("subject") or ""),
+            body=str(payload.get("body") or ""),
+            context=context,
+        )
+        message_id = str((provider.get("result") or {}).get("message_id") or "")
+        out = {
+            "prospect_email": str(payload.get("to") or ""),
+            "subject": str(payload.get("subject") or ""),
+            "body": str(payload.get("body") or ""),
+            "status": "sent" if provider.get("ok") and message_id else "failed",
+            "sendgrid_id": message_id,
+        }
+        return (out["status"] == "sent", {"emails": [out]}, provider)
+    if agent_type == "customer_support":
+        from app.agents.customer_support.send_bridge import send_cs_reply as sender
+
+        provider = await asyncio.to_thread(
+            sender,
+            to=str(payload.get("to") or ""),
+            subject=f"Re: {item.get('subject') or 'your message'}",
+            body=str(payload.get("body") or ""),
+            context=context,
+        )
+        message_id = str((provider.get("result") or {}).get("message_id") or "")
+        out = {
+            **item,
+            "from_address": str(payload.get("to") or item.get("from_address") or ""),
+            "reply_body": str(payload.get("body") or ""),
+            "status": "sent" if provider.get("ok") and message_id else "failed",
+            "sendgrid_id": message_id,
+        }
+        return (out["status"] == "sent", {"replies": [out]}, provider)
+    if agent_type == "social_media":
+        from app.agents import integrations
+
+        kwargs: dict[str, Any] = {"platform": str(payload.get("platform") or "twitter")}
+        if item.get("image_url"):
+            kwargs["image_url"] = str(item["image_url"])
+        if item.get("mention_id"):
+            kwargs["reply_to"] = str(item["mention_id"])
+        provider = await asyncio.to_thread(
+            integrations.post_tweet, str(payload.get("content") or ""), **kwargs
+        )
+        published = provider.get("result") or {}
+        provider_id = str(published.get("id") or "")
+        out = {
+            "content": str(payload.get("content") or "")[:1000],
+            "platform": kwargs["platform"],
+            "tweet_id": provider_id,
+        }
+        return (bool(provider.get("ok")) and bool(provider_id), {"posted": [out]}, provider)
+    if agent_type == "code_generation":
+        from app.agents import integrations
+
+        provider = await asyncio.to_thread(
+            integrations.open_pull_request,
+            repo=str(payload.get("repo") or ""),
+            branch=str(payload.get("branch") or ""),
+            title=str(payload.get("pr_title") or ""),
+            body=str(payload.get("pr_body") or ""),
+        )
+        published = provider.get("result") or {}
+        out = {
+            "repo": str(payload.get("repo") or ""),
+            "branch": str(payload.get("branch") or ""),
+            "url": str(published.get("url") or ""),
+            "number": published.get("number"),
+        }
+        return (bool(provider.get("ok")) and bool(out["url"]), {"pulls": [out]}, provider)
+    if agent_type == "finance":
+        from app.agents import integrations
+
+        raw_amount = item.get("amount_cents")
+        amount = raw_amount if isinstance(raw_amount, int) and not isinstance(raw_amount, bool) else None
+        provider = await asyncio.to_thread(
+            integrations.refund_payment,
+            payment_id=str(payload.get("ref") or ""),
+            amount_cents=amount,
+        )
+        out = {
+            "payment_intent_id": str(payload.get("ref") or ""),
+            "amount_cents": amount,
+            "refund": provider.get("result") if provider.get("ok") else None,
+        }
+        return (bool(provider.get("ok")), {"refunds": [out]}, provider)
+    raise PolsiaError(
+        E_ACTION_REPLAY_UNAVAILABLE,
+        f"no approved-action performer for agent {agent_type!r}",
+        how_to_fix="perform the approved action from its run output; nothing is re-sent automatically",
+        context={"agent_type": agent_type},
+    )
+
+
+async def _replay_approved_actions(
+    *,
+    agent_type: str,
+    task_id: int,
+    approved: dict[str, dict[str, Any]],
+    context: dict[str, Any],
+    approval_token: str,
+) -> dict[str, Any]:
+    """Perform the STORED approved actions — the resume path, with no model call at all.
+
+    Every item goes through the SAME gate the agent's loop uses (`side_effects.request_side_effect`
+    with the operator's token, the STORED payload and the measured channel counts): the token is
+    re-verified against the stored bytes, so nothing can be sent that the owner did not approve.
+    A gate refusal is RECORDED (the fingerprint stays parked and comes back in `approval_required`);
+    a performed send is shaped into the agent's own output key so `_persist_run_artifacts` writes
+    the same artifact row a live run would (`email_logs`, `social_posts`).
+    """
+    from app.agents.policy_firewall import (
+        ActionClass,
+        configured_approval_secret,
+        verify_approval,
+    )
+    from app.agents.side_effects import request_side_effect, side_effect_receipt
+    from app.core.timeutil import now_utc
+
+    secret = configured_approval_secret()
+    receipts: list[dict[str, Any]] = []
+    performed_keys: dict[str, list[dict[str, Any]]] = {}
+    outcomes: dict[str, dict[str, Any]] = {}
+    blocked: list[PolsiaError] = []
+    counts_by_channel = (context or {}).get("channel_sends") or {}
+    for fp, record in approved.items():
+        payload = dict(record.get("payload") or {})
+        channel = str(record.get("channel") or "")
+        # The token NAMES one fingerprint.  A reversible action the owner never approved would be
+        # ALLOWed by the gate on its own merits (no taint in this worker thread, no cap hit), so
+        # the coverage check is what keeps an un-approved item from riding along: it stays parked.
+        if not secret or not verify_approval(secret, approval_token, action_fingerprint=fp):
+            receipts.append({
+                "action": str(record.get("action") or ""),
+                "ref": str(record.get("ref") or ""),
+                "performed": False,
+                "decision": "require_approval",
+                "class": str(record.get("class") or ""),
+                "channel": channel,
+                "fingerprint": fp,
+                "reason": "the supplied approval token does not cover this fingerprint",
+            })
+            outcomes[fp] = {"outcome": "gate_refused",
+                            "reason": "token_does_not_cover_fingerprint",
+                            "at": now_utc().isoformat()}
+            continue
+        counts = counts_by_channel.get(channel) or {} if isinstance(counts_by_channel, dict) else {}
+        try:
+            outcome = request_side_effect(
+                agent_type,
+                ActionClass(str(record.get("class") or "")),
+                channel,
+                action=str(record.get("action") or ""),
+                value_usd=float(record.get("value_usd") or 0.0),
+                payload=payload,
+                sends_today=counts.get("today") if isinstance(counts, dict) else None,
+                sends_this_hour=counts.get("hour") if isinstance(counts, dict) else None,
+                approval_secret=secret,
+                approval_token=approval_token,
+            )
+        except PolsiaError as exc:
+            # A rate/kill/policy denial raises (the agent's own loop would not continue either):
+            # nothing was sent, and the refusal is the run's own failure — an approved action that
+            # cannot be performed must never be reported as done.
+            receipts.append({
+                "action": str(record.get("action") or ""),
+                "ref": str(record.get("ref") or ""),
+                "performed": False,
+                "decision": "deny",
+                "e_code": exc.code,
+                "reason": exc.message,
+                "fingerprint": fp,
+                "channel": channel,
+            })
+            outcomes[fp] = {"outcome": "gate_refused", "code": exc.code,
+                            "at": now_utc().isoformat()}
+            blocked.append(exc)
+            continue
+        receipt = side_effect_receipt(
+            outcome, action=str(record.get("action") or ""), ref=str(record.get("ref") or "")
+        )
+        receipt["fingerprint"] = fp
+        receipt["replayed"] = True
+        if not outcome.allowed:
+            receipts.append(receipt)
+            outcomes[fp] = {"outcome": "gate_refused", "detail": outcome.reason or outcome.e_code,
+                            "at": now_utc().isoformat()}
+            continue
+        try:
+            performed, items, provider = await _perform_approved_action(
+                agent_type, record, context=context
+            )
+        except PolsiaError as exc:
+            # A pre-send refusal from the guarded sender (unconfigured identity, opt-out, missing
+            # credentials): nothing reached the provider, so the marker must NOT claim a send.
+            receipt["e_code"] = exc.code
+            receipt["reason"] = exc.message
+            receipts.append(receipt)
+            outcomes[fp] = {"outcome": "gate_refused", "code": exc.code,
+                            "at": now_utc().isoformat()}
+            continue
+        receipt["integration"] = provider
+        receipts.append(receipt)
+        for key, rows in items.items():
+            performed_keys.setdefault(key, []).extend(rows)
+        # Read each key ONCE into a local (this file's rule): `.get()` twice defeats narrowing.
+        raw_error = provider.get("error")
+        provider_error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
+        outcomes[fp] = {
+            "outcome": "sent" if performed else "provider_refused",
+            "provider_code": str(provider_error.get("code") or ""),
+            "at": now_utc().isoformat(),
+        }
+        if not performed:
+            blocked.append(PolsiaError(
+                E_INTEGRATION,
+                f"{agent_type}: the approved action could not be performed — "
+                f"{provider_error.get('message') or 'the provider refused it'}",
+                how_to_fix=(
+                    "read the provider's refusal in this run's activity; the send-once marker "
+                    "stops a blind retry, and clearing it would re-send"
+                ),
+                context={"task_id": task_id, "fingerprint": fp, "provider": provider_error},
+            ))
+
+    if blocked:
+        # An approved action that could NOT be performed is this run's failure.  Reporting the task
+        # `completed` would claim the owner's send happened when it did not.
+        raise blocked[0]
+
+    sent = [fp for fp, record in outcomes.items() if record.get("outcome") == "sent"]
+    still_parked = [fp for fp, record in outcomes.items()
+                    if record.get("outcome") in ("gate_refused", "provider_refused")]
+    summary = (
+        f"replayed {len(sent)} approved action(s) from the payload the owner approved"
+        if sent else "replayed the approved payload: nothing was sent"
+    )
+    if still_parked:
+        summary += f"; {len(still_parked)} action(s) remain parked"
+    result: dict[str, Any] = {
+        "summary": summary,
+        "agent_type": agent_type,
+        "side_effects": receipts,
+        "approval_replay": outcomes,
+        APPROVED_PAYLOAD_KEY: approved,
+    }
+    for key, rows in performed_keys.items():
+        result[key] = rows
+    return result
+
+
 @app.task(
     name="celery_app.tasks.agent_tasks.run_agent_task",
     bind=True,
@@ -869,6 +1466,59 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             )
             await db.commit()
 
+    # ── 1c. F-14 leg B: decide whether this delivery is a REPLAY, before any ledger row ──────
+    # A row this worker PARKED carries the fingerprints the owner mints for (`approval_required`)
+    # and, since F-14 leg B, the exact payloads those fingerprints name
+    # (`metadata.approved_payload`).  When the token is supplied the resume performs THOSE items:
+    # the model is not asked again, because a regenerated draft is either a different action (D1
+    # bound the token to the FULL body, so a re-worded draft cannot verify) or — worse — an action
+    # the gate ALLOWs for words the owner never saw.  A parked row with nothing stored refuses
+    # HERE, by name, before any provider is reachable and before a run row exists (so a refusal
+    # leaves no forever-`running` ledger row).  A token on a row that was never parked keeps the
+    # pre-F-14 contract (`_approval_replay_plan` returns {}), so the shipped
+    # supply-a-credential path is byte-identical.
+    replay: dict[str, dict[str, Any]] = {}
+    if approval_token:
+        try:
+            replay = _approval_replay_plan(task_id=task_id, metadata=task_dict.get("metadata"))
+        except PolsiaError as exc:
+            if exc.code != E_ACTION_REPLAY_UNAVAILABLE:
+                raise
+            logger.warning("run_agent_task(%s): %s", task_id, exc)
+            # Refused BEFORE execution (no provider call, no ledger row): the row lands the
+            # product's `rejected` state and the claim is released, exactly like the budget
+            # gate's terminal refusal — a retry would refuse identically forever.
+            async with session_factory() as db:
+                task_row = await update_task_status(
+                    db, task_id, "rejected",
+                    error_message=f"{exc.code}: {exc.message} — {exc.how_to_fix}",
+                )
+                if task_row is not None:
+                    task_row.claimed_by = None
+                    task_row.claimed_at = None
+                    task_row.heartbeat_at = None
+                await log_activity(
+                    db,
+                    agent_type=agent_type,
+                    action="approval_replay_refused",
+                    summary=(
+                        f"task {task_id}: the approved payload cannot be replayed "
+                        f"({exc.code}) — nothing was sent"
+                    ),
+                    level="warning",
+                    detail={"task_id": task_id, **dict(exc.context or {})},
+                )
+                await db.commit()
+            return {
+                "status": "skipped",
+                "task_id": task_id,
+                "agent_type": agent_type,
+                "task_status": "rejected",
+                "reason": exc.code,
+                "error": exc.message,
+                "how_to_fix": exc.how_to_fix,
+            }
+
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
     async with session_factory() as db:
         context = await get_full_context(db)
@@ -903,6 +1553,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # `data/workspace/runs/<run_id>/` instead of the shared root.  A string on purpose: the id
     # becomes ONE path segment and the registry validates its charset before any path exists.
     task_dict["run_id"] = str(run_id)
+
+    # ── 2c. F-14 leg B: hand the stored approved payload to the run ───────────────────────────
+    # The packet's hand-off key: an agent-side consumer (A6 FIX-PACKETS §2) reads the same records
+    # out of the task's metadata; this puts them in front of the run without forking the metadata
+    # column.  The replay itself happens in the run leg below (`_replay_approved_actions`), so the
+    # model is never asked for a body the owner already approved.
+    if replay:
+        task_dict["approved_payload"] = replay
 
     # ── 2b. publish the run's state BEFORE its heartbeat and its thread exist ────────────────
     # T02/D1: the run's approval material (`asyncio.to_thread` copies the current context into the
@@ -986,7 +1644,21 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         # V8/C5: the pause decision was already made above (the `rejected` gate) — by the time
         # this line runs the company is known unpaused.  The sync seam's `dispatch_paused`
         # parameter stays for direct callers of `run_agent_for_task` and is exercised by tests.
-        result = await asyncio.to_thread(run_agent_for_task, agent_type, task_dict, context)
+        #
+        # F-14 leg B: a resume whose parked payload is stored REPLAYS it.  `_stamp_replay_started`
+        # commits the send-once marker BEFORE the provider is reachable, so a process killed mid
+        # send leaves evidence instead of a second message on the next delivery.
+        if replay:
+            await _stamp_replay_started(task_id, list(replay), worker=me)
+            result = await _replay_approved_actions(
+                agent_type=agent_type,
+                task_id=task_id,
+                approved=replay,
+                context=context,
+                approval_token=approval_token,
+            )
+        else:
+            result = await asyncio.to_thread(run_agent_for_task, agent_type, task_dict, context)
     except Exception as exc:  # noqa: BLE001 — classified, persisted and (maybe) retried
         failure = exc
     finally:
@@ -1119,9 +1791,45 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 if task_status == "awaiting_approval":
                     # "recorded in its result metadata": merge — never replace — the required
                     # fingerprints into `tasks.metadata`, the documented per-task payload channel.
+                    #
+                    # F-14 leg B: the fingerprints alone are not enough to resume — the token D1
+                    # mints binds the FULL body, so the resume must send the exact words the owner
+                    # saw.  They are stored beside the fingerprints, MERGED over anything already
+                    # there (a re-park after a partial replay keeps the records it did not touch).
                     merged = dict(task_row.metadata_json or {})
                     merged[APPROVAL_REQUIRED_KEY] = approval_reqs
+                    stored_payloads = approved_payloads(merged)
+                    for fingerprint, record in approved_payloads_for(
+                        agent_type, result, context=context
+                    ).items():
+                        if (
+                            isinstance((stored_payloads.get(fingerprint) or {}).get("payload"), dict)
+                            and not isinstance(record.get("payload"), dict)
+                        ):
+                            # A re-park after a partial replay: the item is still parked, and its
+                            # stored bytes are still the approval — never downgrade them to the
+                            # replay's own (itemless) projection.
+                            continue
+                        stored_payloads[fingerprint] = record
+                    merged[APPROVED_PAYLOAD_KEY] = stored_payloads
                     task_row.metadata_json = merged
+                if replay and isinstance(result, dict):
+                    # The replay's own outcome, per fingerprint: `sent`/`provider_refused` close the
+                    # send-once marker, `gate_refused` records that nothing reached the provider (so
+                    # a later resume may reconsider it).  Written in the same transaction as the
+                    # outcome it describes.
+                    outcomes = result.get("approval_replay")
+                    if isinstance(outcomes, dict):
+                        merged = dict(task_row.metadata_json or {})
+                        markers = dict(merged.get(APPROVAL_REPLAY_KEY) or {})
+                        for fingerprint, outcome in outcomes.items():
+                            if not isinstance(fingerprint, str) or not isinstance(outcome, dict):
+                                continue
+                            merged_marker = dict(markers.get(fingerprint) or {})
+                            merged_marker.update(outcome)
+                            markers[fingerprint] = merged_marker
+                        merged[APPROVAL_REPLAY_KEY] = markers
+                        task_row.metadata_json = merged
                 if run_actions:
                     # F-13 (§4.13): append what this attempt EXECUTED to the task's action list —
                     # the cross-attempt carrier.  Re-read the column (the approval merge above

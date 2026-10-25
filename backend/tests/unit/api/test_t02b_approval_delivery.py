@@ -158,22 +158,35 @@ def _create_task_raw_metadata(queue_db, metadata) -> int:
 
 
 def _refund_delegate(seen: dict):
-    """A stand-in for the finance agent's refund leg: the REAL firewall call the agent makes."""
+    """A stand-in for the finance agent's refund leg: the REAL firewall call the agent makes.
+
+    F-14 leg B (wave B1 / seat C3) — the payload is the SHAPE the finance agent really sends
+    (`finance/agent.py:331`: `{action, ref, event_id}`) and the result carries the
+    `failed_payments` item that payload was built from.  The old stand-in hashed a payload shape
+    no agent produces (`{"action": "refund", "payment_intent": …}`) over a `ref` of its own making
+    and returned NO item, so the worker had nothing to store: a resume could only re-run the model
+    and re-send a regenerated body — the defect leg B closes.
+    """
+    paid = {"payment_intent_id": "pi_3T02b", "event_id": "evt_3T02b",
+            "amount_cents": 3000, "refund_requested": True}
+    payload = {"action": "refund", "ref": paid["payment_intent_id"], "event_id": paid["event_id"]}
 
     def delegate(agent_type, task_dict, context):  # noqa: ANN001
         published = current_run_approval()
         seen["token"] = published.token if published is not None else None
+        seen["calls"] = int(seen.get("calls") or 0) + 1
         outcome = request_side_effect(
             "finance",
             ActionClass.EXTERNAL_IRREVERSIBLE,
             "stripe",
             action="refund",
-            payload=dict(REFUND_PAYLOAD),
+            payload=dict(payload),
             value_usd=30.0,
             sends_today=0,
         )
-        receipt = side_effect_receipt(outcome, action="refund", ref="pi_3T02b")
-        return {"summary": "refund proposed", "side_effects": [receipt]}
+        receipt = side_effect_receipt(outcome, action="refund", ref=payload["ref"])
+        return {"summary": "refund proposed", "failed_payments": [paid],
+                "side_effects": [receipt]}
 
     return delegate
 
@@ -220,6 +233,24 @@ async def test_the_full_loop_over_http_the_token_is_delivered_and_the_gated_acti
 
     _configure_secret(monkeypatch, SECRET)
     delivered = _install_delay_recorder(monkeypatch)
+    # The provider side of the replayed refund (never the code under test): the replay calls the
+    # SHIPPED `integrations.refund_payment`, which refuses by name without STRIPE credentials.
+    monkeypatch.setattr(
+        "app.agents.integrations.refund_payment",
+        lambda **kw: {"ok": True, "result": {"id": "re_3T02b", "status": "succeeded"}},
+    )
+
+    # F-04 dependency, named rather than hidden: this build has no counting source for `stripe`
+    # (or `github`), so the worker's snapshot says the count is UNKNOWN and the gate refuses a
+    # capped channel it cannot verify (`POLSIA-E114 cap_unknown`) — live runs are refused the same
+    # way.  The REPLAYED action is gated exactly like a live one, so this test supplies the
+    # MEASURED count a real counter would return (the same zeros D1's egress pins hand their runs).
+    async def _measured_snapshot(db, channels, *, now=None):  # noqa: ANN001, ARG001
+        return {channel: {"today": 0, "hour": 0} for channel in channels}
+
+    monkeypatch.setattr(
+        "app.services.channel_service.channel_sends_snapshot", _measured_snapshot
+    )
     seen: dict = {}
     _install_delegate(monkeypatch, queue_db, _refund_delegate(seen))
     task_id = _create_task(queue_db, title="T02b full loop")
@@ -250,12 +281,22 @@ async def test_the_full_loop_over_http_the_token_is_delivered_and_the_gated_acti
 
     # 4. execute — the token the row carries turns the firewall's REQUIRE_APPROVAL into ALLOW
     second = queue_db.run(_execute_agent_task(task_id))
-    assert second["status"] == "completed"
-    assert second["approval_required"] == []
-    assert seen["token"] == token, "the run the worker started READ the token it was dispatched with"
+    assert second["status"] == "completed", (second, queue_db.row(task_id)["error_message"])
+    assert second["approval_required"] == [], second
+    # DELIBERATE RE-PIN (wave B1 / seat C3, F-14 leg B).  OLD:
+    #     assert seen["token"] == token, "the run the worker started READ the token it was
+    #     dispatched with"
+    # NEW: the resume REPLAYS the payload stored with the approval (`metadata.approved_payload`)
+    # and does not re-run the agent at all, so the model is not asked a second time.  The token
+    # still reaches the gate — the assert below is `decision: allow` + `approved: True`, which
+    # ONLY a verified token produces — and the delegate proves the model was not re-called.
+    assert seen["calls"] == 1, (
+        "the resume re-ran the model (a regenerated body) instead of replaying the stored payload"
+    )
     stored_run = _latest_run_output(queue_db, task_id)
     assert stored_run["side_effects"][0]["decision"] == "allow"
     assert stored_run["side_effects"][0]["approved"] is True
+    assert stored_run["approval_replay"][fp]["outcome"] == "sent", stored_run["approval_replay"]
     assert queue_db.row(task_id)["status"] == "completed"
 
 
