@@ -618,7 +618,7 @@ rebuild.
   needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
-  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 106
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 107
   method+path operations (V29 measurement from the app's own OpenAPI schema; the original 65-route
   tree documented through V9 is pinned route-by-route in `backend/tests/parity/`).
 

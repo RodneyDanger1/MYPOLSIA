@@ -112,6 +112,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     ("PUT", "/api/v1/config/deepseek-key"),
     ("DELETE", "/api/v1/config/deepseek-key"),
     ("POST", "/api/v1/config/deepseek-key/verify"),
+    # §4.16 / F-37: the phone store's availability, answered 200 in every deployment so the
+    # dashboard card can render its honest unavailable state instead of a 5xx console error.
+    ("GET", "/api/v1/config/phone"),
     ("GET", "/api/v1/dashboard/summary"),
     ("GET", "/api/v1/dashboard/activity"),
     ("GET", "/api/v1/dashboard/reports/daily"),

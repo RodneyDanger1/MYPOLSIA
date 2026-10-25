@@ -80,7 +80,7 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 
 `frontend/src/app/` holds **22 `page.tsx`** files: **19 top-level routes** in the navigation
 (`frontend/src/components/layout/nav-items.ts`) plus the root redirect and two detail routes
-(`/tasks/[id]`, `/runs/[id]`). The backend exposes **106 method+path operations** across **35 modules** in
+(`/tasks/[id]`, `/runs/[id]`). The backend exposes **107 method+path operations** across **35 modules** in
 `backend/app/api/v1/` (V29 measurement from the app's own OpenAPI schema; the V23 write counted 77 across
 26). The V22 live `/openapi.json` capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded
 `TOTAL 76`; it predates the V23–V27 surface.

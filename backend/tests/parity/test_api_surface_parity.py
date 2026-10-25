@@ -69,6 +69,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/config/deepseek-key", ("GET",)),
     ("/api/v1/config/deepseek-key", ("PUT",)),
     ("/api/v1/config/deepseek-key/verify", ("POST",)),
+    ("/api/v1/config/phone", ("GET",)),                           # §4.16 / F-37: 200 {configured, available} in EVERY deployment — S7's PhoneCard gate consumes it; NULL never 5xx here
     ("/api/v1/dashboard/activity", ("GET",)),
     ("/api/v1/dashboard/reports", ("GET",)),                     # wave V8 (C5; WAVE-PLAN V8-D7 anticipated it): the daily-reports LIST surface — OLD surface had only /reports/daily; NEW pin added deliberately with the route. Owner-key.
     ("/api/v1/dashboard/reports/daily", ("GET",)),

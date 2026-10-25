@@ -57,6 +57,7 @@ from app.core.errors import (
     E_CONFIG,
     E_DB,
     E_DEEPSEEK_KEY,
+    E_EGRESS_BLOCKED,
     E_INTEGRATION,
     E_NOT_FOUND,
     E_PHONE_UNAVAILABLE,
@@ -140,6 +141,9 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     # wave V25 (L2/L3): the Render/GitHub adapters retell a provider 5xx/timeout/malformed 2xx as
     # E_UPSTREAM — an upstream fault, 502, never a 4xx that blames the caller.
     E_UPSTREAM: 502,
+    # wave A3 (§4.15/F-27): the egress floor refused a private/loopback/link-local/RFC 6598
+    # address or a non-web port — the caller asked for it, so 403, never a 5xx.
+    E_EGRESS_BLOCKED: 403,
 }
 
 
