@@ -292,13 +292,28 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
       rows that all sit in another currency -> UNMEASURED (null) with that reason.
     * `in_30d` — summed USD money-in stripe events in the window; no events at all -> UNMEASURED
       (the webhook may simply not be configured); USD events exist but none succeeded -> a measured
-      0; money-in events that all sit in another currency -> UNMEASURED (null).
+      0; money-in events that all sit in another currency -> UNMEASURED (null); money-in events
+      whose amount was never stated -> UNMEASURED (null), because a partial sum is not a total
+      (A2A7-02's rule, applied to the inflow: a NULL amount cannot be summed into $0.00).
     * `tax_set_aside` — USD tax-categorised expenses in the window; a USD ledger with rows but no
       tax category is a measured 0; an empty (or entirely foreign) ledger is null.
+
+    THE WINDOW IS HALF-OPEN.  `day_window` answers `[start, end)`; both bounds are used.  The
+    pre-fix read was an open-ended `date >= start`, so a FUTURE-dated expense (an agent that books
+    next month's bill) counted as money already out — the exact unbounded-range defect
+    `_month_bounds` records for the month window (measured: one row dated +30 days turned a real
+    `out_30d` of 100.00 into 1099.99, `wave-b1/raw/D4/probe_attacks.out.json` §B).
     """
     reasons: dict[str, str] = {}
     today = today_in()
-    start, _ = day_window(db, today - timedelta(days=CASH_WINDOW_DAYS - 1))
+    # The window's two bounds are typed PER COLUMN.  `expense_records.date` is a DATE, so it is
+    # bounded by DATES (the `_month_bounds` pattern): comparing a DATE to a timestamp bound renders
+    # `'YYYY-MM-DD'` against `'YYYY-MM-DDThh:mm:ss…'` on SQLite, which drops the window's FIRST day
+    # and admits the day after its last.  `stripe_events.processed_at` is a timestamp and is
+    # bounded by `day_window`'s instants, `[start, end)` with `end` = tomorrow's start.
+    window_start = today - timedelta(days=CASH_WINDOW_DAYS - 1)
+    start, _ = day_window(db, window_start)
+    _, end = day_window(db, today)
 
     latest = await fetch_scalar(
         db,
@@ -340,7 +355,7 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
             func.sum(
                 case((excluded_currency_filter(ExpenseRecord.currency), 1), else_=0)
             ).label("foreign_rows"),
-        ).where(ExpenseRecord.date >= start),
+        ).where(ExpenseRecord.date >= window_start, ExpenseRecord.date <= today),
         what="cash block expenses",
     )
     expense_count, usd_expense_cents, usd_expense_count, foreign_expense_count = (
@@ -412,14 +427,31 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
                     else_=0,
                 )
             ).label("foreign_in_rows"),
-        ).where(StripeEvent.processed_at >= start),
+            # A2A7-02's rule, on the inflow side: `SUM` skips a NULL amount ROW BY ROW, so a
+            # money-in delivery Stripe stated no amount for would be summed away and the rest
+            # served as the complete inflow.  Counted here so the caller can refuse the partial.
+            func.sum(
+                case(
+                    (
+                        and_(
+                            reporting_currency_filter(StripeEvent.currency),
+                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
+                            StripeEvent.amount_cents.is_(None),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("usd_in_unmeasured"),
+        ).where(StripeEvent.processed_at >= start, StripeEvent.processed_at < end),
         what="cash block stripe telemetry",
     )
-    events_count, usd_in_cents, usd_in_count, foreign_in_count = (
-        event_rows[0] if event_rows else (0, None, 0, 0)
+    events_count, usd_in_cents, usd_in_count, foreign_in_count, usd_in_unmeasured = (
+        event_rows[0] if event_rows else (0, None, 0, 0, 0)
     )
     usd_in_count = int(usd_in_count or 0)
     foreign_in_count = int(foreign_in_count or 0)
+    usd_in_unmeasured = int(usd_in_unmeasured or 0)
 
     in_30d: float | None = None
     if not events_count:
@@ -431,6 +463,12 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
         reasons["in_30d"] = (
             f"the window's {foreign_in_count} money-in Stripe event(s) are in another currency "
             f"than {REPORTING_CURRENCY} — the USD inflow is unmeasured (nothing was converted)"
+        )
+    elif usd_in_unmeasured:
+        reasons["in_30d"] = (
+            f"{usd_in_unmeasured} of the window's {usd_in_count} USD money-in Stripe event(s) "
+            "carry no measured amount — the USD inflow cannot be summed (a partial sum is not a "
+            "total, and $0.00 would be a measurement nobody made)"
         )
     else:
         # A USD ledger with events and no USD money-in is a MEASURED zero, unlike the
@@ -467,7 +505,8 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
                 )
             ).label("foreign_rows"),
         ).where(
-            ExpenseRecord.date >= start,
+            ExpenseRecord.date >= window_start,
+            ExpenseRecord.date <= today,
             func.lower(ExpenseRecord.category).in_(TAX_EXPENSE_CATEGORIES),
         ),
         what="cash block tax set aside",
