@@ -64,6 +64,13 @@ committed, so the replay skips instead of re-running the orchestrator (the §B6 
 beat entries' `expires` were shortened below the hour (3600 -> 1800) as the second layer; the claim
 is the primary guard.  The claim is per cycle AND per local day: the evening cycle's claim is its
 own, and the next day's window claims anew.
+
+F-02 (wave A3).  The plan's `depends_on` is no longer discarded at materialisation: every planned
+row carries its edges (`metadata.depends_on_titles`, resolved to `depends_on_ids` in a second pass
+inside the SAME transaction) and only the DAG's ROOTS are handed to the broker.  A dependent is
+released by `task_service.release_ready_dependents` when its whole set has completed.  A title this
+cycle did not create, and a model-authored dependency cycle, are RECORDED on the row and released
+as roots — the plan can shorten the day but it can never make work vanish.
 """
 from __future__ import annotations
 
@@ -436,6 +443,7 @@ async def _deny_cycle_tick(
 async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
+    from app.models.task import Task
     from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
     from app.services.finance_service import recent_failed_payments
@@ -514,6 +522,8 @@ async def _morning_cycle() -> dict[str, Any]:
     planned = [entry for entry in raw_planned if isinstance(entry, dict)] if isinstance(raw_planned, list) else []
 
     created: list[int] = []
+    fixed_ids: list[int] = []
+    planned_rows: list[Task] = []
     queued: list[tuple[str, int]] = []
     duplicates: list[str] = []
     skipped: list[str] = []
@@ -556,6 +566,7 @@ async def _morning_cycle() -> dict[str, Any]:
                 duplicates.append(key)
             else:
                 created.append(task.id)
+                fixed_ids.append(task.id)
                 queued.append((agent_type, task.id))
 
         dropped_by_cap = max(0, len(planned) - MAX_PLANNED_TASKS)
@@ -601,6 +612,20 @@ async def _morning_cycle() -> dict[str, Any]:
                     raw_priority,
                 )
             key = dedupe_key(agent_type, plan_bucket(title))
+            # F-02: the plan's DAG and its non-title fields are part of the task, not decoration.
+            # `depends_on` is a list of TITLES (the schema's contract, agent_outputs.TaskSpec);
+            # they are resolved to ids in the second pass below, once every row has one.
+            raw_depends = entry.get("depends_on")
+            plan_meta: dict[str, Any] = {
+                "plan_day": day.isoformat(),
+                "depends_on_titles": (
+                    [str(t) for t in raw_depends][:8] if isinstance(raw_depends, list) else []
+                ),
+                "side_effect": str(entry.get("side_effect") or "internal_write"),
+                "acceptance": str(entry.get("acceptance") or "")[:500],
+                "estimate_usd": entry.get("estimate_usd"),
+                "estimate_seconds": entry.get("estimate_seconds"),
+            }
             try:
                 task = await create_task_deduped(
                     db,
@@ -610,6 +635,7 @@ async def _morning_cycle() -> dict[str, Any]:
                     description=entry.get("description"),
                     priority=priority,
                     source="orchestrator",
+                    metadata=plan_meta,
                 )
             except ValueError as exc:
                 # Unknown agent_type in the plan: skip that entry, keep the cycle alive
@@ -621,6 +647,7 @@ async def _morning_cycle() -> dict[str, Any]:
                 duplicates.append(key)
             else:
                 created.append(task.id)
+                planned_rows.append(task)
                 queued.append((agent_type, task.id))
 
         if len(created) < 5:
@@ -632,13 +659,72 @@ async def _morning_cycle() -> dict[str, Any]:
                 len(planned),
             )
 
+        # F-02 second pass: titles -> ids on the rows this cycle OWNS (a dedupe hit is another
+        # day's row and is left untouched), so a dependent can be dispatched by id later.  A
+        # title this cycle did not create — or the row's own title — can never be an edge:
+        # recorded in `depends_on_unresolved`, never guessed onto another row.
+        by_title = {str(row.title): int(row.id) for row in planned_rows}
+        edges: dict[int, list[int]] = {}
+        for row in planned_rows:
+            meta = dict(row.metadata_json or {})
+            own = int(row.id)
+            resolved: list[int] = []
+            unresolved: list[str] = []
+            for dep_title in meta.get("depends_on_titles") or []:
+                target = by_title.get(str(dep_title))
+                if target is None or target == own:
+                    unresolved.append(str(dep_title))
+                else:
+                    resolved.append(target)
+            meta["depends_on_ids"] = resolved
+            if unresolved:
+                meta["depends_on_unresolved"] = unresolved
+            row.metadata_json = meta
+            edges[own] = resolved
+
+        # A node whose edges can never be satisfied — a model-authored cycle — would wait for
+        # ever.  Release it as a root and NAME the cycle on the row: work must not vanish because
+        # the plan was not a DAG (the flat dispatch this fix replaces at least ran everything).
+        reachable = {node for node, deps in edges.items() if not deps}
+        changed = True
+        while changed:
+            changed = False
+            for node, deps in edges.items():
+                if node not in reachable and all(dep in reachable for dep in deps):
+                    reachable.add(node)
+                    changed = True
+        stranded = [node for node in edges if node not in reachable]
+        if stranded:
+            titles_by_id = {int(row.id): str(row.title) for row in planned_rows}
+            rows_by_id = {int(row.id): row for row in planned_rows}
+            for node in stranded:
+                row = rows_by_id[node]
+                meta = dict(row.metadata_json or {})
+                meta["depends_on_cycle"] = [titles_by_id[dep] for dep in edges[node]]
+                meta["depends_on_ids"] = []
+                row.metadata_json = meta
+                logger.warning(
+                    "morning plan: dependency cycle %s — releasing task %s as a root (recorded)",
+                    meta["depends_on_cycle"],
+                    node,
+                )
+
+        # Roots only: the fixed work and the plan's dependency-free entries.  Every dependent is
+        # released by `task_service.release_ready_dependents` when its whole set has completed.
+        roots = [
+            int(row.id)
+            for row in planned_rows
+            if not (row.metadata_json or {}).get("depends_on_ids")
+        ]
+        dispatch_ids = fixed_ids + roots
+
         await db.commit()
     # Fan out AFTER the commit: every task row exists before a worker can see its message.
     # A group dispatches them independently (the upload ran the finance agent inline with
     # .apply(), serialising the whole cycle behind it). D2/T19 parity: a dead broker marks
     # the created rows failed instead of stranding them (see enqueue_created).
-    if created:
-        await enqueue_created(created, label="morning cycle")
+    if dispatch_ids:
+        await enqueue_created(dispatch_ids, label="morning cycle")
 
     plan_text = str(plan.get("summary") or "Morning plan generated")
     async with session_factory() as db:
@@ -675,6 +761,9 @@ async def _morning_cycle() -> dict[str, Any]:
                 "duplicates": len(duplicates),
                 "plan_entries": len(planned),
                 "plan_entries_dropped_by_cap": dropped_by_cap,
+                # F-02: the plan's SIZE and its hand-off are two different facts now that only
+                # the DAG's roots are dispatched at cycle time.
+                "dispatched": len(dispatch_ids),
                 "fanout": "celery_group",
                 "day": day.isoformat(),
                 "utc_day": now.astimezone(UTC).date().isoformat(),
@@ -699,7 +788,9 @@ async def _morning_cycle() -> dict[str, Any]:
         "day": day.isoformat(),
         "created": len(created),
         "task_ids": created,
-        "queued": [{"agent_type": a, "task_id": t} for a, t in queued],
+        # F-02: `queued` is the hand-off, not the creation — a dependent this cycle created but
+        # did not dispatch (its parent has not completed yet) is NOT reported as queued.
+        "queued": [{"agent_type": a, "task_id": t} for a, t in queued if t in set(dispatch_ids)],
         "duplicates": duplicates,
         "skipped": skipped,
         "plan_entries": len(planned),

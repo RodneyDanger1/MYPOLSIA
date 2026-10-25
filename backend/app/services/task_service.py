@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, NamedTuple
 
-from sqlalchemy import case, func, literal, or_, select, update
+from sqlalchemy import and_, case, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -187,14 +187,24 @@ async def get_task(db: AsyncSession, task_id: int) -> Task | None:
 
 
 async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
-    """Load the ONE row `POST /api/v1/tasks/{task_id}/run` may dispatch — `pending`, or refuse.
+    """Load the ONE row `POST /api/v1/tasks/{task_id}/run` may dispatch — runnable now, or refuse.
 
     V24/L1's guard rail: the run route must never hand a terminal/in-flight row to the broker,
     because the worker's `claim_task` accepts ONLY `pending` rows — a dispatch of anything else
     would produce a retry ladder around a refusal instead of an answer to the caller.
 
-    Two named refusals, both BEFORE anything is mutated (the row is left byte-identical):
+    A2A6-01: "runnable" is the CLAIM's question, not half of it.  The first revision re-derived
+    it from `status == 'pending'` alone and omitted the claim's schedule window
+    (`_claimable_filter`: `scheduled_date IS NULL OR scheduled_date <= now`), so a pending row
+    dated for later answered `202 dispatched`, the worker's own claim refused it, the message
+    was consumed and nothing re-dispatched it (`source='dashboard'`, no re-arm marker).  The
+    check below is literally `_claimable_filter` — one predicate, one answer, both verbs — so
+    the two can never disagree again.
+
+    Three named refusals, all BEFORE anything is mutated (the row is left byte-identical):
       * a missing id is `E_NOT_FOUND` — the same envelope every task read answers;
+      * a `pending` row outside its schedule window is `E_TASK_NOT_RUNNABLE` with
+        `reason="scheduled_in_future"` and the row's own instant in `context`;
       * any other status (null included) is `E_TASK_NOT_RUNNABLE` with the CURRENT status in
         `context`, so an `already running` click is distinguishable from a `completed` one.
 
@@ -210,23 +220,47 @@ async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
             context={"task_id": task_id},
         )
+    # A2A6-01: ask the CLAIM's question (`_claimable_filter` is the claim's own predicate).
+    runnable_id = await db.scalar(
+        select(Task.id)
+        .where(*_claimable_filter(db, task_id=task_id, agent_type=None))
+        .limit(1)
+    )
+    if runnable_id is not None:
+        return task
     current_status = str(task.status or "")
-    if current_status != TaskStatus.PENDING:
+    if current_status == TaskStatus.PENDING:
+        scheduled = task.scheduled_date
         raise PolsiaError(
             E_TASK_NOT_RUNNABLE,
-            f"task {task_id} is {current_status or 'unknown'!r}, not 'pending'; only a queued "
-            "task can be run",
+            f"task {task_id} is scheduled for "
+            f"{scheduled.isoformat() if scheduled else 'an unset date'} and is not runnable yet",
             how_to_fix=(
-                "inspect the task's status (GET /api/v1/tasks/{task_id}); a pending task can be "
-                "run, an in-progress one is already claimed, and a terminal row must be "
-                "re-created through POST /api/v1/tasks if the work is still needed"
+                "wait until the scheduled time and run it again, or create the task without "
+                "`scheduled_date`; nothing was dispatched"
             ),
             context={
                 "task_id": task_id,
                 "status": current_status,
-                "expected": str(TaskStatus.PENDING),
+                "reason": "scheduled_in_future",
+                "scheduled_date": scheduled.isoformat() if scheduled else None,
             },
         )
+    raise PolsiaError(
+        E_TASK_NOT_RUNNABLE,
+        f"task {task_id} is {current_status or 'unknown'!r}, not 'pending'; only a queued "
+        "task can be run",
+        how_to_fix=(
+            "inspect the task's status (GET /api/v1/tasks/{task_id}); a pending task can be "
+            "run, an in-progress one is already claimed, and a terminal row must be "
+            "re-created through POST /api/v1/tasks if the work is still needed"
+        ),
+        context={
+            "task_id": task_id,
+            "status": current_status,
+            "expected": str(TaskStatus.PENDING),
+        },
+    )
     return task
 
 
@@ -631,7 +665,17 @@ async def release_claim(
         values["attempts"] = case((attempts > 0, attempts - 1), else_=0)
     stmt = (
         update(Task)
-        .where(Task.id == task_id, Task.claimed_by == str(worker))
+        .where(
+            Task.id == task_id,
+            # A2A6-02: the from-state is part of the transition.  `claimed_by` alone is NOT a
+            # from-state: `update_task_status` never clears it, so a row the OWNER cancelled
+            # mid-run still reads `claimed_by='worker-A'` and this release used to rewrite the
+            # human decision back to `pending` (refunding the attempt, and — with the pause
+            # gate's marker — dispatching a cancelled task after resume).  A row that moved on
+            # is refused below instead of being written over.
+            Task.status == "in_progress",
+            Task.claimed_by == str(worker),
+        )
         .values(**values)
         .returning(Task.id)
         .execution_options(synchronize_session=False)
@@ -650,9 +694,16 @@ async def release_claim(
         )
     raise PolsiaError(
         E_TASK_CLAIMED,
-        f"task {task_id} is not claimed by {worker!r} (claimed_by={current.claimed_by!r})",
+        f"task {task_id} is not an in_progress claim of {worker!r} "
+        f"(status={str(current.status)!r}, claimed_by={current.claimed_by!r})",
         how_to_fix=ERROR_HINTS[E_TASK_CLAIMED],
-        context={"task_id": task_id, "worker": str(worker), "claimed_by": current.claimed_by},
+        context={
+            "task_id": task_id,
+            "worker": str(worker),
+            "claimed_by": current.claimed_by,
+            "status": str(current.status or ""),
+            "expected": str(TaskStatus.IN_PROGRESS),
+        },
     )
 
 
@@ -734,6 +785,18 @@ async def requeue_stale_claims(
         # the documented seam for "one round trip, one shared `created_at`, no Redis publish".
         from app.services.activity_service import log_activities
 
+        # F-15: a requeued row has NO delivery — the message died with the worker.  Stamp the marker
+        # `maintenance._reconcile_stranded_pending` already reads, so ALL four sources are
+        # re-dispatched within one window instead of only `source='scheduler'` (the other three
+        # waited for `night_task`, ~24 h).  FAILED ids are not stamped: they are terminal by the
+        # attempts rule, and a marker on them would resurrect work the ladder has given up on.
+        # The stamp rides THIS transaction (the caller commits it with the UPDATE), so a
+        # rolled-back sweep cannot leave a marker claiming a retry that was never owed.
+        if requeued_ids:
+            from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
+
+            await stamp_rearmed(db, requeued_ids, reason="stale_claim_requeued")
+
         await log_activities(
             db,
             [
@@ -748,11 +811,76 @@ async def requeue_stale_claims(
                         "requeued_ids": requeued_ids,
                         "failed_ids": failed_ids,
                         "lease_seconds": lease,
+                        # F-15: the ledger and the row agree — every requeued id carries a
+                        # `metadata.rearmed_at` written in this same transaction.
+                        "rearmed": bool(requeued_ids),
                     },
                 }
             ],
         )
     return len(recovered)
+
+
+#: One release pass' bound (the same order as the sibling ticks; the next completion continues).
+DAG_RELEASE_BATCH = 200
+
+
+async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> list[int]:
+    """Dispatch the rows whose WHOLE dependency set is `completed` — the DAG's edge release (F-02).
+
+    `daily_cycle._morning_cycle` persists the plan's edges on the row (`metadata.depends_on_ids`,
+    titles resolved to ids in the same transaction) and dispatches only the roots; this is the
+    other half: when a task finishes, the rows waiting on it become runnable.
+
+    Bounded and dialect-portable in the house way: a LIKE prefilter on the rendered JSON column
+    (the same shape `maintenance._reconcile_stranded_pending` uses) and the exact test re-derived
+    in Python.  Every released id is stamped with `stamp_rearmed` BEFORE the caller dispatches,
+    so a broker that refuses the hand-off leaves a bounded retry (the 5-min reconciler) instead of
+    a row only a human can rescue.  The caller owns the transaction — commit, THEN hand off — so a
+    dependent can never be dispatched to a row that is not yet `completed`.
+
+    Returns the ids this pass released (empty when nothing was waiting on `completed_id`).
+    """
+    from sqlalchemy import String, cast
+
+    rows = (
+        await db.execute(
+            select(Task.id, Task.metadata_json)
+            .where(
+                Task.status == "pending",
+                cast(Task.metadata_json, String).like("%depends_on_ids%"),
+            )
+            .order_by(Task.id)
+            .limit(DAG_RELEASE_BATCH)
+        )
+    ).all()
+    candidates = [
+        (int(task_id), metadata)
+        for task_id, metadata in rows
+        if isinstance(metadata, dict) and metadata.get("depends_on_ids")
+    ]
+    if not candidates:
+        return []
+    needed = {int(dep) for _tid, meta in candidates for dep in meta["depends_on_ids"]}
+    done = set(
+        (
+            await db.execute(
+                select(Task.id).where(Task.id.in_(needed), Task.status == "completed")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ready = [
+        task_id
+        for task_id, meta in candidates
+        if all(int(dep) in done for dep in meta["depends_on_ids"])
+    ]
+    if ready:
+        from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
+
+        await stamp_rearmed(db, ready, reason=f"dag_parent_{completed_id}")
+    return ready
 
 
 # ── reads (get_agent_statuses is wired to /agents/status)
@@ -999,11 +1127,18 @@ def task_completed_at(task: Task) -> datetime | None:
 
 
 class TaskRunTotals(NamedTuple):
-    """One task's runs-ledger sums.  `None` means unmeasured — never a fabricated zero."""
+    """One task's runs-ledger sums.  `None` means unmeasured — never a fabricated zero.
+
+    `unmeasured_runs` counts the runs that finished without recording a cost (the shape F-20
+    documents: a failed run drops its measured usage).  A non-zero count means the sums below
+    are a PARTIAL total, which is why `cost_usd` is null in that case: a reader must be able to
+    tell "the money is $0.02" from "at least $0.02, and one attempt never reported" (A2A7-02).
+    """
 
     cost_usd: Decimal | None
     tokens_in: int | None
     tokens_out: int | None
+    unmeasured_runs: int
 
 
 async def get_task_run_totals(
@@ -1019,16 +1154,32 @@ async def get_task_run_totals(
     unmeasured cost is never reported as `0`.  A MEASURED zero (runs exist, the value recorded as
     0) sums to `0`/`Decimal("0.0000")` and IS reported.  A driver failure is the shared `E_DB`
     refusal (`fetch_rows`), never an empty mapping standing in for "could not read".
+
+    A2A7-02: `SUM` also ignores NULLs ROW BY ROW, so the mixed case — one priced run and one that
+    finished without reporting — used to serve the priced part as the task's complete cost.  The
+    same statement now COUNTS those runs (`unmeasured`), and a non-zero count makes `cost_usd`
+    null: a partial total is not a total.  A run still `running` is excluded from the count —
+    it has not reported YET, which is not the same fact as a run that never will.
     """
     ids = sorted({int(task_id) for task_id in task_ids})
     if not ids:
         return {}
+    unmeasured = func.sum(
+        case(
+            (
+                and_(AgentRun.cost_usd.is_(None), AgentRun.status != "running"),
+                1,
+            ),
+            else_=0,
+        )
+    ).label("unmeasured")
     stmt = (
         select(
             AgentRun.task_id,
             func.sum(AgentRun.cost_usd).label("cost_usd"),
             func.sum(AgentRun.tokens_input).label("tokens_in"),
             func.sum(AgentRun.tokens_output).label("tokens_out"),
+            unmeasured,
         )
         .where(AgentRun.task_id.in_(ids))
         .group_by(AgentRun.task_id)
@@ -1036,11 +1187,12 @@ async def get_task_run_totals(
     rows = await fetch_rows(db, stmt, what="task run totals")
     return {
         int(task_id): TaskRunTotals(
-            cost_usd=cost,
+            cost_usd=None if int(partial or 0) else cost,
             tokens_in=int(tokens_in) if tokens_in is not None else None,
             tokens_out=int(tokens_out) if tokens_out is not None else None,
+            unmeasured_runs=int(partial or 0),
         )
-        for task_id, cost, tokens_in, tokens_out in rows
+        for task_id, cost, tokens_in, tokens_out, partial in rows
     }
 
 

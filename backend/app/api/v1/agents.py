@@ -23,10 +23,11 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_REDIS, PolsiaError
+from app.core.errors import E_DB, E_REDIS, ERROR_HINTS, PolsiaError
 from app.schemas.task import AgentStatusResponse, AgentTriggerRequest, AgentTriggerResponse
 from app.services.task_service import (
     VALID_AGENT_TYPES,
@@ -87,6 +88,25 @@ async def trigger_agent(
             source="manual",
             metadata=metadata,
         )
+        # A2A2-01: COMMIT BEFORE THE HAND-OFF.  `create_task` only flushes; the commit that makes
+        # the row visible to another connection used to be `get_db`'s, i.e. AFTER this response —
+        # so a worker could pick the message up and claim a row that did not exist yet (it answers
+        # `E_NOT_FOUND` and the message is consumed: nothing re-dispatches a `manual` row), and a
+        # commit that failed left a live message for a row that would never exist.  The two
+        # sibling call sites already state the rule (`approvals.py:79-81`, `chat_service.py:770-772`
+        # — which cites THIS module as its source).  `expire_on_commit=False` (database.py:100)
+        # keeps `task.id` usable after the commit.
+        try:
+            await db.commit()
+        except SQLAlchemyError as exc:
+            # The store refused the row: nothing was dispatched, and the caller gets the named
+            # refusal instead of a 202 for work the broker was never told about.
+            raise PolsiaError(
+                E_DB,
+                f"task #{task.id} could not be committed; nothing was dispatched",
+                how_to_fix=ERROR_HINTS[E_DB],
+                context={"task_id": task.id, "agent_type": agent_name},
+            ) from exc
     try:
         from celery_app.tasks.agent_tasks import run_agent_task
 
