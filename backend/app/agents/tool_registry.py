@@ -20,8 +20,9 @@ Honesty rules (repo-wide, enforced here):
     `trust_service.pinned_http_get` resolves the host ONCE (DoH + `is_global` + the port
     allowlist), refuses loopback/RFC1918/link-local+metadata BY NAME, and then DIALS the address
     it vetted — the socket never re-resolves (F-28). Redirects are followed by hand, never
-    crossing the original host, and every hop is pinned and re-vetted. It is not a search engine,
-    and fetched content is external DATA (never instructions).
+    crossing the original origin (scheme + host + effective port), and every hop is pinned and
+    re-vetted. It is not a search engine, and fetched content is external DATA (never
+    instructions).
   * `web_search` (V24/L2) is a REAL call to DeepSeek's search API
     (`POST https://api.deepseek.com/v1/tools/search`) with the APP'S OWN key resolution —
     `deepseek_runtime._resolve_api_key()` (secret store first, env fallback), imported at call
@@ -92,14 +93,13 @@ import json
 import os
 import re
 import shutil
-import socket
 import sqlite3
 import time
 from contextvars import ContextVar, Token
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 from app.agents.policy_firewall import (
     ActionClass,
@@ -1212,21 +1212,35 @@ def _charset_of(content_type: str) -> str:
 # address of the host must be public, checked on the first request AND on every redirect hop.
 
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """False for any range an SSRF could steer at (loopback/private/link-local/...)."""
+    """True only for a globally routable address — the POSITIVE question, not a blacklist.
+
+    `is_global` (A2A1-01) is the one flag that is False for every range an SSRF can steer at:
+    loopback, RFC 1918, link-local/cloud-metadata, IPv6 ULA, and RFC 6598 shared space
+    (`100.64.0.0/10`, where Alibaba's instance-metadata service lives at `100.100.100.200` —
+    neither `is_private` nor `is_reserved` in CPython, so the old flag blacklist APPROVED it).
+
+    `is_global` alone is True for multicast (`224.0.0.1`, `ff02::1`), so `not is_multicast` is
+    load-bearing.  `::ffff:a.b.c.d` is unwrapped first: the v4 address is the real destination.
+    """
     mapped = getattr(ip, "ipv4_mapped", None)  # ::ffff:127.0.0.1 is loopback in disguise
     if mapped is not None:
         ip = mapped
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    return bool(ip.is_global) and not ip.is_multicast
 
 
 def egress_policy_refusal(url: str, *, agent_type: str, tool: str = "web_fetch") -> dict | None:
     """`None` when `url`'s host is inside the egress floor; else the NAMED refusal payload.
 
-    Resolution is `socket.getaddrinfo`; EVERY resolved address must be public — a hostile DNS
-    answer that mixes one public and one private address is refused whole. A host that does
-    not resolve is REFUSED BY NAME (fail closed): a name with no answer now could answer with
-    anything at connect time. Allowed: http(s) URLs whose host is on the public internet.
+    ONE resolver (CONTRACTS §4.15): `trust_service.resolve_egress` is the only thing that
+    decides — DoH only (never the OS resolver), `is_global` (never a blacklist of private-ish
+    flags), and the 80/443 port allowlist.  This function resolves NOTHING itself; it is the
+    URL-shaped wrapper the YouTube media adapter calls, so that path cannot disagree with
+    `web_fetch` about what is public.  A host that does not resolve, a non-public answer and a
+    non-web port are all the resolver's named `E_EGRESS_BLOCKED`, kept in `egress_code`.
+
+    The addresses it returns are re-checked with `_is_public_ip` as defence in depth: if the ONE
+    resolver were ever changed (or stubbed) into answering a non-public address, this floor still
+    refuses by name instead of handing that address to a caller that will dial it.
     """
     parts = urlsplit(url)
     host = parts.hostname or ""
@@ -1240,37 +1254,60 @@ def egress_policy_refusal(url: str, *, agent_type: str, tool: str = "web_fetch")
         return named_refusal(
             E_VALIDATION, f"{tool}: invalid port in {url!r}",
             how_to_fix="fix the URL's port", url=url, tool=tool, agent=agent_type)
+    if port is None:
+        port = 443 if parts.scheme.lower() == "https" else 80
+
+    from app.services import trust_service  # local: keeps this module's import graph light
+
     try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
+        addresses = trust_service.resolve_egress(host, port)
+    except PolsiaError as exc:
+        code = (E_POLICY_DENIED if exc.code == trust_service.E_EGRESS_BLOCKED
+                else E_VALIDATION if exc.code == E_VALIDATION else E_INTEGRATION)
         return named_refusal(
-            E_INTEGRATION,
-            f"{tool}: could not resolve host {host!r} ({exc}) — refusing rather than attempting "
-            "a request to a host that may be steered anywhere",
-            how_to_fix=("check the hostname of the URL; only hosts resolving to public "
-                        "addresses are fetched"),
-            url=url, tool=tool, agent=agent_type)
-    addresses = sorted({str(info[4][0]) for info in infos})
-    if not addresses:
-        return named_refusal(
-            E_INTEGRATION, f"{tool}: host {host!r} resolved to no addresses",
-            how_to_fix="check the hostname of the URL", url=url, tool=tool, agent=agent_type)
+            code, f"{tool}: refusing {url} — {exc.message}", how_to_fix=exc.how_to_fix,
+            url=url, egress_code=exc.code, tool=tool, agent=agent_type)
     for address in addresses:
-        reason = ""
         try:
-            if not _is_public_ip(ipaddress.ip_address(address)):
-                reason = (
-                    f"host {host!r} resolves to {address}, which is not a public address "
-                    "(loopback/link-local/private/metadata ranges are out of policy)")
+            public = _is_public_ip(ipaddress.ip_address(address))
         except ValueError:
-            reason = f"DNS answered an unparseable address {address!r}"
-        if reason:
+            public = False
+        if not public:
             return named_refusal(
-                E_POLICY_DENIED, f"{tool}: refusing {url} — {reason}",
+                E_POLICY_DENIED,
+                f"{tool}: refusing {url} — the resolver answered {address!r}, which is not a "
+                "public address",
                 how_to_fix=("use a URL on the public internet; internal addresses (loopback, "
                             "RFC1918, link-local/cloud-metadata) cannot be fetched"),
                 url=url, resolved=addresses, tool=tool, agent=agent_type)
     return None
+
+
+def _web_origin(parts: SplitResult) -> tuple[str, str, int] | None:
+    """(scheme, hostname, effective port) — the origin a redirect must preserve.
+
+    The port is `parts.port` when the URL spells one, else the scheme's default (443/80), so
+    `https://a/x` and `https://a:443/x` compare EQUAL while `http://a/x` and `https://a/x` do
+    not.  `None` when the port is unparseable: an origin that cannot be computed refuses the hop
+    (fail closed) instead of comparing a partial triple — that was the pre-fix defect, where only
+    the hostname was compared and a same-host 302 could change scheme and port.
+    """
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host, int(port)
+
+
+def _origin_text(origin: tuple[str, str, int]) -> str:
+    """`https://host:port` — how a refusal names the origin it refused to leave or enter."""
+    scheme, host, port = origin
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}:{port}"
 
 
 def _run_web_fetch(*, agent_type: str, arguments: dict) -> dict:
@@ -1304,7 +1341,11 @@ def _run_web_fetch(*, agent_type: str, arguments: dict) -> dict:
     timeout_s = float(WEB_FETCH_TIMEOUT_S)
     read_cap = int(WEB_FETCH_MAX_BYTES)
     socket_cap = int(WEB_FETCH_SOCKET_MAX_BYTES)
-    original_host = (parts.hostname or "").lower()
+    original_origin = _web_origin(parts)
+    if original_origin is None:
+        return named_refusal(
+            E_VALIDATION, f"web_fetch: invalid port in {target!r}",
+            how_to_fix="fix the URL's port", url=target, tool="web_fetch", agent=agent_type)
     current_url = target
     redirects = 0
     status = 0
@@ -1317,7 +1358,8 @@ def _run_web_fetch(*, agent_type: str, arguments: dict) -> dict:
         # a floor whether the name was safe and then let httpx resolve it AGAIN at connect time —
         # a DNS-rebinding window (the vetted answer and the dialled one could differ).  Redirects
         # are not followed by the helper: every hop below goes through it again, so every hop is
-        # pinned and re-vetted (the same-host rule is unchanged).
+        # pinned and re-vetted, and the origin rule below refuses a hop whose scheme, host or
+        # effective port differs from the original.
         try:
             status, response_headers, raw_body = _pinned_get(
                 current_url, timeout_s=timeout_s, max_bytes=socket_cap)
@@ -1341,12 +1383,19 @@ def _run_web_fetch(*, agent_type: str, arguments: dict) -> dict:
                 f"web_fetch: redirect to {next_url!r} refused — only http(s) URLs are fetched",
                 how_to_fix="use an absolute http:// or https:// URL",
                 url=current_url, location=location, tool="web_fetch", agent=agent_type)
-        if (next_parts.hostname or "").lower() != original_host:
+        next_origin = _web_origin(next_parts)
+        if next_origin is None:
+            return named_refusal(
+                E_VALIDATION,
+                f"web_fetch: redirect to {next_url!r} refused — its port is not a number",
+                how_to_fix="the redirect target must carry a valid http(s) port",
+                url=current_url, location=location, tool="web_fetch", agent=agent_type)
+        if next_origin != original_origin:
             return named_refusal(
                 E_POLICY_DENIED,
-                f"web_fetch: refusing the redirect from {original_host!r} to "
-                f"{next_parts.hostname!r} at {next_url} — redirects must stay on "
-                "the original host (SSRF floor)",
+                f"web_fetch: refusing the redirect from {_origin_text(original_origin)} to "
+                f"{_origin_text(next_origin)} at {next_url} — redirects must stay on the "
+                "original origin (scheme, host and port; SSRF floor)",
                 how_to_fix="fetch the redirect target directly if it is on the public internet",
                 url=current_url, location=location, tool="web_fetch", agent=agent_type)
         redirects += 1
