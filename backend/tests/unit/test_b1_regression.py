@@ -22,6 +22,10 @@ things that would drift *silently* afterwards:
 
 Measured against `HEAD = 93a0fd5` (the A3 settle commit).  No network, no broker, no server: the
 DoH answer in `test_a_do_h_answer…` is stubbed at `trust_service._doh`, the one named seam.
+
+B1 phase B (seat C6) CLOSED two of the carries pinned here — the pricing alias (F-19 / S6-R3) and
+the campaign money defaults (D4-R1 / A2A7-01's schema half).  Their `xfail` markers are gone and
+the assertions are plain, so a regression in either is a RED test now, not an XPASS nobody reads.
 """
 from __future__ import annotations
 
@@ -296,17 +300,10 @@ def test_the_replay_refusal_is_one_code_object_and_deliberately_unmapped():
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "F-19 / S6-R3 UNLANDED: app/agents/pricing.py:117 is `MODEL_RATES.get(model)` over exactly "
-        "{'deepseek-flash','deepseek-v4-pro'}, so a dated or differently-capitalised served id prices "
-        "to None -> agent_runs.cost_usd NULL -> finance_service.day_spend_truth reports the day "
-        "UNMEASURED -> planner_service._gate_planner_budget refuses E_BUDGET_EXCEEDED on a RUN THAT "
-        "WAS PRICED AT THE PROVIDER. The planned fix is `rates_for(alias)`. "
-        "Settlement: `pytest tests/unit/test_fix3_cost_truth.py tests/unit/test_a3_spend.py -q`."
-    ),
-)
+# LANDED wave B1 (seat C6): F-19 / S6-R3 — `pricing.rates_for` resolves a SERVED alias (a dated
+# release, a legacy alias, a different case) to its one pinned `MODEL_RATES` entry, so a run priced
+# at the provider no longer records a NULL cost.  This test was that carry's xfail; it is green now.
+# The alias table's own pins live in `tests/unit/test_b1_c_integrator.py`.
 def test_a_served_model_alias_is_priced_not_unmeasured():
     from app.agents.pricing import estimate_cost_usd
 
@@ -316,18 +313,12 @@ def test_a_served_model_alias_is_priced_not_unmeasured():
     assert priced is not None, "a served alias is priced None: the spend gate reads it as unmeasured"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "S6-R1 UNLANDED (A2A7-01 end to end): app/schemas/agent_outputs.py:381-382 defaults "
-        "daily_budget_usd/total_spent_usd to 0.0, so the schema DUMP the worker persists "
-        "(base_agent.usage_metadata -> agent_tasks) carries a measured-looking zero for a campaign "
-        "that reported nothing. ads_service can only honour a payload that OMITS the key, so the "
-        "production path still stores Decimal('0.0000'). The DDL DEFAULT '0' is the second "
-        "fabricator (S6-R6, a migration). Settlement: apply S6-R1, then feed "
-        "`AdCampaignRow(...).model_dump()` through `record_ads_run` and assert the row reads None."
-    ),
-)
+# LANDED wave B1 (seat C6): D4-R1 / A2A7-01's schema half — both money fields default to `None`,
+# so the dump the worker persists says "the model reported nothing" instead of a measured `$0.00`.
+# The writer half is pinned in `test_a3_spend.py`; the end-to-end dump -> `record_ads_run` pin
+# (including the repeat beat that used to erase a measured $250.00) lives in
+# `tests/unit/test_b1_c_integrator.py`.  The column `DEFAULT '0'` carry (S6-R6, a migration) is
+# unchanged and still owed — `create_campaign` restores the NULL explicitly in-band.
 def test_an_unreported_campaign_dump_carries_no_measured_zero():
     from app.schemas.agent_outputs import AdCampaignRow
 

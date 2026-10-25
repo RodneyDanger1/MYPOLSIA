@@ -35,6 +35,10 @@ a silent skip) and the provider is never reached; with the sandbox off the send 
 existing `integrations.send_email` adapter with an explicit recipient
 (`app/agents/integrations.py:78`), whose refusal semantics are already honest: an
 unconfigured SendGrid returns a named `E_INTEGRATION` refusal, never a fake success.
+
+That gate is not left to each call site: `_gated_send` is the module's ONLY provider call, and
+it clears the gate first (redteam F2).  A future third owner-mail leg that sends without the
+gate would have to bypass the helper — there is no ungated `send_email` call left to copy.
 """
 from __future__ import annotations
 
@@ -131,6 +135,39 @@ class _NotificationFailure(Exception):
         super().__init__(str(error.get("message") or error.get("code") or "notification failed"))
 
 
+async def _gated_send(
+    db: AsyncSession,
+    *,
+    action: str,
+    payload: dict[str, Any],
+    to: str,
+    subject: str,
+    body: str,
+) -> None:
+    """THE ONLY place owner mail leaves this module — gate first, provider second (F2).
+
+    Redteam F2's defect shape was a send site that reached `integrations.send_email` without
+    asking the firewall: one new egress written that way put REAL mail on the wire under
+    `SANDBOX_MODE=true`.  Routing both owner-mail legs through this single choke point makes
+    that shape unreachable — there is exactly one `integrations.send_email` call in the module
+    and it is lexically after `_firewall_clearance`, so sandbox, kill switch, channel caps,
+    taint and the cancellation guard all apply to every owner mail by construction.
+
+    Raises `_NotificationFailure` for the caller's funnel: the gate's refusal (a labelled draft
+    under sandbox, `E_RATE_LIMITED` at a cap) or the adapter's own named refusal.  Never
+    swallows — the funnels in both public helpers record the ONE row and return.
+    """
+    await _firewall_clearance(db, action=action, payload=payload)
+
+    # Lazy import on purpose (CLAUDE.md:116): importing this module must never drag the provider
+    # libraries into an import chain that does not send.
+    from app.agents import integrations
+
+    result = integrations.send_email(to=to, subject=subject, body=body)
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise _NotificationFailure(_refusal_error(result))
+
+
 async def notify_owner_for_terminal_outcome(db: AsyncSession, task_id: int, outcome: str) -> None:
     """Email the owner about `task_id`'s `outcome`; NEVER raises, NO-OP when unconfigured.
 
@@ -171,19 +208,17 @@ async def _notify_owner(db: AsyncSession, task_id: int, outcome: str) -> None:
     task = await _load_task(db, task_id)
     subject, body = _compose(task, task_id, outcome, prefix=_subject_prefix(config))
 
-    # D2/V12-F2: the shared gate FIRST — sandbox ON refuses by name (recorded as a labelled
-    # draft), a capped channel refuses by name; only an allowed outcome reaches the provider.
-    await _firewall_clearance(
-        db, action="send_owner_notification", payload={"outcome": outcome, "task_id": task_id}
+    # D2/V12-F2 + redteam F2: the ONE gated send — sandbox ON refuses by name (recorded as a
+    # labelled draft), a capped channel refuses by name; only an allowed outcome reaches the
+    # provider.
+    await _gated_send(
+        db,
+        action="send_owner_notification",
+        payload={"outcome": outcome, "task_id": task_id},
+        to=recipient,
+        subject=subject,
+        body=body,
     )
-
-    # Lazy import on purpose (CLAUDE.md:116): importing this module must never drag the
-    # provider libraries into an import chain that does not send.
-    from app.agents import integrations
-
-    result = integrations.send_email(to=recipient, subject=subject, body=body)
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise _NotificationFailure(_refusal_error(result))
 
 
 def _configured_recipient(config: Any, outcome: str) -> str | None:
@@ -395,20 +430,17 @@ async def _notify_cycle_report(
     body_text = str(summary or "").strip() or "(no summary recorded)"
     body = f"{label} report for {report_date.isoformat()}.\n\n{body_text}"
 
-    # D2/V12-F2: the same gate the terminal-outcome leg runs — sandbox ON refuses by name and
-    # the refusal is recorded by the funnel above; only an allowed outcome reaches the provider.
-    await _firewall_clearance(
+    # D2/V12-F2 + redteam F2: the same choke point the terminal-outcome leg runs — sandbox ON
+    # refuses by name and the refusal is recorded by the funnel above; only an allowed outcome
+    # reaches the provider.
+    await _gated_send(
         db,
         action="send_cycle_report",
         payload={"kind": kind, "report_date": report_date.isoformat()},
+        to=recipient,
+        subject=subject,
+        body=body,
     )
-
-    # Lazy import on purpose (the same rule the terminal-outcome leg follows above).
-    from app.agents import integrations
-
-    result = integrations.send_email(to=recipient, subject=subject, body=body)
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise _NotificationFailure(_refusal_error(result))
 
 
 async def _record_cycle_row(

@@ -19,6 +19,8 @@ that call's cost, which is the safe direction for a spend gate.  Documented as a
 
 HONESTY RULES (repo-wide):
   * an unknown model is UNMEASURED — `estimate_cost_usd` returns None, never a guessed rate;
+    a SERVED id that is a dated/case variant of a pinned model resolves to that model's rates
+    through `rates_for` (F-19), so an alias rename cannot silently price a run to nothing;
   * any unmeasured token count (None) makes the estimate None — a partial sum is fabrication;
   * the estimate is emitted under a DISTINCT key (`cost_estimate_usd`, never
     `total_cost_usd`) so no consumer can mistake it for a provider bill;
@@ -98,6 +100,29 @@ def is_peak_pricing(now: datetime | None = None) -> bool:
     return any(start <= moment.hour < end for start, end in _PEAK_HOUR_WINDOWS)
 
 
+def rates_for(model: str) -> ModelRates | None:
+    """The pinned rates for a MODEL ID as a provider may serve it, or None (UNMEASURED).
+
+    The provider echoes the model it served, which is not always the id we requested: a dated
+    release (`deepseek-flash-2026-10`), a legacy alias, or a different case (F-19 / S6-R3).
+    Exact match first; then the LONGEST known id that prefixes the served string (so a date
+    suffix resolves, `deepseek-flashx` does not — the separator is part of the match).  An
+    unknown id stays None: a guessed rate is a fabricated cost, and this module's first honesty
+    rule is that an unknown model is unmeasured.
+
+    The catalog is the ONLY source: every alias resolves to a `MODEL_RATES` entry, so an alias
+    can never introduce a rate this pin does not carry (`PRICING_VERSION` still describes the
+    table that produced the estimate).
+    """
+    key = str(model or "").strip().lower()
+    if not key:
+        return None
+    if key in MODEL_RATES:
+        return MODEL_RATES[key]
+    prefixes = [name for name in MODEL_RATES if key.startswith(f"{name}-")]
+    return MODEL_RATES[max(prefixes, key=len)] if prefixes else None
+
+
 def estimate_cost_usd(
     model: str,
     *,
@@ -112,9 +137,10 @@ def estimate_cost_usd(
         cost = hit/1e6 * hit_rate + miss/1e6 * miss_rate + out/1e6 * out_rate
     Any count that is None (unmeasured) makes the whole estimate None: a one-sided sum would
     be fabrication-precision (the same rule as `accounting.tokens_used`).  An unknown model is
-    None too — a rate this table does not pin is a rate this code must not guess.
+    None too — a rate this table does not pin is a rate this code must not guess; a SERVED
+    alias of a pinned model resolves through `rates_for` to that pinned entry.
     """
-    rates = MODEL_RATES.get(str(model or "").strip())
+    rates = rates_for(model)
     if rates is None:
         return None
     if cache_hit_tokens is None or cache_miss_tokens is None or output_tokens is None:
@@ -136,4 +162,5 @@ __all__ = [
     "ModelRates",
     "estimate_cost_usd",
     "is_peak_pricing",
+    "rates_for",
 ]

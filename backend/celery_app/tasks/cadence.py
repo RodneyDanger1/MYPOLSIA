@@ -8,8 +8,9 @@ What this is, stated honestly:
   `scheduler`) through `_common.create_task_deduped` with the frozen dedupe key
   `schedule:<id>:<iso-date-hour>` — the ISO date-hour of the DUE instant in the COMPANY timezone —
   and hands the ids to the broker with the same `enqueue_created` hand-off the other schedulers
-  use (a dead broker marks the rows failed and re-raises; nothing is reported as queued that was
-  not).
+  use (a dead broker RE-ARMS them: the rows stay `pending`, each stamped `metadata.rearmed_at`, and
+  `maintenance._reconcile_stranded_pending` re-dispatches the undelivered ones within one window —
+  nothing is reported as queued that was not).
 * **Children are JUST-IN-TIME**: no future child row is ever materialized (the plan's M2 trap); a
   tick with nothing due writes NOTHING — no activity row, no task touch, no broker contact.
 * **The due instant is consumed once**: two ticks that both see the same due instant collide on
@@ -77,9 +78,9 @@ async def _run_due_schedules() -> dict[str, Any]:
                 created_ids.append(int(task.id))
         await db.commit()
 
-    # Broker hand-off AFTER the commit: `enqueue_created` marks the rows failed and raises when
-    # the broker is down (the shared scheduler contract), so a failed hand-off is visible as
-    # failed rows, never as a fake queue.
+    # Broker hand-off AFTER the commit: `enqueue_created` re-arms the rows and raises when the
+    # broker is down (the shared scheduler contract), so a failed hand-off is visible as a
+    # `rearmed_at` stamp on a `pending` row, never as a fake queue and never as a lost row.
     if created_ids:
         await enqueue_created(created_ids, label="task cadence")
         # F1 (V11/W2): stamp the `dispatched_at` marker the moment the broker ACCEPTED the

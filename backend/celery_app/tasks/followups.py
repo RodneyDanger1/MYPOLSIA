@@ -25,7 +25,8 @@ The tick, exactly:
   `sequence_step` + 1, i.e. the NEXT touch after the one that got no reply (a NULL
   `sequence_step` is the column's own 1, so the follow-up is step 2);
 * commits, then hands the ids to the broker with the shared `enqueue_created` (a dead broker
-  marks the rows failed and re-raises — nothing is reported queued that was not);
+  re-arms them (stays `pending`, stamped `rearmed_at`) and re-raises — nothing is reported
+  queued that was not);
 * nothing due -> nothing happens: no task, no activity row, no broker contact.
 
 Registry note (settle wiring, recorded in the wave STATE.md): `celery_config.TASK_MODULES`

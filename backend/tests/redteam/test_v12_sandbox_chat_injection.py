@@ -12,7 +12,7 @@ Surfaces:
 Attack list:
   1. external sends through every path while SANDBOX_MODE=true — outreach agent, the firewall leg
      the compliance sender consults, the invoice egress, and the owner-notification egress
-     (the `integrations` leg: does it consult the firewall at all?)
+     (the `integrations` leg: it must clear the gate AND refuse by name)
   2. chat money-intents: refused BEFORE any task/confirm token exists, through the wire too
   3. chat confirm token replay (single-use proof)
   4. prompt-injection on the compliance preflight: hostile `suppressed` shapes and company fields
@@ -184,30 +184,21 @@ async def test_sandbox_blocks_the_invoice_egress(monkeypatch: Any, async_db_sess
     assert fake.sent == []
 
 
-@pytest.mark.xfail(
-    reason=(
-        "DEFECT (redteam F2) owner-notification egress ignores SANDBOX_MODE: "
-        "notification_service._notify_owner / notify_owner_cycle_report call integrations.send_email "
-        "directly with no request_side_effect, so with SANDBOX_MODE=true (the shipped default) a "
-        "configured install puts REAL SendGrid mail on the wire (measured: fake provider captured "
-        "'[Acme] Task #1 failed: notify me' to owner@example.com under sandbox). "
-        "how_to_fix: route the notification send through request_side_effect "
-        "(ActionClass.EXTERNAL_REVERSIBLE, channel='email') and record the sandbox draft, or at "
-        "minimum refuse while settings.sandbox_mode is true."
-    ),
-    strict=False,
-)
 async def test_sandbox_does_not_reach_the_owner_notification_egress(monkeypatch: Any, async_db_session, mock_redis):
     """ATTACK (the `integrations` leg): with the sandbox ON, configure owner notifications and
     fire a terminal outcome.
 
-    `notification_service` calls `integrations.send_email` directly (no `request_side_effect`
-    call anywhere in the module — verified by source scan below).  Under SANDBOX_MODE=true that
-    must NOT put a real message on the wire, exactly like every other egress.
+    The attack this test was written for is a send site with NO firewall call on its path:
+    `notification_service` called `integrations.send_email` directly.  The egress now clears the
+    shared gate first, so this test asserts BOTH halves of the contract — the gate is on the
+    path (the source scan is INVERTED, so the ungated shape cannot come back), and the gate
+    refuses by NAME (`E_SANDBOX_BLOCKED`, recorded as a labelled draft) while the provider is
+    never touched.
     """
     import inspect
 
     import app.services.notification_service as notification_service
+    from app.models.report import ActivityLog
 
     fake = _arm_paid_provider(monkeypatch, sandbox=True)
     db = async_db_session
@@ -216,9 +207,19 @@ async def test_sandbox_does_not_reach_the_owner_notification_egress(monkeypatch:
     db.add(task)
     await db.commit()
 
-    # The source itself proves there is no firewall call on this path (that is the attack).
+    # The source proves the gate IS on this path — and that there is exactly ONE provider call
+    # in the module, lexically after the gate (redteam F2's shape cannot be reintroduced).
     src = inspect.getsource(notification_service)
-    assert "request_side_effect" not in src
+    assert "request_side_effect" in src, (
+        "the owner-notification egress has no side-effect gate on its path — redteam F2"
+    )
+    assert src.count("integrations.send_email(") == 1, (
+        "the module must keep a SINGLE provider call (the gated send); a second one is an "
+        "egress nobody gates"
+    )
+    assert src.index("request_side_effect(") < src.index("integrations.send_email("), (
+        "a provider call sits above the gate: a sandboxed run could reach it"
+    )
 
     await notification_service.notify_owner_for_terminal_outcome(db, task.id, "failed")
 
@@ -226,6 +227,18 @@ async def test_sandbox_does_not_reach_the_owner_notification_egress(monkeypatch:
         "SANDBOX_MODE=true but the owner-notification egress put a real SendGrid message on "
         "the wire — this path never consults the policy firewall"
     )
+
+    # The refusal is NAMED and a labelled draft, not a silent skip: one activity row, the gate's
+    # own code, and the house draft markers.
+    rows = (
+        await db.execute(
+            select(ActivityLog).where(ActivityLog.action == "owner_notification_failed")
+        )
+    ).scalars().all()
+    (row,) = rows
+    assert row.detail["error"]["code"] == E_SANDBOX_BLOCKED
+    assert row.detail["error"]["sandbox"] is True
+    assert row.detail["error"]["drafted_not_sent"] is True
 
 
 # ── 2. chat money-intents ────────────────────────────────────────────────────────────────────

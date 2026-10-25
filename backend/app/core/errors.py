@@ -50,6 +50,13 @@ E_RATE_LIMITED = "E_RATE_LIMITED"         # provider or internal rate cap
 # schedule / queue
 E_TASK_CLAIMED = "E_TASK_CLAIMED"         # another worker holds a live claim
 E_TASK_NOT_RUNNABLE = "E_TASK_NOT_RUNNABLE"  # task is not in a runnable state
+#: D3-R2 / F-16: a run whose claim was LOST (taken over by another worker, or its lease expired)
+#: refuses its next side effect by this name.  Declared module-local in `policy_firewall` when
+#: that guard landed (errors.py belonged to another seat); adopted here as the ONE canonical home,
+#: so the firewall's `PolicyDecision.e_code`, `side_effects.request_side_effect` and the registry
+#: tool gate all report the same string.  409 (not the unlisted-500 fallback): another worker owns
+#: the row, so the request cannot be applied as sent — the same status `E_TASK_CLAIMED` has.
+E_RUN_CANCELLED = "E_RUN_CANCELLED"
 E_INTEGRATION = "E_INTEGRATION"           # third-party integration failure
 
 # integrations / local stores (wave V16, E5)
@@ -145,6 +152,7 @@ ERROR_HINTS: dict[str, str] = {
     E_RATE_LIMITED: "back off; the limiter will retry after the window resets",
     E_TASK_CLAIMED: "another worker owns it; wait for the lease to expire",
     E_TASK_NOT_RUNNABLE: "check tasks.status — only pending/queued rows can be claimed",
+    E_RUN_CANCELLED: "the task was taken over (or the claim expired) while this run was still executing; let the current claim owner finish and re-run only if the work is still owed",
     E_INTEGRATION: "check the provider's credentials, quota and status page",
     E_PHONE_UNAVAILABLE: "mount the Phone Link store read-only (PHONE_LINK_DB_DIR; compose binds it to /phone-link:ro) and start the Phone Link app so it keeps syncing",
     E_UPSTREAM: "check the provider's status page and retry; the request did reach the provider (or timed out trying), so nothing here is fixed by re-entering your own configuration",
@@ -169,6 +177,10 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_AGENT_UNKNOWN: 422,
     E_TASK_NOT_RUNNABLE: 409,
     E_TASK_CLAIMED: 409,
+    # D3-R2 / F-16: the same class as E_TASK_CLAIMED — another worker owns the row, so the
+    # request cannot be applied as sent.  Deliberately 409 and NOT the unlisted-500 fallback:
+    # nothing is broken here, the run was cancelled.
+    E_RUN_CANCELLED: 409,
     E_BUDGET_EXCEEDED: 429,
     E_RATE_LIMITED: 429,
     E_SANDBOX_BLOCKED: 403,

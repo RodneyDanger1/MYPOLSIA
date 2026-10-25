@@ -378,8 +378,15 @@ class AdCampaignRow(BaseModel):
     external_id: str | None = Field(default=None, max_length=255)
     name: str = Field(min_length=1, max_length=255)
     status: str = Field(default="active", max_length=50)
-    daily_budget_usd: float = Field(default=0.0, ge=0.0)
-    total_spent_usd: float = Field(default=0.0, ge=0.0)
+    # D4-R1 / A2A7-01: both money fields are "measured or unknown", never "unknown as $0".
+    # The structured path ends in `model_validate(parsed).model_dump(mode="json")`
+    # (`base_agent` :754, :818), which FILLS a pydantic default — so a `0.0` default reached
+    # `ads_service.record_ads_run` indistinguishable from a reported zero, and a repeat beat
+    # that omitted the field ERASED a measured $250.00 (`_refresh_campaign_money` treats a
+    # reported value as a measurement).  `None` is the only value the writer can read as
+    # "the model reported nothing"; `AdMetricRow.spend_usd` below carries the same rule.
+    daily_budget_usd: float | None = Field(default=None, ge=0.0)
+    total_spent_usd: float | None = Field(default=None, ge=0.0)
 
 
 class AdMetricRow(BaseModel):

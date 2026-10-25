@@ -11,14 +11,14 @@ e.g. a failing `get_db` — read the other and answered a 500 whose code header 
 refusal, two different wires.
 
 Pinned here, through the REAL shipped app (`api_client` → ASGITransport → the request middleware +
-both exception handlers), for the nine codes plus eleven controls and one deliberately-unmapped
+both exception handlers), for the nine codes plus thirteen controls and one deliberately-unmapped
 code (`E_DEEPSEEK_KEY`):
 
   * pre-route vs in-route → identical status, identical full header set (modulo the per-request
     timing measurement), identical envelope — and the status equals the documented canonical value,
     so a move back to the old 500 fails by name;
   * the tables are ONE OBJECT (`deps.STATUS_BY_CODE is errors.HTTP_STATUS_BY_CODE`), so a future
-    code cannot be added to one side only; the exact 23-row census is pinned as a literal, so
+    code cannot be added to one side only; the exact 25-row census is pinned as a literal, so
     changing it is a deliberate act that updates the pin;
   * two REAL shipped pairs beyond the synthetic matrix: `E_DB` on `/api/v1/social/posts` (a broken
     read inside the route vs a `get_db` that refuses before it) and `E_AUTH` from both real raise
@@ -65,6 +65,7 @@ from app.core.errors import (
     E_PROMPT_TOO_LARGE,
     E_RATE_LIMITED,
     E_REDIS,
+    E_RUN_CANCELLED,
     E_SANDBOX_BLOCKED,
     E_STORAGE,
     E_TASK_CLAIMED,
@@ -105,6 +106,10 @@ CONTROLS = [
     # wave V25 (L2/L3): a provider answering wrongly is an upstream-gateway fault (502) on both
     # paths; kept in the controls so the new row is proven on the wire, not only in the census.
     E_UPSTREAM,
+    # D3-R2 / F-16: a run that lost its claim cannot be applied as sent — 409, the same class as
+    # E_TASK_CLAIMED.  In the controls so its status is proven pre-route AND in-route, not only
+    # in the census literal below.
+    E_RUN_CANCELLED,
 ]
 
 #: `E_DEEPSEEK_KEY` is deliberately unmapped in BOTH tables (it refuses inside the agent runtime,
@@ -120,6 +125,9 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     E_AGENT_UNKNOWN: 422,
     E_TASK_CLAIMED: 409,
     E_TASK_NOT_RUNNABLE: 409,
+    # D3-R2 / F-16: the lease-lost refusal. Deliberately 409 and NOT the unlisted-500 fallback:
+    # another worker owns the row, so the request cannot be applied as sent.
+    E_RUN_CANCELLED: 409,
     E_BUDGET_EXCEEDED: 429,
     E_RATE_LIMITED: 429,
     E_SANDBOX_BLOCKED: 403,
@@ -235,7 +243,7 @@ def test_the_status_tables_are_one_object_not_two():
 
 
 def test_the_status_tables_agree_exactly_and_match_the_census():
-    """Equality both ways + the exact 23-row census: a code added to one side only fails here."""
+    """Equality both ways + the exact 25-row census: a code added to one side only fails here."""
     assert deps.STATUS_BY_CODE == errors.HTTP_STATUS_BY_CODE
     assert set(deps.STATUS_BY_CODE) == set(errors.HTTP_STATUS_BY_CODE)
     assert dict(errors.HTTP_STATUS_BY_CODE) == EXPECTED_STATUS_BY_CODE, (

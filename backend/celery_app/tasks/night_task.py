@@ -185,8 +185,9 @@ async def _night_task() -> dict[str, Any]:
     if pending_total == 0:
         skipped.append("the queue was empty")
 
-    # ── 4. broker hand-off AFTER the read transaction: a dead broker marks the rows failed and
-    #    raises (enqueue_created's contract) — and NO receipt is written then, because "ran X of Y"
+    # ── 4. broker hand-off AFTER the read transaction: a dead broker re-arms the rows and raises
+    #    (`enqueue_created`'s contract: they stay `pending`, stamped `metadata.rearmed_at`, and the
+    #    reconciler re-dispatches them) — and NO receipt is written then, because "ran X of Y"
     #    would be false. ────────────────────────────────────────────────────────────────────────
     if task_ids:
         await enqueue_created(task_ids, label="night task")

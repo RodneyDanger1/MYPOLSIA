@@ -118,6 +118,7 @@ from app.core.errors import (
     E_NOT_FOUND,
     E_PHONE_UNAVAILABLE,
     E_POLICY_DENIED,
+    E_RUN_CANCELLED,
     E_VALIDATION,
     PolsiaError,
 )
@@ -1128,8 +1129,18 @@ def _execute(name: str, arguments: Any, *, agent_type: str) -> dict:
                 action_fingerprint=decision.audit.get("fingerprint"),
                 **context,
             )
+        # D3-R1 / F-16: the OUTER code must be the one the firewall decided.  `decide()` refuses
+        # a lease-lost run FIRST, and `PolicyDecision.e_code` is the firewall's OWN name for that
+        # denial (`E_RUN_CANCELLED`, policy code POLSIA-E120).  The sibling side-effect path
+        # (`side_effects.request_side_effect` -> `enforce()`) already raises that code, so a tool
+        # call refused for a lost claim must not read as a generic policy denial.  Only the
+        # cancellation code is adopted here: every other denial keeps `E_POLICY_DENIED` and its
+        # `policy_code` still names the precise POLSIA reason.
+        refusal_code = (
+            E_RUN_CANCELLED if decision.e_code == E_RUN_CANCELLED else E_POLICY_DENIED
+        )
         return named_refusal(
-            E_POLICY_DENIED,
+            refusal_code,
             f"tool {name!r} refused for agent {agent_type!r}: {decision.reason}",
             how_to_fix=(
                 decision.how_to_fix
