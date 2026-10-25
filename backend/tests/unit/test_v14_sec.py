@@ -34,6 +34,7 @@ from app.agents import integrations, tool_registry
 from app.core import security
 from app.core.errors import E_AUTH, PolsiaError
 from app.models.company import CompanyConfig
+from app.services import trust_service
 from app.services.site_package_service import render_site_package
 
 # ── a REAL loopback server (records hits; serves the internal secret + redirects) ────────────
@@ -97,21 +98,30 @@ def _fetch(server: str, path: str, **args) -> dict:
         "web_fetch", {"url": f"{server}{path}", **args}, agent_type="competitor_research"))
 
 
-def _stub_floor_for(monkeypatch, prefix: str) -> None:
-    """Let URLs under `prefix` through the REAL floor; everything else hits the real floor.
+def _stub_pinned_hops(monkeypatch, *, allow: int) -> list[str]:
+    """Let only the FIRST `allow` requests reach the loopback server; then refuse.
 
-    Needed only where a test must exercise the FETCH MACHINERY (redirect loop) which — by
-    design — can no longer be reached through a loopback host. The floor itself is pinned
-    against the same real server in the tests above/below this helper.
+    A3/S2 (F-28): the URL-prefix stub below used to answer "is this URL inside the floor?" at
+    `tool_registry.egress_policy_refusal`.  The floor now lives in
+    `trust_service.resolve_egress` and `pinned_http_get` calls it ONCE PER HOP before dialling
+    the address it returns — so the same probe (which hop was allowed?) is expressed here as a
+    hop counter on the resolver.  Every allowed hop still crosses a real loopback socket.
     """
-    real = tool_registry.egress_policy_refusal
+    allowed_ports: list[str] = []
 
-    def stubbed(url, **kwargs):
-        if url.startswith(prefix):
-            return None
-        return real(url, **kwargs)
+    def stubbed(host: str, port: int) -> list[str]:
+        if len(allowed_ports) >= allow:
+            raise PolsiaError(
+                trust_service.E_EGRESS_BLOCKED,
+                f"stub floor: hop {len(allowed_ports) + 1} on {host!r}:{port} is outside the "
+                "stub's allowance",
+                how_to_fix="this is the test's own probe, not a production refusal",
+                context={"host": host, "port": port})
+        allowed_ports.append(f"{host}:{port}")
+        return ["127.0.0.1"]
 
-    monkeypatch.setattr(tool_registry, "egress_policy_refusal", stubbed)
+    monkeypatch.setattr(trust_service, "resolve_egress", stubbed)
+    return allowed_ports
 
 
 # ── U2-01: non-ASCII X-API-Key is a named E_AUTH, never a TypeError ──────────────────────────
@@ -184,7 +194,12 @@ async def test_u2_02_web_fetch_refuses_userinfo_host_confusion(internal_server):
         "web_fetch", {"url": f"http://user@{'127.0.0.1'}:{port}/secret"},
         agent_type="competitor_research"))
     assert payload["ok"] is False
-    assert payload["error"]["code"] == "E_POLICY_DENIED"
+    # A3/S2 (F-28): the pinned fetch refuses a credential-bearing URL BY NAME as malformed input
+    # (E_VALIDATION) before ANY resolution happens. The property this test guards is unchanged —
+    # the confused-authority URL never reaches the internal host — and the assertion is now
+    # STRONGER: it names the reason as well as the code.
+    assert payload["error"]["code"] == "E_VALIDATION"
+    assert "credentials" in payload["error"]["message"]
     assert _Handler.hits == []
 
 
@@ -202,7 +217,7 @@ async def test_u2_02_web_fetch_refuses_ipv6_loopback(internal_server):
     ("http://10.0.0.1/", "10.0.0.1"),                                  # RFC1918
     ("http://192.168.1.1/", "192.168.1.1"),                            # RFC1918
     ("http://0.0.0.0/", "0.0.0.0"),                                    # unspecified
-    ("http://[fd00::1]/", "[fd00::1]"),                                # IPv6 ULA
+    ("http://[fd00::1]/", "fd00::1"),                                  # IPv6 ULA
 ])
 @pytest.mark.asyncio
 async def test_u2_02_egress_floor_denies_the_private_and_metadata_matrix(url, needle, monkeypatch):
@@ -223,7 +238,7 @@ def test_u2_02_egress_floor_allows_a_public_address_literal():
 
 @pytest.mark.asyncio
 async def test_u2_02_cross_host_redirect_is_refused(internal_server, monkeypatch):
-    _stub_floor_for(monkeypatch, f"{internal_server}/go-cross")
+    _stub_pinned_hops(monkeypatch, allow=1)          # only the first hop is ever requested
     payload = _fetch(internal_server, "/go-cross")
     assert payload["ok"] is False
     assert payload["error"]["code"] == "E_POLICY_DENIED"
@@ -235,7 +250,7 @@ async def test_u2_02_cross_host_redirect_is_refused(internal_server, monkeypatch
 async def test_u2_02_every_redirect_hop_re_passes_the_floor(internal_server, monkeypatch):
     # Only the FIRST hop is stubbed to pass; the same-host redirect target must re-pass the REAL
     # floor — proving the check runs per hop, not once per call.
-    _stub_floor_for(monkeypatch, f"{internal_server}/go-same")
+    _stub_pinned_hops(monkeypatch, allow=1)   # hop 1 allowed, hop 2 must be re-vetted
     payload = _fetch(internal_server, "/go-same")
     assert payload["ok"] is False
     assert payload["error"]["code"] == "E_POLICY_DENIED"
@@ -246,7 +261,7 @@ async def test_u2_02_every_redirect_hop_re_passes_the_floor(internal_server, mon
 async def test_u2_02_same_host_redirects_are_followed_and_final_url_reported(internal_server, monkeypatch):
     # The manual redirect loop itself: a same-host 302 is followed and the FINAL url is reported
     # (this is the machinery the `follow_redirects=False` policy must preserve).
-    _stub_floor_for(monkeypatch, internal_server)
+    _stub_pinned_hops(monkeypatch, allow=2)   # /go-same then /ok, both on the same host
     payload = _fetch(internal_server, "/go-same")
     assert payload["ok"] is True, payload
     assert payload["result"]["url"].endswith("/ok")
@@ -255,7 +270,7 @@ async def test_u2_02_same_host_redirects_are_followed_and_final_url_reported(int
 
 @pytest.mark.asyncio
 async def test_u2_02_redirect_loops_stop_at_the_cap(internal_server, monkeypatch):
-    _stub_floor_for(monkeypatch, internal_server)
+    _stub_pinned_hops(monkeypatch, allow=tool_registry.WEB_FETCH_MAX_REDIRECTS + 2)
     payload = _fetch(internal_server, "/loop")
     max_redirects = tool_registry.WEB_FETCH_MAX_REDIRECTS
     assert payload["ok"] is False

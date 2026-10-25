@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import math
 import re
@@ -460,6 +461,54 @@ def reset_run_approval() -> None:
     RUN_APPROVAL.set(None)
 
 
+# ---------------------------------------------------------------------------
+# Run-level channel counts: the contextvar the WORKER sets and the gate reads
+# ---------------------------------------------------------------------------
+
+#: The run's per-channel send counts, in the exact shape `context["channel_sends"]` carries
+#: (`{"github": {"today": int|None, "hour": int|None}}`).
+#:
+#: Why a contextvar, same reasoning as RUN_TAINT/RUN_APPROVAL above: the worker owns the DB and
+#: measures the counts (`_with_channel_sends`), while the consumption happens inside a tool call
+#: that has no run object in its frozen signature.  A `None` ENTRY is deliberate and load-bearing:
+#: it means "no local record of this channel's sends exists", which the firewall refuses BY NAME
+#: rather than reading as zero sends (A2 finding F-04).  An absent snapshot (`None` whole) is
+#: "this run published no counts" — again unknown, never a fabricated zero.
+RUN_CHANNEL_SENDS: ContextVar[dict[str, dict[str, int | None]] | None] = ContextVar(
+    "polsia_run_channel_sends", default=None)
+
+
+def set_run_channel_sends(snapshot: dict[str, dict[str, int | None]] | None) -> None:
+    """Publish the run's per-channel counts (producer side — the worker, before the run)."""
+    RUN_CHANNEL_SENDS.set(snapshot)
+
+
+def current_run_channel_sends() -> dict[str, dict[str, int | None]] | None:
+    """The counts of the run executing in this context; None when none were published."""
+    return RUN_CHANNEL_SENDS.get()
+
+
+def reset_run_channel_sends() -> None:
+    """Clear the published counts (a worker's `finally`, or tests isolating a run)."""
+    RUN_CHANNEL_SENDS.set(None)
+
+
+def canonical_payload(payload: dict) -> str:
+    """The payload's canonical JSON: the ONE rendition `fingerprint` hashes.
+
+    `sort_keys` makes it independent of insertion order (a dict built in another order is the
+    same action), the separators remove the whitespace `json.dumps` would otherwise vary, and
+    `default=str` keeps a non-JSON value from raising inside a policy decision.  `ensure_ascii`
+    is ON so the rendition is always encodable as UTF-8 — a payload carrying a lone surrogate
+    (model output can) must still get a fingerprint, not a UnicodeEncodeError from the gate.  It
+    is INJECTIVE over JSON values: two different payloads cannot render to the same string, which
+    is what a token bound to "the action the operator approved" requires (A2A4-02).
+    """
+    shaped = {str(key): value for key, value in (payload or {}).items()}
+    return json.dumps(shaped, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      default=str)
+
+
 def configured_approval_secret() -> bytes:
     """The operator's `APPROVAL_SECRET`, read DEFENSIVELY at call time.
 
@@ -566,7 +615,19 @@ def verify_approval(secret: bytes, token: str, *, action_fingerprint: str,
 
 
 def fingerprint(action_class: str, channel: str, payload: dict) -> str:
-    canon = f"{action_class}|{channel}|{sorted(payload.items(), key=lambda kv: str(kv[0]))}"
+    """The approval fingerprint: `action_class | channel | canonical(payload)` (A2A4-02).
+
+    The token is the OBJECT of a human approval — `issue_approval` signs this value and
+    `decide()` allows only when the request's own fingerprint verifies — so whatever this
+    string does not bind, the operator has not approved.
+
+    It used to be `str(sorted(payload.items()))`, which was both NON-canonical (a nested dict in
+    another insertion order produced a different fingerprint for the same action) and ambiguous
+    (a string VALUE containing repr punctuation could render to the same text as two fields).
+    `canonical_payload` is injective over JSON values and order-independent, so two different
+    actions can never share a token and an unchanged action always verifies.
+    """
+    canon = f"{action_class}|{channel}|{canonical_payload(payload)}"
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:24]
 
 
@@ -952,9 +1013,11 @@ __all__ = [
     "RunApproval",
     "RunTaint",
     "assert_sandboxed_side_effect_allowed",
+    "canonical_payload",
     "capability_for",
     "configured_approval_secret",
     "current_run_approval",
+    "current_run_channel_sends",
     "current_run_taint",
     "decide",
     "enforce",
@@ -963,8 +1026,10 @@ __all__ = [
     "issue_approval",
     "kill_grade_from_env",
     "reset_run_approval",
+    "reset_run_channel_sends",
     "reset_run_taint",
     "set_run_approval",
+    "set_run_channel_sends",
     "set_run_taint",
     "value_cents",
     "verify_approval",

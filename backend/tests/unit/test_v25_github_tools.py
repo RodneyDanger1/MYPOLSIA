@@ -91,8 +91,15 @@ def _runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
     monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "sandbox_mode", False)
+    # A3/S2: the run-scoped policy context is process state; no case may inherit another's.
+    pf.reset_run_taint()
+    pf.reset_run_channel_sends()
+    pf.reset_run_approval()
     yield
     github_service._TRANSPORT = None
+    pf.reset_run_taint()
+    pf.reset_run_channel_sends()
+    pf.reset_run_approval()
 
 
 def _install(monkeypatch, routes: dict) -> _Wire:
@@ -101,8 +108,45 @@ def _install(monkeypatch, routes: dict) -> _Wire:
     return wire
 
 
+#: The owner's approval secret for this suite (never a real one — house test-key pattern).
+APPROVAL_SECRET = b"v25-github-tools-approval-secret"
+
+#: The measured `github` send count this suite's runs start from (a measured ZERO, not unknown).
+GITHUB_COUNTS = {"github": {"today": 0, "hour": 0}}
+
+
 def _call(name: str, arguments: dict | None = None, *, agent_type: str = "code_generation") -> dict:
-    return json.loads(tool_registry.execute_tool(name, arguments or {}, agent_type=agent_type))
+    """Execute one tool call AS AN APPROVED RUN.
+
+    A3/S2 re-pin (A7-04 + A2A9-02): a REAL GitHub mutation (`dry_run: false`) is now gated
+    `external_irreversible` on the `github` channel — the same class, channel and counters the
+    code agent's own `open_pr` path uses — so the gate asks for the two things every run must
+    publish: a MEASURED per-channel count and the owner's approval.  These tests exercise the
+    GITHUB RUNNER, not the gate (tests/unit/test_a3_toolgate.py owns the gate's refusals), so the
+    harness supplies both — and it mints the token from the gate's OWN `require_token` refusal,
+    which is the loop an operator goes through (POST /api/v1/approvals -> retry the same call).
+    An UNAPPROVED mutation never runs: that is pinned, by name, in test_a3_toolgate.py.
+    """
+    pf.set_run_channel_sends(GITHUB_COUNTS)
+    # The run HAS an approval channel (the operator's secret) but no token yet: the gate then
+    # answers REQUIRE_APPROVAL with the fingerprint instead of the "no channel configured" DENY.
+    pf.set_run_approval(pf.RunApproval(secret=APPROVAL_SECRET))
+    try:
+        payload = json.loads(
+            tool_registry.execute_tool(name, arguments or {}, agent_type=agent_type))
+        context = (payload.get("error") or {}).get("context") or {}
+        if context.get("require_token"):
+            token = pf.issue_approval(APPROVAL_SECRET,
+                                      action_fingerprint=context["action_fingerprint"])
+            pf.set_run_approval(pf.RunApproval(secret=APPROVAL_SECRET, token=token.token))
+            try:
+                payload = json.loads(
+                    tool_registry.execute_tool(name, arguments or {}, agent_type=agent_type))
+            finally:
+                pf.reset_run_approval()
+        return payload
+    finally:
+        pf.reset_run_channel_sends()
 
 
 def _repo_ok() -> httpx.Response:

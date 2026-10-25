@@ -29,6 +29,7 @@ import pytest
 
 from app.agents import tool_registry
 from app.core.timeutil import today_in
+from app.services import trust_service
 
 CATALOG_AS_OF = "2026-10-14"  # the frozen snapshot date (pricing_service module docstring)
 
@@ -87,10 +88,16 @@ def live_server():
 @pytest.fixture(autouse=True)
 def _stub_the_egress_floor(monkeypatch):
     """These tests pin the FETCH MACHINERY (caps, timeout, HTML→text, redirect-following) over a
-    real loopback socket; the U2-02 egress floor (wave-v14) refuses loopback BY DESIGN, so it is
-    stubbed here ONLY. The floor itself is pinned end-to-end — named refusal + zero bytes crossed
-    — against a real loopback server in tests/unit/test_v14_sec.py."""
-    monkeypatch.setattr(tool_registry, "egress_policy_refusal", lambda url, **kwargs: None)
+    real loopback socket; the U2-02 egress floor refuses loopback BY DESIGN, so it is stubbed here
+    ONLY. The floor itself is pinned end-to-end — named refusal + zero bytes crossed — against a
+    real loopback server in tests/unit/test_v14_sec.py.
+
+    A3/S2 (F-28): the floor now LIVES in `trust_service.resolve_egress` and the socket DIALS the
+    address it returns (CONTRACTS §4.15), so the stub moved to that seam. Returning the loopback
+    address (`127.0.0.1`, and any port — this fixture deliberately bypasses the 80/443 allowlist
+    for the ephemeral test server) is what lets the real bytes cross a real socket here.
+    """
+    monkeypatch.setattr(trust_service, "resolve_egress", lambda host, port: ["127.0.0.1"])
 
 
 def _payload(text: str) -> dict:

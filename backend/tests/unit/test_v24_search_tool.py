@@ -143,8 +143,12 @@ def test_a_successful_search_maps_the_frozen_result_shape(monkeypatch):
 
     assert payload["ok"] is True and payload["tool"] == "web_search"
     result = payload["result"]
-    assert set(result) == {"query", "results", "note"}
+    assert set(result) == {"query", "results", "untrusted", "note"}, (
+        "A3/S2 F-32: the third-party payload carries `untrusted: true` — the flag the model and "
+        "the audit read, so a search result can never be mistaken for our own words")
+
     assert result["query"] == "DeepSeek V4 release"
+    assert result["untrusted"] is True, "third-party rows are labelled, not trusted"
     assert len(result["results"]) == 2
     first = result["results"][0]
     assert set(first) == {"title", "url", "snippet", "summary", "date", "authority",
