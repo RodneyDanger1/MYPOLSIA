@@ -94,12 +94,21 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     # stays on the existing claim path; this export is the selection read only). OLD set = the 20
     # names below without it; NEW set adds exactly that name; the delta is recorded in the
     # wave-U5 P3 receipt.
+    # wave B1/C1 (2026-10-25) extended it once more with the ONE transition authority F-17 needs —
+    # `TASK_TRANSITIONS` + `TASK_TRANSITION_WRITERS` (the 14-edge matrix and the writer each edge
+    # belongs to), `legal_task_status_targets` (the accepted-value read the route serves),
+    # `transition_task_status` (value set -> matrix -> write + one audit row) and
+    # `TASK_STATUS_CHANGED_ACTION` (that row's action name).  OLD set = the 21 names below without
+    # these five; NEW set adds exactly those; nothing was removed.  Delta recorded in the wave-B1
+    # phase-B receipt (commit "fix(api): the status route decides through the transition matrix").
     assert {
         "APPROVAL_TOKEN_METADATA_KEY", "VALID_AGENT_TYPES", "VALID_TASK_STATUSES",
         "attach_approval_token", "claim_task", "claimable_task_ids", "create_agent_run", "create_task",
         "finish_agent_run", "get_agent_statuses", "get_task", "heartbeat_task", "is_valid_agent_type",
         "list_tasks", "release_claim", "requeue_stale_claims", "update_task_status",
         "TaskRunTotals", "get_task_run_totals", "task_completed_at", "task_terminal_at_expr",
+        "TASK_TRANSITIONS", "TASK_TRANSITION_WRITERS", "TASK_STATUS_CHANGED_ACTION",
+        "legal_task_status_targets", "transition_task_status",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__
