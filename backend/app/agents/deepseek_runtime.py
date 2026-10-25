@@ -430,6 +430,22 @@ def _tool_specs_for(inv: claude_cli.Invocation, tools: list[dict] | None) -> lis
     return specs
 
 
+def _tool_budget_api():
+    """The REAL registry module's per-run budget verbs (`begin_run_tool_budget`/`end_run_...`).
+
+    Imported lazily, for the same reason `_tool_registry` is, but DELIBERATELY not through it:
+    `_tool_registry()` is the EXECUTOR seam, and the tree's tests legitimately install an executor
+    double that speaks only the frozen contract (`TOOL_SPECS` + `execute_tool`,
+    tests/unit/test_a3_writepath.py).  Requiring a new attribute on that double would break every
+    one of those tests to test something the double does not implement; the budget's contextvars
+    are process state owned HERE, so the runtime opens them on the real module and a double that
+    never reads them simply never charges — exactly the pre-F-33 behaviour.
+    """
+    from app.agents import tool_registry
+
+    return tool_registry
+
+
 def _tool_refusal(code: str, detail: str) -> str:
     """A NAMED refusal payload for a call THE RUNTIME refused to run (E_* first, bounded).
 
@@ -1417,7 +1433,9 @@ def invoke(
     `tool_calls` turn is executed through the FROZEN registry seam and answered with a `role:"tool"`
     message, and the loop is bounded at `TOOL_LOOP_MAX_ITERATIONS` provider calls (a run still
     asking for tools there refuses BY NAME). `tools=` / `agent_type=` override the derivation for
-    a caller that does not come through `base_agent`.
+    a caller that does not come through `base_agent`. A tool-enabled run also opens exactly ONE
+    `tool_registry.begin_run_tool_budget()` scope for its own metered provider calls and tool-path
+    sends, closed in a `finally` (F-33/S2-R2) — a tool-less run never opens one.
 
     V26/L3: `run_id` is the calling run's identity (`agent_runs.id` as text). It is OPTIONAL,
     keyword-only and defaulted, and is forwarded through the tool loop to
@@ -1475,6 +1493,15 @@ def invoke(
     journal: list[dict[str, Any]] = []
     stored_actions = replay_index(replay)
     provider_calls = 0
+    # F-33 (S2-R2): the per-run tool budget had NO producer — `begin_run_tool_budget()` existed and
+    # was called ONLY by tests, so every real run read `None`: nothing was metered, and this run's
+    # own tool-path sends were never charged against a channel cap.  ONE budget is opened for this
+    # run (the metered provider-call count + the per-channel sends this run really performs) and
+    # closed in the `finally` below, so a later run in the same worker context starts from zero.
+    # Only a run that can EXECUTE tools opens one: a tool-less run performs no tool call, and its
+    # path stays byte-identical to the pre-F-33 runtime.
+    budget_api = _tool_budget_api() if tool_specs else None
+    tool_budget = budget_api.begin_run_tool_budget() if budget_api is not None else None
     try:
         while True:
             provider_calls += 1
@@ -1584,6 +1611,10 @@ def invoke(
             content = content_raw
             break
     finally:
+        # Close THIS run's tool budget before anything else: the budget is run-scoped state, and a
+        # run that leaves it open would meter (and charge) the next run in this context.
+        if tool_budget is not None and budget_api is not None:
+            budget_api.end_run_tool_budget(tool_budget)
         if own_client:
             http.close()
 

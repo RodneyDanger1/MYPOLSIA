@@ -167,6 +167,11 @@ def request_side_effect(
     argument wins, else the run's published `RunApproval` (D1/T02).  With neither, both stay
     `b""`/`""` — no approval channel — exactly as before the channel existed.
 
+    F-16: a run whose claim was lost is refused HERE — `enforce()` raises the named
+    `E_RUN_CANCELLED` for `decide()`'s cancellation leg, which reads the run's published
+    `RunCancellation` guard.  There is deliberately no second copy of that check in this module:
+    one gate, one answer, for this path and the registry tool path alike.
+
     Raises the named refusal for a policy/rate/kill denial (an agent must not continue past a
     real denial). Returns an outcome carrying `sandboxed=True` for a sandbox denial — the caller
     then records a labelled draft instead of performing the action.

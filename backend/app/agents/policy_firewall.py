@@ -49,6 +49,26 @@ from app.core.errors import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Policy codes this module owns
+# ---------------------------------------------------------------------------
+
+#: F-16's named refusal: the run lost its claim, so its next side effect must not happen.
+#:
+#: WHY module-local and not in `app/core/errors.py`: that file is another seat's territory this
+#: wave, and the tree already ships exactly this pattern for codes a module needs before the
+#: taxonomy carries them (`tool_registry.E_BALANCE` / `E_RATE_LIMIT` / `E_UNAVAILABLE`, whose
+#: comment states the same reason).  The rule those constants follow is honoured here: EVERY
+#: refusal built with this code passes an explicit `how_to_fix`, so nothing depends on
+#: `ERROR_HINTS` carrying it.  Adoption into `errors.py` (constant + `ERROR_HINTS` + a 409 in
+#: `HTTP_STATUS_BY_CODE`, the `E_TASK_CLAIMED` status) is filed in the seat's REQUESTS.md.
+E_RUN_CANCELLED = "E_RUN_CANCELLED"
+
+#: The POLSIA policy code a cancelled-run denial carries in `PolicyDecision.code` and the audit row.
+#: `PolicyDecision.e_code` maps it to `E_RUN_CANCELLED`; the registry's tool gate names it in its
+#: refusal's `policy_code` field (never inventing a code the gate cannot see).
+_CANCELLED_POLICY_CODE = "POLSIA-E120"
+
+# ---------------------------------------------------------------------------
 # Action classes and decision objects
 # ---------------------------------------------------------------------------
 
@@ -89,6 +109,10 @@ class PolicyDecision:
         """The `app.core.errors` name for this decision."""
         if self.decision is Decision.ALLOW:
             return ""
+        if self.code == _CANCELLED_POLICY_CODE:
+            # F-16 first: a run that lost its claim is refused by its OWN name, never as a generic
+            # policy denial — this is the code an operator greps for when a run kept going.
+            return E_RUN_CANCELLED
         if self.sandboxed:
             return E_SANDBOX_BLOCKED
         if self.code == "POLSIA-E117":
@@ -493,6 +517,88 @@ def reset_run_channel_sends() -> None:
     RUN_CHANNEL_SENDS.set(None)
 
 
+# ---------------------------------------------------------------------------
+# Run-level cancellation: the contextvar the WORKER publishes and the gate refuses on
+# ---------------------------------------------------------------------------
+# `E_RUN_CANCELLED` / `_CANCELLED_POLICY_CODE` are declared at the top of this module, beside the
+# other codes; the STATE and its verbs live here, in the run-scope section.
+
+
+@dataclass
+class RunCancellation:
+    """The cancellation guard ONE run executes under (F-16) — a MUTABLE, SHARED object.
+
+    This is deliberately NOT the shape of `RUN_TAINT`/`RUN_APPROVAL`/`RUN_CHANNEL_SENDS`, and the
+    difference is the whole mechanism: those three publish an immutable VALUE before the run and
+    nobody rewrites it afterwards.  Here the verdict arrives DURING the run — and it arrives
+    somewhere else: `asyncio.create_task` and `asyncio.to_thread` COPY the current context, so a
+    contextvar rebound (`set_*` with a new object) on the heartbeat task or on the worker loop is
+    invisible to the agent thread that is about to perform the side effect, and vice versa.
+
+    Publishing ONE object before the run starts and MUTATING it is what crosses those contexts:
+    every copy holds a reference to the same guard, the heartbeat task writes `cancelled`, and the
+    agent thread reads it.  A contextvar holding a bool could not carry this verdict at all.
+    """
+
+    cancelled: bool = False
+    reason: str = ""
+
+    def cancel(self, reason: str) -> None:
+        """Latch the cancellation.  The FIRST reason wins: it names what actually happened."""
+        if not self.cancelled:
+            self.cancelled = True
+            self.reason = reason.strip() or "run cancelled"
+
+
+#: The cancellation guard of the run executing in this context; None when no run published one
+#: (the CLI path, every direct caller, and every unit test that does not open a run — all of which
+#: keep the pre-F-16 behaviour by construction).
+RUN_CANCELLED: ContextVar[RunCancellation | None] = ContextVar(
+    "polsia_run_cancelled", default=None)
+
+
+def begin_run_cancellation() -> RunCancellation:
+    """Publish a FRESH guard for the run about to execute and hand it to the caller (the worker).
+
+    Call it BEFORE the run's heartbeat task and agent thread exist: those copies of the context
+    must hold this same object for the lease verdict to reach the side-effect gate.
+    """
+    guard = RunCancellation()
+    RUN_CANCELLED.set(guard)
+    return guard
+
+
+def current_run_cancellation() -> RunCancellation | None:
+    """The guard of the run executing in this context; None when no run published one."""
+    return RUN_CANCELLED.get()
+
+
+def cancel_run(reason: str) -> bool:
+    """Latch THIS context's run cancelled (producer side — the worker's lease heartbeat).
+
+    Returns False when no run published a guard, so a heartbeat that fires outside a run cannot
+    pretend it stopped one.  False is never an error: it means there was nothing to cancel.
+    """
+    guard = RUN_CANCELLED.get()
+    if guard is None:
+        return False
+    guard.cancel(reason)
+    return True
+
+
+def run_cancelled_reason() -> str:
+    """The live cancellation reason for this context; `""` when the run may still act."""
+    guard = RUN_CANCELLED.get()
+    if guard is None or not guard.cancelled:
+        return ""
+    return guard.reason
+
+
+def end_run_cancellation() -> None:
+    """Clear the guard (a worker's `finally`, or tests that must not inherit a cancelled run)."""
+    RUN_CANCELLED.set(None)
+
+
 def canonical_payload(payload: dict) -> str:
     """The payload's canonical JSON: the ONE rendition `fingerprint` hashes.
 
@@ -712,6 +818,10 @@ def decide(
     """The output-action firewall. EVERY external side effect calls this first.
 
     Order of checks (first DENY wins; REQUIRE_APPROVAL is sticky and checked after the denies):
+      0. the run lost its claim (F-16, `_CANCELLED_POLICY_CODE` / `E_RUN_CANCELLED`) — FIRST, so
+         an abandoned run's next side effect is refused by its own name rather than being dressed
+         as a sandbox draft or a cap denial.  A run whose lease went to another worker must not
+         act: that worker owns the task now, and this context's send would duplicate it.
       1. kill switch (E118)
       2. agent capability exists; action class permitted; channel permitted
       3. tool allowlist (when a tool call is the action — i.e. the caller supplied `req.tool`).
@@ -743,6 +853,28 @@ def decide(
             "flagged_blocks": list(req.taint.flagged_blocks),
             "sources": list(req.taint.sources),
         }
+    # F-16 — a run that lost its claim performs NO side effect, of any class, before any other
+    # leg is consulted.  Deliberately FIRST: the sandbox leg would otherwise answer "labelled
+    # draft" (a run that looks like it kept working), a channel cap could answer "cap_unknown",
+    # and the kill switch would answer for the operator — all true statements about a run that
+    # should not be running at all.  The verdict is a MUTABLE guard shared across the worker's
+    # context copies (see `RunCancellation`), because the loss is discovered on the loop while
+    # the send is attempted on the run's thread.
+    cancel_reason = run_cancelled_reason()
+    if cancel_reason:
+        return PolicyDecision(
+            Decision.DENY,
+            f"this run lost its claim ({cancel_reason}) — a run that no longer owns its task "
+            "performs no side effect",
+            _CANCELLED_POLICY_CODE,
+            audit={**audit, "cancelled": True, "cancel_reason": cancel_reason},
+            how_to_fix=(
+                "nothing to fix in the request: the task was taken over by another worker (or the "
+                "claim expired) while this run was still executing. Let the current claim owner "
+                "finish; if the work is really still owed, re-run the task after the current "
+                "attempt ends"
+            ),
+        )
     if kill_switch:
         return PolicyDecision(Decision.DENY, "kill switch active", "POLSIA-E118", audit=audit)
 
@@ -1008,18 +1140,24 @@ __all__ = [
     "AgentCapability",
     "ApprovalToken",
     "Decision",
+    "E_RUN_CANCELLED",
     "PolicyDecision",
     "RateCaps",
     "RunApproval",
+    "RunCancellation",
     "RunTaint",
     "assert_sandboxed_side_effect_allowed",
+    "begin_run_cancellation",
     "canonical_payload",
+    "cancel_run",
     "capability_for",
     "configured_approval_secret",
     "current_run_approval",
+    "current_run_cancellation",
     "current_run_channel_sends",
     "current_run_taint",
     "decide",
+    "end_run_cancellation",
     "enforce",
     "fingerprint",
     "flag_injection_heuristics",
@@ -1028,6 +1166,7 @@ __all__ = [
     "reset_run_approval",
     "reset_run_channel_sends",
     "reset_run_taint",
+    "run_cancelled_reason",
     "set_run_approval",
     "set_run_channel_sends",
     "set_run_taint",

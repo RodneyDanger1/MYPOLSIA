@@ -108,6 +108,56 @@ result_backend_transport_options = {
     "retry_policy": {"max_retries": 1, "interval_start": 0, "interval_step": 0.2, "interval_max": 0.2},
 }
 
+# ── broker TRUTH: publisher confirmation + the visibility timeout (A2A6-03 / S3-2) ────────────
+# A `publish()` that returns normally is NOT proof the broker stored the message.  Two transport
+# switches close that gap, and neither is Celery's default:
+#
+# `confirm_publish` (publisher confirms).  Read where it takes effect, in the INSTALLED versions
+# (celery 5.4.0 / kombu 5.6.2 / amqp 5.4.1):
+#   * kombu's pyamqp transport splats `broker_transport_options` straight into
+#     `amqp.Connection(**opts)` (kombu/transport/pyamqp.py:200-201), and amqp 5.4.1's
+#     `Connection.__init__` accepts `confirm_publish=False` by default -> with this key the channel
+#     is put in confirm mode and a publish that the broker did not take is an ERROR the producer
+#     retries (`task_publish_retry` below), instead of a silent drop.
+#   * the REDIS transport reads ONLY the names in `Channel.from_transport_options`
+#     (kombu/transport/virtual/base.py:485-489) and `confirm_publish` is not one of them, so on the
+#     Redis broker this key is INERT — recorded here rather than dressed up: Redis answers an
+#     `LPUSH` with the list length, so a returned publish already means "the server took it".  The
+#     key costs nothing and is the correct setting the moment the broker is AMQP.
+#     Measured: raw/D3/probe_confirm_publish.txt + probe_confirm_publish2.txt.
+confirm_publish = True
+#: `task_publish_retry` then actually retries — Celery's own publishes use this policy (a
+#: connection that dies mid-publish must not turn into a lost tick).
+task_publish_retry = True
+task_publish_retry_policy = {"max_retries": 3, "interval_start": 0,
+                             "interval_step": 0.2, "interval_max": 1.0}
+
+
+# `visibility_timeout` (Redis redelivery).  Redis redelivers an unacked message this many seconds
+# after delivery, so it is set from the TWO clocks a redelivery must never race:
+#   * the CLAIM LEASE (`settings.task_claim_lease_seconds`, 900 s) — the row's own authority on who
+#     owns the run.  A redelivery landing while the claim is live is refused by `claim_task`
+#     (E_TASK_CLAIMED) and, once the lease is gone, F-16's cancellation refuses that run's side
+#     effects: nothing is doubled, but the redelivery is wasted work.  Above the lease, the broker
+#     never races a claim that is still the truth.
+#   * the TASK's hard limit (`settings.celery_task_time_limit`, 900 s) — how long a task can
+#     legitimately run.  Below it, every long task is redelivered mid-run BY CONSTRUCTION; the
+#     extra 600 s covers the worker's persist-and-ack phase, which runs while the message is still
+#     unacked.
+# This deployment therefore gets max(2 x 900, 900 + 600) = 1800 s.  Deliberately NOT left to
+# Celery/kombu's redis default of 3600 s: 4x the lease buys nothing above that margin, and the
+# default keeps a message a crashed worker took invisible for a full hour.
+# Measured on the installed stack: kombu 5.6.2 reads `visibility_timeout` from the transport
+# options (kombu/transport/redis.py `Channel.from_transport_options`; channel default 3600).
+visibility_timeout = max(
+    2 * settings.task_claim_lease_seconds, settings.celery_task_time_limit + 600
+)
+broker_transport_options = {
+    **broker_transport_options,
+    "visibility_timeout": visibility_timeout,
+    "confirm_publish": True,
+}
+
 # Ceilings the upload never set (lane 04 §0: "no time/memory ceilings… a leaked CLI/Node
 # child is contained in one process").  These come from settings so a deployment can tune
 # them without editing code — and the tuning route is env-first (same reason as broker_url

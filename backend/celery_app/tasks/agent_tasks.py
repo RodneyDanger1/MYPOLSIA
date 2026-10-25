@@ -904,6 +904,35 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # becomes ONE path segment and the registry validates its charset before any path exists.
     task_dict["run_id"] = str(run_id)
 
+    # ── 2b. publish the run's state BEFORE its heartbeat and its thread exist ────────────────
+    # T02/D1: the run's approval material (`asyncio.to_thread` copies the current context into the
+    # worker thread, so `side_effects._resolve_approval` sees it without any per-agent edit).
+    # S2-R1/R2 (F-04/F-33): the per-channel counts THIS worker measured (`_with_channel_sends`) and
+    # the cancellation guard the run is abandoned through (F-16) are published here for the same
+    # reason — the consumers (the firewall's cap leg, the registry tool gate, `decide()`'s
+    # cancellation leg) run INSIDE the agent, with no run object to read.
+    #   * `context.get("channel_sends")` is None when the producer could not measure; publishing
+    #     None keeps "unmeasured" distinguishable from a measured zero, which is what makes the
+    #     firewall refuse a configured cap it cannot verify (`cap_unknown`, POLSIA-E114) instead of
+    #     reading a fabricated 0.
+    #   * `begin_run_cancellation()` MUST run before `create_task(_heartbeat)` below: the task
+    #     copies this context, and the loss is latched on the SHARED guard object, so every copy
+    #     (the loop's task and the run's thread) reads the same verdict.
+    from app.agents.policy_firewall import (
+        RunApproval,
+        begin_run_cancellation,
+        cancel_run,
+        configured_approval_secret,
+        end_run_cancellation,
+        reset_run_approval,
+        reset_run_channel_sends,
+        set_run_approval,
+        set_run_channel_sends,
+    )
+
+    set_run_channel_sends(context.get("channel_sends"))
+    begin_run_cancellation()
+
     # ── 3. heartbeat the lease while the agent runs ──────────────────────────
     stop_heartbeat = asyncio.Event()
     lease_lost = asyncio.Event()
@@ -925,9 +954,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # The service refuses to renew a claim this worker no longer holds
                     # (E_TASK_CLAIMED / E_TASK_NOT_RUNNABLE / E_NOT_FOUND) instead of silently
                     # no-opping, so a lost lease cannot pass unnoticed: stop and record the loss.
+                    # F-16: and LATCH IT on the run's guard, so the side effect the agent may be
+                    # about to perform is refused by name instead of being sent by a run that no
+                    # longer owns the task. `cancel_run` writes the object BOTH contexts hold
+                    # (`set_run_channel_sends`'s neighbour, published before this task existed).
                     logger.error(
                         "task %s: claim lease lost (%s), abandoning the run", task_id, exc.code
                     )
+                    cancel_run(f"claim lease lost ({exc.code})")
                     lease_lost.set()
                     return
                 logger.warning("heartbeat refused for task %s: %s", task_id, exc, exc_info=True)
@@ -940,19 +974,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     heartbeat = asyncio.create_task(_heartbeat())
     result: dict[str, Any] = {}
     failure: BaseException | None = None
-    # T02/D1: publish the run's approval material BEFORE the agent runs.  `asyncio.to_thread`
-    # copies the current context into the worker thread, so the side-effect path INSIDE the agent
-    # (`side_effects._resolve_approval`) sees it without any per-agent edit.  The secret comes from
-    # settings (b"" when APPROVAL_SECRET is unset — no channel, the fail-closed default), the
-    # token from the task row's metadata.  The `finally` clears it so one run's token cannot leak
-    # into the next run in this worker process.
-    from app.agents.policy_firewall import (
-        RunApproval,
-        configured_approval_secret,
-        reset_run_approval,
-        set_run_approval,
-    )
-
+    # T02/D1: the approval material itself is published above (step 2b), before this task and the
+    # run's thread copied the context; the secret comes from settings (b"" when APPROVAL_SECRET is
+    # unset — no channel, the fail-closed default), the token from the task row's metadata.
     set_run_approval(
         RunApproval(secret=configured_approval_secret(), token=approval_token)
     )
@@ -968,7 +992,12 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     finally:
         stop_heartbeat.set()
         await heartbeat
+        # EVERY run-scoped publish is cleared here, in the same `finally` that stops the
+        # heartbeat: one run's counts, token or cancellation verdict must never reach the next run
+        # in this worker process (the RUN_TAINT isolation argument, applied to the whole scope).
         reset_run_approval()
+        reset_run_channel_sends()
+        end_run_cancellation()
     duration = round(time.monotonic() - started, 2)
 
     error = None if failure is None else f"{type(failure).__name__}: {failure}"
