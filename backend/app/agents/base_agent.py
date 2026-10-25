@@ -146,6 +146,22 @@ def parse_json_object(text: str) -> Any | None:
     return structured_output.extract_json_from_text(text)
 
 
+def _envelope_actions(result: claude_cli.InvokeResult) -> list[dict[str, Any]]:
+    """The action records one runtime invocation published on its envelope (F-13); `[]` otherwise.
+
+    A run that produced none — the CLI transport, a tool-less run, a spawn-level refusal — yields
+    `[]` and changes nothing.  A MALFORMED envelope is also `[]` here: `_finish_call` classifies a
+    broken stdout and must see the original failure, not a parse error raised by a bookkeeping
+    helper (`_retryable` makes the same choice for the retry classification).
+    """
+    try:
+        env = structured_output.extract_envelope(result.stdout)
+    except ValueError:
+        return []
+    raw = env.get(deepseek_runtime.ACTION_KEY)
+    return [record for record in raw if isinstance(record, dict)] if isinstance(raw, list) else []
+
+
 @dataclass
 class _RawCall:
     """One real CLI conversation: the text, the envelope (for accounting) and what it cost us."""
@@ -191,6 +207,16 @@ class BasePolsiaAgent(ABC):
         # entirely, so an id-less run keeps the pre-V26 invoke signature and the shared
         # workspace root.
         self.run_id: str = ""
+        # F-13 — the task's action list: what its EARLIER attempts already executed
+        # (`tasks.metadata["actions"]`, published by the worker at claim time as
+        # `task["prior_actions"]`) and what THIS run executed (`self.last_actions`).  Empty on a
+        # first delivery, so a fresh run calls the runtime exactly as before.
+        self.prior_actions: list[dict[str, Any]] = []
+        self.last_actions: list[dict[str, Any]] = []
+        # §4.13's `attempt`: the worker's execution number for this run (`tasks.attempts` after the
+        # claim).  None means "the caller published none" — then `_real_call` omits the keyword
+        # and a direct caller keeps the pre-F-13 invoke signature.
+        self.run_attempt: int | None = None
 
     def set_run_context(self, task: dict[str, Any] | None) -> None:
         """Publish the run's task title, images and run id for the invoke seam (V25/L1, V26/L3).
@@ -205,6 +231,12 @@ class BasePolsiaAgent(ABC):
         V26/L3: `task["run_id"]` is the worker's `agent_runs.id`; it is published verbatim so
         `_real_call` can hand it to the runtime, which scopes the code tools to
         `runs/<id>/`.  Absent means "no id" and every pre-V26 behaviour is unchanged.
+
+        F-13: `task["prior_actions"]` is the task's recorded action list — what an EARLIER attempt
+        of this same task already executed (`tasks.metadata["actions"]`, snapshotted by the worker
+        at claim time).  It is published for `_real_call` to hand to the runtime as `replay`.
+        `task["attempt"]` is the worker's execution number, recorded on every action record.
+        Absent on both, the run is byte-identical to the pre-F-13 one.
         """
         data = task or {}
         title = str(data.get("title") or "").strip()[:512]
@@ -214,8 +246,17 @@ class BasePolsiaAgent(ABC):
         # REFUSED by the registry, never silently rewritten into a different path segment).
         raw_run_id = data.get("run_id")
         run_id = str(raw_run_id).strip() if raw_run_id is not None else ""
+        raw_prior = data.get("prior_actions")
+        prior = [r for r in raw_prior if isinstance(r, dict)] if isinstance(raw_prior, list) else []
+        raw_attempt = data.get("attempt")
+        attempt = (raw_attempt if isinstance(raw_attempt, int) and not isinstance(raw_attempt, bool)
+                   and raw_attempt > 0 else None)
+        # `prior == self.prior_actions` is part of the comparison on purpose: without it a second
+        # `set_run_context` call (the repair ladder re-prompts through the same agent) would skip
+        # the assignment and replay a stale list.
         if (title == self.task_title and refs == self.task_attachment_refs
-                and run_id == self.run_id):
+                and run_id == self.run_id and prior == self.prior_actions
+                and attempt == self.run_attempt):
             return
         images: list[dict[str, Any]] = []
         if refs:
@@ -226,6 +267,8 @@ class BasePolsiaAgent(ABC):
         self.task_attachment_refs = refs
         self.task_images = images
         self.run_id = run_id
+        self.prior_actions = prior
+        self.run_attempt = attempt
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -547,6 +590,12 @@ class BasePolsiaAgent(ABC):
         )
         transport = "http" if runtime is not None else inv.transport
 
+        # F-13: the records THIS logical run produced, accumulated across the ladder's own
+        # dispatches.  `claude_cli.run_with_retries` re-runs the WHOLE invocation on a retryable
+        # envelope, so without this list a 429 after a tool turn would execute the same tool again
+        # on the next dispatch — the measured 3x replay.
+        run_actions: list[dict[str, Any]] = []
+
         def dispatch() -> claude_cli.InvokeResult:
             if runtime is not None:
                 # V25/L1: the run's context rides the SAME invoke seam, keyword-only and
@@ -560,12 +609,21 @@ class BasePolsiaAgent(ABC):
                 }
                 if self.run_id:
                     runtime_kwargs["run_id"] = self.run_id
-                return runtime.invoke(inv, **runtime_kwargs)
+                # F-13: what an earlier DELIVERY of this task did (`prior_actions`) plus what an
+                # earlier DISPATCH of this run did — both by exact `call_key`, never by name.
+                replay = [*self.prior_actions, *run_actions]
+                if replay:
+                    runtime_kwargs["replay"] = replay
+                if self.run_attempt is not None:
+                    runtime_kwargs["attempt"] = self.run_attempt
+                result = runtime.invoke(inv, **runtime_kwargs)
+                run_actions.extend(_envelope_actions(result))
+                return result
             return claude_cli.invoke(inv, executable=self.cli_path)
 
         result, attempts = claude_cli.run_with_retries(dispatch, classify=self._retryable)
         self.last_attempts = attempts
-        return self._finish_call(result, attempts, transport=transport)
+        return self._finish_call(result, attempts, transport=transport, actions=run_actions)
 
     def _retryable(self, result: claude_cli.InvokeResult) -> bool:
         """S-01: the retry classifier reads the envelope's `subtype`/`api_error_status`; when
@@ -610,7 +668,14 @@ class BasePolsiaAgent(ABC):
     def _e_code_for(self, failure: structured_output.FailureCode) -> str:
         return structured_output.e_code_for(failure)
 
-    def _finish_call(self, result: claude_cli.InvokeResult, attempts: int, *, transport: str) -> _RawCall:
+    def _finish_call(
+        self,
+        result: claude_cli.InvokeResult,
+        attempts: int,
+        *,
+        transport: str,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> _RawCall:
         failure, detail, env = self._classify_invoke(result)
         if env:
             self.last_envelope = env
@@ -620,6 +685,17 @@ class BasePolsiaAgent(ABC):
         else:
             self.last_envelope = {}
             self.last_usage = None
+        # F-13: the records this RUN produced.  `actions` (the ladder's accumulated journal) wins
+        # over the final envelope's own list: an earlier dispatch may have executed a call the last
+        # one never repeated, and the worker must persist every effect, not the last one's subset.
+        if actions is not None:
+            self.last_actions = [record for record in actions if isinstance(record, dict)]
+        else:
+            raw_actions = env.get(deepseek_runtime.ACTION_KEY)
+            self.last_actions = (
+                [record for record in raw_actions if isinstance(record, dict)]
+                if isinstance(raw_actions, list) else []
+            )
         if failure is not None:
             e_code = self._e_code_for(failure)
             raise PolsiaError(
@@ -633,6 +709,10 @@ class BasePolsiaAgent(ABC):
                     "stderr": result.stderr.strip()[:500],
                     "stdout_head": result.stdout[:500],
                     "attempts": attempts,
+                    # F-13: the known effects ride the refusal.  A FAILED run stores no
+                    # `agent_runs.output`, so this context is the ONLY carrier the worker can
+                    # persist — and the next delivery replays it instead of repeating the run.
+                    **({"actions": self.last_actions} if self.last_actions else {}),
                 },
             )
         return _RawCall(
@@ -783,6 +863,11 @@ class BasePolsiaAgent(ABC):
             "context_tokens": 0,
             "stable_prefix_hash": "",
         }
+        if self.last_actions:
+            # F-13: a COMPLETED run's list rides its own result -> `agent_runs.output` (the task
+            # row's copy is the worker's, and is what a retry reads).  Absent when the run made no
+            # tool call, so a tool-less result keeps its historical key set.
+            meta[deepseek_runtime.ACTION_KEY] = [dict(record) for record in self.last_actions]
         usage = self.last_usage
         if usage is not None:
             meta.update(usage.as_dict())

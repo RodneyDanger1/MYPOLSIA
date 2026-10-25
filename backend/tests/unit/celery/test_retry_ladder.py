@@ -22,6 +22,8 @@ re-executes the task body — the closest thing to a worker redelivery that exis
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, PolsiaError
@@ -124,6 +126,13 @@ def test_invariant_5_the_ladder_retries_up_to_the_cap_and_then_goes_terminal(
     (attempts 3 > cap — terminal).  So the agent runs THREE times, TWO retries are requested, and
     `apply()` reports FAILURE.
 
+    A3/S3 (F-13): "three attempts" is the ladder's contract, NOT a licence to repeat the work.
+    Each attempt is a fresh delivery of the same task, and what it may re-do is bounded by the
+    task's action list — pinned by
+    `test_a_retry_replays_the_previous_attempts_actions` below, which runs this same ladder with a
+    tool call in it and asserts the call executes ONCE across the three attempts.  The count here
+    is the ATTEMPT count; a fix that made the ladder run the agent twice would fail it.
+
     This test previously pinned one retry and two executions, which was the double-counted
     arithmetic: the failure path added an increment the claim had already added, so the first
     failure consumed two of the ladder's slots.
@@ -142,7 +151,7 @@ def test_invariant_5_the_ladder_retries_up_to_the_cap_and_then_goes_terminal(
     result = eager_delivery(task_id)
 
     assert len(spy.calls) == 3, (
-        "the ladder must run the agent once per attempt up to the cap: first execution + 2 retries"
+        "the ladder must make three ATTEMPTS up to the cap: first execution + 2 retries"
     )
     assert result.state == "FAILURE", "the failure past the cap is terminal and must be a FAILURE"
     assert len(retry_recorder) == 2, "the ladder asks for exactly `agent_max_retries` retries"
@@ -157,3 +166,81 @@ def test_invariant_5_the_ladder_retries_up_to_the_cap_and_then_goes_terminal(
     assert [r["status"] for r in runs] == ["failed", "failed", "failed"], (
         "one run ledger row per execution"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5d. F-13 (§4.13) — the ladder's three attempts execute each tool call ONCE
+# ─────────────────────────────────────────────────────────────────────────────
+class _ToolCallingRun:
+    """A stand-in agent run that makes ONE tool call per attempt through the REAL seam.
+
+    It reads `task_dict["prior_actions"]` — exactly what the worker published from
+    `tasks.metadata["actions"]` at the claim — and hands it to `_execute_tool_calls` as the replay
+    index.  That is the shipped path; this double only supplies the model's one tool call.
+    """
+
+    def __init__(self) -> None:
+        self.attempts: list[int] = []
+        self.prior_sizes: list[int] = []
+
+    def __call__(self, agent_type, task_dict, context):
+        from app.agents import deepseek_runtime
+
+        prior = task_dict.get("prior_actions") or []
+        self.prior_sizes.append(len(prior))
+        self.attempts.append(int(task_dict.get("attempt") or 0))
+        journal: list[dict] = []
+        deepseek_runtime._execute_tool_calls(
+            [{"id": "c1", "type": "function",
+              "function": {"name": "web_fetch",
+                           "arguments": '{"url": "https://example.test/page"}'}}],
+            agent_type=agent_type,
+            url="test://retry-ladder",
+            attempt=task_dict.get("attempt"),
+            replay=deepseek_runtime.replay_index(prior),
+            journal=journal,
+        )
+        raise PolsiaError(E_CLI_TIMEOUT, "test-only transport failure",
+                          context={"actions": journal})
+
+
+def test_a_retry_replays_the_previous_attempts_actions(
+    queue_db, eager_delivery, monkeypatch
+):
+    """F-13: three attempts, ONE execution of the tool call, ONE record on the task row.
+
+    RED leg (observed against the shipped tree): the third assertion fails with `assert 3 == 1` —
+    `run_with_retries`/Celery re-deliver the task, nothing tells the run what the previous attempt
+    already did, and `web_fetch` executes once per attempt.
+    """
+    from app.agents import deepseek_runtime
+
+    executed: list[tuple[str, dict]] = []
+
+    class _Registry:
+        TOOL_SPECS = [{"type": "function", "function": {"name": "web_fetch", "parameters": {}}}]
+
+        def execute_tool(self, name, arguments, *, agent_type, **_kwargs):
+            executed.append((name, arguments))
+            return "Fetched https://example.test/page — 32 chars of text."
+
+    monkeypatch.setattr(deepseek_runtime, "_tool_registry", lambda: _Registry(), raising=False)
+    run = _ToolCallingRun()
+    import app.agents.crew_factory as crew_factory
+
+    monkeypatch.setattr(crew_factory, "run_agent_for_task", run)
+
+    task_id = queue_db.create_task(title="ladder-replay")
+    result = eager_delivery(task_id)
+
+    assert result.state == "FAILURE", "the run failed every attempt"
+    assert run.attempts == [1, 2, 3], "the ladder made three attempts, numbered by the claim"
+    assert run.prior_sizes == [0, 1, 1], (
+        "attempt 1 had no record; attempts 2 and 3 replayed the one it wrote"
+    )
+    assert len(executed) == 1, "the tool call is executed ONCE across the three attempts"
+
+    actions = json.loads(queue_db.row(task_id)["metadata"])["actions"]
+    assert len(actions) == 1, "one effect keeps one record, however often it was replayed"
+    assert actions[0]["status"] == "executed", "the effect really happened exactly once"
+    assert actions[0]["call_key"].startswith("web_fetch|")

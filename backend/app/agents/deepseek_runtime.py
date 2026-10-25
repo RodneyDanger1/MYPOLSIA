@@ -81,6 +81,7 @@ BEFORE the request; a task with no images sends the exact same plain-string mess
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -98,6 +99,7 @@ import httpx
 from app.agents import claude_cli, pricing
 from app.config import settings
 from app.core.errors import (
+    E_ACTION_REPLAY_UNAVAILABLE,
     E_CLI_JSON,
     E_CLI_TIMEOUT,
     E_CONFIG,
@@ -490,6 +492,188 @@ def _requested_tool_names(calls: Any) -> list[str]:
     return names
 
 
+# ── the run's action list (§4.13 / F-13) ─────────────────────────────────────────────────────
+#: The envelope key carrying THIS run's action records.  The worker persists them under the same
+#: name in `tasks.metadata` (`celery_app.tasks._common.ACTION_KEY`); the two literals are pinned
+#: equal by `tests/unit/test_a3_writepath.py`.
+ACTION_KEY = "actions"
+#: §4.13's per-entry bound: 4 KB of serialized record.  The identity fields (`call_key`, `tool`,
+#: `args`) are never truncated — they ARE the replay key — so the tool RESULT absorbs the bound.
+MAX_ACTION_ENTRY_BYTES = 4096
+#: The first cut before the byte fit (a tool answer is re-sent to the model on replay, not archived).
+MAX_ACTION_RESULT_CHARS = 4000
+#: §4.13's refusal now lives in `app/core/errors.py` (one code, one home): re-sending an
+#: effect that may already exist is the defect, so this refuses instead.
+
+
+def _canonical_arguments(arguments: Any) -> str:
+    """The canonical JSON an attempt-independent call identity is hashed over."""
+    return json.dumps(
+        arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
+
+
+def call_key(tool: str, arguments: Any) -> str:
+    """Attempt-independent identity of ONE tool call: `<tool>|<sha256 of canonical args>`.
+
+    §4.13's key.  It is derived from the model's own tool name and arguments, never from the
+    attempt, the call id or the run: that is what lets a LATER attempt recognise "this exact call
+    already happened" instead of performing it a second time.
+    """
+    digest = hashlib.sha256(_canonical_arguments(arguments).encode("utf-8")).hexdigest()
+    return f"{tool}|{digest}"
+
+
+def _run_identity(run_id: Any) -> Any:
+    """The record's `run_id`: the `agent_runs.id` as the INT the column holds, else the raw value.
+
+    `base_agent` carries the run id as text (it becomes a path segment), so a digit string is the
+    numeric id; anything else is recorded verbatim rather than dropped, and an id-less run records
+    `null` — never an invented number.
+    """
+    if isinstance(run_id, bool):
+        return None
+    if isinstance(run_id, int):
+        return run_id
+    if isinstance(run_id, str) and run_id.strip().isdigit():
+        return int(run_id.strip())
+    return run_id if isinstance(run_id, str) and run_id.strip() else None
+
+
+def _entry_bytes(entry: dict[str, Any]) -> int:
+    return len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+
+
+def _action_record(
+    *,
+    tool: str,
+    arguments: Any,
+    result: str,
+    status: str,
+    run_id: Any,
+    attempt: Any,
+) -> dict[str, Any]:
+    """ONE action record, bounded to §4.13's 4 KB entry (`result` absorbs the bound).
+
+    `result` is the tool's answer AS PERSISTED — a replay re-sends exactly this text — and
+    `result_digest` binds it, so a corrupted entry is refused on replay instead of being replayed
+    as if it were the tool's answer.  An entry whose identity fields alone fill the budget keeps
+    its digest and NO `result`: it says what ran, and replay refuses it by name (fail closed)
+    rather than inventing an answer or re-sending the call.
+    """
+    text = result[:MAX_ACTION_RESULT_CHARS]
+    entry: dict[str, Any] = {
+        "call_key": call_key(tool, arguments),
+        "tool": tool,
+        "args": arguments if isinstance(arguments, dict) else {},
+        "run_id": _run_identity(run_id),
+        # §4.13's `attempt`: which execution of this task performed the call.  The worker publishes
+        # the claim's own counter; a direct caller that published none is running the first one.
+        "attempt": (attempt if isinstance(attempt, int) and not isinstance(attempt, bool)
+                    and attempt > 0 else 1),
+        "status": status,
+        "result": text,
+        "result_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+    for _ in range(8):
+        size = _entry_bytes(entry)
+        if size <= MAX_ACTION_ENTRY_BYTES:
+            return entry
+        # JSON escaping can cost six bytes per character, so trim by the MEASURED overshoot and
+        # re-measure instead of assuming one byte per character.
+        keep = len(text) - max(1, size - MAX_ACTION_ENTRY_BYTES)
+        if keep <= 0:
+            break
+        text = text[:keep]
+        entry["result"] = text
+        entry["result_digest"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    entry.pop("result", None)
+    return entry
+
+
+def replay_index(records: Any) -> dict[str, dict[str, Any] | None]:
+    """`call_key -> stored record` for every call an earlier attempt TOUCHED.
+
+    `None` means the key is present but its outcome is UNKNOWN — a `started` record, written when a
+    process died between recording the intent and recording the answer.  §4.13's replay rule is
+    fail-closed, so such a key is kept as a refusal marker: re-executing it could repeat an effect
+    that already happened, which is the exact defect this list exists to prevent.
+    """
+    index: dict[str, dict[str, Any] | None] = {}
+    if not isinstance(records, list):
+        return index
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        key = record.get("call_key")
+        if not isinstance(key, str) or not key:
+            continue
+        status = record.get("status")
+        if status in ("executed", "replayed"):
+            index[key] = record          # a later, terminal record for a key wins
+        elif status == "started":
+            index.setdefault(key, None)  # touched, unknown outcome: never re-executed
+    return index
+
+
+def _replay_refusal(detail: str, *, key: str, tool: str, url: str) -> PolsiaError:
+    """The named refusal §4.13 requires where a recorded call cannot be replayed."""
+    return PolsiaError(
+        E_ACTION_REPLAY_UNAVAILABLE,
+        f"{tool} ({key}): {detail}",
+        how_to_fix=(
+            "an earlier attempt of this task recorded the call but not a replayable answer, and "
+            "re-sending it could repeat a real side effect. Nothing was sent. Inspect or clear "
+            "tasks.metadata[\"actions\"] for this task to authorise a fresh run of it."
+        ),
+        context={"call_key": key, "tool": tool, "url": url, "runtime": "deepseek"},
+    )
+
+
+def _replayed_result(stored: dict[str, Any] | None, *, key: str, tool: str, url: str) -> str:
+    """The recorded result text for `key`, or a NAMED refusal — never a silent re-send (§4.13)."""
+    if not isinstance(stored, dict):
+        raise _replay_refusal(
+            "an earlier attempt started this call and never recorded its outcome; the effect may "
+            "already exist, so it must not be executed again",
+            key=key, tool=tool, url=url,
+        )
+    text = stored.get("result")
+    digest = stored.get("result_digest")
+    if not isinstance(text, str) or not isinstance(digest, str) or not digest:
+        raise _replay_refusal(
+            "the recorded entry carries no replayable result (its answer did not fit the entry "
+            "bound, or was never persisted)",
+            key=key, tool=tool, url=url,
+        )
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
+        raise _replay_refusal(
+            "the recorded entry's text does not match its own digest; the record was altered or "
+            "corrupted after it was written",
+            key=key, tool=tool, url=url,
+        )
+    return text
+
+
+def _loop_evidence(
+    tool_specs: list[dict], tools_used: list[str], journal: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A FAILURE envelope's tool evidence (`{}` for a tool-less run: byte-identical, no new keys).
+
+    A2A4-01: the two failures the retry ladder actually retries — a transport fault and a non-200
+    status — dropped `tools_used`, so at the retry seam every tool run looked tool-less and the
+    cheapest correct mitigation ("do not retry a run whose envelope reported tools") was
+    unimplementable against the envelopes the product really produces.
+
+    F-13 rides the same envelope for the same reason: a FAILED run stores no
+    `agent_runs.output`, so its action list exists only here — and this envelope is what the next
+    delivery replays instead of repeating the run.
+    """
+    if not tool_specs:
+        return {}
+    return {"tools_used": list(tools_used), ACTION_KEY: list(journal)}
+
+
 def _turn_usage(usage_raw: dict[str, Any]) -> dict[str, int | None]:
     """One provider call's four measurements (None = UNMEASURED, the NULL-vs-zero rule)."""
     return {
@@ -582,7 +766,8 @@ def _assistant_tool_echo(message: dict[str, Any]) -> dict[str, Any]:
 
 def _execute_tool_calls(
     calls: Any, *, agent_type: str, url: str, task_title: str | None = None,
-    run_id: str | None = None,
+    run_id: str | None = None, replay: dict[str, dict[str, Any] | None] | None = None,
+    attempt: int | None = None, journal: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run every call of ONE tool_calls turn -> (`role:"tool"` messages, names that reached it).
 
@@ -597,6 +782,21 @@ def _execute_tool_calls(
     A STRUCTURALLY broken call — one that cannot be answered with a `tool_call_id` — is
     off-contract, so it raises `E_CLI_JSON` instead of being guessed at.
 
+    F-13 (§4.13): `replay` is the `call_key -> recorded action` index of what an EARLIER attempt of
+    this task already did.  A call whose key is in it is NOT executed: the recorded result is
+    handed back to the model (so the conversation continues correctly) and journalled as
+    `replayed`.  A stored record that cannot be replayed RAISES
+    `E_ACTION_REPLAY_UNAVAILABLE` — re-sending an effect that may already exist is the defect,
+    so the only safe answer is a named refusal.
+
+    `journal` is the SINK the records are appended to (one per call this turn executed or
+    replayed), which is what the worker persists.  It is an out-parameter rather than a third
+    return value on purpose: this function's two-value return is pinned by every pre-F-13 caller
+    and executor double in the tree (`tests/unit/test_v25_vision.py`,
+    `test_v26_run_context.py::test_the_run_id_reaches_execute_tool_through_the_runtime_seam`),
+    and THE TREE WINS over the packet's three-value sketch.  A caller with no sink pays nothing:
+    the records are built into a local list and dropped.
+
     V26/L3: `run_id` is the calling RUN's id (an `agent_runs.id` as text, or any caller-supplied
     id). It rides the SAME frozen signature as a keyword-only, defaulted addition and is
     forwarded to `execute_tool` ONLY when the run HAS one — a run without an id (and every
@@ -606,6 +806,7 @@ def _execute_tool_calls(
     """
     tool_messages: list[dict[str, Any]] = []
     reached: list[str] = []
+    records: list[dict[str, Any]] = journal if journal is not None else []
     registry = _tool_registry()
     for call in calls:
         if not isinstance(call, dict):
@@ -642,7 +843,22 @@ def _execute_tool_calls(
             )
         name = name.strip()
         arguments, malformed = _tool_arguments(function.get("arguments"))
-        if malformed is not None:
+        key = call_key(name, arguments) if malformed is None else ""
+        if key and replay is not None and key in replay:
+            # §4.13: this exact call was already performed by an earlier attempt of this task.
+            # Answering from the record is the point: the effect exists once, the model still gets
+            # the result it asked for, and the retry cannot open a second PR.
+            text = _replayed_result(replay[key], key=key, tool=name, url=url)
+            # The call reached the JOURNAL, and its effect exists in the world, so the name belongs
+            # in `tools_used`: a retry-decision that read "no tool ran" here would be exactly the
+            # blind seam A2A4-01 is about.
+            reached.append(name)
+            records.append(
+                _action_record(tool=name, arguments=arguments, result=text, status="replayed",
+                               run_id=run_id, attempt=attempt)
+            )
+            logger.info("deepseek runtime: %s replayed from an earlier attempt's record", name)
+        elif malformed is not None:
             # Garbage arguments are the MODEL's mistake: it is told, by name, and gets its
             # bounded turns to fix it. Nothing is executed from a shape we cannot read.
             text = _tool_refusal("E_TOOL_ARGS", f"{name}: {malformed}; the tool was NOT executed")
@@ -680,6 +896,10 @@ def _execute_tool_calls(
                         "(the value was dropped, not coerced)",
                     )
             logger.info("deepseek runtime: tool %s -> %d chars of result", name, len(text))
+            records.append(
+                _action_record(tool=name, arguments=arguments, result=text, status="executed",
+                               run_id=run_id, attempt=attempt)
+            )
         tool_messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
     return tool_messages, reached
 
@@ -697,6 +917,7 @@ def _post_completion(
     started: float,
     num_turns: int,
     usage: dict[str, Any] | None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, claude_cli.InvokeResult | None]:
     """ONE chat-completions exchange: (`payload`, None) on a documented 200, else (None, failure).
 
@@ -705,6 +926,11 @@ def _post_completion(
     that is not the documented completion shape). A transport fault or a non-200 status comes
     back as a FAILURE ENVELOPE exactly as before — carrying the loop's call count and the usage
     measured so far, so a mid-loop failure cannot lose the tokens already spent.
+
+    A2A4-01: `extra` carries the loop's tool evidence (`tools_used` + the action list) on those
+    two failure envelopes.  They are exactly the failures the retry ladder retries, and until this
+    argument existed a tool run that ended in a 429 or a transport fault was indistinguishable
+    from a tool-less one at the retry seam.
     """
     try:
         # Same process-wide bound as the CLI path (claude_cli.concurrency_gate): the knob that
@@ -733,6 +959,7 @@ def _post_completion(
             api_status=None,
             num_turns=num_turns,
             usage=usage,
+            extra=extra,
         )
     except (ValueError, httpx.InvalidURL) as exc:
         # httpx raises a plain ValueError / InvalidURL for URL shapes it cannot build a request
@@ -757,6 +984,7 @@ def _post_completion(
             api_status=response.status_code,
             num_turns=num_turns,
             usage=usage,
+            extra=extra,
         )
 
     try:
@@ -1172,6 +1400,8 @@ def invoke(
     task_title: str | None = None,
     images: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    replay: list[dict[str, Any]] | None = None,
+    attempt: int | None = None,
 ) -> claude_cli.InvokeResult:
     """Run one DeepSeek chat completion for `inv`; same shape as `claude_cli.invoke`.
 
@@ -1194,6 +1424,14 @@ def invoke(
     `execute_tool(run_id=...)` only when present; the three code tools then scope their
     workspace to `<settings.code_workspace_dir>/runs/<id>/`. Absent, the run reads and writes
     the shared workspace root exactly as before (byte-identical request/result shapes).
+
+    F-13 (§4.13): `replay` is the action list a PREVIOUS attempt of this task recorded
+    (`tasks.metadata["actions"]`, read by `base_agent`).  A tool call whose `call_key` is in it is
+    answered from the record instead of being executed again, and a record that cannot be
+    replayed raises `E_ACTION_REPLAY_UNAVAILABLE`.  Omitted/empty, this runtime behaves exactly as
+    it did before (the request body never carries the list; only the envelope gains `actions`, on
+    the same presence rule as `tools_used`).  `attempt` is the task's execution number, recorded on
+    each action record for audit.
     """
     key = (api_key if api_key is not None else _resolve_api_key() or "").strip() or ""
     if not key:
@@ -1232,6 +1470,10 @@ def invoke(
     # that reached the executor (metadata ONLY), and the call count (accounting + the bound).
     turns: list[dict[str, int | None]] = []
     tools_used: list[str] = []
+    #: F-13: this attempt's action records.  Same presence rule as `tools_used` — absent means the
+    #: run had no tools at all, `[]` means tools were offered and none ran.
+    journal: list[dict[str, Any]] = []
+    stored_actions = replay_index(replay)
     provider_calls = 0
     try:
         while True:
@@ -1248,6 +1490,10 @@ def invoke(
                 started=started,
                 num_turns=provider_calls,
                 usage=(_accumulated_usage(turns) if tool_specs else None),
+                # A2A4-01 + F-13: what the loop had ALREADY done when this call failed rides the
+                # failure envelope, because a failed run stores no output and this envelope is
+                # what the next attempt replays.
+                extra=_loop_evidence(tool_specs, tools_used, journal) or None,
             )
             if failure is not None:
                 return failure
@@ -1303,11 +1549,11 @@ def invoke(
                         api_status=None,
                         num_turns=provider_calls,
                         usage=_accumulated_usage(turns),
-                        extra={"tools_used": list(tools_used)},
+                        extra=_loop_evidence(tool_specs, tools_used, journal),
                     )
                 tool_messages, reached = _execute_tool_calls(
                     calls, agent_type=tool_agent_type, url=url, task_title=task_title,
-                    run_id=run_id,
+                    run_id=run_id, replay=stored_actions, attempt=attempt, journal=journal,
                 )
                 for name in reached:
                     _record_tool_name(tools_used, name)
@@ -1382,7 +1628,7 @@ def invoke(
             # A tool run that truncates on its LAST call still spent the earlier turns' tokens:
             # the measurement is carried, and a tool-LESS run keeps the historical empty usage.
             usage=(_accumulated_usage(turns) if tool_specs else None),
-            extra=({"tools_used": list(tools_used)} if tool_specs else None),
+            extra=_loop_evidence(tool_specs, tools_used, journal) or None,
         )
 
     stored_messages = messages
@@ -1417,6 +1663,9 @@ def invoke(
         # model's own arguments. `tools_used == []` is a measured zero (tools were available, the
         # model called none) — a key that is merely ABSENT means the run had no tools at all.
         envelope["tools_used"] = list(tools_used)
+        # F-13: the run's action list.  Same presence rule as `tools_used`: absent means the run
+        # had no tools (byte-identical envelope), `[]` means tools were offered and none ran.
+        envelope[ACTION_KEY] = list(journal)
         logger.info(
             "deepseek runtime: tool run finished after %d provider call(s); tools used: %s",
             provider_calls,
@@ -1448,13 +1697,16 @@ def invoke(
 
 
 __all__ = [
+    "ACTION_KEY",
     "CHAT_COMPLETIONS_PATH",
     "DEEPSEEK_DEFAULT_BASE_URL",
     "DEEPSEEK_DEFAULT_MAX_TOKENS",
     "DEEPSEEK_DEFAULT_MODEL",
     "DEEPSEEK_DEFAULT_REASONING_EFFORT",
     "DEEPSEEK_DEFAULT_TIMEOUT_SECONDS",
+    "E_ACTION_REPLAY_UNAVAILABLE",
     "InvocationPlan",
+    "MAX_ACTION_ENTRY_BYTES",
     "SESSION_STORE_LIMIT",
     "SESSION_STORE_MAX_BYTES",
     "TOOL_LOOP_MAX_ITERATIONS",
@@ -1462,6 +1714,8 @@ __all__ = [
     "VISION_MAX_IMAGE_BYTES",
     "VISION_MAX_TOTAL_BYTES",
     "available",
+    "call_key",
     "invoke",
     "plan_from_invocation",
+    "replay_index",
 ]

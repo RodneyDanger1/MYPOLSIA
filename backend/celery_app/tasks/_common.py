@@ -185,16 +185,53 @@ async def create_task_deduped(
 
 
 # ── broker hand-off ──────────────────────────────────────────────────────────
-async def enqueue_created(task_ids: list[int], *, label: str) -> None:
-    """Hand committed task rows to the broker; a failed hand-off must not strand them (D2/T19).
+async def stamp_rearmed(db: AsyncSession, task_ids: list[int], *, reason: str) -> list[int]:
+    """Mark rows whose delivery was owed and did not arrive — the reconciler's ONE marker.
 
-    The scheduler paths commit rows `pending` and then dispatch. Measured defect (audit lane 4,
-    L4-F1, using the wave-4/T19 dead-broker evidence): with the broker down, `run_agent_task.delay(...)`
-    raised into the caller and the rows stayed `pending` forever — nothing reconciles a row no worker
-    was ever told about, and the unique dedupe key blocks the next bucket run from re-creating it.
-    This mirrors the API trigger's contract (app/api/v1/agents.py): mark EVERY row `failed` with the
-    measured reason in its own session, commit, then raise the named refusal so the Celery task fails
-    honestly instead of reporting a fake queue.
+    `maintenance._reconcile_stranded_pending` selects ANY `pending` row carrying
+    `metadata.rearmed_at` older than one window and hands it to `run_agent_task.delay`, so a marker
+    without a delivery is a bounded retry instead of a stranded row.  Until this writer existed the
+    marker was produced only by the pause path, which is why an orchestrator/manual/chat row whose
+    dispatch was refused waited for `night_task` (A2-03).
+
+    Merge — never replace — the per-task payload channel, and stamp in the CALLER's transaction: a
+    rolled-back sweep must not leave a marker claiming a retry that was never owed.  The row's
+    `status` is NOT touched here: re-arming is only ever correct for a row that is already
+    `pending` (claimable), and `enqueue_created` is the caller that guarantees it.
+    """
+    if not task_ids:
+        return []
+    rows = (
+        await db.execute(select(Task).where(Task.id.in_(list(task_ids))))
+    ).scalars().all()
+    stamp = now_utc().isoformat()
+    stamped: list[int] = []
+    for row in rows:
+        merged = dict(row.metadata_json or {})
+        merged["rearmed_at"] = stamp
+        merged["rearm_reason"] = reason
+        row.metadata_json = merged
+        stamped.append(int(row.id))
+    await db.flush()
+    return stamped
+
+
+async def enqueue_created(task_ids: list[int], *, label: str) -> None:
+    """Hand committed task rows to the broker; a refusal RE-ARMS them, it never terminalises them.
+
+    The scheduler paths commit rows `pending` and then dispatch.  Measured defect (audit lane 4,
+    L4-F1, wave-4/T19 dead-broker evidence): with the broker down, `run_agent_task.delay(...)`
+    raised into the caller and nothing reconciled the undelivered rows.
+
+    A2-03: the old fallback marked EVERY row `failed` on any exception, on the strength of a comment
+    claiming "NO delivery was accepted" — which a `group` publish cannot know: a group is published
+    one message at a time, so a connection that dies mid-publish leaves a PREFIX live in the queue
+    while the code writes `failed` on all of them, and `claim_task` accepts only `pending`.  The
+    work was queued AND written off.  A refusal proves nothing about what the broker took, so the
+    rows stay `pending` and each is stamped with `metadata.rearmed_at`: a delivered row is claimed
+    (the claim is its proof of life) and an undelivered one is re-dispatched by
+    `maintenance._reconcile_stranded_pending` within one window.  The named refusal still reaches
+    the caller — a fake queue would be worse than a loud one.
     """
     from celery_app.tasks.agent_tasks import run_agent_task  # lazy: agent_tasks imports this module
 
@@ -205,27 +242,120 @@ async def enqueue_created(task_ids: list[int], *, label: str) -> None:
             from celery import group
 
             group([run_agent_task.s(task_id) for task_id in task_ids]).apply_async()
-    except Exception as exc:  # broker unavailable: NO delivery was accepted for these rows
+    except Exception as exc:  # noqa: BLE001 — a broker refusal is NAMED below; the rows stay queued
         from app.core.database import get_session_factory
         from app.core.errors import E_REDIS, PolsiaError
-        from app.services.task_service import update_task_status
 
-        logger.warning("failed to enqueue %s task(s) for %s", len(task_ids), label, exc_info=True)
+        reason = f"enqueue_refused:{exc.__class__.__name__}"
+        logger.warning(
+            "failed to enqueue task(s) for %s (%s); re-arming %s so the reconciler re-dispatches "
+            "the undelivered ones", label, reason, len(task_ids), exc_info=True,
+        )
         session_factory = get_session_factory()
         async with session_factory() as db:
-            for task_id in task_ids:
-                await update_task_status(
-                    db,
-                    task_id,
-                    "failed",
-                    error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
-                )
+            rearmed = await stamp_rearmed(db, task_ids, reason=reason)
             await db.commit()
         raise PolsiaError(
             E_REDIS,
-            f"{label}: {len(task_ids)} task(s) were created but could not be handed to a worker",
-            context={"task_ids": task_ids},
+            (
+                f"{label}: {len(task_ids)} task(s) could not be handed to a worker; they stay "
+                f"queued and are re-dispatched by the stranded-row reconciler"
+            ),
+            context={"task_ids": task_ids, "rearmed": rearmed, "reason": reason},
         ) from exc
+
+
+# ── the run's action list (§4.13 / F-13) ─────────────────────────────────────
+#: The `tasks.metadata` key carrying a task's CROSS-ATTEMPT action list.  The runtime publishes the
+#: same records under the same name on its envelope (`deepseek_runtime.ACTION_KEY`); the two
+#: literals are pinned equal by `tests/unit/test_a3_writepath.py`.
+ACTION_KEY = "actions"
+#: §4.13's list bound.  The per-ENTRY bound (4 KB) is applied where the record is built — the
+#: runtime is the only layer that holds the tool result — so this module owns the list itself.
+MAX_ACTIONS = 50
+#: The only status a record can terminalise to: the call was made and this is its answer.  A
+#: `replayed` record points at an effect that already existed, and an `evicted` row is the summary
+#: the bound leaves behind (it carries a count, never a `call_key`).
+_EXECUTED = "executed"
+
+
+def prior_actions(metadata: Any) -> list[dict[str, Any]]:
+    """The task's recorded action list (`[]` when absent) — never a coerced value.
+
+    Read by the worker at the CLAIM and handed to the agent as `task_dict["prior_actions"]`, so the
+    replay set is the one committed when the task was claimed: a concurrent writer cannot hand a
+    run a half-list, and an absent/unreadable value is an empty list, never a fabricated record.
+    """
+    if isinstance(metadata, dict):
+        records = metadata.get(ACTION_KEY)
+        if isinstance(records, list):
+            return [record for record in records if isinstance(record, dict)]
+    return []
+
+
+def merge_actions(existing: Any, new: Any) -> list[dict[str, Any]]:
+    """Merge two action lists by `call_key` into the persisted list (§4.13).
+
+    * the newest record for a `call_key` wins, EXCEPT that a terminal `executed` record beats a
+      later `replayed` one — the effect happened once, and a replay must not erase that fact;
+    * keyless and non-object entries are DROPPED: a record with no `call_key` cannot be replayed,
+      and persisting it would claim otherwise;
+    * at most `MAX_ACTIONS` rows.  Past the bound the OLDEST `executed` rows are dropped and ONE
+      `{"status": "evicted", "count": N}` summary row records how many, cumulative and always last.
+    """
+    incoming: list[Any] = []
+    for candidate in (existing, new):
+        if isinstance(candidate, list):
+            incoming.extend(candidate)
+
+    kept: list[dict[str, Any]] = []
+    slot: dict[str, int] = {}
+    evicted = 0
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if status == "evicted":
+            try:
+                evicted += int(item.get("count") or 0)
+            except (TypeError, ValueError):
+                continue
+            continue
+        key = item.get("call_key")
+        if not isinstance(key, str) or not key:
+            continue
+        if key in slot:
+            current = kept[slot[key]]
+            if current.get("status") != _EXECUTED and status == _EXECUTED:
+                kept[slot[key]] = item
+            continue
+        slot[key] = len(kept)
+        kept.append(item)
+
+    # One row of the bound is the summary row once anything has been evicted, so the survivors are
+    # held one short — otherwise appending the summary would push the list over `MAX_ACTIONS`.
+    capacity = MAX_ACTIONS - 1 if (evicted or len(kept) > MAX_ACTIONS) else MAX_ACTIONS
+    if len(kept) > capacity:
+        dropped = len(kept) - capacity
+        kept = kept[dropped:]
+        evicted += dropped
+    if evicted:
+        kept.append({"status": "evicted", "count": evicted})
+    return kept
+
+
+def actions_from_outcome(result: Any, failure: BaseException | None) -> list[dict[str, Any]]:
+    """The list a finished (or failed) run produced: the result's key, else the error's context.
+
+    A COMPLETED run carries its list in the result (`agent_runs.output` receives the same copy); a
+    FAILED run stores no output at all (`finish_agent_run(output=None)`), so its list exists only in
+    the named refusal's context — which is precisely the case the retry needs.
+    """
+    records = result.get(ACTION_KEY) if isinstance(result, dict) else None
+    if not isinstance(records, list):
+        context = getattr(failure, "context", None)
+        records = context.get(ACTION_KEY) if isinstance(context, dict) else None
+    return [r for r in records if isinstance(r, dict)] if isinstance(records, list) else []
 
 
 # ── dispatch budget gate ─────────────────────────────────────────────────────
@@ -280,13 +410,19 @@ async def assert_budget_allows(agent_type: str) -> None:
 
 
 __all__ = [
+    "ACTION_KEY",
+    "MAX_ACTIONS",
+    "actions_from_outcome",
     "assert_budget_allows",
     "create_task_deduped",
     "day_spend_by_agent",
     "dedupe_key",
     "enqueue_created",
     "get_process_loop",
+    "merge_actions",
     "plan_bucket",
+    "prior_actions",
     "run_async",
+    "stamp_rearmed",
     "sweep_bucket",
 ]

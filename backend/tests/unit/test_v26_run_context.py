@@ -144,13 +144,21 @@ def _tool_payload(message: dict) -> dict:
 
 def test_invoke_gains_exactly_one_optional_run_id():
     signature = inspect.signature(deepseek_runtime.invoke)
+    # V26/L3 added `run_id` — keyword-only, defaulted — and nothing else.  A3/S3 (§4.13, F-13)
+    # adds `replay` (the task's persisted action list, read from `tasks.metadata["actions"]`) and
+    # `attempt` (the execution number recorded on each action), by the SAME additive rule.  The
+    # list stays pinned so a later addition has to be argued for here, and every optional keyword
+    # must keep a `None` default: that is what lets an older double — whose signature carries only
+    # the keywords it knows — keep working unchanged.
     assert list(signature.parameters) == [
         "inv", "client", "api_key", "model", "tools", "agent_type", "task_title",
-        "images", "run_id",
+        "images", "run_id", "replay", "attempt",
     ]
-    run_id = signature.parameters["run_id"]
-    assert run_id.kind is inspect.Parameter.KEYWORD_ONLY
-    assert run_id.default is None
+    for name in ("client", "api_key", "model", "tools", "agent_type", "task_title",
+                 "images", "run_id", "replay", "attempt"):
+        parameter = signature.parameters[name]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
+        assert parameter.default is None, name
 
 
 # ── 2/3. the id reaches the executor; no id keeps the OLD executor signature ─────────────────

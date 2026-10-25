@@ -45,10 +45,14 @@ from app.core.errors import (
 )
 from app.models.task import TaskStatus
 from celery_app.tasks._common import (
+    ACTION_KEY,
+    actions_from_outcome,
     assert_budget_allows,
     create_task_deduped,
     dedupe_key,
     enqueue_created,
+    merge_actions,
+    prior_actions,
     run_async,
     sweep_bucket,
 )
@@ -687,7 +691,16 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                          # literal used to drop it, so no attached payload could ever reach an
                          # agent's prompt (RD4 §4 note 3 / RD12).  Additive for every agent: the
                          # prompt layers read only id/title/description/acceptance.
-                         "metadata": task.metadata_json}
+                         "metadata": task.metadata_json,
+                         # F-13: the task's cross-attempt action list, snapshotted HERE in the
+                         # claim session, so the replay set is the one committed when the task was
+                         # claimed (a concurrent writer cannot hand the run a half-list).  Empty
+                         # on a first delivery, which leaves the run byte-identical to a pre-F-13
+                         # one.
+                         "prior_actions": prior_actions(task.metadata_json),
+                         # §4.13's `attempt`: the execution number the claim just incremented, so
+                         # every record says which attempt really performed the call.
+                         "attempt": int(task.attempts or 1)}
             # V25/L1 — the task's image attachments, as metadata REFS (id/name/mime/stored_name),
             # never bytes: the agent's run context (`set_run_context`) reads the blobs and builds
             # the data URIs on the RUN thread.  Read in this claim session so the set is the one
@@ -1034,6 +1047,12 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         if run_row is not None:
             _apply_run_usage(run_row, result)
 
+        # F-13: what THIS attempt really executed.  A COMPLETED run also carries the list in its
+        # result (`agent_runs.output` gets the same copy, via `attach_run_meta`); a FAILED run
+        # stores no output at all (`finish_agent_run(output=None)`), so the task row is the ONLY
+        # carrier a retry can read — which is exactly the case this exists for.
+        run_actions = actions_from_outcome(result, failure)
+
         if lease_lost.is_set():
             # Another worker owns this row now: record the loss, do not stomp the status
             # that worker is about to write.
@@ -1073,6 +1092,15 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # fingerprints into `tasks.metadata`, the documented per-task payload channel.
                     merged = dict(task_row.metadata_json or {})
                     merged[APPROVAL_REQUIRED_KEY] = approval_reqs
+                    task_row.metadata_json = merged
+                if run_actions:
+                    # F-13 (§4.13): append what this attempt EXECUTED to the task's action list —
+                    # the cross-attempt carrier.  Re-read the column (the approval merge above
+                    # wrote it too, and a stale copy would silently drop the fingerprints), merge
+                    # by `call_key` so one effect keeps one record, and let the merge apply the
+                    # list bound.  This line is what a retry replays instead of re-doing the run.
+                    merged = dict(task_row.metadata_json or {})
+                    merged[ACTION_KEY] = merge_actions(merged.get(ACTION_KEY), run_actions)
                     task_row.metadata_json = merged
                 if run_status == "failed":
                     # `attempts` counts EXECUTIONS, and the claim already incremented it for this one
@@ -1139,19 +1167,26 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # that was REQUEUED notifies as `requeued` — its own toggle (`notify_on_run_requeued`) —
     # and NEVER as `failed`: the retry is coming, and one leg routes exactly one outcome per
     # attempt (the double-email edge: `notify_on_failed` must not also fire here).
-    notification_outcome = _notification_outcome(task_status, requeued)
-    try:
-        from app.services.notification_service import notify_owner_for_terminal_outcome
+    #
+    # A2A8-02: only a run that WROTE its outcome may announce it.  A lease-lost run wrote nothing
+    # (`task_lease_lost`, "outcome not written") because another worker owns the row, so a push
+    # here would contradict — eight lines later — the record it just refused to touch, and the
+    # owner would receive "Task #N completed" for work whose result was deliberately discarded
+    # (the row may still be `running` under the new owner, may complete, or may fail differently).
+    if not lease_lost.is_set():
+        notification_outcome = _notification_outcome(task_status, requeued)
+        try:
+            from app.services.notification_service import notify_owner_for_terminal_outcome
 
-        async with session_factory() as notify_db:
-            await notify_owner_for_terminal_outcome(notify_db, task_id, notification_outcome)
-    except Exception:  # noqa: BLE001 — a notifier failure must never rewrite a recorded outcome
-        logger.warning(
-            "task %s: terminal-outcome notification failed (outcome=%s)",
-            task_id,
-            notification_outcome,
-            exc_info=True,
-        )
+            async with session_factory() as notify_db:
+                await notify_owner_for_terminal_outcome(notify_db, task_id, notification_outcome)
+        except Exception:  # noqa: BLE001 — a notifier failure must never rewrite a recorded outcome
+            logger.warning(
+                "task %s: terminal-outcome notification failed (outcome=%s)",
+                task_id,
+                notification_outcome,
+                exc_info=True,
+            )
 
     return {
         "status": task_status,
@@ -1215,10 +1250,11 @@ async def _email_inbox_sweep() -> dict[str, Any]:
 
     Broker hand-off: only tasks CREATED here are enqueued.  A dedupe-hit (task already exists;
     e.g. a concurrent sweep won the insert) is reported with `task_created: False` and NOT
-    re-enqueued — `enqueue_created`'s failure path marks every listed id `failed`, which must
-    not stomp a row that may already be in flight.  The process-death window between commit
-    and hand-off is the documented D2/T19 gap (nothing reconciles an undelivered row), not
-    something a blind re-hand-off makes honest.
+    re-enqueued — `enqueue_created`'s failure path RE-ARMS every listed id (the row stays
+    `pending` with `metadata.rearmed_at`), and a row that may already be in flight must not be
+    handed a marker claiming a retry is owed.  The process-death window between commit and
+    hand-off is the documented D2/T19 gap; a row that never got a message is now reclaimed by the
+    same `rearmed_at` marker the reconciler reads, rather than by a blind re-hand-off.
     """
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
