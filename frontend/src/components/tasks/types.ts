@@ -1,34 +1,71 @@
 import type { Task } from "@/lib/api";
 
 /**
- * The plan edge the orchestrator persisted on the task row (`TaskResponse.plan`, F-36).
+ * The plan edge the orchestrator persisted on the task row (`TaskResponse.plan`, F-36/D1).
  *
- * Provenance, not a claim: the five keys the plan's own `TaskSpec` requires a model to state
- * (`backend/app/schemas/agent_outputs.py`), narrowed at the API boundary by a computed field (it
- * is NOT the raw `metadata` bag — that would serve the private `approval_token`). Every key is
- * optional: the server omits an estimate the model never stated, and absence prints as absence —
- * "the model did not price it" and "it costs nothing" are different facts.
+ * Provenance, not a claim: the keys the morning cycle persists on `tasks.metadata`
+ * (`celery_app/tasks/daily_cycle.py:619-628` first pass, `:673-682` the resolved ids) and what
+ * `TaskResponse.plan` mirrors WITHOUT renaming (`backend/app/schemas/task.py`
+ * `PLAN_METADATA_KEYS`). It is NOT the raw `metadata` bag — that holds the private
+ * `approval_token`, which is why the server computes this shape instead of serving the dict.
+ *
+ * THE SPELLINGS MATTER (measured against D1's computed field):
+ *   - `depends_on` is the RESOLVED DAG edge: task IDS (integers), not names. A renderer that
+ *     joins it as text prints "42, 43" where the operator needs titles.
+ *   - `depends_on_titles` is the plan's own dependency titles (strings, capped at 8);
+ *   - `depends_on_unresolved` names the titles the planner could not match to a planned task;
+ *   - `depends_on_cycle` is true when the plan was not a DAG: the row was released as a root and
+ *     its edges were DROPPED (`daily_cycle.py:700-705`), so presenting them as live would lie.
+ *
+ * Every key is optional: the server omits an estimate the model never stated, and absence prints
+ * as absence — "the model did not price it" and "it costs nothing" are different facts.
+ * `depends_on` also accepts strings for the PRE-D1 shape the A3 renderer was written against (a
+ * title list under the same key), so an older row still renders its real names rather than ids.
  */
 export type PlanEdge = {
-  depends_on?: string[];
-  /**
-   * The spelling the morning cycle persists TODAY (`celery_app/tasks/daily_cycle.py:619-628`
-   * writes `depends_on_titles` flat on the metadata bag). Read only when the served
-   * `depends_on` is absent: a client that printed "no dependency" while the row records one
-   * would be stating something false, so both spellings are honoured — one shape is rendered.
-   */
-  depends_on_titles?: string[];
-  side_effect?: string;
-  estimate_usd?: number;
-  estimate_seconds?: number;
-  acceptance?: string;
+  depends_on?: number[] | string[] | null;
+  depends_on_titles?: (string | null)[] | null;
+  depends_on_unresolved?: (string | null)[] | null;
+  depends_on_cycle?: boolean | null;
+  plan_day?: string | null;
+  side_effect?: string | null;
+  estimate_usd?: number | null;
+  estimate_seconds?: number | null;
+  acceptance?: string | null;
 };
 
-/** The dependency TITLES a plan edge records, in either spelling the server may serve. */
+/** The dependency TITLES a plan edge records, in either spelling the server may serve: the
+ *  plan's own `depends_on_titles` first, then a string-valued `depends_on` (the pre-D1 shape). */
 export function planDependencies(plan: PlanEdge): string[] {
-  if (Array.isArray(plan.depends_on)) return plan.depends_on;
-  if (Array.isArray(plan.depends_on_titles)) return plan.depends_on_titles;
+  const strings = (values: unknown): string[] =>
+    Array.isArray(values)
+      ? values
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .filter((value) => value.length > 0)
+      : [];
+
+  const titles = strings(plan.depends_on_titles);
+  if (titles.length > 0) return titles;
+  const legacy = strings(plan.depends_on);
+  if (legacy.length > 0) return legacy;
   return [];
+}
+
+/** The RESOLVED dependency edge — task ids the server actually recorded (`depends_on_ids`).
+ *  Rendered only as ids, and only when no titles exist: an id is not a name. */
+export function planDependencyIds(plan: PlanEdge): number[] {
+  if (!Array.isArray(plan.depends_on)) return [];
+  return plan.depends_on.filter(
+    (value): value is number => typeof value === "number" && Number.isInteger(value),
+  );
+}
+
+/** The dependency titles the planner could not match to a planned task (`depends_on_unresolved`). */
+export function planUnresolvedDependencies(plan: PlanEdge): string[] {
+  if (!Array.isArray(plan.depends_on_unresolved)) return [];
+  return plan.depends_on_unresolved
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
 }
 
 /**

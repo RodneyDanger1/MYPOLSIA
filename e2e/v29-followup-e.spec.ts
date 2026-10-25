@@ -1,10 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 
-import { API_BASE, PREFIX } from "./_helpers";
+import { API_BASE, PREFIX, REFUSED_PHONE_SUMMARY_503 } from "./_helpers";
 
 /**
  * V29 follow-up E — LIVE integrated verification of the four V29 surfaces that a parser/module
- * edit can silently break:
+ * edit can silently break, plus the dashboard's phone refusal state:
  *
  *   1. the dashboard SIGNALS widget — its fetch (`GET /signals?limit=6`), the wire shape
  *      (`items`/`sources`/`note`/`untrusted`), the third-party-link safety attributes, and its
@@ -15,16 +15,27 @@ import { API_BASE, PREFIX } from "./_helpers";
  *   3. INVOICE currency display — a non-USD row shows its own code (`EUR 1,234.56`), a display-only
  *      `≈ $X` line at the backend's rate, and `≈ —` (never 1:1) when the rate read is refused;
  *   4. the CAPABILITY payload — exactly 17 registry tools, the five V29 additions included, each
- *      with a description, and the `/capabilities` page rendering that same 17-name set.
+ *      with a description, and the `/capabilities` page rendering that same 17-name set;
+ *   5. the dashboard's PHONE CARD refusal state — a 503 `E_PHONE_UNAVAILABLE` from
+ *      `/phone/summary` renders BY CODE and by its fix hint, never as an empty card.
  *
  * READ-ONLY except one reversible fixture: the currency test creates a DRAFT EUR invoice and VOIDS
  * it in `finally` (the `invoices.spec.ts` pattern). All rows carry the suite's `[e2e-fixture]`
  * prefix so any residue is attributable and swept by the suite-end sweep.
  *
+ * ENVIRONMENT INDEPENDENCE (the CI red): the dashboard mounts the phone card, which asks
+ * `GET /api/v1/config/phone` (200 in every deployment, CONTRACTS §4.16) and only then the
+ * 503-only `/phone/summary`. On a runner whose phone store is half-mounted the config answer is
+ * `available: true` while the summary refuses — two console lines about a surface this spec is
+ * not testing, which is what reddened the two dashboard tests. Both now PIN the config answer
+ * (`pinNoPhoneStore`) so nothing about the runner's disk reaches the console budget; the one test
+ * that deliberately provokes the refusal allows exactly that URL at exactly that status
+ * (`REFUSED_PHONE_SUMMARY_503`) and asserts the named state on screen.
+ *
  * Console errors are part of every assertion: each test watches `console` (type "error") and
- * `pageerror`, and fails with the collected text. The two deliberately-failed reads (a 500 signals
- * answer and a refused FX rate) are allowed to produce the browser's own resource-load line; that
- * expected line is filtered by URL, nothing else is.
+ * `pageerror`, and fails with the collected text. The deliberately-failed reads (a 500 signals
+ * answer, a refused FX rate, a refused phone summary) are allowed to produce the browser's own
+ * resource-load line; that expected line is filtered by URL, nothing else is.
  */
 
 type SignalItem = {
@@ -120,6 +131,30 @@ function watchConsole(page: Page, ignored: RegExp[] = []): string[] {
   return errors;
 }
 
+/**
+ * Pin the dashboard's phone CONFIG answer to "this deployment has no phone store".
+ *
+ * Why the spec may say this: the card's first question is `GET /api/v1/config/phone`, whose
+ * contract (`backend/app/api/v1/config.py` :126-141, CONTRACTS §4.16) is 200 in EVERY deployment
+ * with the bare body `{configured, available}` — never an `{ok,data}` envelope. The runner's own
+ * answer is not part of what these tests assert, and on CI a store can be half-mounted
+ * (`available: true` from the shallow check, then a 503 from the summary read), which put two
+ * phone console errors inside tests about SIGNALS. Pinning the answer makes the run independent
+ * of the runner's disk: the card renders its unavailable state and never asks the 503-only route.
+ *
+ * Deliberately NOT a blanket console allow-list — every other line still fails the test, and the
+ * one test that does provoke the refusal names the exact URL+status it expects instead.
+ */
+async function pinNoPhoneStore(page: Page): Promise<void> {
+  await page.route(/\/api\/v1\/config\/phone(\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ configured: false, available: false }),
+    });
+  });
+}
+
 test.describe("V29 follow-up E — live integrated surfaces", () => {
   test("Signals widget: live payload shape, limit=6 fetch, safe links, named source failures", async ({
     page,
@@ -168,6 +203,7 @@ test.describe("V29 follow-up E — live integrated surfaces", () => {
       );
     }
 
+    await pinNoPhoneStore(page);
     await page.goto("/dashboard");
     const widget = page.getByTestId("signals-widget");
     await expect(widget).toBeVisible();
@@ -275,6 +311,7 @@ test.describe("V29 follow-up E — live integrated surfaces", () => {
       });
     });
 
+    await pinNoPhoneStore(page);
     await page.goto("/dashboard");
     const widget = page.getByTestId("signals-widget");
     await expect(widget).toBeVisible();
@@ -643,6 +680,63 @@ test.describe("V29 follow-up E — live integrated surfaces", () => {
     expect(rendered).toHaveLength(17);
     expect([...rendered].sort()).toEqual(EXPECTED_TOOLS);
     for (const tool of V29_TOOLS) await expect(registry.getByText(tool, { exact: true })).toBeVisible();
+
+    expect(errors, `console/page errors: ${errors.join(" | ") || "none"}`).toEqual([]);
+  });
+
+  test("Phone card: a 503 from /phone/summary is the NAMED refusal on screen, and the only console line it costs is Chromium's own", async ({
+    page,
+  }) => {
+    // The ONE line allowed: the browser's resource-load error for the refused read this test makes.
+    // Named, explicit, and pinned to this URL at this status in `_helpers` (REFUSED_PHONE_SUMMARY_503).
+    const errors = watchConsole(page, [REFUSED_PHONE_SUMMARY_503]);
+    const summaryRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/v1/phone/summary")) summaryRequests.push(request.url());
+    });
+
+    // A deployment that DECLARES a store and whose shallow check says it is mounted — the
+    // half-mount case: only `summary` can discover the refusal. Stubbed because the runner's own
+    // store is not what this test is about (and may not exist at all).
+    await page.route(/\/api\/v1\/config\/phone(\?.*)?$/, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ configured: true, available: true }),
+      });
+    });
+    await page.route(/\/api\/v1\/phone\/summary(\?.*)?$/, async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: {
+            code: "E_PHONE_UNAVAILABLE",
+            message: "the phone store is not mounted",
+            how_to_fix: "set PHONE_LINK_DB_DIR to the phone-link store directory and restart",
+          },
+        }),
+      });
+    });
+
+    await page.goto("/dashboard");
+
+    // The card renders the server's OWN words: the capability is absent, and the fix is the
+    // server's. No fabricated counts, no empty-inbox copy, no retry loop.
+    const card = page.getByTestId("phone-card-unavailable");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("PHONE LINK UNAVAILABLE");
+    await expect(card).toContainText("E_PHONE_UNAVAILABLE");
+    await expect(card).toContainText("set PHONE_LINK_DB_DIR");
+    await expect(page.getByTestId("phone-unread-total")).toHaveCount(0);
+    await expect(page.getByTestId("phone-card-threads")).toHaveCount(0);
+
+    // The gated read really happened — this is the 503 branch, not the "no store configured" one.
+    expect(
+      summaryRequests.length,
+      "the card must ask /phone/summary once the config answer says a store is mounted",
+    ).toBeGreaterThan(0);
 
     expect(errors, `console/page errors: ${errors.join(" | ") || "none"}`).toEqual([]);
   });

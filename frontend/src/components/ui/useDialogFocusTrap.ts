@@ -58,8 +58,11 @@ export function useDialogFocusTrap(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        // The dialog owns Escape while it is open: stop here so a second overlay beneath (the
-        // command palette listens on `window`) does not also close on the same key press.
+        // The dialog owns Escape while it is open: stop here so a listener ABOVE this one in the
+        // propagation path (a `window` handler such as the palette's Ctrl+K combo) does not also
+        // act on the same key press. Two hook-bound dialogs open at once BOTH close — this call
+        // cannot stop another listener on the SAME node (that needs `stopImmediatePropagation`,
+        // which would instead pin Escape to whichever dialog happened to mount first).
         event.stopPropagation();
         closeRef.current();
         return;

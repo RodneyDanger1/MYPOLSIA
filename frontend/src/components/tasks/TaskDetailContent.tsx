@@ -17,10 +17,26 @@ import { TaskAttachments } from "./TaskAttachments";
 import { TaskStatusControl } from "./TaskStatusControl";
 import {
   planDependencies,
+  planDependencyIds,
+  planUnresolvedDependencies,
   type AgentTriggerResponse,
   type ApprovalIssueResponse,
   type TaskRow,
 } from "./types";
+
+/**
+ * The plan's own wall-clock estimate, as a duration a reader can check: the `TaskSpec` contract
+ * bounds `estimate_seconds` to 5..7200, so a minute-scale value is the normal case, and printing
+ * the raw second count (or dropping the key entirely, as this section used to) would hide a fact
+ * the wire carries. Never compared to measured elapsed time — it is the model's ESTIMATE.
+ */
+function durationText(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds - minutes * 60);
+  return rest === 0 ? `${minutes} min` : `${minutes} min ${rest}s`;
+}
 
 /**
  * The task detail BODY — every field and action of one task, in ONE place. Extracted from
@@ -77,8 +93,24 @@ export function TaskDetailContent({
    */
   const recovery = recoveryFor(row);
   const descriptionLines = splitDescription(row.description);
-  /** F-36: the dependency titles the plan recorded, in either spelling the server may serve. */
+  /** F-36: what the plan recorded about its dependencies — titles, ids, unresolved names and the
+   *  dropped-cycle flag, each read from D1's own key (`TaskResponse.plan`). */
   const planDeps = row.plan ? planDependencies(row.plan) : [];
+  const planDepIds = row.plan ? planDependencyIds(row.plan) : [];
+  const planUnresolved = row.plan ? planUnresolvedDependencies(row.plan) : [];
+  const planCycle = row.plan?.depends_on_cycle === true;
+  /** One line for "Depends on". Titles are NAMES; ids are only ever printed when no title exists,
+   *  and a dropped cycle edge is said to be dropped — it is not a live dependency. */
+  const planDependencyText =
+    planDeps.length > 0
+      ? planCycle
+        ? `${planDeps.join(", ")} — dropped: the plan was not a DAG, so this task was released as a root`
+        : planDeps.join(", ")
+      : planDepIds.length > 0
+        ? `task ${planDepIds.map((id) => `#${id}`).join(", ")} — the plan recorded task ids, not their titles`
+        : planCycle
+          ? "— the plan was not a DAG: its dependency edges were dropped and this task ran as a root"
+          : "— the plan recorded no dependency";
 
   /**
    * The run action (runs under the label `recoveryFor` chose — `Run now` for a queued row,
@@ -197,14 +229,26 @@ export function TaskDetailContent({
         <section className="mt-3" data-testid="plan-edge">
           <p className="ui-label text-ink-muted">Planned by</p>
           <dl className="mt-1 space-y-1 border border-line bg-surface-sunk p-3">
-            <MetaRow label="Depends on">
-              {planDeps.length > 0
-                ? planDeps.join(", ")
-                : "— the plan recorded no dependency"}
-            </MetaRow>
+            {typeof row.plan.plan_day === "string" && row.plan.plan_day.trim().length > 0 ? (
+              // The server's own `plan_day` string, verbatim: parsing it into a local Date could
+              // move the day across a timezone, which is exactly what this row must not do.
+              <MetaRow label="Planned on">{row.plan.plan_day.trim()}</MetaRow>
+            ) : null}
+            <MetaRow label="Depends on">{planDependencyText}</MetaRow>
+            {planUnresolved.length > 0 ? (
+              <MetaRow label="Unresolved">
+                {`${planUnresolved.join(", ")} — the planner could not match these to a planned task`}
+              </MetaRow>
+            ) : null}
             {typeof row.plan.estimate_usd === "number" ? (
               <MetaRow label="Planned cost">
                 {`$${row.plan.estimate_usd.toFixed(2)} — the model's estimate, not spend`}
+              </MetaRow>
+            ) : null}
+            {typeof row.plan.estimate_seconds === "number" &&
+            durationText(row.plan.estimate_seconds) !== "" ? (
+              <MetaRow label="Planned time">
+                {`${durationText(row.plan.estimate_seconds)} — the model's estimate, not measured elapsed time`}
               </MetaRow>
             ) : null}
             {typeof row.plan.side_effect === "string" && row.plan.side_effect.length > 0 ? (

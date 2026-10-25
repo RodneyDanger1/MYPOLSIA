@@ -9,6 +9,7 @@ import { agentLabel } from "@/components/dashboard/format";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 import { errorText } from "@/components/tasks/status";
 import { cn } from "@/components/ui";
+import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 import { api } from "@/lib/api";
 
 /**
@@ -27,10 +28,16 @@ import { api } from "@/lib/api";
  * Modal grammar mirrors `TaskDetailSheet` (the app's ONE measured sheet grammar,
  * sheets-and-composer.md §1): full-viewport scrim, `role="dialog"` + `aria-modal`, focus moves
  * in on open and RETURNS to the previously-focused element on close, Esc closes, scrim press
- * closes. Two deliberate differences, both from the palette's spec: the scrim press IS a close
- * gesture here (the sheet's OPEN DECISION #2 refused it for a data view; a transient search
- * overlay is the other case), and Escape is handled on `window` while open so it works even if
- * focus ever slipped out from under the input.
+ * closes, and the keyboard law (Escape from anywhere, Tab trapped) is the shared
+ * `useDialogFocusTrap` hook. This palette used to hand-roll both: Escape on `window` (which did
+ * survive focus on `<body>`) and a Tab trap on the PANEL's own `onKeyDown` — a React handler that
+ * never fires when the event's target is the document, so a click on the palette's non-focusable
+ * text followed by Tab walked focus into the page behind the scrim (F-40/A2A3-01, measured in
+ * `__tests__/components/B1Truth.test.tsx`). Two deliberate differences from the sheet remain,
+ * both from the palette's spec: the scrim press IS a close gesture here (the sheet's OPEN
+ * DECISION #2 refused it for a data view; a transient search overlay is the other case), and the
+ * global Ctrl+K combo stays on `window` because the palette is CLOSED most of the time and has no
+ * panel to listen on.
  *
  * A11y pattern (ONE coherent choice): the results container is `role="listbox"` with
  * `role="option"` rows grouped per section (`role="group"` labelled by the mono-caps header),
@@ -130,8 +137,9 @@ export function CommandPalette() {
 
   /**
    * The global combo, live for the whole mount: Ctrl+K / Cmd+K toggles (both are preventDefaulted
-   * so the browser's own Ctrl+K never fires), and Esc closes while open — window-level so it
-   * closes even if focus ever escaped the input. Cleanup on unmount.
+   * so the browser's own Ctrl+K never fires). Escape is NOT here — it belongs to the modal law
+   * (`useDialogFocusTrap` below), which binds on `document` while the palette is open and stops
+   * the event before it reaches `window`. Cleanup on unmount.
    */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -143,16 +151,16 @@ export function CommandPalette() {
       ) {
         event.preventDefault();
         setOpen((current) => !current);
-        return;
-      }
-      if (open && event.key === "Escape") {
-        event.preventDefault();
-        setOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, []);
+
+  // F-40 / A2A3-01: Escape from ANYWHERE (including after focus has left the panel) and a Tab
+  // trap that also PULLS focus back in when it is on `<body>` — the two things the palette's own
+  // panel-scoped handler could not do. Focus-in/return stay below: they are the palette's own.
+  useDialogFocusTrap(dialogRef, () => setOpen(false), open);
 
   /**
    * Open → remember what had focus (BEFORE we move it), start a clean query, focus the filter
@@ -321,33 +329,10 @@ export function CommandPalette() {
     router.push(href);
   };
 
-  /** Tab is trapped: with the input as the dialog's only focusable, focus wraps onto itself. */
-  const trapTab = (shiftKey: boolean) => {
-    const root = dialogRef.current;
-    if (!root) return;
-    const focusables = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-    );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (shiftKey) {
-      if (active === first || !root.contains(active)) last.focus();
-    } else if (active === last || !root.contains(active)) {
-      first.focus();
-    }
-  };
-
+  /** The palette's own verb: arrows move the ACTIVE option, Enter opens it. Tab is the modal law
+   *  (`useDialogFocusTrap`) — a panel-scoped handler could not see it once focus left the panel. */
   const onDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const flat = model.flat;
-    if (event.key === "Tab") {
-      event.preventDefault();
-      trapTab(event.shiftKey);
-      return;
-    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (flat.length === 0) return;

@@ -60,6 +60,20 @@ export const BACKEND_URL = process.env.E2E_BACKEND_URL ?? "http://localhost:8000
  */
 export const API_BASE = process.env.E2E_API_BASE ?? "http://localhost";
 
+/**
+ * The ONE console line a spec may ignore when it DELIBERATELY makes a page read a phone summary
+ * the server refuses.
+ *
+ * Chromium logs its own `Failed to load resource: … status of 503` error for every refused HTTP
+ * response before any application code runs — that line is the browser reporting the REQUEST, not
+ * the app reporting a fault. The card's 503 state is a real, named deployment state
+ * (`E_PHONE_UNAVAILABLE`: no store mounted) that the suite pins on purpose, so the spec that
+ * provokes it allows exactly this URL at exactly this status. Both halves are pinned: a 500, a
+ * 4xx, or the same status on any other URL still fails the test.
+ */
+export const REFUSED_PHONE_SUMMARY_503 =
+  /Failed to load resource.*(status of 503|503 \(Service Unavailable\)).*\/api\/v1\/phone\/summary/;
+
 function openDb() {
   // Measured (node:sqlite, Node 26): `new DatabaseSync(p)` CREATES an empty DB whenever the directory
   // exists, so a missing lab DB would silently accept fixture writes nobody serves; it throws only when

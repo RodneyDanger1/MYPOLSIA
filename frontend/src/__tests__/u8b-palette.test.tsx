@@ -130,6 +130,18 @@ beforeEach(() => {
   mockRouter.push.mockReset();
 });
 
+/**
+ * Host-load allowance, NOT a weakened assertion (wave B1 / D5, measured).
+ *
+ * This file's user-event tests measure 1.2-7 s each on this machine (the ROUTES-exemption pin is
+ * the 7 s one) and jest's 5 s default timer fires LATE when the host is busy: a run that shares
+ * the box with other agents reds "renders the mocked rows lazily…" and "a failed read renders ONE
+ * honest note line…" with `Exceeded timeout of 5000 ms`, while the same file passes 12/12 in
+ * isolation. Measured on the PRE-B1 palette bytes too (4 concurrent runs: 2-3 failures each), so
+ * the flake is the harness default, not the component. Every assertion below is unchanged.
+ */
+jest.setTimeout(30_000);
+
 /* ---------------------------------------------------------------------------
  * 1. open/close grammar
  * ------------------------------------------------------------------------- */
