@@ -10,13 +10,25 @@ deal in masked status only: the raw key goes INTO `PUT` and never back out — n
 body, no log line, no error detail (verify scrubs it) ever carries it.  Refusals follow
 the app's named-refusal convention (`refusal_guard` + `E_VALIDATION` for a blank key,
 `E_STORAGE` when the store cannot be written).
+
+`GET /config/phone` (`§4.16`) is the third CONFIG question: whether this deployment has a
+phone store at all.  It answers 200 with `{configured, available}` in EVERY deployment —
+the dashboard card must be able to ask "should I show a phone?" without the question itself
+being logged as a refused request.  Deliberately NOT under `/phone`, whose contract is
+"absent store = 503, there is no degraded mode"; `available` is `phone_link_service.store_status()`,
+the service's own shallow presence check, which returns "unavailable" in exactly the cases
+`summary()` would refuse on.  It is sync file I/O, so it runs off the event loop.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.config import settings
 from app.core.errors import E_DB, E_NOT_FOUND, ERROR_HINTS, PolsiaError
 from app.schemas.company import (
     CompanyConfigResponse,
@@ -29,6 +41,7 @@ from app.schemas.secret import (
     DeepSeekVerifyRequest,
     DeepSeekVerifyResult,
 )
+from app.services import phone_link_service
 from app.services.company_service import get_company, invalidate_company_context
 from app.services.secret_store import (
     clear_deepseek_api_key,
@@ -104,6 +117,38 @@ async def update_config(
     # The profile just changed: any cached agent context is now wrong.
     invalidate_company_context()
     return _config_response(company)
+
+
+# ── phone availability (§4.16, F-37) ───────────────────────────────────────────────────────────
+
+
+class PhoneAvailability(BaseModel):
+    """`GET /config/phone` — the dashboard's "should I ask the phone surfaces anything?" answer.
+
+    TWO booleans, both honest: `configured` says this deployment DECLARES a phone store
+    (`PHONE_LINK_DB_DIR`); `available` says one is mounted AND readable right now
+    (`phone_link_service.store_status() == "ok"`).  They differ on purpose — a configured mount
+    that is missing is a distinct state from a deployment that never had a phone, and the card
+    renders that difference instead of a generic failure.
+    """
+
+    configured: bool
+    available: bool
+
+
+@router.get("/phone", response_model=PhoneAvailability)
+async def read_phone_availability() -> PhoneAvailability:
+    """200 whether or not a Phone Link store is mounted — never a 5xx, never a 404.
+
+    The same shape the DeepSeek key's status uses (`200 {configured: false}`), and for the same
+    reason: a card that has to ask "is this deployment paired?" must not have the question itself
+    logged as a refused request.  Nothing here can become a second 503 — `store_status()` returns
+    "unavailable" instead of raising in exactly the cases `summary()` would refuse on.
+    """
+    configured = bool((settings.phone_link_db_dir or "").strip())
+    with refusal_guard():
+        store = await asyncio.to_thread(phone_link_service.store_status)
+    return PhoneAvailability(configured=configured, available=store == "ok")
 
 
 # ── DeepSeek key lifecycle ──────────────────────────────────────────────────────────────────

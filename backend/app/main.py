@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.v1 import (
     ads,
@@ -62,6 +63,7 @@ from app.config import settings
 from app.core.database import dispose_engine
 from app.core.errors import (
     E_AUTH,
+    E_INTERNAL,
     E_VALIDATION,
     ERROR_HINTS,
     PolsiaError,
@@ -111,6 +113,100 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger(__name__)
+
+#: F-01's code for a failure the app did not name.  It belongs in `app/core/errors.py` beside
+#: `E_UPSTREAM` (REQUESTS.md S4-1 carries the exact edit); that file is outside this seat's
+#: F-01's code lives in `app/core/errors.py` with every other `E_*`; the hint is looked up
+#: from `ERROR_HINTS[E_INTERNAL]` at the one call site below (a second constant would drift).
+
+
+#: Where the minted id is remembered on the ASGI scope.  One scope object travels the whole
+#: middleware chain for a request, so the FIRST caller mints and everyone after it reads — the id in
+#: the envelope, on the response header and in the log are the same string (F-01).
+_REQUEST_ID_SCOPE_KEY = "polsia.request_id"
+
+
+def request_id_from_scope(scope: Scope) -> str:
+    """The inbound `x-request-id`, or a fresh 16-hex id MINTED ONCE per request — ONE rule.
+
+    Both the correlation middleware and the error boundary read this, and the id is memoized on the
+    scope: minting it twice produced a 500 envelope whose `request_id` was not the one on the
+    response header (measured while landing this fix), which is exactly the correlation the id
+    exists for.
+    """
+    minted = scope.get(_REQUEST_ID_SCOPE_KEY)
+    if isinstance(minted, str) and minted:
+        return minted
+    request_id = ""
+    for name, value in scope.get("headers") or []:
+        if name == b"x-request-id":
+            text = value.decode("latin-1").strip()
+            if text:
+                request_id = text[:128]
+                break
+    if not request_id:
+        request_id = uuid.uuid4().hex[:16]
+    scope[_REQUEST_ID_SCOPE_KEY] = request_id
+    return request_id
+
+
+class ErrorBoundary:
+    """The last-resort net INSIDE `CORSMiddleware` (F-01).
+
+    WHY a middleware and not `@app.exception_handler(Exception)`: Starlette wraps the WHOLE user
+    middleware stack — `CORSMiddleware` included — in one outermost `ServerErrorMiddleware`, so the
+    500 that handler produces is generated outside CORS and outside every handler the app
+    registered.  Measured at the base commit: a route `ValueError` answered `500 text/plain
+    "Internal Server Error"` with no code, no request id and no `Access-Control-Allow-Origin`, so a
+    split-origin dashboard could not even read the status.  Added BEFORE `CORSMiddleware` (the last
+    added is the outermost), this sits INSIDE it and turns an uncaught exception into an ordinary
+    response that CORS then decorates.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started_sending = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started_sending
+            if message["type"] == "http.response.start":
+                started_sending = True
+            await send(message)
+
+        request_id = request_id_from_scope(scope)
+        started = time.perf_counter()
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception as exc:  # noqa: BLE001 — this class IS the last resort
+            if started_sending:
+                # Headers are on the wire: a second response would corrupt the stream, so only a
+                # closed connection is honest here.
+                raise
+            logger.exception(
+                "unhandled %s on %s %s in %.0fms [request_id=%s]",
+                type(exc).__name__,
+                scope.get("method"),
+                scope.get("path"),
+                (time.perf_counter() - started) * 1000,
+                request_id,
+            )
+            refusal = PolsiaError(
+                E_INTERNAL,
+                f"the request failed unexpectedly ({type(exc).__name__}); nothing was half-written",
+                how_to_fix=ERROR_HINTS[E_INTERNAL],
+                context={"request_id": request_id},
+            )
+            response = JSONResponse(
+                status_code=http_status_for(E_INTERNAL),
+                content=to_http_detail(refusal),
+                headers={"X-Request-ID": request_id, "X-Polsia-Error-Code": E_INTERNAL},
+            )
+            await response(scope, receive, send)
 
 
 def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
@@ -281,6 +377,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         debug=settings.debug,  # R22: the setting was declared and dead; default False = unchanged
     )
+    # F-01: added FIRST so it sits INSIDE CORSMiddleware (the last added is the outermost), and an
+    # uncaught exception still reaches the client with the app's envelope AND CORS headers.
+    application.add_middleware(ErrorBoundary)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -316,8 +415,10 @@ def create_app() -> FastAPI:
         """Attach a request id (honouring an inbound one) and log one line per request.
 
         Without this an operator cannot tie an activity-log row to the HTTP call that caused it.
+        The id rule is `request_id_from_scope`, the SAME one the error boundary uses, so the id in a
+        500's envelope is the id on this response's header (F-01 / A4-05).
         """
-        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+        request_id = request_id_from_scope(request.scope)
         started = time.perf_counter()
         try:
             response = await call_next(request)

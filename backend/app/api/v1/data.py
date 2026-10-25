@@ -8,9 +8,13 @@ Two routes, one contract each:
 THE EXPORT (V10-D2)
     Members: tasks, agent_runs, activity_log, revenue_snapshots, invoices, task_schedules (CSV —
     tabular data) + memory_entries, chat_messages (JSON).  `MANIFEST.json` names every member,
-    its table, its format, its columns and its ROW COUNT AS EXPORTED — the manifest is built
-    from the same rows that are written into the archive, so the declared counts and the archive
-    cannot disagree.  A NULL cell is an empty CSV cell (CSV has no null type — documented, the
+    its table, its format, its columns and its ROW COUNT AS EXPORTED — the count is declared first
+    (`declared_total`, one COUNT(*) per member) and then VERIFIED against the rows actually written,
+    so a ledger that moved mid-export refuses `E_DB` instead of shipping a manifest that lies (F-48).
+    Each member is STREAMED into the archive in page-sized chunks (`_write_member`), so neither the
+    ORM set of a member nor its serialised text is ever held whole: the measured pre-fix peak was
+    60.38 MB for a 50 k-row runs member, held twice (rows + text) for every member at once.
+    A NULL cell is an empty CSV cell (CSV has no null type — documented, the
     `runs.py` convention); a dict/list cell is JSON-encoded into its CSV cell (a Python `repr`
     would not round-trip); datetimes are ISO-8601.  The export NEVER carries the DeepSeek key
     store or `.env` contents — the store is a FILE outside every member table, and
@@ -82,6 +86,7 @@ import os
 import tempfile
 import time
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -98,6 +103,7 @@ from starlette.background import BackgroundTask
 
 from app.agents.policy_firewall import configured_approval_secret, verify_approval
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.api.v1.totals import declared_total
 from app.core.errors import (
     E_CONFIG,
     E_DB,
@@ -173,6 +179,12 @@ logger = logging.getLogger(__name__)
 EXPORT_TEMP_PREFIX = "polsia-data-export-"
 EXPORT_TEMP_SUFFIX = ".zip"
 
+#: F-48: rows per server-side cursor page, and how often the CSV text buffer is flushed into the
+#: member.  Both are page-sized on purpose — the point is that neither the ORM set of a member nor
+#: its serialised text is ever held whole.
+STREAM_PAGE_ROWS = 500
+CSV_FLUSH_ROWS = 500
+
 
 class DataWipeResponse(BaseModel):
     """The DELETE wire shape: the dry run answers `would_delete`, the wipe answers `deleted`."""
@@ -196,7 +208,7 @@ def _json_safe(value: Any) -> Any:
     `Decimal` stays a STRING on purpose: money exported through a float loses cents, and this
     surface exists to move the owner's data without silent conversion.
     """
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime | date):
         return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
@@ -207,9 +219,9 @@ def _csv_cell(value: Any) -> str:
     """One CSV cell: `None` -> empty (no null in CSV), dict/list -> JSON, else ISO/str."""
     if value is None:
         return ""
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime | date):
         return value.isoformat()
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return json.dumps(_json_safe(value), ensure_ascii=False)
     if isinstance(value, Decimal):
         return str(value)
@@ -229,52 +241,88 @@ def _member_attrs(model: type[Any]) -> list[Any]:
 # ── the export ───────────────────────────────────────────────────────────────────────────────
 
 
-async def _build_export(db: AsyncSession) -> tuple[Path, int]:
-    """Read every member, write MANIFEST.json + the members to a TEMP-FILE zip.
+async def _stream_rows(db: AsyncSession, model: Any) -> AsyncIterator[Any]:
+    """This member's rows, oldest first, one page at a time (never a list of the whole table).
 
-    Returns `(temp file path, total rows)`.  The rows are read ONCE and the manifest is built
-    from those same rows (the declared-count rule above); the U2-10 change is only WHERE the
-    archive is assembled: via `tempfile.mkstemp` in the system scratch dir instead of one
-    in-memory `BytesIO` whose `getvalue()` doubled the payload.  A failure while writing removes
-    the temp file before it propagates — this endpoint never leaks a scratch file.
+    F-48: `select(model).scalars().all()` held the ORM set of the biggest table AND its serialised
+    text at the same time; the measured peak on the runs twin was 60.38 MB for 50 k rows.  A
+    server-side cursor (Postgres) / a driver-buffered cursor that is only consumed page by page
+    (SQLite) keeps the resident cost at one page.
     """
-    manifest_members: list[dict[str, Any]] = []
-    member_files: list[tuple[str, str]] = []  # (archive name, text payload)
+    result = await db.stream(
+        select(model).order_by(model.id).execution_options(yield_per=STREAM_PAGE_ROWS)
+    )
+    async for row in result.scalars():
+        yield row
 
-    for table, model in MEMBER_MODELS.items():
-        attrs = _member_attrs(model)
-        result = await db.execute(select(model).order_by(model.id))
-        rows = result.scalars().all()
 
-        if table in CSV_MEMBERS:
+async def _write_member(
+    db: AsyncSession, model: Any, *, table: str, archive: zipfile.ZipFile
+) -> int:
+    """Stream ONE member INTO the archive; return the rows actually written (the declared count).
+
+    The member is opened as a write handle and fed in page-sized chunks — the CSV text is flushed
+    every `CSV_FLUSH_ROWS` rows, the JSON array one object at a time — so no complete member is ever
+    materialised in this process.
+    """
+    attrs = _member_attrs(model)
+    columns = [attr.columns[0].name for attr in attrs]
+    is_csv = table in CSV_MEMBERS
+    written = 0
+    with archive.open(f"{table}.{'csv' if is_csv else 'json'}", "w") as member:
+        if is_csv:
+            member.write((",".join(columns) + "\n").encode("utf-8"))
             buffer = io.StringIO()
             writer = csv.writer(buffer)
-            columns = [attr.columns[0].name for attr in attrs]
-            writer.writerow(columns)
-            for row in rows:
+            async for row in _stream_rows(db, model):
                 writer.writerow([_csv_cell(getattr(row, attr.key)) for attr in attrs])
-            archive_name = f"{table}.csv"
-            member_files.append((archive_name, buffer.getvalue()))
+                written += 1
+                if written % CSV_FLUSH_ROWS == 0:
+                    member.write(buffer.getvalue().encode("utf-8"))
+                    buffer.seek(0)
+                    buffer.truncate(0)
+            member.write(buffer.getvalue().encode("utf-8"))
         else:
-            columns = [attr.columns[0].name for attr in attrs]
-            payload = [
-                {attr.columns[0].name: _json_safe(getattr(row, attr.key)) for attr in attrs}
-                for row in rows
-            ]
-            archive_name = f"{table}.json"
-            member_files.append((archive_name, json.dumps(payload, indent=2, default=str)))
+            member.write(b"[")
+            async for row in _stream_rows(db, model):
+                payload = {
+                    attr.columns[0].name: _json_safe(getattr(row, attr.key)) for attr in attrs
+                }
+                if written:
+                    member.write(b",")
+                member.write(json.dumps(payload, indent=2, default=str).encode("utf-8"))
+                written += 1
+            member.write(b"]")
+    return written
 
+
+async def _build_export(db: AsyncSession) -> tuple[Path, int]:
+    """Count every member, write MANIFEST.json + the members to a TEMP-FILE zip.
+
+    Returns `(temp file path, total rows)`.  F-48 changed HOW, not WHAT: the counts are declared
+    FIRST (one `COUNT(*)` per member through the house honesty helper, `declared_total`), each member
+    is then STREAMED into the archive, and the number actually written is compared to the declared
+    one — a ledger that moved mid-export refuses `E_DB` and removes the temp file, so the manifest
+    can never declare a row count the archive does not carry.  A failure while writing removes the
+    temp file before it propagates — this endpoint never leaks a scratch file.
+    """
+    manifest_members: list[dict[str, Any]] = []
+    declared: dict[str, int] = {}
+
+    for table, model in MEMBER_MODELS.items():
+        columns = [attr.columns[0].name for attr in _member_attrs(model)]
+        declared[table] = await declared_total(db, model, [], what=f"{table} export count")
         manifest_members.append(
             {
-                "name": archive_name,
+                "name": f"{table}.{'csv' if table in CSV_MEMBERS else 'json'}",
                 "table": table,
                 "format": "csv" if table in CSV_MEMBERS else "json",
-                "row_count": len(rows),
+                "row_count": declared[table],
                 "columns": columns,
             }
         )
 
-    total_rows = sum(member["row_count"] for member in manifest_members)
+    total_rows = sum(declared.values())
     manifest = {
         "product": "polsia",
         "export_version": 1,
@@ -303,8 +351,17 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int]:
     try:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
-            for archive_name, member_text in member_files:
-                archive.writestr(archive_name, member_text)
+            for table, model in MEMBER_MODELS.items():
+                written = await _write_member(db, model, table=table, archive=archive)
+                if written != declared[table]:
+                    _remove_export_tempfile(path)
+                    raise PolsiaError(
+                        E_DB,
+                        f"{table} export refused: manifest declares {declared[table]} row(s) but "
+                        f"{written} were written",
+                        how_to_fix="retry the export; the ledger changed while the archive was built",
+                        context={"table": table, "declared": declared[table], "written": written},
+                    )
     except OSError as exc:
         _remove_export_tempfile(path)
         raise PolsiaError(
@@ -315,7 +372,8 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int]:
             context={"path": str(path)},
         ) from exc
     except BaseException:
-        # Anything else (cancellation, a serialization failure): the temp file still goes away.
+        # Anything else (cancellation, a serialization failure, a moved ledger): the temp file still
+        # goes away.
         _remove_export_tempfile(path)
         raise
     return path, total_rows

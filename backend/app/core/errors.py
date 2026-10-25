@@ -66,6 +66,22 @@ E_PHONE_UNAVAILABLE = "E_PHONE_UNAVAILABLE"
 #: a transport problem as our own bug.  Still an upstream-gateway fault at the API boundary: 502.
 E_UPSTREAM = "E_UPSTREAM"
 
+#: §4.15 / F-27: the egress floor refused a host or address — private, loopback, link-local,
+#: RFC 6598 shared space, a bare IP on a non-web port, or a name that resolved to one of those.
+#: The caller asked this service to fetch something it must not reach, so it is a caller-facing
+#: refusal (403), never a 5xx that blames the service for honouring the request.
+E_EGRESS_BLOCKED = "E_EGRESS_BLOCKED"
+
+#: §4.13 / F-13: a stored action record cannot be replayed (no persisted result, a digest that does
+#: not match its text, or a `started` record whose outcome is unknown).  Raised INSTEAD of re-sending
+#: a call that may already have had an effect.  Unlisted below on purpose: 500 is right, because the
+#: caller cannot fix a corrupt journal by changing the request.
+E_ACTION_REPLAY_UNAVAILABLE = "E_ACTION_REPLAY_UNAVAILABLE"
+
+#: F-01: a failure the app did not name.  Deliberately NOT in `HTTP_STATUS_BY_CODE` — an unlisted
+#: code is a 500, which is exactly what this is.
+E_INTERNAL = "E_INTERNAL"
+
 
 class PolsiaError(Exception):
     """A failure that names itself and says how to fix it.
@@ -132,6 +148,9 @@ ERROR_HINTS: dict[str, str] = {
     E_INTEGRATION: "check the provider's credentials, quota and status page",
     E_PHONE_UNAVAILABLE: "mount the Phone Link store read-only (PHONE_LINK_DB_DIR; compose binds it to /phone-link:ro) and start the Phone Link app so it keeps syncing",
     E_UPSTREAM: "check the provider's status page and retry; the request did reach the provider (or timed out trying), so nothing here is fixed by re-entering your own configuration",
+    E_EGRESS_BLOCKED: "the address is not routable on the public internet (private, loopback, link-local, RFC 6598 shared space, or a non-web port); fetch a public http(s) URL instead",
+    E_ACTION_REPLAY_UNAVAILABLE: "the earlier attempt's action record is incomplete or corrupt; inspect or clear tasks.metadata['actions'] for that task to authorise a fresh run — nothing is re-sent automatically",
+    E_INTERNAL: "this is a bug, not a configuration problem: quote the request id (X-Request-ID) in the server log to the maintainer",
 }
 
 # Which HTTP status a code means when it reaches the API boundary. Anything unlisted is a 500:
@@ -181,6 +200,8 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     # V25 (L2/L3): the provider answered wrongly (5xx/timeout/malformed 2xx) — a gateway fault,
     # never a 4xx that would blame the caller for a deploy they correctly asked for.
     E_UPSTREAM: 502,
+    # §4.15: the request named an address this service must not reach — the caller's input.
+    E_EGRESS_BLOCKED: 403,
 }
 
 

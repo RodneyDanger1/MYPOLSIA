@@ -18,10 +18,11 @@ it returns (`integration_status_service._scrub`).
 AUDIT
 -----
 Every save / clear / test writes an `activity_log` row (`agent_type="integrations"`) whose
-`detail` carries the provider, the action, the outcome, the secret NAMES and — on a refusal —
-the refusal code.  A value is never in the row.  The refusal path commits the row explicitly
-before raising: `get_db` rolls back on exception, so without that commit a failed test would
-leave no audit trail at all.
+`detail` carries the provider, the action, the outcome, the secret NAMES and — on a refusal — the
+refusal code.  A value is never in the row.  The row is written by `log_activity_isolated` (F-47):
+its OWN transaction, committed before it is published — so a refusal's row survives the rollback
+`get_db` performs when the route raises, and a failed audit write can neither mask the real answer
+nor poison the request's session.
 
 AUTH
 ----
@@ -39,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, verify_api_key
 from app.core.errors import PolsiaError
 from app.services import integration_status_service
-from app.services.activity_service import log_activity
+from app.services.activity_service import log_activity_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,18 @@ async def _record(
     secrets: tuple[str, ...] | list[str] = (),
     code: str | None = None,
 ) -> None:
-    """Write the audit row for one action — provider + action + outcome, never a value."""
+    """Write the audit row for one action — provider + action + outcome, never a value.
+
+    The row goes through `log_activity_isolated` (F-47): its own transaction, committed before this
+    returns, then published.  Two properties follow, and both are the point:
+
+    * a REFUSAL's row survives the rollback `get_db` performs when the route raises (this module
+      used to commit the request's transaction by hand to get that — which is the same defect);
+    * a FAILED audit write can neither fail the action it records nor poison the request's session.
+
+    The isolated writer logs its own failure, so there is nothing to branch on here: no response
+    model in this module has a field that could carry "audit unavailable".
+    """
     detail: dict[str, Any] = {
         "provider": provider,
         "action": action,
@@ -118,28 +130,14 @@ async def _record(
     if code:
         detail["code"] = code
     summary = f"{action} {provider}: {outcome}" + (f" ({code})" if code else "")
-    try:
-        await log_activity(
-            db,
-            agent_type="integrations",
-            action=f"integration_{action}",
-            summary=summary,
-            level="info" if outcome == "ok" else "warning",
-            detail=detail,
-        )
-    except Exception:  # noqa: BLE001 — an audit write must not replace the real answer
-        logger.warning(
-            "integrations: could not write the audit row for %s %s", action, provider,
-            exc_info=True,
-        )
-
-
-async def _commit_audit(db: AsyncSession) -> None:
-    """Commit the audit row before a refusal propagates (`get_db` rolls back on exception)."""
-    try:
-        await db.commit()
-    except Exception:  # noqa: BLE001 — a failed audit commit must not mask the refusal
-        logger.warning("integrations: could not commit the audit row", exc_info=True)
+    await log_activity_isolated(
+        db,
+        "integrations",
+        f"integration_{action}",
+        summary,
+        level="info" if outcome == "ok" else "warning",
+        detail=detail,
+    )
 
 
 # ── reads ────────────────────────────────────────────────────────────────────────────────────
@@ -172,7 +170,6 @@ async def save_integration(
     except PolsiaError as exc:
         await _record(db, spec.provider, "save", "refused",
                       secrets=tuple(payload.values), code=exc.code)
-        await _commit_audit(db)
         raise
     await _record(db, spec.provider, "save", "ok", secrets=tuple(payload.values))
     return ProviderStatusOut(**status)
@@ -188,7 +185,6 @@ async def clear_integration(
         status = integration_status_service.clear_provider_secrets(provider)
     except PolsiaError as exc:
         await _record(db, spec.provider, "clear", "refused", secrets=spec.secrets, code=exc.code)
-        await _commit_audit(db)
         raise
     await _record(db, spec.provider, "clear", "ok", secrets=spec.secrets)
     return ProviderStatusOut(**status)
@@ -207,7 +203,6 @@ async def test_integration(
         result = await integration_status_service.test_provider(provider)
     except PolsiaError as exc:
         await _record(db, spec.provider, "test", "refused", secrets=spec.secrets, code=exc.code)
-        await _commit_audit(db)
         raise
     await _record(db, spec.provider, "test", "ok", secrets=spec.secrets)
     return ProviderTestOut(**result)

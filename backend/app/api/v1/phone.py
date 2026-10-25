@@ -14,6 +14,9 @@ THE CONTRACT (frozen before this module was written)
         body {"to": "<thread_id | E.164 digits>", "body": "1..640 chars"}; sandbox / unpaired /
         unavailable / validation refuse BY NAME (`services.phone_send_service`), and every attempt
         (sent or refused) writes one `activity_log` row with the recipient masked and no body text.
+        That row is written in its OWN committed transaction (F-47): a refusal keeps it, and a
+        failed audit write cannot turn a send that already happened into a 500 — the success answer
+        then carries `"audit": "unavailable"` instead.
     All of them: key-auth (the router dependency), envelope `{"ok": true, "data": {...}}` on
     success and the named refusal shape (`{"ok": false, "error": {code, message, how_to_fix,
     context}}` + `X-Polsia-Error-Code`) on failure — both produced by the SHIPPED plumbing
@@ -69,7 +72,7 @@ from app.core.timeutil import today_utc
 from app.services import phone_link_service as phone
 from app.services import phone_media_service as media
 from app.services import phone_send_service as sends
-from app.services.activity_service import log_activity
+from app.services.activity_service import log_activity, log_activity_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -207,12 +210,16 @@ async def _audit_send_attempt(
     payload: dict[str, Any],
     outcome: sends.SendResult | None,
     refusal: PolsiaError | None,
-) -> None:
-    """Write the ONE audit row per attempt — masked recipient, body LENGTH, never the body.
+) -> bool:
+    """Write the ONE audit row per attempt in its OWN transaction (F-47) — never the request's.
 
-    An audit failure is logged and swallowed: the send already happened (or refused) and the
-    caller's answer must not turn into a 500 because the feed is unavailable. The row itself never
-    carries the message text or an unmasked number — `activity_log` is rendered in the dashboard.
+    Masked recipient, body LENGTH, never the body.  The row is committed by the isolated writer
+    BEFORE this returns, which is what lets a refusal's row survive `get_db`'s rollback — and what
+    keeps a FAILED audit write from poisoning the request's session, which used to answer a bare 500
+    for a message that had already been sent (measured: one send, one 500, zero audit rows).
+
+    `db` supplies the engine only; nothing is written through it.  Returns False when the audit
+    store refused the write (the caller then says so instead of inviting a retry).
     """
     to_masked = sends.mask_target(payload.get("to"))
     body = payload.get("body")
@@ -232,17 +239,9 @@ async def _audit_send_attempt(
             {"driver": outcome.driver, "sent_at": outcome.sent_at, "to_masked": outcome.to_masked}
         )
         level = "info"
-    try:
-        await log_activity(
-            db, sends.AUDIT_AGENT, sends.AUDIT_ACTION, summary=summary, level=level, detail=detail
-        )
-        # COMMIT the row HERE, before the caller raises its refusal: `get_db` auto-commits on a
-        # successful response but ROLLS BACK when the route raises, so a refusal's audit row would
-        # otherwise be erased with the transaction.  Measured live (V17 drill): the sandbox 403
-        # answered correctly while ZERO phone_send rows ever landed; two-session pin added.
-        await db.commit()
-    except Exception:  # noqa: BLE001 — the audit must never rewrite the outcome it records
-        logger.exception("phone send audit row could not be written")
+    return await log_activity_isolated(
+        db, sends.AUDIT_AGENT, sends.AUDIT_ACTION, summary, level=level, detail=detail
+    )
 
 
 @router.post("/send")
@@ -290,12 +289,19 @@ async def phone_send(
             except PolsiaError as exc:
                 refusal = exc
         # One row per attempt, ALWAYS — a non-object body has no target, so `mask_target(None)`
-        # yields "" and the row still names the code (V-12).
-        await _audit_send_attempt(db, body or {}, outcome, refusal)
+        # yields "" and the row still names the code (V-12).  The isolated writer commits it in its
+        # own transaction, so a refusal cannot roll it back and a failed write cannot poison this
+        # request's session (F-47).
+        audit_ok = await _audit_send_attempt(db, body or {}, outcome, refusal)
         if refusal is not None:
             raise sends.http_refusal(refusal) from refusal
         assert outcome is not None
-    return {"ok": True, "data": outcome.payload()}
+    answer: dict[str, Any] = {"ok": True, "data": outcome.payload()}
+    if not audit_ok:
+        # The send HAPPENED.  Say so and say the record is missing — never an error that invites a
+        # retry of an irreversible action (A4-01 stage 1 / F-47).
+        answer["audit"] = "unavailable"
+    return answer
 
 
 # ── export ───────────────────────────────────────────────────────────────────────────────────
