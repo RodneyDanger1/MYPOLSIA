@@ -16,6 +16,8 @@ import { errorText, statusChipClass, statusLabel } from "./status";
 import { TaskAttachments } from "./TaskAttachments";
 import { TaskStatusControl } from "./TaskStatusControl";
 import {
+  planCycleDropped,
+  planCycleMembers,
   planDependencies,
   planDependencyIds,
   planUnresolvedDependencies,
@@ -93,24 +95,33 @@ export function TaskDetailContent({
    */
   const recovery = recoveryFor(row);
   const descriptionLines = splitDescription(row.description);
-  /** F-36: what the plan recorded about its dependencies — titles, ids, unresolved names and the
-   *  dropped-cycle flag, each read from D1's own key (`TaskResponse.plan`). */
+  /** F-36/C4: what the plan recorded about its dependencies — titles, ids, unresolved names and
+   *  the dropped cycle (its MEMBERS when the server serves them), each read from D1's own key
+   *  (`TaskResponse.plan`). */
   const planDeps = row.plan ? planDependencies(row.plan) : [];
   const planDepIds = row.plan ? planDependencyIds(row.plan) : [];
   const planUnresolved = row.plan ? planUnresolvedDependencies(row.plan) : [];
-  const planCycle = row.plan?.depends_on_cycle === true;
+  const planCycle = row.plan ? planCycleDropped(row.plan) : false;
+  /** The cycle's member TITLES. Empty on a server whose `plan` flattens the list to `true` —
+   *  that server answered "a cycle was recorded" without naming it, and the sheet says so
+   *  instead of borrowing the declared dependency titles for a fact they do not carry. */
+  const planCycleNames = row.plan ? planCycleMembers(row.plan) : [];
   /** One line for "Depends on". Titles are NAMES; ids are only ever printed when no title exists,
-   *  and a dropped cycle edge is said to be dropped — it is not a live dependency. */
+   *  and a dropped cycle edge is said to be dropped — it is not a live dependency. When the wire
+   *  serves the cycle's members they lead the line: naming WHAT the task could never wait for is
+   *  the fact the boolean flattened away. */
   const planDependencyText =
-    planDeps.length > 0
-      ? planCycle
-        ? `${planDeps.join(", ")} — dropped: the plan was not a DAG, so this task was released as a root`
-        : planDeps.join(", ")
-      : planDepIds.length > 0
-        ? `task ${planDepIds.map((id) => `#${id}`).join(", ")} — the plan recorded task ids, not their titles`
-        : planCycle
-          ? "— the plan was not a DAG: its dependency edges were dropped and this task ran as a root"
-          : "— the plan recorded no dependency";
+    planCycle && planCycleNames.length > 0
+      ? `Dropped cycle — ${planCycleNames.join(", ")}: the plan was not a DAG, so these edges could never be satisfied and this task was released as a root`
+      : planDeps.length > 0
+        ? planCycle
+          ? `${planDeps.join(", ")} — dropped: the plan was not a DAG, so this task was released as a root`
+          : planDeps.join(", ")
+        : planDepIds.length > 0
+          ? `task ${planDepIds.map((id) => `#${id}`).join(", ")} — the plan recorded task ids, not their titles`
+          : planCycle
+            ? "— the plan was not a DAG: its dependency edges were dropped and this task ran as a root"
+            : "— the plan recorded no dependency";
 
   /**
    * The run action (runs under the label `recoveryFor` chose — `Run now` for a queued row,

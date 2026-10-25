@@ -13,8 +13,9 @@ import type { TaskRow } from "./types";
  *     the queue's real verb) and `failed` (B3's run-again path, labelled for what it is).
  *   * `approve` — `POST /approvals` mint + attach (`approval.ts` reads the fingerprints), which
  *     re-queues the parked row. Only drawn when a fingerprint the mint endpoint's own contract
- *     accepts was found in the task's STRUCTURED approval list (or, for a server that does not
- *     serve it yet, in `result_summary`); otherwise `none`.
+ *     accepts was found in the server's STRUCTURED answer (`approval_fingerprints`, or the
+ *     pre-D1 list spelling of `approval_required`) or, for a server that serves neither, in
+ *     `result_summary`; otherwise `none`, with the reason naming BOTH sources it checked.
  *   * `none` — every other state, with the reason stated instead of a control that could not
  *     work: `completed` (nothing to recover — the live product's RETRY-on-a-done-task is the
  *     defect this rule kills), `in_progress` (no stop/advance endpoint), `rejected` /
@@ -51,7 +52,7 @@ export function recoveryFor(task: TaskRow): Recovery {
         : {
             kind: "none",
             reason:
-              "This task is parked awaiting approval, and it records no fingerprint this build can read \u2014 neither in its structured approval list nor in its result text. There is nothing to approve from here.",
+              "This task is parked awaiting approval, and it records no fingerprint this build can read in either place one can be recorded \u2014 its approval list (approval_fingerprints) or its result text. There is nothing to approve from here.",
           };
     case "in_progress":
       return {

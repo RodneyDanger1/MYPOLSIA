@@ -14,8 +14,9 @@ import type { Task } from "@/lib/api";
  *     joins it as text prints "42, 43" where the operator needs titles.
  *   - `depends_on_titles` is the plan's own dependency titles (strings, capped at 8);
  *   - `depends_on_unresolved` names the titles the planner could not match to a planned task;
- *   - `depends_on_cycle` is true when the plan was not a DAG: the row was released as a root and
- *     its edges were DROPPED (`daily_cycle.py:700-705`), so presenting them as live would lie.
+ *   - `depends_on_cycle` says the plan was not a DAG and this row was released as a root with its
+ *     edges DROPPED (`daily_cycle.py:700-705`), so presenting them as live would lie. It carries
+ *     the MEMBER TITLES when the server serves the list the producer recorded; see the field.
  *
  * Every key is optional: the server omits an estimate the model never stated, and absence prints
  * as absence — "the model did not price it" and "it costs nothing" are different facts.
@@ -26,7 +27,18 @@ export type PlanEdge = {
   depends_on?: number[] | string[] | null;
   depends_on_titles?: (string | null)[] | null;
   depends_on_unresolved?: (string | null)[] | null;
-  depends_on_cycle?: boolean | null;
+  /**
+   * The cycle that stranded this task — the TITLES of the edges it was left waiting on.
+   *
+   * TWO spellings, and the difference is a fact, not a style: the morning cycle records the LIST
+   * (`daily_cycle.py:700-705` writes `[titles_by_id[dep] for dep in edges[node]]`), while D1's
+   * computed `TaskResponse.plan` flattens it — `isinstance(cycle, list) and bool(cycle)`
+   * (`backend/app/schemas/task.py:142`). So a server can answer `true` (a cycle was recorded, and
+   * its members were NOT served) or the member list itself. `planCycleMembers` /
+   * `planCycleDropped` below read both; nothing here treats `true` as if it carried names, and
+   * the sheet says which of the two facts it actually has.
+   */
+  depends_on_cycle?: boolean | string[] | null;
   plan_day?: string | null;
   side_effect?: string | null;
   estimate_usd?: number | null;
@@ -68,6 +80,27 @@ export function planUnresolvedDependencies(plan: PlanEdge): string[] {
     .filter((value) => value.length > 0);
 }
 
+/** The member TITLES of the cycle that stranded this task, in the order the plan recorded them.
+ *
+ *  An older server's flattened `true` answers "a cycle was recorded" and carries NO names: that
+ *  is an empty list here, never an invented one. A non-string entry is dropped rather than
+ *  stringified — `String(null)` would print "null" as a task title. */
+export function planCycleMembers(plan: PlanEdge): string[] {
+  const cycle = plan.depends_on_cycle;
+  if (!Array.isArray(cycle)) return [];
+  return cycle
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+}
+
+/** True when the plan recorded that this node was released as a root because its edge set was a
+ *  cycle — in EITHER spelling: the pre-flattening list (non-empty), or D1's `true`. An empty list
+ *  is not a cycle (the producer only writes the key for a stranded node). */
+export function planCycleDropped(plan: PlanEdge): boolean {
+  if (Array.isArray(plan.depends_on_cycle)) return planCycleMembers(plan).length > 0;
+  return plan.depends_on_cycle === true;
+}
+
 /**
  * The wire row these pages render. `GET /tasks` answers with the backend's `TaskResponse`
  * (`backend/app/schemas/task.py`), which carries fields the shared `Task` type stops short of;
@@ -89,8 +122,8 @@ export function planUnresolvedDependencies(plan: PlanEdge): string[] {
  * The two F-36 / A5-02 computed fields:
  *   * `plan` — the plan edge (above); null when the task was not materialised by the orchestrator,
  *     so a hand-made task renders no provenance section at all;
- *   * `approval_required` — the STRUCTURED fingerprint list the worker parks on the row. The
- *     Approve control reads this before the prose in `result_summary`.
+ *   * `approval_required` / `approval_fingerprints` — D1's parked-approval pair (below). The ONE
+ *     reader of both is `approval.ts`; no surface reads either field directly.
  */
 export type TaskRow = Task & {
   description?: string | null;
@@ -102,7 +135,23 @@ export type TaskRow = Task & {
   tokens_in?: number | null;
   tokens_out?: number | null;
   plan?: PlanEdge | null;
-  approval_required?: { fingerprint: string }[] | null;
+  /**
+   * D1's parked-approval FLAG — a BOOLEAN (`bool(approval_fingerprints)`,
+   * `backend/app/schemas/task.py:152-162`), derived from the list beside it.
+   *
+   * The pre-D1 spelling put the list itself here (the A3 pins were written against it, and an
+   * older server still serves it), so both spellings are declared. `Array.isArray(true)` is
+   * FALSE: a consumer that reads this field as the fingerprint list silently disarms the Approve
+   * control on exactly the rows the server marks as parked — the measured hazard this wave fixes.
+   * Read it through `approval.ts`, never directly.
+   */
+  approval_required?: boolean | { fingerprint: string }[] | null;
+  /**
+   * D1's fingerprints (`task.py:164-182`), de-duplicated in order, narrowed to the one value the
+   * mint endpoint accepts. PRESENT means the server ANSWERED: `[]` is "nothing is parked", not
+   * "unknown", so an empty list is never backfilled from `result_summary` prose.
+   */
+  approval_fingerprints?: string[] | null;
 };
 
 /** `POST /agents/{agent_type}/trigger` (agents.py:54-58, 202). */

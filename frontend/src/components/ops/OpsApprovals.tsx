@@ -4,35 +4,50 @@ import { useEffect, useRef, useState } from "react";
 
 import { errorText } from "@/components/finance/useFinanceRead";
 import { ListSkeleton, ReadError } from "@/components/finance/states";
-import { fingerprintsFrom } from "@/components/tasks/approval";
+import { fingerprintsForTask, type ApprovalCarrier } from "@/components/tasks/approval";
 import { Button, Card } from "@/components/ui";
+import { declaredTotal } from "@/hooks/useActivityFeed";
 import { api } from "@/lib/api";
 
 /**
  * Pending approvals — the parked tasks and the two REAL writes that clear them.
  *
  * The read is the existing task list filtered to the parked status:
- * `GET /tasks?status=awaiting_approval&limit=50` (tasks.py's `status` alias). Each fingerprint is
- * parsed from the task's own `result_summary` by the shipped strict reader
- * (`components/tasks/approval.ts`) — a row with no readable fingerprint says so, and still offers
- * Deny (which needs no token).
+ * `GET /tasks?status=awaiting_approval&limit=50` (tasks.py's `status` alias) plus its
+ * `X-Polsia-Total` header. That header declares how many rows the FULL filter matches, which is
+ * the only honest source for the "waiting" label — the body is a PAGE, capped at `APPROVALS_LIMIT`,
+ * and printing its length as the total is the defect this surface used to ship.
+ *
+ * Each fingerprint comes from the SAME reader the task sheet uses (`components/tasks/approval.ts`):
+ * D1's `approval_fingerprints` list first, the pre-D1 list spelling of `approval_required` second,
+ * the parked `result_summary` sentence only when the server serves NEITHER structured field. A row
+ * whose two sources carry no readable fingerprint says so, and still offers Deny (which needs no
+ * token) — the sentence names both sources so a reader can check them.
  *
  * APPROVE: `POST /approvals {action_fingerprint, task_id}` — the shipped mint + attach + re-queue
  * loop. The minted token is never rendered.
  *
  * DENY: `PATCH /tasks/{id}/status {status:"rejected", error_message}` — the same typed write the
- * task sheet uses, against the `rejected` status the backend's vocabulary carries. Deny is a real
- * state change, so it is two-step (arm, then confirm); a single accidental click cannot refuse work.
+ * task sheet uses, against the `rejected` status the backend's vocabulary carries
+ * (`task_service.VALID_TASK_STATUSES`; the write has no transition matrix, so the state this
+ * control names is one the API genuinely reaches). Deny is a real state change, so it is two-step
+ * (arm, then confirm); a single accidental click cannot refuse work.
  */
 export const APPROVALS_LIMIT = 50;
 const APPROVALS_PATH = `/tasks?status=awaiting_approval&limit=${APPROVALS_LIMIT}`;
 
-type PendingTask = {
+/** The card's "waiting" label. The page length is NOT the queue: with a capped read the label
+ *  must either use the server's declared total or say, in words, that it is showing a page. */
+export function waitingLabel(shown: number, total: number | null): string {
+  if (total === null) return `${shown} shown — the server declared no total`;
+  return total > shown ? `${shown} of ${total} waiting` : `${total} waiting`;
+}
+
+type PendingTask = ApprovalCarrier & {
   id: number;
   title: string;
   agent_type: string;
   status: string | null;
-  result_summary: string | null;
 };
 
 function isPendingList(body: unknown): body is PendingTask[] {
@@ -50,6 +65,7 @@ function isPendingList(body: unknown): body is PendingTask[] {
 
 export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () => void }) {
   const [tasks, setTasks] = useState<PendingTask[] | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -67,22 +83,32 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
 
   useEffect(() => {
     let cancelled = false;
+    // The declared total rides the SAME response as the rows (V23/L4's `onHeaders` hook), so the
+    // label can never describe a different read; one capture per read, never carried across.
+    const captured: { total: number | null } = { total: null };
     api
-      .get<unknown>(APPROVALS_PATH)
+      .get<unknown>(APPROVALS_PATH, {
+        onHeaders: (headers: Headers) => {
+          captured.total = declaredTotal(headers.get("X-Polsia-Total"));
+        },
+      })
       .then((body) => {
         if (cancelled) return;
         if (!isPendingList(body)) {
           setError("the server returned no pending-approval list");
+          setTotal(null);
           setLoading(false);
           return;
         }
         setTasks(body);
+        setTotal(captured.total);
         setError(null);
         setLoading(false);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
         setError(errorText(e));
+        setTotal(null);
         setLoading(false);
       });
     return () => {
@@ -143,7 +169,7 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
       action={
         tasks !== null ? (
           <span className="ui-label text-ink-muted" data-testid="ops-approvals-count">
-            {tasks.length} waiting
+            {waitingLabel(tasks.length, total)}
           </span>
         ) : undefined
       }
@@ -185,7 +211,7 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
       {!loading && error === null && tasks !== null && tasks.length > 0 ? (
         <ul className="space-y-2" data-testid="ops-approvals-list">
           {tasks.map((task) => {
-            const fingerprints = fingerprintsFrom(task.result_summary);
+            const fingerprints = fingerprintsForTask(task);
             const denyBusy = busy === `deny:${task.id}`;
             return (
               <li key={task.id} data-testid={`approval-task-${task.id}`} className="border border-line p-2">
@@ -196,8 +222,10 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
 
                 {fingerprints.length === 0 ? (
                   <p className="mt-2 text-xs text-ink-muted">
-                    This row carries no readable fingerprint, so it cannot be approved from here —
-                    denying it is still available.
+                    This row carries no readable fingerprint — its approval list
+                    (approval_fingerprints) and its result text are both empty, or carry no token the
+                    mint endpoint accepts — so it cannot be approved from here. Denying it is still
+                    available.
                   </p>
                 ) : (
                   <ul className="mt-2 space-y-1">

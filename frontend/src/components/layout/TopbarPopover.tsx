@@ -1,6 +1,6 @@
 "use client";
 
-// Not mounted anywhere (V28 finding; kept by the no-delete rule — V29 decision, wave-v29/DECISIONS.md).
+// Not mounted anywhere (V28 finding; kept by the no-delete rule — V29 decision, COMPLETENESS.md §7.2 item 7 — owner: parent, retire decision).
 import type { ReactNode } from "react";
 
 import { usePopover } from "@/components/layout/usePopover";
