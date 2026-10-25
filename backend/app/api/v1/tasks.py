@@ -9,12 +9,16 @@ Unknown `agent_type` is 422 (the service raises `ValueError`; a bad value is the
 caller's input, not an internal fault).  A missing task is 404 with the `E_NOT_FOUND`
 code in the body.
 
-`PATCH /{task_id}/status` (T12/D20) is the typed write the `TaskStatusUpdate` model
-documents: it calls the SAME `task_service.update_task_status` the worker uses, so the
-service's `VALID_TASK_STATUSES` remains the single authority over the value set and an
-unknown status is refused by name with the accepted values in the context (E_VALIDATION ->
-422, via `refusal_guard`).  `result_summary`/`error_message` are only written when the body
-supplies them.  The row is committed by `get_db` on success, like every other write route.
+`PATCH /{task_id}/status` (T12/D20 + F-17) is the typed write the `TaskStatusUpdate` model
+documents: it calls `task_service.transition_task_status`, which routes the value through the
+service's ONE transition matrix (`TASK_TRANSITIONS` — the same edges `claim_task`/`release_claim`
+implement atomically) before writing.  So an unknown status is still refused by name with the
+accepted VALUES in the context (E_VALIDATION -> 422, via `refusal_guard`), while a known but
+ILLEGAL move (a `completed` row back to `pending`, or a no-op write) is `E_TASK_NOT_RUNNABLE` ->
+409 with `from`/`to`/`accepted` in the context, and nothing is written.  Every accepted change
+writes ONE `task_status_changed` activity row in the same transaction.
+`result_summary`/`error_message` are only written when the body supplies them.  The row is
+committed by `get_db` on success, like every other write route.
 
 `POST /{task_id}/run` (V24/L1) is the missing verb between "created" and "executed": it loads
 the row through `task_service.get_runnable_task` (404 `E_NOT_FOUND`; any status but `pending`
@@ -77,7 +81,7 @@ from app.services.task_service import (
     get_task_run_totals,
     list_tasks,
     task_completed_at,
-    update_task_status,
+    transition_task_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,16 +266,24 @@ async def run_task_endpoint(
 async def update_task_status_endpoint(
     task_id: int, payload: TaskStatusUpdate, db: AsyncSession = Depends(get_db)
 ) -> TaskResponse:
-    """Typed status write (T12/D20).
+    """Typed status write THROUGH THE TRANSITION MATRIX (T12/D20 + F-17).
 
-    The service is the authority: an unknown status raises its named `E_VALIDATION` refusal
-    (422 through `refusal_guard`, with the accepted value set in the context), and a missing
-    task is the same `E_NOT_FOUND` envelope the read routes answer.  Nothing is written when
-    either refuses — `update_task_status` validates BEFORE it touches the row, and `get_db`
-    rolls the session back on the raised refusal.
+    The service decides, the route never sets: `transition_task_status` checks the target against
+    `task_service.TASK_TRANSITIONS` (the same edges `claim_task`/`release_claim` implement), so a
+    `completed` row can no longer be sent back to `pending`.  Three named refusals, none of which
+    writes anything:
+
+      * an unknown status VALUE is the shipped value-set refusal (`E_VALIDATION` -> 422, the
+        accepted values in `context.valid`);
+      * an unknown task is the same `E_NOT_FOUND` envelope the read routes answer (404);
+      * a same-status write or an illegal cell is `E_TASK_NOT_RUNNABLE` (409) with `from`, `to` and
+        the ACCEPTED set in the context.
+
+    An accepted change writes ONE activity row (`task_status_changed`) in the same transaction, so
+    the feed and the row can never disagree.  `get_db` commits both on success.
     """
     with refusal_guard():
-        task = await update_task_status(
+        task = await transition_task_status(
             db,
             task_id,
             payload.status,

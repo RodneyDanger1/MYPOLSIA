@@ -47,7 +47,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
@@ -67,13 +67,17 @@ from app.schemas.planning import FinancePlanningResponse
 from app.services import pricing_service
 from app.services.company_service import get_company, measured_human_hourly_rate
 from app.services.finance_service import (
+    REPORTING_CURRENCY,
+    SpendTruth,
     extract_payment_intent_id,
     get_ai_spend_summary,
     get_finance_summary,
     list_expenses,
     list_revenue_snapshots,
     list_stripe_events,
+    money,
     record_stripe_event,
+    reporting_currency_filter,
 )
 from app.services.query_helpers import fetch_rows
 
@@ -461,13 +465,40 @@ def pricing_guardrails_for(idea: Any, pricing_model: Any) -> list[str]:
     return warnings
 
 
-async def _burn_line_items(db: AsyncSession, reasons: dict[str, str]) -> list[dict[str, Any]]:
-    """The current month's measured expenses, one line per category (source-named)."""
+async def _burn_line_items(db: AsyncSession, reasons: dict[str, str]) -> tuple[list[dict[str, Any]], int]:
+    """The current month's measured expenses, one line per category — USD-only and COUNTED.
+
+    D4-R2 / A2A7-03.  This used to sum `expense_records.amount_cents` over EVERY currency, so one
+    EUR 500.00 row beside a USD 100.00 row served `monthly_usd: 600.0` — a euro priced as dollars
+    on the one finance sum A3 never reached (measured: `probe_attacks.out.json` §C).  The sum is
+    now scoped through `finance_service.reporting_currency_filter` — the ONE definition of the
+    rule every other money sum uses — and what it left out is never silent:
+
+      * a category whose rows are ALL in another currency (or carry no amount) is UNMEASURED:
+        `monthly_usd: None` + its `reason` (never a fabricated `$0.00` and never the foreign sum);
+      * a category with SOME USD rows keeps the USD subtotal and its `source` NAMES the excluded
+        count — the string the panel already prints beside the number (`finance/page.tsx` reads
+        `item.source` for a measured row), so the partial is labelled without a new wire key;
+      * the second return value is the month's excluded-row COUNT, which `build_planning_view`
+        uses to refuse a break-even computed from a partial burn.
+    """
     month_start = today_in().replace(day=1)
     month_end = (month_start + timedelta(days=32)).replace(day=1)
     rows = await fetch_rows(
         db,
-        select(ExpenseRecord.category, func.sum(ExpenseRecord.amount_cents))
+        select(
+            ExpenseRecord.category,
+            func.sum(
+                case(
+                    (reporting_currency_filter(ExpenseRecord.currency), ExpenseRecord.amount_cents),
+                    else_=None,
+                )
+            ).label("usd_cents"),
+            func.sum(
+                case((reporting_currency_filter(ExpenseRecord.currency), 1), else_=0)
+            ).label("usd_rows"),
+            func.count().label("rows"),
+        )
         .where(ExpenseRecord.date >= month_start, ExpenseRecord.date < month_end)
         .group_by(ExpenseRecord.category)
         .order_by(ExpenseRecord.category),
@@ -477,51 +508,135 @@ async def _burn_line_items(db: AsyncSession, reasons: dict[str, str]) -> list[di
         reasons["burn_line_items"] = (
             f"no expense records for {month_start:%Y-%m} — monthly burn is unmeasured"
         )
-        return []
+        return [], 0
     items: list[dict[str, Any]] = []
-    for category, total_cents in rows:
-        if total_cents is None:
-            # The month DID record this category, with no measured amount: keep it VISIBLE as a null
-            # row carrying its cause instead of dropping it (v14 S3-05 — the panel renders
+    excluded_total = 0
+    for category, usd_cents, usd_rows, row_count in rows:
+        row_count = int(row_count or 0)
+        usd_row_count = int(usd_rows or 0)
+        excluded = row_count - usd_row_count
+        excluded_total += excluded
+        label = str(category or "uncategorized")
+        if usd_cents is None:
+            # Nothing was measured in the reporting currency. Keep the row VISIBLE as a null row
+            # carrying its cause instead of dropping it (v14 S3-05 — the panel renders
             # `monthly_usd: null` as the em dash plus this `reason`; the `reasons` map keeps the
             # per-category key as the response-level provenance of the same fact).
-            reason = "expenses in this category carry no measured amount"
+            if usd_row_count == 0 and excluded:
+                reason = (
+                    f"all {row_count} expense record(s) in this category are in another or "
+                    f"unstated currency than {REPORTING_CURRENCY}; nothing was converted, so the "
+                    "amount is unmeasured"
+                )
+            else:
+                reason = "expenses in this category carry no measured amount"
+                if excluded:
+                    reason += (
+                        f" ({excluded} record(s) in another or unstated currency than "
+                        f"{REPORTING_CURRENCY} were excluded too)"
+                    )
             reasons[f"burn_line_items.{category}"] = reason
             items.append(
                 {
-                    "label": str(category or "uncategorized"),
+                    "label": label,
                     "monthly_usd": None,
                     "source": None,
                     "reason": reason,
                 }
             )
             continue
+        source = f"expense_records {month_start:%Y-%m}"
+        if excluded:
+            # The provenance slot the panel prints for a MEASURED row: it says the subtotal is
+            # scoped, so an operator can never read 100.00 as the whole category.
+            source = (
+                f"{source} ({REPORTING_CURRENCY.upper()} only: {excluded} record(s) in another "
+                "or unstated currency excluded)"
+            )
         items.append(
             {
-                "label": str(category or "uncategorized"),
-                "monthly_usd": round(float(total_cents) / 100, 2),
-                "source": f"expense_records {month_start:%Y-%m}",
+                "label": label,
+                "monthly_usd": round(float(usd_cents) / 100, 2),
+                "source": source,
             }
         )
-    return items
+    return items, excluded_total
+
+
+async def _ai_spend_window_truth(db: AsyncSession) -> SpendTruth:
+    """The last 30 company-local days of AI spend, as the SHIPPED `SpendTruth` shape (D4-R3).
+
+    The defect this replaces: `_ai_spend_window_usd` read every `cost_usd` in the window and
+    returned the SUM OF THE PRICED PART — one priced run beside one finished run whose cost was
+    never recorded served `3.0` as "the 30-day spend" (measured: `probe_attacks.out.json` §E).
+    That is the same lie `AgentRun`'s day reader refuses (`finance_service.day_spend_truth`,
+    A1-03/F-19) and `task_service.run_totals` fixed per task, so it is fixed with the SAME
+    vocabulary rather than a third shape:
+
+      * `finished_unpriced` counts the rows that ENDED without a cost — their presence makes the
+        window UNMEASURED (`total is None`), because a partial sum is not a total;
+      * `in_flight` counts the runs still open: their cost is bounded by the per-run cap, not
+        guessed into the total (`SpendTruth`'s own rule);
+      * `per_agent` carries only agents with a measured sum (a `0` entry would be a fabricated
+        zero one level down).
+
+    Two deliberate differences from `day_spend_truth`, both the planning view's SHIPPED contract:
+    the window is 30 days (not the local day) and it is bounded on BOTH edges — a future-dated
+    `started_at` must not inflate a projection (the correction `_month_bounds` records) — and an
+    ABSENT/entirely-unpriced ledger stays UNMEASURED (None) instead of SpendTruth's measured `0`
+    for an absent DAY: the planning panel must not price a per-client AI cost from a ledger that
+    never measured one.  (`finance_service.day_spend_truth` owns the day window and is not editable
+    here; unifying the two needs a window parameter there — see REQUESTS.)
+    """
+    start, _ = day_window(db, today_in() - timedelta(days=AI_SPEND_WINDOW_DAYS - 1))
+    _, end = day_window(db, today_in())
+    finished_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_not(None))
+    open_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_(None))
+    grouped = (
+        select(
+            AgentRun.agent_type,
+            func.sum(AgentRun.cost_usd).label("measured"),
+            func.count().label("runs"),
+            func.sum(case((finished_unpriced, 1), else_=0)).label("finished_unpriced"),
+            func.sum(case((open_unpriced, 1), else_=0)).label("in_flight"),
+        )
+        .where(AgentRun.started_at >= start, AgentRun.started_at < end)
+        .group_by(AgentRun.agent_type)
+    )
+    rows = await fetch_rows(db, grouped, what="ai spend window")
+    per_agent: dict[str, Decimal] = {}
+    finished_unpriced_total = in_flight_total = measured_runs = 0
+    for agent, measured, runs, unpriced_runs, open_runs in rows:
+        finished_unpriced_total += int(unpriced_runs or 0)
+        in_flight_total += int(open_runs or 0)
+        measured_runs += int(runs) - int(unpriced_runs or 0) - int(open_runs or 0)
+        converted = money(measured)
+        if converted is not None:
+            per_agent[str(agent)] = converted
+    if finished_unpriced_total:
+        total: Decimal | None = None      # a partial sum is not a total
+    elif not per_agent:
+        total = None                       # nothing was measured: not a priced $0.00
+    else:
+        total = sum(per_agent.values(), Decimal("0"))
+    return SpendTruth(
+        total=total,
+        per_agent=per_agent,
+        finished_unpriced=finished_unpriced_total,
+        in_flight=in_flight_total,
+        measured_runs=measured_runs,
+    )
 
 
 async def _ai_spend_window_usd(db: AsyncSession) -> float | None:
-    """Measured AI spend over the last 30 company-local days — or None when it was never measured.
+    """The 30-day AI spend when it is a TOTAL — otherwise None (never the priced part).
 
-    No runs in the window: the ledger has nothing, so the spend is UNMEASURED (not $0.00).  Runs
-    exist but none reported a cost: also unmeasured (the column staying NULL is documented).
+    Thin reader over `_ai_spend_window_truth`: `None` means the window is unmeasured (no run
+    reported a cost), so the caller must refuse to allocate rather than divide a partial.
     """
-    start, _ = day_window(db, today_in() - timedelta(days=AI_SPEND_WINDOW_DAYS - 1))
-    rows = await fetch_rows(
-        db,
-        select(AgentRun.cost_usd).where(AgentRun.started_at >= start),
-        what="ai spend window",
-    )
-    costs = [float(row[0]) for row in rows if row[0] is not None]
-    if not costs:
-        return None
-    return sum(costs)
+    truth = await _ai_spend_window_truth(db)
+    return float(truth.total) if truth.total is not None else None
+
 
 
 async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
@@ -546,7 +661,7 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
     today = today_in()
     provenance = pricing_service.catalog_provenance(today)
     company = await get_company(db)
-    burn_line_items = await _burn_line_items(db, reasons)
+    burn_line_items, excluded_currency_rows = await _burn_line_items(db, reasons)
     # A null burn row is UNMEASURED (see `_burn_line_items`): summing it would fabricate a 0, so the
     # total only ever adds rows that carry a measured amount — and with none measured it is null.
     measured_burn = [
@@ -611,14 +726,24 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
             "hours per client are unmeasured, so capacity cannot be divided honestly"
         )
 
-    ai_spend = await _ai_spend_window_usd(db)
+    ai_truth = await _ai_spend_window_truth(db)
+    ai_spend = float(ai_truth.total) if ai_truth.total is not None else None
     ai_cost: float | None = None
     if max_clients and ai_spend is not None:
         ai_cost = round(ai_spend / max_clients, 4)
     elif ai_spend is None:
-        reasons["margin_template.ai_cost"] = (
-            f"no AI cost measured in the last {AI_SPEND_WINDOW_DAYS} days (no runs reported a cost)"
-        )
+        # D4-R3: a window with a finished-but-unpriced run is UNMEASURED, and the reason NAMES the
+        # count — the priced part is never served as the window's spend, so it is never allocated.
+        if ai_truth.finished_unpriced:
+            reasons["margin_template.ai_cost"] = (
+                f"{ai_truth.finished_unpriced} finished run(s) in the last {AI_SPEND_WINDOW_DAYS} "
+                "days recorded no cost — the priced part is not a total, so the window's AI spend "
+                "is unmeasured and cannot be allocated per client"
+            )
+        else:
+            reasons["margin_template.ai_cost"] = (
+                f"no AI cost measured in the last {AI_SPEND_WINDOW_DAYS} days (no runs reported a cost)"
+            )
     else:
         reasons["margin_template.ai_cost"] = (
             "no client capacity is measured, so the measured AI spend cannot be allocated per client"
@@ -651,7 +776,18 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
         )
 
     break_even = break_even_clients(burn_total, price, ai_cost, hours_hi, human_rate)
-    if break_even is None:
+    if excluded_currency_rows:
+        # D4-R2: the burn subtotal left foreign-currency rows out, so it is PARTIAL — a break-even
+        # computed from it would be fabricated precision, even when the arithmetic yields a number.
+        # The count is named instead of the figure.
+        break_even = None
+        reasons["capacity.break_even_clients"] = (
+            f"{excluded_currency_rows} expense record(s) for {today.replace(day=1):%Y-%m} are "
+            f"in another or unstated currency than {REPORTING_CURRENCY} and were EXCLUDED "
+            "(nothing was converted), so the month's burn is a partial USD subtotal — "
+            "break-even needs a complete month"
+        )
+    elif break_even is None:
         reasons["capacity.break_even_clients"] = (
             "needs measured monthly burn and a positive per-client contribution (see the fields above)"
         )

@@ -15,6 +15,12 @@ dependencies are solved BEFORE path/query/body validation):
 `GET /status` is ONE statement (`task_service.get_agent_statuses`): a CTE of the
 nine agent types plus correlated subqueries, so it returns exactly nine rows on an
 empty database instead of 27 round trips (lane 06: 981.889 ms → 84.838 ms).
+
+`POST /{agent_type}/trigger`'s broker hand-off (D6-R2): the row is COMMITTED before `.delay()`
+(A2A2-01) and a refused `.delay()` does NOT terminalise it.  A publish refusal cannot prove that
+nothing was delivered (A2-03), so the row stays `pending` with `metadata.rearmed_at` — the marker
+`maintenance._reconcile_stranded_pending` re-dispatches on — and the caller gets the named `E_REDIS`
+refusal saying the work was accepted but not dispatched.
 """
 from __future__ import annotations
 
@@ -33,7 +39,6 @@ from app.services.task_service import (
     VALID_AGENT_TYPES,
     create_task,
     get_agent_statuses,
-    update_task_status,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -118,32 +123,60 @@ async def trigger_agent(
         # the loop free; the bounded broker transport (celery_app/celery_config.py) keeps the thread
         # from waiting out a long ladder before the except branch below handles the outage.
         await asyncio.to_thread(run_agent_task.delay, task.id)
-    except Exception as exc:  # broker unavailable: NO delivery was accepted for this row
-        # The row exists and will never be claimed: `claim_task`'s only caller is broker delivery, and
-        # nothing reconciles a pending row. The old branch logged this and still answered 202 +
-        # `status:"queued"` — a fake success, because the caller is told work is waiting that no worker
-        # was ever told about. Instead the row records the measured terminal state (why it will never
-        # run) and the caller gets the named refusal, which the app renders as 503 + E_REDIS + how_to_fix.
+    except Exception as exc:  # broker unavailable: a refusal cannot prove nothing was delivered
+        # A2-03's class, in the API path (D6-R2).  The old branch wrote the row `failed` on the
+        # strength of a comment claiming "NO delivery was accepted" — which a publish refusal
+        # cannot know: a connection that dies mid-publish can leave a live message behind, and
+        # `claim_task` accepts only `pending` rows, so the row was written off while the work was
+        # already queued.  The row therefore stays `pending` and carries `metadata.rearmed_at`
+        # (`task_service.requeue_stale_claims` / `_common.enqueue_created` write the same marker
+        # through the same helper): a delivered row is claimed (the claim is its proof of life),
+        # an undelivered one is re-dispatched by `maintenance._reconcile_stranded_pending` within
+        # one window instead of waiting for a human.  The caller STILL gets the named refusal — a
+        # fake 202/"queued" is worse than a loud one — and the refusal says exactly what happened:
+        # the work was accepted (the row exists, still queued) but not dispatched.
         import logging
 
-        logging.getLogger(__name__).warning("failed to enqueue task %s", task.id, exc_info=True)
-        await update_task_status(
-            db,
+        from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
+
+        reason = f"enqueue_refused:{exc.__class__.__name__}"
+        logging.getLogger(__name__).warning(
+            "failed to enqueue task %s for %s; re-arming the undelivered row for the reconciler",
             task.id,
-            "failed",
-            error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
+            agent_name,
+            exc_info=True,
         )
-        # Load-bearing commit (T19): `create_task`/`update_task_status` only FLUSH, and `get_db`
-        # rolls the request session back on the exception raised right below — measured before
-        # this commit (W4 scratch, re-read by W2): the row the 503 names ("task #16 ...") was
-        # rolled back and never existed, so the ledger lost the attempt entirely while the
-        # caller held an id. The created row, its terminal state and its reason must survive
-        # the refusal: the caller saw an id, the ledger keeps it.
+        rearmed = await stamp_rearmed(db, [task.id], reason=reason)
+        # The refusal also lands ON the row (`error_message` names the code) while the row stays
+        # `pending`: the diagnostic a human reads is kept, and the status keeps the truth that the
+        # work was never proven dispatched.  `status` is deliberately NOT touched here — the
+        # re-arm helper only merges `metadata`, and a claim is the delivery's proof of life.
+        task.error_message = f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})"
+        # Load-bearing commit (T19): `create_task`/`stamp_rearmed` only FLUSH, and `get_db` rolls
+        # the request session back on the exception raised right below — measured before this
+        # commit (W4 scratch, re-read by W2): the row the 503 names ("task #16 ...") was rolled
+        # back and never existed, so the ledger lost the attempt entirely while the caller held an
+        # id.  The created row, its re-arm marker and its reason must survive the refusal.
         await db.commit()
         raise PolsiaError(
             E_REDIS,
-            f"task #{task.id} was created but could not be handed to a worker",
-            context={"task_id": task.id, "agent_type": agent_name},
+            f"task #{task.id} was accepted (created, still pending) but NOT dispatched: the "
+            f"broker refused the hand-off ({exc.__class__.__name__}), so the row stays queued for "
+            "the stranded-row reconciler to re-dispatch",
+            how_to_fix=(
+                "no action is required — the row is pending and the 5-minute stranded-row sweep "
+                "re-dispatches it; check REDIS_URL and that the broker/worker are running if this "
+                "keeps happening"
+            ),
+            context={
+                "task_id": task.id,
+                "agent_type": agent_name,
+                "status": "pending",
+                "accepted": True,
+                "dispatched": False,
+                "rearmed": rearmed,
+                "reason": reason,
+            },
         ) from exc
     return AgentTriggerResponse(
         status="queued",

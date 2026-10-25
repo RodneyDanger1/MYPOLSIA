@@ -17,9 +17,9 @@ RED legs, both observed: revert the handler to a bare `run_agent_task.delay(task
 `asyncio.to_thread` to call its target inline — either way the ticker observes **0** ticks and the
 `ticks >= 5` assertion fails, so the check can fail.
 
-T19 adds the two proofs the wave-4 receipt left open: the terminal row survives the request-session
-rollback (`test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back`) and the refusal is
-BOUNDED in wall time against the real transport configuration
+T19 adds the two proofs the wave-4 receipt left open: the RE-ARMED row survives the
+request-session rollback (`test_a_dead_broker_leaves_the_rearmed_row_committed_not_rolled_back`)
+and the refusal is BOUNDED in wall time against the real transport configuration
 (`test_the_dead_broker_ladder_elapses_bounded` + `test_the_broker_transport_is_bounded_by_configuration`).
 Those two measure real seconds on purpose — the bound is the subject. Measured at T19: 12.758 s on
 the uvicorn path (W4 scratch), 12.981 s through this test's own API path, 6.29–6.61 s for a bare
@@ -86,17 +86,24 @@ async def test_a_stalled_broker_does_not_freeze_the_event_loop(api_client, auth_
 async def test_a_broker_outage_is_a_named_refusal_and_the_row_is_not_left_looking_queued(
     api_client, auth_headers, monkeypatch
 ):
-    """When `.delay()` RAISES, the old 202/"queued" was a fake success.
+    """When `.delay()` RAISES, the old 202/"queued" was a fake success — and so was `failed`.
 
-    Nothing accepted the delivery: `claim_task`'s only caller is broker delivery, and no reconciler
-    picks up a row that was never enqueued — so a row left `pending` would sit in the ledger looking
-    queued forever while the caller waited for work no worker knew about. The measured behaviour now:
-    HTTP 503, the refusal envelope with `E_REDIS` and its `how_to_fix`, and the row itself carries the
-    terminal state and the reason.
+    PIN REPAIRED (wave B1 / seat C1, D6-R2).  This test used to assert that the handler wrote the
+    row `failed` through `update_task_status` (recorded == (4242, "failed"), error_message carrying
+    E_REDIS) on the strength of "NO delivery was accepted".  A publish refusal cannot know that
+    (A2-03: a connection that dies mid-publish leaves a live message behind, and `claim_task`
+    accepts only `pending` rows), so the shipped contract is now: the row STAYS `pending` and is
+    stamped with `metadata.rearmed_at` (the marker `maintenance._reconcile_stranded_pending`
+    re-dispatches on), `error_message` keeps the refusal's name as the diagnostic, and the caller
+    still gets the loud named refusal — which now says accepted-but-not-dispatched.  The response
+    half of this test is unchanged; the row half is STRICTER (pending + marker instead of a
+    terminal guess).
 
-    RED leg (observed): restore the swallow-and-return-202 branch and this test fails on
-    `assert response.status_code == 503` — the response is 202 with `status:"queued"`.
+    RED leg (observed, wave B1/C1): revert `agents.py`'s except branch to `update_task_status(...,
+    "failed", ...)` and this test fails on `assert rearmed == [((4242,), "enqueue_refused:ConnectionError")]`
+    — the branch no longer stamps anything.
     """
+    import celery_app.tasks._common as common_module
     import celery_app.tasks.agent_tasks as agent_tasks
     from app.api.v1 import agents as agents_module
 
@@ -106,14 +113,16 @@ async def test_a_broker_outage_is_a_named_refusal_and_the_row_is_not_left_lookin
     def dead_delay(*_args, **_kwargs):
         raise ConnectionError("Error 61 connecting to localhost:6379. Connection refused.")
 
-    recorded: list[tuple] = []
+    rearmed: list[tuple] = []
 
-    async def fake_update_task_status(db, task_id, new_status, **kwargs):
-        recorded.append((task_id, new_status, kwargs.get("error_message", "")))
-        return None
+    async def fake_stamp_rearmed(db, task_ids, *, reason):
+        rearmed.append((tuple(task_ids), reason))
+        return list(task_ids)
 
     monkeypatch.setattr(agents_module, "create_task", fake_create_task, raising=False)
-    monkeypatch.setattr(agents_module, "update_task_status", fake_update_task_status, raising=False)
+    # The handler imports `stamp_rearmed` lazily from its module, so the module attribute is what
+    # the call resolves — patching it here intercepts the re-arm exactly where it happens.
+    monkeypatch.setattr(common_module, "stamp_rearmed", fake_stamp_rearmed, raising=False)
     monkeypatch.setattr(agent_tasks.run_agent_task, "delay", dead_delay, raising=False)
 
     response = await api_client.post("/api/v1/agents/social_media/trigger", headers=auth_headers)
@@ -124,11 +133,13 @@ async def test_a_broker_outage_is_a_named_refusal_and_the_row_is_not_left_lookin
     assert body["error"]["code"] == "E_REDIS", "the failure must name itself"
     assert body["error"]["how_to_fix"], "a named refusal must say how to fix it"
     assert body["error"]["context"]["task_id"] == 4242
+    # ... and it says the honest thing: accepted (created, still queued), not dispatched.
+    assert body["error"]["context"]["dispatched"] is False
+    assert body["error"]["context"]["status"] == "pending"
 
-    assert recorded, "the row must record why it will never run"
-    task_id, new_status, error_message = recorded[0]
-    assert (task_id, new_status) == (4242, "failed")
-    assert "E_REDIS" in error_message
+    assert rearmed == [((4242,), "enqueue_refused:ConnectionError")], (
+        "the refused delivery must RE-ARM the row, not terminalise it"
+    )
 
 
 @pytest.mark.asyncio
@@ -161,22 +172,36 @@ async def test_the_trigger_reports_queued_with_the_created_task_id(api_client, a
 
 
 @pytest.mark.asyncio
-async def test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back(
+async def test_a_dead_broker_leaves_the_rearmed_row_committed_not_rolled_back(
     api_client, auth_headers, async_db_session, monkeypatch
 ):
     """The response names a task id — after the request teardown, that row must still exist.
 
+    PIN REPAIRED (wave B1 / seat C1, D6-R2).  Renamed from
+    `test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back`: it used to assert the
+    committed row was `failed` ("the row's terminal state is the reason it will never run") — the
+    very claim a publish refusal cannot make.  The row is now committed `pending` WITH
+    `metadata.rearmed_at` and the refusal in `error_message`, and it is STILL RUNNABLE by a second
+    attempt (asserted below through the worker's own claim), which is strictly more than "the id
+    exists": the work is owed, provably, and bounded by the reconciler's window.
+
     `get_db` rolls the request session back when the handler raises (its docstring; measured
-    behavior). The handler only FLUSHES the created row and its terminal state, so without the
-    explicit commit the id the 503 hands the caller points at nothing. Measured before the commit
+    behavior). The handler only FLUSHES the created row and its marker, so without the explicit
+    commit the id the 503 hands the caller points at nothing. Measured before the commit
     (W4 scratch DB, re-read by W2): rows 1..15 exist and row 16 — the one the 503 named — does not.
     The fixture's dependency override skips `get_db`, so this test applies the teardown rollback
     by hand: a missing commit is discarded here and fails the test; a present one survives it.
+
+    OLD assertion: `assert row.status == "failed"` + `"E_REDIS" in row.error_message`.
+    NEW assertion: `row.status == "pending"`, `metadata.rearmed_at` present with
+    `rearm_reason == "enqueue_refused:ConnectionError"`, `"E_REDIS" in row.error_message`, and
+    `claim_task(...)` still claims the row.
     """
     from sqlalchemy import select
 
     import celery_app.tasks.agent_tasks as agent_tasks
     from app.models.task import Task
+    from app.services.task_service import claim_task
 
     def dead_delay(*_args, **_kwargs):
         raise ConnectionError("Error 61 connecting to localhost:6379. Connection refused.")
@@ -198,8 +223,20 @@ async def test_a_dead_broker_leaves_the_failed_row_committed_not_rolled_back(
         await async_db_session.execute(select(Task).where(Task.id == task_id))
     ).scalar_one_or_none()
     assert row is not None, "the id the 503 named must not point at a rolled-back ghost row"
-    assert row.status == "failed", "the row's terminal state is the reason it will never run"
+    assert row.status == "pending", (
+        "a refused .delay() cannot prove nothing was delivered: the row stays queued for a retry"
+    )
+    metadata = row.metadata_json or {}
+    assert metadata.get("rearm_reason") == "enqueue_refused:ConnectionError"
+    assert metadata.get("rearmed_at"), "the reconciler's marker is what re-dispatches it"
     assert "E_REDIS" in (row.error_message or ""), "the row must carry the refusal's name"
+
+    # A second attempt can still run it: the worker's own claim (the only path a delivery takes)
+    # accepts the row. The claim is the delivery's proof of life.
+    claimed = await claim_task(async_db_session, worker="post-refusal-attempt", task_id=task_id)
+    assert claimed is not None and claimed.status == "in_progress", (
+        "the re-armed row must still be runnable by a later delivery"
+    )
 
 
 @pytest.mark.asyncio

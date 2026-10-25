@@ -69,6 +69,89 @@ VALID_AGENT_TYPES: tuple[str, ...] = (
 VALID_TASK_STATUSES: tuple[str, ...] = tuple(member.value for member in TaskStatus)
 
 
+#: The ONE `tasks.status` transition matrix (F-17, wave B1 / seat C1).  Every edge below exists
+#: because a real writer needs it — the table does not invent edges, it STATES the ones the product
+#: already relied on, so an API write can be checked against the same authority the queue verbs
+#: implement atomically in SQL (`_claimable_filter`/`claim_task`: pending -> in_progress;
+#: `release_claim`: in_progress -> pending).
+#:
+#: TERMINAL states (`completed`, `cancelled`, `rejected`) have NO outgoing edge.  That is the
+#: measured F-17 defect: `PATCH /tasks/{id}/status` used to write any value over any state and
+#: answered 200 for `completed -> pending`, silently erasing a completion.  `failed -> pending` is
+#: the ONE re-arm the product ships (V12's control: a manually failed row may be queued again);
+#: `awaiting_approval -> pending` is `attach_approval_token`'s re-queue after the owner approves.
+TASK_TRANSITIONS: dict[TaskStatus, tuple[TaskStatus, ...]] = {
+    TaskStatus.PENDING: (
+        TaskStatus.IN_PROGRESS,      # claim_task
+        TaskStatus.COMPLETED,        # operator completes a queued row (T12/U2 pins)
+        TaskStatus.FAILED,           # operator records a failure (V12 redteam control)
+        TaskStatus.CANCELLED,        # owner cancels a queued row
+        TaskStatus.REJECTED,         # refused BEFORE execution (budget/policy choke point)
+    ),
+    TaskStatus.IN_PROGRESS: (
+        TaskStatus.PENDING,          # release_claim / a retryable failure's requeue
+        TaskStatus.COMPLETED,        # the worker's outcome (agent_tasks)
+        TaskStatus.FAILED,           # the worker's outcome (agent_tasks)
+        TaskStatus.CANCELLED,        # owner cancels a run mid-flight (release_claim's docstring)
+        TaskStatus.AWAITING_APPROVAL,  # the worker parks the run for approval (T02)
+        TaskStatus.REJECTED,         # the budget gate's refusal (agent_tasks:826)
+    ),
+    TaskStatus.AWAITING_APPROVAL: (
+        TaskStatus.PENDING,          # attach_approval_token re-queues after the owner's approval
+        TaskStatus.CANCELLED,        # task_repeat: "approve it … or cancel"
+    ),
+    TaskStatus.FAILED: (
+        TaskStatus.PENDING,          # re-arm for a retry (V12 redteam control)
+    ),
+    TaskStatus.COMPLETED: (),
+    TaskStatus.CANCELLED: (),
+    TaskStatus.REJECTED: (),
+}
+
+#: For every edge above, the writer that needs it — the matrix's own provenance.  Pinned equal to
+#: the edges by the test, so an edge cannot be added without naming who needs it (an invented
+#: transition is how a blind setter grows back).
+TASK_TRANSITION_WRITERS: dict[tuple[TaskStatus, TaskStatus], str] = {
+    (TaskStatus.PENDING, TaskStatus.IN_PROGRESS): "task_service.claim_task",
+    (TaskStatus.PENDING, TaskStatus.COMPLETED): "PATCH /tasks/{id}/status (operator completion)",
+    (TaskStatus.PENDING, TaskStatus.FAILED): "PATCH /tasks/{id}/status (operator failure)",
+    (TaskStatus.PENDING, TaskStatus.CANCELLED): "PATCH /tasks/{id}/status (owner cancel)",
+    (TaskStatus.PENDING, TaskStatus.REJECTED): "policy/budget refusal before execution",
+    (TaskStatus.IN_PROGRESS, TaskStatus.PENDING): "task_service.release_claim / retryable requeue",
+    (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED): "celery_app.tasks.agent_tasks (run outcome)",
+    (TaskStatus.IN_PROGRESS, TaskStatus.FAILED): "celery_app.tasks.agent_tasks (run outcome)",
+    (TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED): "PATCH /tasks/{id}/status (owner cancel)",
+    (TaskStatus.IN_PROGRESS, TaskStatus.AWAITING_APPROVAL): "agent_tasks (parked for approval)",
+    (TaskStatus.IN_PROGRESS, TaskStatus.REJECTED): "agent_tasks (budget gate, :826)",
+    (TaskStatus.AWAITING_APPROVAL, TaskStatus.PENDING): "task_service.attach_approval_token",
+    (TaskStatus.AWAITING_APPROVAL, TaskStatus.CANCELLED): "PATCH /tasks/{id}/status (owner cancel)",
+    (TaskStatus.FAILED, TaskStatus.PENDING): "PATCH /tasks/{id}/status (re-arm for retry)",
+}
+
+#: The activity_log action every accepted transition writes (the audit half of F-17).
+TASK_STATUS_CHANGED_ACTION = "task_status_changed"
+#: The activity_log `agent_type` such a row carries: this is queue bookkeeping, not one agent's
+#: work — the same role `requeue_stale_claims` writes its recovery rows under.
+_TASK_STATUS_ACTOR_ROLE = "orchestrator"
+
+
+def legal_task_status_targets(status: str | TaskStatus) -> tuple[str, ...]:
+    """The statuses `status` may move to — the accepted set a refusal quotes.  Empty = terminal.
+
+    An UNKNOWN current status (a NULL/blank row, or a value outside the enum) has no row in the
+    matrix and therefore no accepted target: it answers `()` rather than guessing an edge.
+    ALPHABETICAL on purpose: the tuple goes onto the wire (`context.accepted`) and into the
+    refusal's message, so its order must be deterministic and independent of the matrix's
+    declaration order (a client can print it verbatim).
+    """
+    try:
+        targets = TASK_TRANSITIONS[TaskStatus(str(status))]
+    except (KeyError, ValueError):
+        return ()
+    return tuple(sorted(str(target) for target in targets))
+
+
+
 def is_valid_agent_type(agent_type: str) -> bool:
     return agent_type in VALID_AGENT_TYPES
 
@@ -122,13 +205,7 @@ async def create_task(
         raise ValueError(
             f"Unknown agent type: {agent_type!r}. Valid: {', '.join(VALID_AGENT_TYPES)}"
         )
-    if status not in VALID_TASK_STATUSES:
-        raise PolsiaError(
-            E_VALIDATION,
-            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
-            how_to_fix=ERROR_HINTS[E_VALIDATION],
-            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
-        )
+    _require_valid_task_status(status)
 
     values: dict[str, Any] = {
         "title": title,
@@ -297,6 +374,22 @@ async def list_tasks(
     return await fetch_scalars(db, stmt, what="tasks")
 
 
+def _require_valid_task_status(status: str) -> None:
+    """Refuse an unknown `tasks.status` value BY NAME — the value-set authority, in ONE place.
+
+    The writers (`create_task`, `update_task_status`, `transition_task_status`) each called this
+    same refusal inline; extracting it keeps the message, the context keys and the code identical
+    across all three, so a caller can never get two different spellings of the same typo.
+    """
+    if status not in VALID_TASK_STATUSES:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
+        )
+
+
 async def update_task_status(
     db: AsyncSession,
     task_id: int,
@@ -314,14 +407,14 @@ async def update_task_status(
     them", and `ck_tasks_status` can only police that on PostgreSQL: on SQLite (every unit
     test) a bogus value used to be stored, and on PG it answered a bare
     `IntegrityError`/codeless 500 instead of a named caller error (L2-02).
+
+    This is the WORKER's and the services' writer: it asserts the value set and writes, with no
+    transition check (the worker's outcome write happens after its own claim, and the shipped
+    service contract — pinned by `tests/unit/celery/test_service_contract.py` — is exactly these
+    five parameters).  A caller-facing status write goes through `transition_task_status`, which
+    adds the `TASK_TRANSITIONS` check and the activity row on top of this same write.
     """
-    if status not in VALID_TASK_STATUSES:
-        raise PolsiaError(
-            E_VALIDATION,
-            f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
-            how_to_fix=ERROR_HINTS[E_VALIDATION],
-            context={"status": status, "valid": list(VALID_TASK_STATUSES)},
-        )
+    _require_valid_task_status(status)
     task = await get_task(db, task_id)
     if task is None:
         return None
@@ -337,6 +430,115 @@ async def update_task_status(
     task.updated_at = utcnow()
     await db.flush()
     return task
+
+
+async def transition_task_status(
+    db: AsyncSession,
+    task_id: int,
+    status: str,
+    result_summary: str | None = None,
+    error_message: str | None = None,
+    *,
+    actor: str = "owner",
+) -> Task | None:
+    """Move ONE task through `TASK_TRANSITIONS` and record it — or refuse by name (F-17).
+
+    The API's status verb must DECIDE, not set: `PATCH /tasks/{id}/status` used to write any value
+    over any state, so a `completed` row could be sent back to `pending` with a 200 and no trace
+    (measured F-17).  Order of operations, each deliberate:
+
+      1. the target VALUE is asserted first (`_require_valid_task_status`) — an unknown word is
+         still the value-set refusal (`E_VALIDATION`, the accepted values in `context.valid`), the
+         shipped L1-09/L2-02 contract; a known but ILLEGAL value is the matrix refusal below;
+      2. a missing row answers `None` (the route's `E_NOT_FOUND`), writing nothing;
+      3. a same-status write and an illegal cell are the SAME answer: `E_TASK_NOT_RUNNABLE` (409 —
+         the request conflicts with the row's current state) with `from`, `to` and the ACCEPTED
+         set in the context, and nothing is mutated;
+      4. an accepted cell is written on the ALREADY-LOADED row (the same four assignments
+         `update_task_status` makes — doing them here keeps the check and the write on ONE read,
+         so no writer can slip between them) and an activity row is written in the SAME
+         transaction, so a rolled-back write cannot leave a feed entry claiming a change that
+         never happened (the H-02 rule).
+
+    `result_summary`/`error_message` keep the service's "only when supplied" rule — a transition
+    must not wipe a previously recorded message.
+    """
+    _require_valid_task_status(status)
+    target = TaskStatus(status)
+    task = await get_task(db, task_id)
+    if task is None:
+        return None
+
+    current = str(task.status or "")
+    accepted = legal_task_status_targets(current)
+    if current not in VALID_TASK_STATUSES:
+        raise PolsiaError(
+            E_TASK_NOT_RUNNABLE,
+            f"task {task_id} carries an unrecognised status {current!r}; there is no transition "
+            "out of it (nothing was written)",
+            how_to_fix=(
+                f"repair the row's status first — GET /api/v1/tasks/{task_id} shows it; the value "
+                f"set is {', '.join(VALID_TASK_STATUSES)}"
+            ),
+            context={"task_id": task_id, "from": current, "to": target.value, "accepted": []},
+        )
+    accepted_text = ", ".join(accepted) if accepted else "none (terminal state)"
+    if target.value == current:
+        raise PolsiaError(
+            E_TASK_NOT_RUNNABLE,
+            f"task {task_id} is already {current!r}; a status write must name a DIFFERENT status "
+            f"(nothing was written)",
+            how_to_fix=(
+                "omit the write — the row already carries that status; from "
+                f"{current!r} the accepted targets are: {accepted_text}"
+            ),
+            context={
+                "task_id": task_id,
+                "from": current,
+                "to": target.value,
+                "accepted": list(accepted),
+            },
+        )
+    if target not in TASK_TRANSITIONS[TaskStatus(current)]:
+        raise PolsiaError(
+            E_TASK_NOT_RUNNABLE,
+            f"illegal task transition {current!r} -> {target.value!r} for task {task_id}; from "
+            f"{current!r} the accepted targets are: {accepted_text} (nothing was written)",
+            how_to_fix=(
+                f"re-read the task (GET /api/v1/tasks/{task_id}) and choose one of the accepted "
+                "targets named here; a terminal row cannot be reopened and its history does not "
+                "change retroactively"
+            ),
+            context={
+                "task_id": task_id,
+                "from": current,
+                "to": target.value,
+                "accepted": list(accepted),
+            },
+        )
+
+    task.status = target
+    if result_summary is not None:
+        task.result_summary = result_summary
+    if error_message is not None:
+        task.error_message = error_message
+    task.updated_at = utcnow()
+    await db.flush()
+
+    # Lazy import, for the same reason `requeue_stale_claims` uses one: this module's import graph
+    # stays exactly what it was.  `log_activity` shares the CALLER's transaction — the audit row
+    # and the status write commit (or roll back) together.
+    from app.services.activity_service import log_activity
+
+    await log_activity(
+        db,
+        _TASK_STATUS_ACTOR_ROLE,
+        TASK_STATUS_CHANGED_ACTION,
+        f"task #{task_id} status {current} -> {target.value} (accepted, by {actor})",
+        detail={"task_id": task_id, "from": current, "to": target.value, "actor": actor},
+    )
+    return task
+
 
 
 #: The `tasks.metadata` key the owner's minted approval token travels under (T02/T02b).  The
@@ -1204,6 +1406,9 @@ async def get_task_run_totals(
 
 __all__ = [
     "APPROVAL_TOKEN_METADATA_KEY",
+    "TASK_STATUS_CHANGED_ACTION",
+    "TASK_TRANSITIONS",
+    "TASK_TRANSITION_WRITERS",
     "VALID_AGENT_TYPES",
     "VALID_TASK_STATUSES",
     "TaskRunTotals",
@@ -1218,10 +1423,12 @@ __all__ = [
     "get_task_run_totals",
     "heartbeat_task",
     "is_valid_agent_type",
+    "legal_task_status_targets",
     "list_tasks",
     "release_claim",
     "requeue_stale_claims",
     "task_completed_at",
     "task_terminal_at_expr",
+    "transition_task_status",
     "update_task_status",
 ]
