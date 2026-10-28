@@ -403,18 +403,12 @@ async def test_a_non_iterable_suppressed_value_is_a_named_refusal_at_the_agent_s
     assert fake.sent == []
 
 
-@pytest.mark.xfail(
-    reason=(
-        "DEFECT (redteam F1) a non-list `suppressed` value silently disables suppression: "
-        "email_compliance._session_free_send iterates whatever `preflight['suppressed']` is, so a "
-        "bare STRING iterates its characters and the membership test can never match — a "
-        "malformed/hostile preflight turns the suppression check off and the address is SENT "
-        "(measured: provider captured the message to the suppressed address). "
-        "how_to_fix: require a list/tuple for `suppressed` and refuse E_VALIDATION/E_CONFIG by "
-        "name for any other type (fail closed, like every other malformed preflight shape)."
-    ),
-    strict=False,
-)
+# FIXED (redteam F1) — a non-list `suppressed` value used to silently disable suppression:
+# `email_compliance._session_free_send` iterated whatever `preflight['suppressed']` was, so a bare
+# STRING iterated its characters, the membership test could never match, and the address was SENT.
+# The shape floor now refuses any non-list/tuple by NAME (`E_CONFIG`) before the provider is
+# reached. This test was that defect's xfail; it is green now, so it asserts the refusal itself —
+# a bare string must not merely fail to send, it must be refused with the reason.
 async def test_a_bare_string_suppressed_value_must_not_disable_suppression(monkeypatch: Any):
     """ATTACK (the sharp one): `suppressed` as a BARE STRING instead of a list.
 
@@ -424,18 +418,21 @@ async def test_a_bare_string_suppressed_value_must_not_disable_suppression(monke
     an address the suppression list names — whatever the list's Python type.
     """
     fake = _arm_paid_provider(monkeypatch, sandbox=False)
-    try:
-        result = compliance_send.send_outreach_email(
+    with pytest.raises(PolsiaError) as refusal:
+        compliance_send.send_outreach_email(
             to=SUPPRESSED, subject="s", body="b",
             context={"compliance": _preflight(SUPPRESSED)},
         )
-    except PolsiaError:
-        assert fake.sent == [], "refused, yet the provider was reached"
-        return
-    assert fake.sent == [], (
-        f"suppressed address was SENT to: a string `suppressed` value silently disables the "
-        f"suppression check (result={result!r})"
+    assert refusal.value.code == E_CONFIG, (
+        f"a bare-string `suppressed` must be refused E_CONFIG by name, got {refusal.value.code}"
     )
+    assert "suppressed" in refusal.value.message, (
+        f"the refusal does not name the malformed key: {refusal.value.message!r}"
+    )
+    assert refusal.value.context.get("suppressed_type") == "str", (
+        "the refusal must carry the type it refused, so the producer can be fixed"
+    )
+    assert fake.sent == [], "the provider was reached for a suppressive preflight"
 
 
 # ── the source-level pin: every egress names the firewall where it exists ────────────────────

@@ -80,9 +80,10 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 
 `frontend/src/app/` holds **22 `page.tsx`** files: **19 top-level routes** in the navigation
 (`frontend/src/components/layout/nav-items.ts`) plus the root redirect and two detail routes
-(`/tasks/[id]`, `/runs/[id]`). The backend exposes **107 method+path operations** across **35 modules** in
-`backend/app/api/v1/` (wave A3 measurement from the app's own OpenAPI schema; V29 measured 106, and wave
-A3's `GET /config/phone` is the 107th; the V23 write counted 77 across
+(`/tasks/[id]`, `/runs/[id]`). The backend exposes **109 method+path operations** across **35 modules** in
+`backend/app/api/v1/` (measured from the app's own OpenAPI schema; V29 measured 106, wave
+A3's `GET /config/phone` was the 107th, and wave B2 added `GET /ready` and `POST /ws/ticket` as the 108th and
+109th; the V23 write counted 77 across
 26). The V22 live `/openapi.json` capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded
 `TOTAL 76`; it predates the V23–V27 surface.
 
@@ -175,11 +176,11 @@ predates the last closures, so where they disagree the working-tree code and L3'
   is a recorded decision, not a wiring fix.
 - **W1 GAP-5 — worker-side activity-publish counters are not visible in the UI.** Breaker counters are
   per-process; the usage panel reads the API process, and its copy said so
-  (`frontend/src/app/usage/page.tsx:188-190`, `backend/celery_app/tasks/maintenance.py:210`).
+  (`frontend/src/app/usage/page.tsx:188-190`, `backend/celery_app/tasks/maintenance.py:244`).
   **Closed in V23 by L4:** the 15-minute tick publishes the worker's snapshot to the shared Redis key
   `polsia:activity-publish:stats` (TTL 900 s) and `GET /api/v1/ops/activity-publish` serves it; the
   `/usage` **Worker process** card shows the last published counters or an honest "not published yet"
-  (`maintenance.py:215-260`, `ops.py:75-136`, `OpsPanel.tsx:298-349`). See §7 item 8.
+  (`maintenance.py:244-262`, `app/api/v1/ops.py:118-147`, `OpsPanel.tsx:298-349`). See §7 item 8.
 
 W1's reverse sweep found **no page that discards a response body** (0 GAP-DEADREAD); the partial reads
 it checked are deliberate (dashboard margin widget vs the full Finance page; Settings' single
@@ -215,7 +216,7 @@ owned by the parent:
 | **D1** | **H** | Dashboard Business panel shows **MRR `$0.00`, Active customers `0`, Churn `0.0%`** as measurements. At the V22 audit no product **UI** wrote `company_config.kpis` (`PUT /config` accepted the key, but nothing in the UI sent it) and Settings had no KPI editor. **V23:** the Settings **KPI editor** now writes that key (item 10), so seeded values are correctable in-product. | `backend/scripts/seed_company.py:36-43` → `frontend/src/components/dashboard/BusinessPanel.tsx:124-126`; V23 `frontend/src/components/settings/KpiEditor.tsx` | **parent** (seed is backend; no V22 writer owns it) |
 | **D2** | **H** | The compliance fields are **already set** in the live config, so the gate passes **today**; with `SANDBOX_MODE=false` every outbound email footer would print `Privacy: https://yourcompany.com/privacy` / unsubscribe links on a domain the owner does not own. Only sandbox mode stops it now. | `backend/scripts/seed_company.py:44` → `backend/app/services/email_compliance.py:240-264` | **parent** (seed) |
 | **D3** | M | Daily Report says **"Planned 8 · Completed 0 · Failed 0"** with no "as of", while the dashboard says 27 completed today. The report is a 06:00 snapshot; `updated_at` is served and typed but never rendered. | `frontend/src/components/dashboard/DailyReportPanel.tsx:131-136`, `DocumentsOverlay.tsx:226-232` | **closed by L3** — `Updated <stamp>` now renders (`DailyReportPanel.tsx:153`, `DocumentsOverlay.tsx:240`), pin `v22-wiring-copy-truth.test.tsx` |
-| **D4** | M | Settings → Emails helper says the requeued-run toggle **"sends nothing yet"** — false; it sends a real email. | `frontend/src/components/settings/EmailsSection.tsx:40-42` vs `backend/app/services/notification_service.py:113-116,190-200` | **closed by L3** — helper now states the shipped route (`EmailsSection.tsx:42`), pin `v22-wiring-copy-truth.test.tsx` + `u7-settings` |
+| **D4** | M | Settings → Emails helper says the requeued-run toggle **"sends nothing yet"** — false; it sends a real email. | `frontend/src/components/settings/EmailsSection.tsx:40-42` vs `backend/app/services/notification_service.py:116-121,190-200` | **closed by L3** — helper now states the shipped route (`EmailsSection.tsx:42`), pin `v22-wiring-copy-truth.test.tsx` + `u7-settings` |
 | **D5** | M | Command palette says **"Search tasks, runs, reports…"** but reads only the newest 50/50/20; an older match answers **"No matches."** — a claim of absence. | `frontend/src/components/shell/CommandPalette.tsx:48-50,392,409` | **closed by L3** — persistent scope line from the same limit constants (`CommandPalette.tsx:58,471-477`), pin `v22-wiring-copy-truth.test.tsx` |
 | **D6** | L | Bell says **"Notifications, 20 in the last 48 hours"** — 20 is the route's hard cap, not the window count. | `frontend/src/components/layout/NotificationsPanel.tsx:283`; `backend/app/api/v1/notifications.py:196-199` | **closed by L3** — "up to 20" at the cap (`NotificationsPanel.tsx:288`), pin `v22-wiring-copy-truth.test.tsx` |
 | **D7** | L | Stale "INTENDED STATUS" comments claim the Memory page has no Add/Forget controls; both ship. | `backend/app/api/v1/memory.py:65-71,96-100` | **parent** (backend) |
@@ -334,7 +335,7 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 |---|---|---|---|
 | 6 | **CLOSED (V23 · L4).** The feed header now prints the server's own total — `N events` (`1 event` singular) — read from the same response's `X-Polsia-Total` through the shared `onHeaders` hook; an absent or non-integer header draws **no count** (never the rows on hand). A malformed snapshot cannot publish a stale/foreign count. | `frontend/src/hooks/useActivityFeed.ts:88-97,198-215,395`; `frontend/src/components/dashboard/ActivityFeed.tsx:147-163`; pin `frontend/src/__tests__/v23-observability.test.tsx` | **done (V23 L4)** |
 | 7 | Three components are imported by nothing: `AgentStatusGrid`, `MetricsCard`, `TopbarPopover` (two have their own unit specs). Retire-vs-keep is a recorded decision — the campaign's no-delete rule pins two of them. | `__tests__/u4-darktail.test.tsx:68-75`; `components/dashboard/*`, `components/layout/TopbarPopover.tsx` | **parent (retire decision)** |
-| 8 | **CLOSED (V23 · L4).** The 15-minute maintenance tick writes `{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job), and `GET /api/v1/ops/activity-publish` serves it: `{data:{…}}` / `{data:null}` when the worker never wrote / **503 `E_REDIS`** when Redis is unreachable or the stored value is not the frozen shape (no coercion of `"2"`/`true` into counts). The `/usage` **Worker process** card renders the four counters or the honest absence ("No counters are shown rather than fabricated zeros"); the "worker invisible" copy is gone. | `backend/celery_app/tasks/maintenance.py:215-260`; `backend/app/core/redis_client.py:84-110`; `backend/app/api/v1/ops.py:75-136`; `frontend/src/components/usage/OpsPanel.tsx:298-349`; pins `backend/tests/unit/test_v23_breaker_stats.py` (8), `frontend/src/__tests__/v23-observability.test.tsx` (7) | **done (V23 L4)** — the live tick/route read is the parent's (RELEASE-CHECKLIST V23) |
+| 8 | **CLOSED (V23 · L4).** The 15-minute maintenance tick writes `{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job), and `GET /api/v1/ops/activity-publish` serves it: `{data:{…}}` / `{data:null}` when the worker never wrote / **503 `E_REDIS`** when Redis is unreachable or the stored value is not the frozen shape (no coercion of `"2"`/`true` into counts). The `/usage` **Worker process** card renders the four counters or the honest absence ("No counters are shown rather than fabricated zeros"); the "worker invisible" copy is gone. | `backend/celery_app/tasks/maintenance.py:244-262`; `backend/app/core/redis_client.py:84-110`; `backend/app/api/v1/ops.py:118-147`; `frontend/src/components/usage/OpsPanel.tsx:298-349`; pins `backend/tests/unit/test_v23_breaker_stats.py` (8), `frontend/src/__tests__/v23-observability.test.tsx` (7) | **done (V23 L4)** — the live tick/route read is the parent's (RELEASE-CHECKLIST V23) |
 
 ### 7.3 Capabilities that had no owner-facing control (all closed in V23)
 

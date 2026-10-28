@@ -3,7 +3,7 @@
 ## How to run all tests
 
 ```bash
-# Backend unit (41+ tests, no Docker needed)
+# Backend unit (no Docker needed)
 cd backend && CLAUDE_CLI_MOCK=true python -m pytest tests/unit/ -v
 
 # Backend with coverage report
@@ -42,7 +42,8 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `api/test_social.py` | 4 | List empty, list all, filter by status, auth required |
 | `celery/test_agent_tasks.py` | 2 | Celery task dispatches correct agent from AGENT_MAP |
 
-**Total: 293 backend tests** (`tests/unit` + `tests/parity` + `tests/redteam`, measured 2026-10-12 — the file list above is the original snapshot; the gate XML holds the live count)
+**Total: not stated here.** The file list above is the original snapshot of the early unit suite; the
+live count is whatever the gate's JUnit XML reports, never a number copied into this document.
 
 ### Frontend unit tests
 
@@ -78,7 +79,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Feature | Acceptance criteria | Test type |
 |---|---|---|
 | Docker stack starts | All 7 services healthy after `make up` | Manual / `docker-build.yml` CI |
-| Database migrations | `make init-db` succeeds, all 22 tables present | Manual |
+| Database migrations | `make init-db` succeeds, all 24 tables present | Manual |
 | Health endpoint | `GET /api/v1/health` → `{"status":"ok"}` | E2E |
 | Authentication | Requests without `X-API-Key` return 401 | Unit (all API tests) |
 | WebSocket | Connect to `WS /ws/activity`, receive events from agent runs | Unit + E2E |
@@ -107,7 +108,7 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Ads Management | Returns campaign recommendation | Unit (mocked CLI) |
 | Code Generation | Calls PyGitHub (mocked), returns commit summary | Unit (mocked CLI) |
 | Finance | Calls Stripe (mocked), returns MRR/ARR values | Unit (mocked CLI) |
-| Deployment | **Not implemented in this repository** — no Deployment agent and no `deployments` table exist in this tree (GET /agents/status asserts exactly nine agent types). | — |
+| Deployment | **No Deployment agent exists** — `AGENT_MAP` dispatches exactly nine agent types (`backend/app/agents/crew_factory.py::AGENT_MAP`) and this tree has no `deployments` table. The Render deploy *adapter* does ship, owner-driven: `backend/app/services/deploy_service.py` behind `POST /api/v1/sites/{slug}/deploy` (dry run by default) and `GET /api/v1/sites/{slug}/deploy` (`backend/app/api/v1/sites.py`). | Unit: `tests/unit/test_v25_deploy.py`; E2E: `e2e/v26-deploy.spec.ts` |
 
 ### REST API endpoints
 
@@ -124,9 +125,9 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | `GET /api/v1/finance/summary` | Returns MRR, ARR, subscribers, ad spend, expenses |
 | `POST /api/v1/finance/stripe/webhook` | Validates Stripe signature, logs event, returns `{"received":true}` |
 | `GET /api/v1/social/posts` | Returns list of posts, filterable by status |
-| `GET /api/v1/deployments` | **Not implemented in this repository** — no such route exists in `app/api/v1/`. |
-| `POST /api/v1/deployments/trigger` | **Not implemented in this repository** — no such route exists. |
-| `GET /api/v1/deployments/latest` | **Not implemented in this repository** — no such route exists. |
+| `GET /api/v1/deployments` | **Does not exist** — the deploy surface is per site: `GET /api/v1/sites/{slug}/deploy` returns `{configured, missing, service_id, last_deploy}`. |
+| `POST /api/v1/deployments/trigger` | **Does not exist** — the trigger is `POST /api/v1/sites/{slug}/deploy` (dry run unless `RENDER_API_KEY` + `RENDER_SERVICE_ID` are set). |
+| `GET /api/v1/deployments/latest` | **Does not exist** — the last deploy is the `last_deploy` field of `GET /api/v1/sites/{slug}/deploy`. |
 
 ### Finance agent (Stripe)
 
@@ -137,15 +138,19 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Webhook signature | Invalid signature → 400, missing secret → 500 | Unit: `test_finance.py` |
 | Sandbox gate | `SANDBOX_MODE=true` prevents real Stripe refunds | Unit (env check) |
 
-### Deployment agent (Render) — not implemented
+### Deployment adapter (Render) — ships, owner-driven; no Deployment agent
 
-> **Not implemented in this repository.** This section documents a capability this repository does
-> not implement: there is no Deployment agent class, no Render client, no `/api/v1/deployments*`
-> route, no `deployments` table and no test for any of it. The only trace that exists is the draft
-> schema in `app/schemas/agent_outputs.py` (deliberately not in the agent registry); the dead
-> environment placeholder in `.env.example` was removed by the 2026-10-13 owner decision — the
-> never-implemented integration no longer advertises config. The rows below are a specification for
-> future work, kept rather than erased so the design record survives.
+> **What ships.** `backend/app/services/deploy_service.py` is a real Render client: `POST
+> /api/v1/sites/{slug}/deploy` plans a deploy, DRY RUN by default, and only submits live when
+> `RENDER_API_KEY` + `RENDER_SERVICE_ID` are set (`E_CONFIG` naming the missing one otherwise);
+> `GET /api/v1/sites/{slug}/deploy` serves the configured flag, the missing names and the last
+> deploy record. Pinned by `backend/tests/unit/test_v25_deploy.py` and `e2e/v26-deploy.spec.ts`.
+>
+> **What does not ship.** There is no Deployment *agent* class in `AGENT_MAP` (nine dispatchable
+> types), no `deployments` table, and no `/api/v1/deployments*` route, so nothing schedules,
+> polls or records a deploy on its own. The rows below are the specification for that future
+> agent; row 1 (the trigger call) is the half the shipped adapter already makes on request
+> (`deploy_service` posts `https://api.render.com/v1/services/<id>/deploys`).
 
 | Feature | Acceptance criteria | Test type |
 |---|---|---|
@@ -165,8 +170,8 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 | Agent status grid | All nine agents shown with last-run status badge | Unit: `AgentStatusGrid.test.tsx` |
 | Agent trigger | Button click → 202 → task appears in task list | E2E: `agents.spec.ts` |
 | Settings save | Update company name → `PUT /config` → success toast | E2E: `settings.spec.ts` |
-| Deploy page | **Not implemented in this repository** — no deploy page exists in `frontend/src/app/`. | — |
-| Memory search | Type query → semantic results appear | E2E (to be added) |
+| Deploy board | **Ships on the Sites page** (`frontend/src/app/sites/page.tsx`): each row reads `GET /api/v1/sites/{slug}/deploy` and shows the last deploy / the missing credentials; the trigger is `POST …/deploy` (dry run by default). There is no separate `/deploy` page. | E2E: `e2e/v26-deploy.spec.ts` |
+| Memory search | Type query → semantic results appear | E2E: `memory.spec.ts` |
 
 ---
 
@@ -190,15 +195,18 @@ docker-compose up -d && npx playwright test e2e/ --reporter=html
 - `tests/unit/test_social_media_agent.py` — mock Tweepy
 - `tests/unit/test_finance_agent.py` — mock Stripe SDK
 
-### Missing E2E specs
-- `e2e/finance.spec.ts` — Finance page loads MRR/ARR, expense table visible
-- `e2e/deployments.spec.ts` — Deploy page shows history, trigger button works (**not implemented** — no deploy page exists; see the note above)
-- `e2e/memory.spec.ts` — Search returns results, add memory entry
+### E2E specs
+
+The three specs this section used to list as missing all ship: `e2e/finance.spec.ts` (Finance page
+KPIs + expense reads), `e2e/memory.spec.ts` (memory search + add), and `e2e/v26-deploy.spec.ts` (the
+Sites deploy board — there is no separate deploy page; see the deployment note above). The suite is
+`e2e/*.spec.ts`; run it against a live stack (`e2e/run-suite.sh`), not per-file lists copied into
+this document.
 
 ### Manual acceptance checklist (run before first real deployment)
 
 - [ ] `SANDBOX_MODE=false` + real Stripe keys → Stripe balance loads in Finance page
-- [ ] `SANDBOX_MODE=false` + real Render keys → trigger deploy from dashboard → Render dashboard shows active deploy (**not implemented** — there is no deploy trigger and no Deployment agent; see the note above)
+- [ ] `SANDBOX_MODE=false` + real Render keys → trigger a deploy from the Sites page (`POST /api/v1/sites/{slug}/deploy?dry_run=false`) → the returned `deploy_id` is active in the Render dashboard. (There is no Deployment *agent*; the owner drives this route.)
 - [ ] Morning cycle fires hourly and self-gates to the configured company-local hour (default 06:00) → tasks visible in dashboard
 - [ ] Agent trigger → Celery worker picks up task → activity feed updates via WebSocket
 - [ ] Claude CLI authenticated (`claude login` on host) → agent runs real inference

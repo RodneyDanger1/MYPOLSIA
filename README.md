@@ -16,7 +16,12 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 - **The day** — the morning cycle (your company-local hour) has the orchestrator write the plan,
   materialises the tasks it returns, and files it in the dashboard's Daily Report; the evening
   cycle files the day's summary. Tasks, approvals, runs and phone events stream into the live
-  Activity feed; the chat rail talks to the orchestrator.
+  Activity feed. The chat rail is **not** a conversation with an agent: it is a deterministic
+  intent router (`backend/app/services/chat_service.py::classify_message` — an ordered regex/stem
+  table with no model call on the path) that answers from the product's own reads (dashboard
+  summary, finance summary, runs ledger, daily report, task lookup) or creates a task; a money or
+  external ask is refused by name. The model path is the agent runs — the orchestrator plans in the
+  morning/evening cycles and each specialist runs when a task is dispatched.
 - **The rule** — nothing fakes anything: a sandboxed action is a labelled draft, an unmeasured
   value is `null` (not 0), and a missing credential is a refusal **by name** with the fix in it.
 
@@ -250,8 +255,12 @@ Fill in the relevant sections of `.env` to activate each integration:
   (`web_fetch`, `web_search`) ride the request and every `tool_calls` turn is executed by
   `app/agents/deepseek_runtime.py`, so `competitor_research` searches and fetches for real (V28
   correction: the earlier "tool-calling is deferred / prompt context only" text was stale)
-- **Google Ads / Meta Ads** — Campaign management (advertised, not implemented:
-  `GOOGLE_ADS_CLIENT_SECRET` is not read by any code path; the other Google Ads settings are)
+- **Google Ads / Meta Ads** — Campaign management (partly implemented, by name):
+  `integrations.read_ad_metrics` reads the provider's own campaign metrics — the Google Ads leg
+  requires **five** values, `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
+  `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN` and `GOOGLE_ADS_CUSTOMER_ID`, and refuses
+  `E_INTEGRATION` naming whichever is blank; `integrations.update_ad_budget` (a live budget
+  mutation) refuses by name because this deployment ships no account-scoped write client
 - **Stripe** — Revenue and expense tracking (`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`; there
   is no client-side publishable-key setting)
 - **GitHub** — Open PRs from the code generation agent
@@ -312,11 +321,12 @@ quietly relaxed. Each one names its measurement.
   original upload (`polsia-src-dossier.md` §6: the same set was read by nothing there, and no mail-
   poll or web-search variable was defined anywhere) and the live product (vendor-processed inbound
   email, no web-search provider, managed Meta-only ads, internal hosting, no batch/backlog knobs).
-  Exactly two settings still have no reader, and both are deliberate and named:
-  `GOOGLE_ADS_CLIENT_SECRET` — RESERVED-labelled, kept because our google_ads channel exists (the
-  OAuth client secret of a client this deployment does not ship) — and
+  Exactly one setting still has no reader, and it is deliberate and named:
   `CELERY_WORKER_CONCURRENCY`, documented as owned by the docker-compose launch command
-  (`--concurrency=4`), not the app (R20/R23). `DEBUG`/`LOG_JSON` are consumed by `app/main.py` (R22).
+  (`--concurrency=4`), not the app (R20/R23). `GOOGLE_ADS_CLIENT_SECRET` was previously listed
+  here as unread; that was wrong — `integrations.read_ad_metrics` requires it and
+  `integrations._google_ads_read` passes it to the client. `DEBUG`/`LOG_JSON` are consumed by
+  `app/main.py` (R22).
 - **F-02 (the default API key) is half-closed by design; the key ROTATION is deliberately not
   executed.** The fresh-eyes defect sweep (F-02: `build/ui-reverse/u6-research/fresh-eyes/DEFECT-SWEEP.md`
   §F-02; ruled on in `build/ui-reverse/u6-analysis/U6-MAJOR-REPORT.md` item 2) measured the owner API
@@ -620,9 +630,12 @@ rebuild.
   needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
-  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 107
-  method+path operations (wave A3 measurement from the app's own OpenAPI schema; V29 measured
-  106, and wave A3's `GET /api/v1/config/phone` is the 107th. The original 65-route
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 109
+  method+path operations (measured from the app's own OpenAPI schema; V29 measured
+  106, wave A3's `GET /api/v1/config/phone` was the 107th, and wave B2 added the last two —
+  `GET /api/v1/ready`, the readiness probe beside liveness, and `POST /api/v1/ws/ticket`, the
+  short-lived ticket the browser exchanges for its WebSocket handshake because a handshake cannot
+  carry the key header. The original 65-route
   tree documented through V9 is pinned route-by-route in `backend/tests/parity/`).
 
 ## CI/CD

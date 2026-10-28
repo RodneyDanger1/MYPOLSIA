@@ -258,23 +258,36 @@ def test_the_web_fetch_path_has_one_connect_path():
     assert '"untrusted": True' in fetch_src, "the web_fetch payload lost its untrusted flag"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "A2A1-02 / S1-R2 UNLANDED at HEAD: `_run_web_fetch` compares `(next_parts.hostname or "
-        "'').lower() != original_host` — the HOSTNAME only (tool_registry.py:1344 at HEAD). A "
-        "same-host 302 may therefore change the port (Redis 6379 / Docker 2375 on a public host) or "
-        "downgrade https->http; today the port leg is caught later by resolve_egress's 80/443 "
-        "allowlist, the plaintext downgrade is not. Fix = compare the (scheme, host, port) triple. "
-        "Settlement: `pytest tests/unit/test_a3_egress.py tests/unit/test_v14_sec.py -q`."
-    ),
-)
+# LANDED wave B1: A2A1-02 / S1-R2 — the redirect rule is the ORIGIN (scheme, host, effective port),
+# not the hostname. `_web_origin` computes the triple and `_run_web_fetch` refuses a hop whose
+# origin differs, so a same-host 302 cannot change the port or downgrade https->http. This test was
+# that class's xfail; it is green now, and it pins the comparison by behaviour (a hostname-only
+# rule would call all three of these origins equal) plus the line that consumes it.
 def test_a_same_host_redirect_may_not_change_the_origin():
+    from urllib.parse import urlsplit
+
     from app.agents import tool_registry
 
+    same = tool_registry._web_origin(urlsplit("https://example.com/x"))
+    explicit_default = tool_registry._web_origin(urlsplit("https://example.com:443/x"))
+    downgraded = tool_registry._web_origin(urlsplit("http://example.com/x"))
+    port_changed = tool_registry._web_origin(urlsplit("https://example.com:6379/x"))
+
+    assert same == explicit_default == ("https", "example.com", 443), (
+        "the origin wrongly distinguishes an implicit default port from the same port spelled out"
+    )
+    assert downgraded == ("http", "example.com", 80)
+    assert port_changed == ("https", "example.com", 6379)
+    assert same != downgraded, "https->http on the same host is the SAME origin: the downgrade is open"
+    assert same != port_changed, "a same-host port change is the SAME origin: the port leg is open"
+
     fetch_src = inspect.getsource(tool_registry._run_web_fetch)
-    assert "original_origin" in fetch_src and "next_origin" in fetch_src, (
-        "web_fetch's redirect rule is hostname-only: a same-host 302 may change the port or scheme"
+    assert "_web_origin(next_parts)" in fetch_src, (
+        "web_fetch no longer computes the hop's origin — the hostname-only rule is back"
+    )
+    assert "next_origin != original_origin" in fetch_src, (
+        "web_fetch compares something other than the full origin: a same-host 302 may change the "
+        "port or scheme"
     )
 
 
@@ -329,27 +342,50 @@ def test_an_unreported_campaign_dump_carries_no_measured_zero():
     assert dump["daily_budget_usd"] is None
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "S2-R1/R3 UNLANDED (F-33, A7-04): `policy_firewall.set_run_channel_sends` has NO producer "
-        "in app/ or celery_app/ — only tests call it. So the snapshot a tool sees is None, "
-        "`_channel_counts` answers (None, None), and EVERY GitHub mutation refuses `cap_unknown` in "
-        "production (the runner is reachable only from the tests' own publish). Settlement: publish "
-        "`channel_service.channel_sends_snapshot` in the run scope the worker opens, then "
-        "`pytest tests/unit/test_a3_toolgate.py tests/unit/test_v25_github_tools.py -q`."
-    ),
-)
+# LANDED wave B1: S2-R1/R3 (F-33, A7-04) — the worker publishes the run's measured per-channel
+# counts on `RUN_CHANNEL_SENDS` before the run and clears them in `finally`, and the registry's tool
+# path reads that snapshot into `decide()`. This test was the class's xfail; it is green now and
+# pins the producer, the reader and the value round-trip (a context that publishes nothing still
+# answers "unknown", which is the fail-closed direction).
 def test_a_run_publishes_the_channel_send_snapshot():
-    call_sites = [
-        f"{path.relative_to(BACKEND)}:{number}"
-        for path in list((BACKEND / "app").rglob("*.py")) + list((BACKEND / "celery_app").rglob("*.py"))
-        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1)
-        if "set_run_channel_sends(" in line and not line.lstrip().startswith("def ")
-    ]
-    assert call_sites, (
-        "no product module publishes the run's channel-send snapshot: the measured count that "
-        "A7-04's write gate reads is always unknown"
+    import inspect as _inspect
+
+    from app.agents import policy_firewall
+    from app.agents.policy_firewall import reset_run_channel_sends, set_run_channel_sends
+
+    snapshot = {"github": {"today": 3, "hour": 1}}
+    set_run_channel_sends(snapshot)
+    try:
+        assert policy_firewall.current_run_channel_sends() == snapshot, (
+            "the published snapshot does not read back — decide()'s cap leg would see None"
+        )
+    finally:
+        reset_run_channel_sends()
+    assert policy_firewall.current_run_channel_sends() is None, (
+        "the snapshot outlived its run: a later run would inherit another run's counts"
+    )
+
+    # The producer is the worker's run scope (read as source: the task is a Celery object, not a
+    # plain function). It publishes before the agent runs and clears in the SAME `finally` that
+    # stops the heartbeat, so one run's counts never reach the next run.
+    worker_src = (BACKEND / "celery_app" / "tasks" / "agent_tasks.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert 'set_run_channel_sends(context.get("channel_sends"))' in worker_src, (
+        "the worker no longer publishes the run's channel-send snapshot — every configured cap "
+        "leg reads `cap_unknown` again (A7-04's write gate refuses in production)"
+    )
+    assert "reset_run_channel_sends()" in worker_src, (
+        "the worker publishes the snapshot but never clears it: the counts leak into the next run "
+        "in the same worker process"
+    )
+
+    from app.agents import tool_registry
+
+    execute_src = _inspect.getsource(tool_registry._execute)
+    assert "current_run_channel_sends()" in execute_src, (
+        "the tool path no longer reads the published snapshot: the producer above would be dead "
+        "code again"
     )
 
 

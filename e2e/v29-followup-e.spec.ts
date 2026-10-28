@@ -236,18 +236,33 @@ test.describe("V29 follow-up E — live integrated surfaces", () => {
       }
     }
 
+    // The card renders the answer it was GIVEN — one link per item, up to the documented limit.
+    // A zero-item answer is the card's own HONEST EMPTY (the branch the visibility wait above
+    // already accepts), never a failure: HN and TechCrunch can both be cold, cached-empty or
+    // named-failed on a runner, and this spec may not demand a feed the page never promised to
+    // conjure. What is demanded unconditionally is the shape: links for items, "No headlines
+    // right now." for none — and never both, and never a blank card.
     const links = widget.locator("a");
-    const linkCount = await links.count();
-    expect(linkCount).toBeGreaterThan(0);
-    expect(linkCount).toBeLessThanOrEqual(6);
-    for (let index = 0; index < linkCount; index += 1) {
-      const link = links.nth(index);
-      expect((await link.getAttribute("href")) ?? "").toMatch(/^https?:\/\//);
-      await expect(link).toHaveAttribute("target", "_blank");
-      const rel = ((await link.getAttribute("rel")) ?? "").toLowerCase();
-      expect(rel).toContain("noreferrer");
-      expect(rel).toContain("noopener");
-      expect(((await link.innerText()) ?? "").trim().length).toBeGreaterThan(0);
+    if (body.items.length > 0) {
+      const linkCount = await links.count();
+      expect(
+        linkCount,
+        `the payload carried ${body.items.length} items and the card rendered none`,
+      ).toBeGreaterThan(0);
+      expect(linkCount).toBeLessThanOrEqual(6);
+      for (let index = 0; index < linkCount; index += 1) {
+        const link = links.nth(index);
+        expect((await link.getAttribute("href")) ?? "").toMatch(/^https?:\/\//);
+        await expect(link).toHaveAttribute("target", "_blank");
+        const rel = ((await link.getAttribute("rel")) ?? "").toLowerCase();
+        expect(rel).toContain("noreferrer");
+        expect(rel).toContain("noopener");
+        expect(((await link.innerText()) ?? "").trim().length).toBeGreaterThan(0);
+      }
+    } else {
+      await expect(widget.getByText(/No headlines right now/)).toBeVisible();
+      await expect(widget.getByRole("alert")).toHaveCount(0);
+      await expect(links).toHaveCount(0);
     }
 
     // Third-party text is labelled as such — the payload's note is on screen, verbatim.
