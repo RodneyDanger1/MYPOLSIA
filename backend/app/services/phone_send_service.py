@@ -8,10 +8,11 @@ THE CONTRACT (frozen in wave-v17/V17-PLAN.md, consumed by `api/v1/phone.py` and 
 WHY THIS MODULE EXISTS
     A send is the one phone operation that cannot be undone, so every layer of this path is ordered
     to refuse EARLY:
-        1. policy  — `settings.sandbox_mode` (the shipped default) refuses before anything else runs:
-                     no validation, no path lookup, no subprocess. A sandboxed deployment must not
-                     even probe the driver, because probing is a side effect on a machine it should
-                     not touch.
+        1. policy  — the operator KILL SWITCH (AC-04: `freeze` denies every side effect,
+                     `throttle` pauses external ones) and then `settings.sandbox_mode` (the
+                     shipped default) refuse before anything else runs: no validation, no path
+                     lookup, no subprocess. A sandboxed or frozen deployment must not even probe
+                     the driver, because probing is a side effect on a machine it should not touch.
         2. input   — `to` and `body` are validated into their canonical shapes (digits-only E.164 or
                      a positive thread id; 1..640 characters with no control characters).
         3. driver  — the script must exist; otherwise the honest answer is E_PHONE_UNAVAILABLE, not
@@ -634,7 +635,17 @@ async def send(
 
     `sandbox`/`timeout` exist for tests and for a future caller that already resolved policy; the
     route passes neither, so the live `settings.sandbox_mode` is the gate.
+
+    AC-04: the operator KILL SWITCH is read first, at call time, through the one shared reader
+    (`policy_firewall.require_external_effects_enabled`).  `freeze` denies every side effect and
+    `throttle` pauses external ones; an SMS is irreversible and customer-facing, so a frozen (or
+    throttled) fleet must not send one.  This holds even when a caller passes `sandbox=False`:
+    the sandbox flag is a deployment switch, never a policy override.
     """
+    from app.agents.policy_firewall import require_external_effects_enabled
+
+    require_external_effects_enabled("phone send")
+
     if settings.sandbox_mode if sandbox is None else sandbox:
         raise PolsiaError(
             E_SANDBOX_BLOCKED,

@@ -173,7 +173,16 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
                      "signals_read", "fx_convert"),
     ),
     "business_planning": AgentCapability(
-        allowed_tools=("Read",), denied_tools=("Bash", "Edit", "Write", "WebFetch", "mcp__*"),
+        # AC-02 (P0) — OLD: ("Read",).  NEW: ("Read(./**)",).
+        # Why the old pin was a defect: a bare `Read` in `--allowedTools` is an UNSPECIFIED
+        # permission rule.  The CLI ran with no cwd (the worker's backend directory, holding
+        # `.env`, `data/secrets.json`, `data/deepseek_api_key.json`), so "Read" meant "read any
+        # path the CLI's own policy would hand over" — the whole-provider credential store
+        # included.  The anchored form binds the grant to the invocation's run workspace
+        # (`claude_cli.planned_run_workspace`); a path outside it is not covered by this rule.
+        # `decide()`'s tool leg still matches the TOOL name (`_tool_match("Read", "Read(./**)")`),
+        # so the firewall's answer for a `Read` tool call is unchanged.
+        allowed_tools=("Read(./**)",), denied_tools=("Bash", "Edit", "Write", "WebFetch", "mcp__*"),
         # V12/W-B: READ added for the macro/pricing registry reads (frozen mapping); external
         # classes stay absent — reads + internal writes only.
         action_classes=frozenset({ActionClass.READ, ActionClass.INTERNAL_WRITE}), channels=(),
@@ -259,7 +268,19 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         channels=("google_ads", "meta_ads"),
     ),
     "code_generation": AgentCapability(
-        allowed_tools=("Read", "Edit", "Write",
+        # AC-02 (P0) — OLD: ("Read", "Edit", "Write", ...git rules).  NEW: the same three file
+        # tools PATH-SCOPED to the invocation's run workspace.  Why the old pin was a defect:
+        # bare `Edit`/`Write` granted an unspecified path surface while the CLI inherited the
+        # backend cwd (the directory holding `.env` and the two credential stores), so the model
+        # could edit a secret store or rotate the DeepSeek key.  The anchored form is the most
+        # restrictive shape the documented permission-rule language offers for a file tool
+        # (`Tool(./**)`); it is UNVERIFIED on this host because the `claude` binary is not
+        # installed (see the AC-02 note in `claude_cli.py`), which is why the cwd itself is also
+        # contained rather than relying on the rule language alone.
+        # The git rules stay (read/branch/commit only; `git push *` / `git remote *` are still
+        # denied): they can now only see a repository under the run workspace, never the product
+        # checkout, so the wall is narrower, not weaker.
+        allowed_tools=("Read(./**)", "Edit(./**)", "Write(./**)",
                        "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
                        "Bash(git branch *)", "Bash(git add *)", "Bash(git commit *)"),
         denied_tools=("Bash(git push *)", "Bash(git remote *)", "Bash(rm *)",
@@ -306,6 +327,33 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # V12/W-B: budget/pricing reasoning reads the macro snapshot + catalog (frozen mapping).
         # V29/L4: display-only currency conversion.
         agent_tools=("macro_snapshot", "pricing_catalog", "fx_convert"),
+    ),
+}
+
+
+#: AC-03 — capabilities for a DIRECT, NON-MODEL caller: the owner-authenticated routes that
+#: perform an external effect themselves instead of dispatching an agent (`POST
+#: /sites/{slug}/deploy` -> a real Render deploy).  Deliberately NOT entries in
+#: `AGENT_CAPABILITIES`: that map is indexed by AGENT TYPE and is rendered into every agent's
+#: prompt, the orchestrator fleet map and the `/ops/capabilities` manifest, so a console slot
+#: there would advertise a non-existent agent.  `decide(..., direct_caller=...)` resolves ONLY
+#: from this closed registry — a caller cannot mint a capability — and every decision leg still
+#: runs (kill switch, action class, channel, sandbox, caps, approval); the row only replaces the
+#: per-agent lookup.  This is the same "slot" pattern `notification_service` documents for owner
+#: mail, kept separate instead of borrowing a model agent's privileges.
+DIRECT_CALLER_CAPABILITIES: dict[str, AgentCapability] = {
+    "owner_render_deploy": AgentCapability(
+        # The owner console may preview (READ) and submit (EXTERNAL_IRREVERSIBLE) a deploy of a
+        # site this product generated.  No CLI tools, no registry tools, one channel: `render`.
+        # The class is IRREVERSIBLE on purpose — `decide()` then requires a single-use operator
+        # approval token for every live deploy, which is the shipped rule for an action a human
+        # cannot undo by retrying the other direction.
+        allowed_tools=(),
+        denied_tools=("*",),
+        tools_available="",
+        action_classes=frozenset({ActionClass.READ, ActionClass.EXTERNAL_IRREVERSIBLE}),
+        channels=("render",),
+        agent_tools=(),
     ),
 }
 
@@ -836,8 +884,14 @@ def decide(
     approval_secret: bytes = b"",
     kill_switch: bool = False,
     sandbox_mode: bool = True,
+    direct_caller: str = "",
 ) -> PolicyDecision:
     """The output-action firewall. EVERY external side effect calls this first.
+
+    `direct_caller` names a non-model caller from `DIRECT_CALLER_CAPABILITIES` (AC-03: the owner
+    console's Render deploy).  It replaces ONLY the per-agent capability lookup — the closed
+    registry means a caller cannot widen its own permissions, and every leg below (kill switch,
+    action class, channel, sandbox, caps, approval) still runs.
 
     Order of checks (first DENY wins; REQUIRE_APPROVAL is sticky and checked after the denies):
       0. the run lost its claim (F-16, `_CANCELLED_POLICY_CODE` / `E_RUN_CANCELLED`) — FIRST, so
@@ -900,9 +954,14 @@ def decide(
     if kill_switch:
         return PolicyDecision(Decision.DENY, "kill switch active", "POLSIA-E118", audit=audit)
 
-    cap = AGENT_CAPABILITIES.get(req.agent_type)
-    if cap is None:
-        return PolicyDecision(Decision.DENY, f"unknown agent '{req.agent_type}'", "POLSIA-E114", audit=audit)
+    if direct_caller:
+        cap = DIRECT_CALLER_CAPABILITIES.get(direct_caller)
+        if cap is None:
+            return PolicyDecision(Decision.DENY, f"unknown direct caller '{direct_caller}'", "POLSIA-E114", audit=audit)
+    else:
+        cap = AGENT_CAPABILITIES.get(req.agent_type)
+        if cap is None:
+            return PolicyDecision(Decision.DENY, f"unknown agent '{req.agent_type}'", "POLSIA-E114", audit=audit)
     if req.action_class not in cap.action_classes:
         return PolicyDecision(
             Decision.DENY,
@@ -1099,6 +1158,39 @@ def kill_grade_from_env() -> str:
     return "run"
 
 
+def require_external_effects_enabled(action: str) -> str:
+    """The operator's kill-switch gate for a DIRECT external effect (AC-04).
+
+    Shipped semantics (`config.kill_switch`; `structured_output`'s KILL_SWITCH remediation):
+    `freeze` denies EVERY side effect (reads may continue), `throttle` pauses the fleet's
+    EXTERNAL effects (reads continue).  Agent dispatch reads the switch in
+    `crew_factory.dispatch_preflight`; the direct owner endpoints (`POST /phone/send`,
+    `POST /sites/{slug}/deploy`) are exactly the "no model in the loop" paths that never pass
+    through dispatch, so they call THIS function before their sandbox check and before any
+    transport work.  `kill_grade_from_env()` is read at CALL time (env before settings), so an
+    operator's stop takes effect without a restart.
+
+    Returns the grade (`"run"`), or raises the named `E_POLICY_DENIED` refusal.  Deliberately a
+    single shared read: two endpoints that each re-implement the switch is how they drifted.
+    """
+    grade = kill_grade_from_env()
+    if grade == "run":
+        return grade
+    if grade == "freeze":
+        detail = "all side effects are denied; reads may continue"
+    else:
+        detail = "external side effects are paused; reads may continue"
+    raise PolsiaError(
+        E_POLICY_DENIED,
+        f"{action} refused: the operator kill switch is {grade!r} — {detail}",
+        how_to_fix=(
+            "set POLSIA_KILL_SWITCH=run (or unset it) when external effects should resume; the "
+            "switch is read at call time, so no restart is needed"
+        ),
+        context={"kill_switch": grade, "action": action},
+    )
+
+
 def enforce(
     req: ActionRequest,
     *,
@@ -1106,6 +1198,7 @@ def enforce(
     approval_secret: bytes = b"",
     sandbox_mode: bool | None = None,
     kill_switch: bool | None = None,
+    direct_caller: str = "",
 ) -> PolicyDecision:
     """`decide()` + the honest failure semantics.
 
@@ -1113,6 +1206,9 @@ def enforce(
     (the caller must then record a file-labelled draft: an operation that did not happen is not
     an error, but it is not a success either). Any other DENY raises the named refusal, because a
     policy denial must never be silently swallowed by an agent loop.
+
+    `direct_caller` is passed through to `decide()` for a non-model caller (AC-03); it selects a
+    row from the closed `DIRECT_CALLER_CAPABILITIES` registry and nothing else.
     """
     from app.config import settings
 
@@ -1123,6 +1219,7 @@ def enforce(
         kill_switch=bool(kill_switch) if kill_switch is not None
         else kill_grade_from_env() == "freeze",
         sandbox_mode=bool(settings.sandbox_mode if sandbox_mode is None else sandbox_mode),
+        direct_caller=direct_caller,
     )
     if decision.decision is Decision.DENY and not decision.sandboxed:
         raise decision.to_polsia_error(agent_type=req.agent_type,
@@ -1157,6 +1254,7 @@ def assert_sandboxed_side_effect_allowed(agent_type: str, action: str, *, decisi
 __all__ = [
     "AGENT_CAPABILITIES",
     "APPROVAL_THRESHOLDS",
+    "DIRECT_CALLER_CAPABILITIES",
     "ActionClass",
     "ActionRequest",
     "AgentCapability",
@@ -1186,6 +1284,7 @@ __all__ = [
     "flag_injection_heuristics",
     "issue_approval",
     "kill_grade_from_env",
+    "require_external_effects_enabled",
     "reset_run_approval",
     "reset_run_channel_sends",
     "reset_run_taint",

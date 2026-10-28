@@ -39,6 +39,15 @@ Failure mapping, named:
   * `E_VALIDATION` — the site slug does not exist (the deploy REQUEST names bad input; the deploy
                   STATE read in `deploy_state` names a missing resource with `E_NOT_FOUND`).
 
+A LIVE DEPLOY GOES THROUGH THE SHIPPED POLICY GATE (AC-03 / AC-04)
+------------------------------------------------------------------
+Live mode is an EXTERNAL_IRREVERSIBLE action, so it runs the same `policy_firewall` decision path
+an agent's external effect runs — the owner-console slot `owner_render_deploy`:
+kill switch first (`freeze`/`throttle` -> named `E_POLICY_DENIED`), then the capability/channel
+check, then `SANDBOX_MODE` (a labelled `E_SANDBOX_BLOCKED` refusal; nothing is sent), then the
+render day cap against a MEASURED count, then a single-use approval token bound to
+`deploy_payload(slug, service_id)`.  There is no caller-controlled switch that skips any of it.
+
 WHERE THE STATE LIVES
 ---------------------
 `meta.json` beside the generated site, under `last_deploy`:
@@ -52,17 +61,35 @@ The file sits inside the PUBLIC site directory: only non-secret deploy facts are
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_UPSTREAM, E_VALIDATION, PolsiaError
-from app.services import site_service
+from app.core.errors import (
+    E_CONFIG,
+    E_DB,
+    E_NOT_FOUND,
+    E_POLICY_DENIED,
+    E_UPSTREAM,
+    E_VALIDATION,
+    ERROR_HINTS,
+    PolsiaError,
+)
+from app.core.timeutil import company_tz, day_window, now_utc
+from app.models.report import ActivityLog
+from app.services import channel_service, site_service
+from app.services.query_helpers import fetch_scalar
 from app.services.secret_store import mask_secret
+
+logger = logging.getLogger(__name__)
 
 #: Render's REST base.  A module attribute (not an inlined literal) so a test can point the adapter
 #: at a scratch base; production never changes it.
@@ -71,6 +98,14 @@ RENDER_API_BASE = "https://api.render.com/v1"
 #: The owner's credential + the Render service a generated site deploys to.
 RENDER_API_KEY_ENV = "RENDER_API_KEY"
 RENDER_SERVICE_ID_ENV = "RENDER_SERVICE_ID"
+
+#: AC-03/AC-04 — the policy slot and channel this adapter is gated under.  The slot is a
+#: `policy_firewall.DIRECT_CALLER_CAPABILITIES` row (owner console, not a model agent), so
+#: `decide()` applies the kill switch, sandbox, render day cap and the single-use approval token
+#: to a LIVE deploy exactly as it does for an agent's external effects.
+OWNER_DEPLOY_SLOT = "owner_render_deploy"
+RENDER_CHANNEL = "render"
+DEPLOY_ACTION = "deploy_site"
 
 #: ONE bounded attempt.  A deploy submit is a small POST; 20 s is generous for Render's API and
 #: short enough that a stuck request cannot wedge the API worker.
@@ -236,6 +271,164 @@ def _store(slug: str, record: dict[str, Any], root: Path | None) -> None:
     site_service.record_deploy(slug, record, root=root)
 
 
+# ── the policy gate (AC-03 / AC-04) ────────────────────────────────────────────────────────
+# WHAT WAS WRONG: `deploy_site` posted to api.render.com with NO sandbox check, NO kill-switch
+# read, NO rate cap and NO approval — a live deploy was reachable while SANDBOX_MODE=true, which
+# CLAUDE.md:52 documents as the control that prevents real Render calls ("only API-key
+# authenticated"), and the render channel's configured 3/day cap was never consulted.
+#
+# WHAT REPLACES IT: the SHIPPED decision path.  `policy_firewall.enforce` (the function
+# `side_effects.request_side_effect` wraps for agent runs) evaluates the owner-console slot
+# `owner_render_deploy`: kill switch -> capability/class/channel -> sandbox -> render day cap ->
+# approval token.  A live deploy is EXTERNAL_IRREVERSIBLE, so it always needs a single-use token
+# bound to the exact (slug, service id) payload; the token is minted for
+# `fingerprint("external_irreversible", "render", deploy_payload(slug, service_id))`.
+#
+# The CAP COUNT is MEASURED, not assumed: every successful live deploy writes one
+# `channel_send:render` row through `channel_service.record_channel_send` (the shipped producer
+# for a channel with no table of its own), and `render_deploys_today` counts those rows in the
+# company-local day.  Before the first deploy that is a measured 0, never an invented one.  A
+# caller that cannot supply the session is refused by name — a live deploy is never sent on an
+# unknown cap.
+#
+# RESIDUAL, named: a successful deploy whose ledger write fails is reported as the deploy it is
+# (never converted into a failure — the side effect already happened) and the failure is LOGGED;
+# the render cap then under-counts that one deploy.  `channel_service` itself still reports
+# `render` as "unknown" until its `_ACTIVITY_RECORDED_CHANNELS` tuple absorbs the channel (a
+# REQUEST is filed with its owner in the lane report — the file is outside this seat's territory).
+
+
+def deploy_payload(slug: str, service_id: str) -> dict[str, Any]:
+    """The exact payload the operator approves: what the approval fingerprint is bound to.
+
+    Deliberately minimal and stable: the action, the site slug and the Render service id.  The
+    API key is NOT part of it (a fingerprint is stored in audit rows; a credential must never be),
+    and neither is `dry_run` (only the live action is ever gated).
+    """
+    return {"action": DEPLOY_ACTION, "slug": slug, "service_id": service_id}
+
+
+async def render_deploys_today(db: AsyncSession, *, now: datetime | None = None) -> int:
+    """MEASURED live Render deploys in the company-local day containing `now`.
+
+    Counts the `channel_send:render` ledger rows `_record_render_deploy` writes.  A COUNT that
+    comes back empty is the named `E_DB` — never collapsed into a fabricated zero.
+    """
+    anchor = now or now_utc()
+    start, end = day_window(db, day=anchor.astimezone(company_tz()).date())
+    stmt = (
+        select(func.count())
+        .select_from(ActivityLog)
+        .where(
+            ActivityLog.action == f"{channel_service.CHANNEL_SEND_ACTION_PREFIX}{RENDER_CHANNEL}",
+            ActivityLog.created_at >= start,
+            ActivityLog.created_at < end,
+        )
+    )
+    value = await fetch_scalar(db, stmt, what="render deploys today")
+    if value is None:
+        raise PolsiaError(
+            E_DB,
+            "count for render deploys today returned no value",
+            how_to_fix=ERROR_HINTS[E_DB],
+            context={"query": "render deploys today"},
+        )
+    return int(value)
+
+
+def _authorise_live_deploy(
+    *, slug: str, service_id: str, sends_today: int, approval_token: str
+) -> dict[str, Any]:
+    """Run the shipped decision path for the live deploy; refuse by name or return the payload.
+
+    Returns the approved payload on ALLOW.  The sandbox draft and the missing/invalid approval
+    token both come back as DECISIONS (not exceptions from `enforce`), and both are raised here as
+    the named refusal: a live deploy is a single network POST, so there is no useful "draft" to
+    persist — the honest answer is the refusal that names the control that stopped it.
+    """
+    from app.agents.policy_firewall import (
+        ActionClass,
+        ActionRequest,
+        Decision,
+        configured_approval_secret,
+        enforce,
+    )
+
+    payload = deploy_payload(slug, service_id)
+    decision = enforce(
+        ActionRequest(
+            agent_type=OWNER_DEPLOY_SLOT,
+            action_class=ActionClass.EXTERNAL_IRREVERSIBLE,
+            channel=RENDER_CHANNEL,
+            value_usd=0.0,
+            payload=payload,
+            approval_token=approval_token,
+            sends_today=sends_today,
+            # RateCaps defines no render HOURLY cap; None keeps "no hour cap configured" distinct
+            # from a measured zero (the firewall only consults it when a cap exists).
+            sends_this_hour=None,
+        ),
+        approval_secret=configured_approval_secret(),
+        direct_caller=OWNER_DEPLOY_SLOT,
+    )
+    if decision.decision is Decision.ALLOW:
+        return payload
+
+    code = decision.e_code or E_POLICY_DENIED
+    fix = decision.how_to_fix or ERROR_HINTS.get(code, "")
+    if decision.decision is Decision.REQUIRE_APPROVAL:
+        fix = (
+            f"mint a single-use approval token for fingerprint "
+            f"{decision.audit.get('fingerprint', '')} (POST /api/v1/approvals with "
+            f"{{\"action_fingerprint\": \"<the fingerprint above>\"}}, which needs APPROVAL_SECRET "
+            "configured) and repeat this deploy with {\"approval_token\": \"<token>\"}; the token "
+            "is bound to this site's slug and Render service id, so a token minted for another "
+            "site does not verify"
+        )
+    raise PolsiaError(
+        code,
+        f"{DEPLOY_ACTION}: the live Render deploy of a site is refused by policy: {decision.reason}",
+        how_to_fix=fix,
+        context={
+            "decision": decision.decision.value,
+            "policy_code": decision.code,
+            **decision.audit,
+        },
+    )
+
+
+async def _record_render_deploy(
+    db: AsyncSession, *, slug: str, deploy_id: str, service_id: str, at: str
+) -> bool:
+    """Record ONE real deploy in the channel ledger the render cap counts.
+
+    Called only AFTER Render accepted the deploy (a 2xx carrying a deploy id) and AFTER the
+    `meta.json` record was written, so the ledger never counts an attempt that did not happen.
+    A ledger write failure must not rewrite the outcome of a real deploy: it is logged (with the
+    deploy id, never the credential) and the cap under-counts that one deploy — the residual is
+    named in the section comment above rather than hidden.
+    """
+    try:
+        await channel_service.record_channel_send(
+            db,
+            RENDER_CHANNEL,
+            summary=f"render deploy {deploy_id} submitted for site {slug}",
+            detail={"site": slug, "service_id": service_id, "deploy_id": deploy_id, "at": at},
+            agent_type=OWNER_DEPLOY_SLOT,
+        )
+    except (PolsiaError, SQLAlchemyError) as exc:
+        logger.warning(
+            "render deploy %s for site %s was accepted but the channel ledger could not record "
+            "it (%s: %s); the render day cap will under-count this deploy",
+            deploy_id,
+            slug,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    return True
+
+
 # ── reads ───────────────────────────────────────────────────────────────────────────────────
 def deploy_state(slug: str, *, root: Path | None = None) -> dict[str, Any]:
     """`{slug, configured, missing, service_id, last_deploy}` — a pure local read, no Render call.
@@ -265,13 +458,27 @@ async def deploy_site(
     transport: httpx.AsyncBaseTransport | None = None,
     at: str | None = None,
     base_url: str = RENDER_API_BASE,
+    db: AsyncSession | None = None,
+    approval_token: str = "",
 ) -> dict[str, Any]:
     """Submit (or preview) a deploy of `slug` to Render.
 
     `dry_run` defaults TRUE and changes nothing: no connection, no `meta.json` write.  Live mode
     makes ONE bounded call and claims success only for a 2xx carrying a deploy id.  `api_key` /
     `service_id` / `transport` / `at` / `base_url` are test seams; production passes none of them
-    except `root` for the static mount's directory.
+    except `root` for the static mount's directory and `db` for the cap's measured count.
+
+    LIVE MODE IS POLICY-GATED (AC-03/AC-04), in this order and before any network work:
+      1. the operator kill switch (`require_external_effects_enabled`) — `freeze`/`throttle` is
+         the named `E_POLICY_DENIED`, nothing is sent;
+      2. the render day cap from a MEASURED count (`render_deploys_today`); `db` is required —
+         no session means no measured count, which is the named `E_CONFIG` rather than a deploy
+         on an unverifiable cap;
+      3. `policy_firewall.enforce` on the owner-console slot: sandbox (`E_SANDBOX_BLOCKED`, the
+         labelled refusal, nothing sent), the cap, and the single-use approval token an
+         EXTERNAL_IRREVERSIBLE action always needs (`E_POLICY_DENIED` with the fingerprint and
+         how to mint the token).
+    A successful live deploy also writes one `channel_send:render` ledger row so the cap counts it.
     """
     _require_site(slug, root)
     resolved_key, resolved_service, _missing = credentials()
@@ -295,6 +502,33 @@ async def deploy_site(
             ),
             "plan": plan,
         }
+
+    # AC-04 — the kill switch, read at CALL time before any transport work (a dry run above is a
+    # read-only preview and is deliberately not blocked: freeze still allows reads).
+    from app.agents.policy_firewall import require_external_effects_enabled
+
+    require_external_effects_enabled(f"{DEPLOY_ACTION} of site {slug!r} (live Render deploy)")
+
+    # AC-03 — the cap count must be measured; a caller without the session cannot measure it.
+    if db is None:
+        raise PolsiaError(
+            E_CONFIG,
+            f"a LIVE Render deploy of {slug!r} needs the database session this adapter counts "
+            f"today's deploys through, and none was supplied — the {RENDER_CHANNEL} day cap "
+            "would be unknown",
+            how_to_fix=(
+                "call deploy_site(..., db=<AsyncSession>); the HTTP route passes its request "
+                "session. A live deploy is never sent on a cap that cannot be measured"
+            ),
+            context={"slug": slug, "channel": RENDER_CHANNEL},
+        )
+    sends_today = await render_deploys_today(db)
+    _authorise_live_deploy(
+        slug=slug,
+        service_id=service,
+        sends_today=sends_today,
+        approval_token=approval_token,
+    )
 
     stamp = at or _now()
     headers = {
@@ -435,6 +669,15 @@ async def deploy_site(
         "error": None,
     }
     _store(slug, record, root)
+    # AC-03 — count the REAL deploy the cap is about.  After the site record, never before: a
+    # ledger row must not exist for an attempt Render did not accept.
+    await _record_render_deploy(
+        db,
+        slug=slug,
+        deploy_id=deploy_id.strip(),
+        service_id=service,
+        at=stamp,
+    )
     return {
         "slug": slug,
         "dry_run": False,
@@ -480,12 +723,17 @@ async def _read_service_url(
 
 __all__ = [
     "CLEAR_CACHE",
+    "DEPLOY_ACTION",
     "DEPLOY_TIMEOUT_SECONDS",
+    "OWNER_DEPLOY_SLOT",
     "RENDER_API_BASE",
     "RENDER_API_KEY_ENV",
+    "RENDER_CHANNEL",
     "RENDER_SERVICE_ID_ENV",
     "credentials",
+    "deploy_payload",
     "deploy_site",
     "deploy_state",
     "planned_call",
+    "render_deploys_today",
 ]

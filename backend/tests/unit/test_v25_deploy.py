@@ -66,6 +66,39 @@ def configured(monkeypatch):
     return API_KEY
 
 
+# ── AC-03: LIVE mode now runs the SHIPPED policy gate ───────────────────────────────────────
+# OLD (pre-AC-03): a live deploy posted to Render with no sandbox check, no render-day cap and no
+# approval, so these live-mode transport tests called `deploy_site(..., dry_run=False)` under the
+# shipped default `SANDBOX_MODE=true` and expected a real submit.  That is exactly the defect
+# BUGS.json AC-03 records.  NEW: the same transport-mapping tests run against the ALLOWING policy
+# state — sandbox OFF, the kill switch at `run`, a real measured-render-count session (0 deploys
+# today) and a valid single-use token for this exact (slug, Render service id) payload.  Every
+# assertion about Render's response mapping is untouched; only the policy precondition is explicit.
+APPROVAL_SECRET = b"w1-ac03-test-approval-secret-not-a-real-one"
+
+
+def _approval_token(slug: str = "landing-page") -> str:
+    from app.agents import policy_firewall
+
+    fingerprint = policy_firewall.fingerprint(
+        "external_irreversible",
+        deploy_service.RENDER_CHANNEL,
+        deploy_service.deploy_payload(slug, SERVICE_ID),
+    )
+    return policy_firewall.issue_approval(APPROVAL_SECRET, action_fingerprint=fingerprint).token
+
+
+@pytest.fixture
+def live(monkeypatch, async_db_session, mock_redis):
+    """The ALLOWING policy state for a live deploy (see the OLD -> NEW note above)."""
+    from app.config import settings as app_settings
+
+    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.setattr(app_settings, "sandbox_mode", False)
+    monkeypatch.setattr(app_settings, "approval_secret", APPROVAL_SECRET.decode())
+    return {"db": async_db_session, "approval_token": _approval_token()}
+
+
 @pytest.fixture
 def unconfigured(monkeypatch):
     monkeypatch.delenv(deploy_service.RENDER_API_KEY_ENV, raising=False)
@@ -188,7 +221,9 @@ async def test_a_key_without_a_service_id_is_the_named_config_refusal(
 
 
 @pytest.mark.asyncio
-async def test_the_secret_never_appears_in_a_refusal(configured, monkeypatch, tmp_path: Path) -> None:
+async def test_the_secret_never_appears_in_a_refusal(
+    configured, live, monkeypatch, tmp_path: Path
+) -> None:
     def boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused for test", request=request)
 
@@ -197,7 +232,7 @@ async def test_the_secret_never_appears_in_a_refusal(configured, monkeypatch, tm
     _write_site(tmp_path)
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_UPSTREAM
     assert API_KEY not in excinfo.value.message
@@ -220,7 +255,7 @@ async def test_an_unknown_slug_on_a_deploy_request_is_the_named_validation_refus
 # ── 4. live deploy through the LABELLED MOCKED transport ────────────────────────────────────
 @pytest.mark.asyncio
 async def test_a_live_deploy_persists_the_render_deploy_id_status_url_and_stamp(
-    configured, tmp_path: Path
+    configured, live, tmp_path: Path
 ) -> None:
     """MOCKED TRANSPORT — a fake Render, not a live network call."""
     recorder = Recorder()
@@ -229,7 +264,7 @@ async def test_a_live_deploy_persists_the_render_deploy_id_status_url_and_stamp(
 
     result = await deploy_service.deploy_site(
         "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport,
-        at="2026-10-19T15:00:00+00:00",
+        at="2026-10-19T15:00:00+00:00", **live,
     )
 
     assert result["dry_run"] is False
@@ -262,14 +297,14 @@ async def test_a_live_deploy_persists_the_render_deploy_id_status_url_and_stamp(
 
 
 @pytest.mark.asyncio
-async def test_a_2xx_without_a_deploy_id_is_never_success(configured, tmp_path: Path) -> None:
+async def test_a_2xx_without_a_deploy_id_is_never_success(configured, live, tmp_path: Path) -> None:
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(201, json={"status": "created"})
     site_dir = _write_site(tmp_path)
 
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_UPSTREAM
     assert "deploy id" in excinfo.value.message
@@ -282,7 +317,7 @@ async def test_a_2xx_without_a_deploy_id_is_never_success(configured, tmp_path: 
 
 @pytest.mark.asyncio
 async def test_an_upstream_5xx_is_retold_as_the_named_upstream_refusal(
-    configured, tmp_path: Path
+    configured, live, tmp_path: Path
 ) -> None:
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(503, text="render is down")
@@ -290,7 +325,7 @@ async def test_an_upstream_5xx_is_retold_as_the_named_upstream_refusal(
 
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_UPSTREAM
     assert "503" in excinfo.value.message
@@ -301,7 +336,7 @@ async def test_an_upstream_5xx_is_retold_as_the_named_upstream_refusal(
 
 @pytest.mark.asyncio
 async def test_a_timeout_is_the_named_upstream_refusal_and_is_recorded_as_unknown_outcome(
-    configured, tmp_path: Path
+    configured, live, tmp_path: Path
 ) -> None:
     def slow(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out", request=request)
@@ -312,7 +347,7 @@ async def test_a_timeout_is_the_named_upstream_refusal_and_is_recorded_as_unknow
 
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_UPSTREAM
     assert "timed out" in excinfo.value.message.lower()
@@ -323,33 +358,39 @@ async def test_a_timeout_is_the_named_upstream_refusal_and_is_recorded_as_unknow
 
 
 @pytest.mark.asyncio
-async def test_a_rejected_credential_is_the_named_config_refusal(configured, tmp_path: Path) -> None:
+async def test_a_rejected_credential_is_the_named_config_refusal(
+    configured, live, tmp_path: Path
+) -> None:
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(401, json={"message": "invalid token"})
     _write_site(tmp_path)
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_CONFIG
     assert deploy_service.RENDER_API_KEY_ENV in excinfo.value.message
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_service_id_is_the_named_config_refusal(configured, tmp_path: Path) -> None:
+async def test_an_unknown_service_id_is_the_named_config_refusal(
+    configured, live, tmp_path: Path
+) -> None:
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(404, json={"message": "service not found"})
     _write_site(tmp_path)
     with pytest.raises(PolsiaError) as excinfo:
         await deploy_service.deploy_site(
-            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+            "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
     assert excinfo.value.code == E_CONFIG
     assert deploy_service.RENDER_SERVICE_ID_ENV in excinfo.value.message
 
 
 @pytest.mark.asyncio
-async def test_a_failed_service_url_read_does_not_invent_a_url(configured, tmp_path: Path) -> None:
+async def test_a_failed_service_url_read_does_not_invent_a_url(
+    configured, live, tmp_path: Path
+) -> None:
     """The deploy id is the proof; a URL that could not be read is `null`, never guessed."""
 
     def responder(request: httpx.Request) -> httpx.Response:
@@ -361,7 +402,7 @@ async def test_a_failed_service_url_read_does_not_invent_a_url(configured, tmp_p
     recorder.responder = responder
     _write_site(tmp_path)
     result = await deploy_service.deploy_site(
-        "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport
+        "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
     )
     assert result["deploy_id"] == "dep-abc123"
     assert result["url"] is None

@@ -31,6 +31,7 @@ import atexit
 import contextlib
 import os
 import random
+import re
 import shlex
 import signal
 import subprocess
@@ -38,15 +39,19 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.config import settings
 from app.core.errors import (
     E_CLI_JSON,
     E_CLI_MISSING,
     E_CLI_TIMEOUT,
+    E_POLICY_DENIED,
     E_PROMPT_TOO_LARGE,
+    E_STORAGE,
     ERROR_HINTS,
     PolsiaError,
 )
@@ -78,11 +83,236 @@ def _cleanup_spill_tmp_files() -> None:
 
 SAFE_ENV_PASSTHROUGH = (
     "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
-    "LANG", "LC_ALL", "SystemRoot", "COMSPEC", "CLAUDE_CONFIG_DIR",
+    "LANG", "LC_ALL", "SystemRoot", "COMSPEC", "PATHEXT", "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_PROMPT_CACHE_TTL",
 )
 
 SPILL_PLACEHOLDER = "@@POLSIA_SYSTEM_PROMPT_FILE@@"
+
+
+# ── run-workspace + child-environment containment (AC-02) ───────────────────────────────────
+# WHAT WAS WRONG (BUGS.json AC-02, P0): `build_invocation` set no `cwd`, so `subprocess.Popen`
+# inherited the worker's working directory — the BACKEND directory, which holds `.env`,
+# `data/secrets.json` and `data/deepseek_api_key.json` — and the allowlist granted bare
+# `Read`/`Edit`/`Write` (no path specifier).  On the documented no-DeepSeek-key fallback that made
+# every provider key the model could name reachable and writable.
+#
+# WHAT THIS SECTION CHANGES, and what it can PROVE:
+#   1. every spawned CLI process gets a NON-None cwd: a per-invocation directory under a root
+#      that is NOT inside the backend's credential tree.  The directory is created at spawn time
+#      (`ensure_run_workspace`) and a root it cannot create/verify is a NAMED `E_STORAGE` /
+#      `E_POLICY_DENIED` refusal — never a silent fallback to the inherited cwd;
+#   2. the child environment is built from the `SAFE_ENV_PASSTHROUGH` whitelist only, and an
+#      override that names a credential-bearing variable is refused BY NAME (a caller cannot
+#      quietly hand the CLI `DEEPSEEK_API_KEY`/`ANTHROPIC_API_KEY`/`SENDGRID_API_KEY`);
+#   3. the file-tool ALLOW rules are path-scoped (`Read(./**)` etc., policy_firewall.py) so the
+#      documented permission-rule language cannot mean "any path on this machine".
+#
+# THE UNVERIFIED LEG, named rather than implied: the `claude` binary is NOT installed on this
+# host, so the CLI's own resolution of `Read(./**)` against its cwd cannot be executed here.
+# Everything this module can assert locally (cwd, env, argv, secret-store placement) IS asserted
+# in tests/unit/test_w1_cli_containment.py.  The absolute-path residual — a model typing
+# `Read(C:\...\backend\.env)` — remains the CLI's own file-access policy; the cwd is the boundary
+# this process can enforce, and it no longer starts inside the secrets.
+
+#: Operator override for the run-workspace ROOT.  A relative value is anchored at the backend
+#: directory (the `deepseek_key_file` anchoring rule), never at the process cwd.
+CLI_WORKSPACE_ROOT_ENV = "POLSIA_CLI_WORKSPACE_ROOT"
+
+#: Layout under the root: `<root>/runs/<name>` — the same `runs/` shape tool_registry uses for
+#: workspace-bound registry tools, so an operator has one place to look.
+CLI_RUNS_SUBDIR = "runs"
+CLI_RUN_PREFIX = "cli"
+_RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+#: Environment variable NAMES that carry a credential.  The whitelist above already keeps them
+#: out of the inherited environment; this list closes the explicit-override hole (`env_overrides`
+#: / `extra_env`), because "no secret in the child" must not depend on the caller remembering it.
+_CREDENTIAL_ENV_MARKERS = (
+    "API_KEY", "APIKEY", "API-KEY", "ACCESS_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD",
+    "PRIVATE_KEY", "CREDENTIAL",
+)
+
+
+def backend_root() -> Path:
+    """The backend directory (`app/agents/claude_cli.py` -> `backend/`), never the process cwd."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _absolute(raw: str | Path) -> Path:
+    """`raw` as an absolute path: relative values are anchored at the BACKEND, not the cwd."""
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = backend_root() / path
+    try:
+        return path.resolve()
+    except (OSError, ValueError):  # a path the OS cannot resolve is still a path to refuse on
+        return path
+
+
+def secret_store_paths() -> tuple[Path, ...]:
+    """Every local credential store this process knows about, resolved defensively at call time.
+
+    The two stores are the ones `services/secret_store.py` really writes (`POLSIA_SECRETS_FILE` /
+    `DEEPSEEK_KEY_FILE`, else the repo-anchored defaults) plus the backend `.env`, which
+    docker-compose exports into the container and which the README documents as the place
+    deployment credentials live.  This is a *containment* list, not a reader: nothing here logs,
+    opens or returns a value.
+    """
+    candidates: list[str] = [str(backend_root() / ".env")]
+    for env_name, setting_name, default in (
+        ("DEEPSEEK_KEY_FILE", "deepseek_key_file", "data/deepseek_api_key.json"),
+        ("POLSIA_SECRETS_FILE", "secrets_file", "data/secrets.json"),
+    ):
+        raw = os.environ.get(env_name) or getattr(settings, setting_name, "") or default
+        candidates.append(str(raw))
+    resolved = [str(_absolute(raw)) for raw in candidates]
+    return tuple(Path(item) for item in dict.fromkeys(resolved))
+
+
+def cli_workspace_root() -> Path:
+    """The root a CLI run directory may live under: `POLSIA_CLI_WORKSPACE_ROOT`, else the OS temp."""
+    raw = (os.getenv(CLI_WORKSPACE_ROOT_ENV) or "").strip()
+    return _absolute(raw) if raw else _absolute(Path(tempfile.gettempdir()) / "polsia-cli-workspace")
+
+
+def _new_run_name() -> str:
+    return f"{CLI_RUN_PREFIX}-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
+def planned_run_workspace(
+    *, root: str | Path | None = None, run_id: str | None = None
+) -> Path:
+    """The path the child WILL run in (no filesystem side effect).
+
+    The caller can pin `root` (tests) and `run_id` (a caller that already owns a workspace); the
+    name is validated so a run id can never traverse out of `runs/`.
+    """
+    base = _absolute(root) if root is not None else cli_workspace_root()
+    name = run_id or _new_run_name()
+    if not _RUN_NAME_RE.fullmatch(name):
+        raise PolsiaError(
+            E_STORAGE,
+            f"refusing a CLI run workspace with the invalid name {name!r}",
+            how_to_fix="pass a run id of 1-64 letters, digits, '.', '_' or '-' (no separators)",
+            context={"run_id": name},
+        )
+    return base / CLI_RUNS_SUBDIR / name
+
+
+def workspace_refusal(directory: str | Path) -> PolsiaError | None:
+    """The named refusal for an unsafe run cwd, or None when the directory is acceptable.
+
+    Unsafe is BOTH directions:
+      * the cwd CONTAINS a credential store (`./secrets.json` would name a real secret), and
+      * the cwd is INSIDE a directory that directly holds one — `backend/` holds `.env`,
+        `backend/data/` holds both stores — because `../` traversal from a subdirectory would
+        reach it, and "the CLI inherits the backend cwd" is exactly the AC-02 defect.
+    The shipped default (the OS temp dir) satisfies both; an operator override that does not is
+    refused by name with the fix, never silently accepted.
+    """
+    resolved = _absolute(directory)
+    for secret in secret_store_paths():
+        secret_dir = secret.parent
+        try:
+            contains = secret == resolved or secret.is_relative_to(resolved)
+            inside = resolved == secret_dir or resolved.is_relative_to(secret_dir)
+        except (OSError, ValueError):  # pragma: no cover - cross-drive comparison raises ValueError
+            continue
+        if contains:
+            return PolsiaError(
+                E_POLICY_DENIED,
+                f"refusing to run the CLI with cwd {str(resolved)!r}: it contains (or is) the "
+                f"credential store {str(secret)!r}, so a bare relative read could open a secret",
+                how_to_fix=(
+                    f"set {CLI_WORKSPACE_ROOT_ENV} to a directory this process owns and that holds "
+                    "no credential store (the default is the system temp dir), then retry"
+                ),
+                context={"cwd": str(resolved), "credential_store": str(secret)},
+            )
+        if inside:
+            return PolsiaError(
+                E_POLICY_DENIED,
+                f"refusing to run the CLI with cwd {str(resolved)!r}: it is inside "
+                f"{str(secret_dir)!r}, the directory that holds the credential store "
+                f"{str(secret)!r}, so '../' traversal could reach a secret",
+                how_to_fix=(
+                    f"set {CLI_WORKSPACE_ROOT_ENV} to a directory outside the backend's credential "
+                    "tree (the default is the system temp dir), then retry"
+                ),
+                context={"cwd": str(resolved), "credential_directory": str(secret_dir)},
+            )
+    return None
+
+
+def ensure_run_workspace(directory: str | Path | None = None) -> Path:
+    """Create (0700) and return the run cwd the child will use — never None, never unsafe.
+
+    A None argument means "this invocation carries no workspace": a fresh per-run directory is
+    chosen.  Creation or verification failure is a NAMED refusal — falling back to the inherited
+    cwd is exactly the defect this function exists to prevent.
+    """
+    candidate = planned_run_workspace() if directory is None else _absolute(directory)
+    refusal = workspace_refusal(candidate)
+    if refusal is not None:
+        raise refusal
+    try:
+        candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"the CLI run workspace {str(candidate)!r} could not be created "
+            f"({type(exc).__name__}: {exc})",
+            how_to_fix=(
+                f"set {CLI_WORKSPACE_ROOT_ENV} to a writable directory outside the backend's "
+                "credential tree and retry; the CLI is not run without its own workspace"
+            ),
+            context={"cwd": str(candidate)},
+        ) from exc
+    if not candidate.is_dir():  # pragma: no cover - mkdir("a/file/..") cannot land here
+        raise PolsiaError(
+            E_STORAGE,
+            f"the CLI run workspace {str(candidate)!r} is not a directory",
+            how_to_fix=f"point {CLI_WORKSPACE_ROOT_ENV} at a directory",
+            context={"cwd": str(candidate)},
+        )
+    return candidate
+
+
+def _credential_shaped(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in _CREDENTIAL_ENV_MARKERS)
+
+
+def child_environment(
+    *,
+    env_overrides: dict[str, str] | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """The CLI child's ENTIRE environment: the whitelist, plus explicit non-credential additions.
+
+    Nothing is inherited implicitly.  An explicit override whose NAME is credential-shaped is a
+    named refusal (a caller trying to hand the child a provider key is a defect, not a preference).
+    """
+    env = {key: os.environ[key] for key in SAFE_ENV_PASSTHROUGH if key in os.environ}
+    for label, source in (("env_overrides", env_overrides), ("extra_env", extra_env)):
+        for raw_name, raw_value in (source or {}).items():
+            name = str(raw_name)
+            if _credential_shaped(name):
+                raise PolsiaError(
+                    E_POLICY_DENIED,
+                    f"refusing to pass {name!r} ({label}) into the Claude CLI child process: the "
+                    "child environment is a whitelist and provider credentials are not part of it",
+                    how_to_fix=(
+                        "authenticate the CLI itself (claude login, or CLAUDE_CONFIG_DIR pointing at "
+                        "an existing login) instead of forwarding provider keys; the backend keeps "
+                        "its own credentials to itself"
+                    ),
+                    context={"variable": name, "source": label},
+                )
+            env[name] = str(raw_value)
+    return env
+
 
 
 class ClaudeCLIError(PolsiaError):
@@ -157,6 +387,8 @@ def build_invocation(
     prompt_via_stdin: bool | None = None,
     timeout_s: int | None = None,
     schema_name: str = "",
+    workspace_root: str | Path | None = None,
+    workspace_run_id: str | None = None,
 ) -> Invocation:
     """Build the exact argv for one headless call.
 
@@ -168,6 +400,12 @@ def build_invocation(
     otherwise (or whenever `CLAUDE_PROMPT_VIA_STDIN` is on) it is piped over stdin, and a
     prompt larger than the documented 10 MB stdin cap is a named `E_PROMPT_TOO_LARGE`
     refusal — the caller must spill it to a file and reference the path.
+
+    AC-02: the invocation ALWAYS carries a `cwd` — a per-invocation directory under
+    `cli_workspace_root()` (`workspace_root`/`workspace_run_id` exist for tests and for a caller
+    that already owns a workspace).  A root that contains a credential store is the named
+    `E_POLICY_DENIED`; the directory itself is created at spawn time (`invoke()`), so building an
+    invocation is side-effect-free.
     """
     if permission_mode not in SAFE_PERMISSION_MODES:
         raise ValueError(
@@ -177,6 +415,11 @@ def build_invocation(
     budget = argv_budget(max_argv_chars)
     via_stdin_default = bool(settings.claude_prompt_via_stdin)
     want_stdin = via_stdin_default if prompt_via_stdin is None else bool(prompt_via_stdin)
+
+    planned_workspace = planned_run_workspace(root=workspace_root, run_id=workspace_run_id)
+    workspace_problem = workspace_refusal(planned_workspace)
+    if workspace_problem is not None:
+        raise workspace_problem
 
     if len(prompt.encode("utf-8")) > STDIN_LIMIT:
         raise PolsiaError(
@@ -221,6 +464,22 @@ def build_invocation(
         argv += ["--permission-prompts", "none"]
 
         for d in add_dirs:
+            # AC-02: `--add-dir` is a RE-GRANT.  Adding a directory that holds a credential store
+            # would undo the cwd containment, so it is refused by name here (no current caller
+            # passes one; the guard is what keeps a future caller from re-opening the hole).
+            added = _absolute(d)
+            for secret in secret_store_paths():
+                if secret == added or secret.is_relative_to(added):
+                    raise PolsiaError(
+                        E_POLICY_DENIED,
+                        f"refusing --add-dir {d!r}: it would re-grant the CLI the credential "
+                        f"store {str(secret)!r}",
+                        how_to_fix=(
+                            "pass only directories that hold the work product; credential stores "
+                            "belong to the backend process, never to the model's file tools"
+                        ),
+                        context={"add_dir": str(added), "credential_store": str(secret)},
+                    )
             argv += ["--add-dir", d]
         if mcp_config_path:
             argv += ["--mcp-config", mcp_config_path]
@@ -249,6 +508,7 @@ def build_invocation(
         return Invocation(
             argv=argv,
             stdin_text=stdin_text,
+            cwd=str(planned_workspace),
             transport=transport,
             prompt_file=prompt_file,
             system_prompt_file_content=sys_prompt_file,
@@ -335,9 +595,14 @@ def invoke(
     """
     argv = list(inv.argv)
     argv[0] = executable or cli_path()
-    env = {k: os.environ[k] for k in SAFE_ENV_PASSTHROUGH if k in os.environ}
-    env.update(inv.env_overrides)
-    env.update(extra_env or {})
+    env = child_environment(env_overrides=inv.env_overrides, extra_env=extra_env)
+    # AC-02 — NEVER spawn with cwd=None (the pre-fix code passed `cwd=inv.cwd`, which was None for
+    # every agent, so the child inherited the BACKEND directory and could open `.env`,
+    # `data/secrets.json` and `data/deepseek_api_key.json`).  An invocation built by a hand-rolled
+    # caller gets a fresh run directory too; one that cannot be created is a named refusal.
+    run_workspace_existed = bool(_absolute(inv.cwd).is_dir()) if inv.cwd else False
+    run_workspace = ensure_run_workspace(inv.cwd)
+    command_cwd = str(run_workspace)
 
     tmp_files: list[str] = []
     if inv.system_prompt_file_content is not None:
@@ -363,7 +628,7 @@ def invoke(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=inv.cwd,
+                cwd=command_cwd,
                 env=env,
                 # POSIX: run in our OWN session so `_kill_process_tree` can kill the whole GROUP
                 # (the CLI's grandchildren included); without this the group is never ours (D6).
@@ -395,6 +660,12 @@ def invoke(
             with contextlib.suppress(OSError):
                 os.unlink(path)
             _SPILL_TMP_FILES.discard(path)
+        if not run_workspace_existed:
+            # Only the directory THIS call created is removed, and only when the CLI left it
+            # empty: a run that wrote files keeps them (they are the run's deliverable), while
+            # the crash-free no-write path leaves no per-invocation clutter behind.
+            with contextlib.suppress(OSError):
+                run_workspace.rmdir()
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
@@ -519,21 +790,31 @@ def safety_preflight(*, kill_grade: str, auth_ok: bool = True, cli_present: bool
 
 __all__ = [
     "BANNED_FLAGS",
+    "CLI_RUNS_SUBDIR",
+    "CLI_WORKSPACE_ROOT_ENV",
     "ClaudeCLIError",
     "Invocation",
     "InvokeResult",
+    "SAFE_ENV_PASSTHROUGH",
     "SAFE_PERMISSION_MODES",
     "SIGTERM_EXIT_CODE",
     "STDIN_LIMIT",
     "STDIN_POINTER",
     "WIN_CMDLINE_LIMIT",
     "argv_budget",
+    "backend_root",
     "backoff_delay",
     "build_invocation",
+    "child_environment",
     "cli_path",
+    "cli_workspace_root",
     "concurrency_gate",
+    "ensure_run_workspace",
     "invoke",
     "is_retryable_failure",
+    "planned_run_workspace",
     "run_with_retries",
     "safety_preflight",
+    "secret_store_paths",
+    "workspace_refusal",
 ]

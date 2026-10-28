@@ -6,9 +6,12 @@ Frozen interface (V24-PLAN):
     unknown slug -> E_NOT_FOUND; slug `[a-z0-9-]{2,48}`, collision -> E_VALIDATION naming it
 
 Wave V25 (lane L3) adds the Render deploy surface on top of the same disk-backed site:
-    POST /api/v1/sites/{slug}/deploy  {dry_run?} (or ?dry_run=) -> the plan (dry, default) or the
-         submitted deploy; `E_CONFIG` with no key/service, `E_UPSTREAM` when Render fails,
-         `E_VALIDATION` for a slug that does not exist.
+    POST /api/v1/sites/{slug}/deploy  {dry_run?, approval_token?} (or ?dry_run=) -> the plan
+         (dry, default) or the submitted deploy; `E_CONFIG` with no key/service, `E_UPSTREAM`
+         when Render fails, `E_VALIDATION` for a slug that does not exist.
+         A LIVE deploy is POLICY-GATED (AC-03/AC-04): `E_SANDBOX_BLOCKED` while SANDBOX_MODE is
+         on, `E_POLICY_DENIED` under the operator kill switch / an exhausted render day cap / a
+         missing-or-invalid approval token — Render is never called in any of those cases.
     GET  /api/v1/sites/{slug}/deploy -> {slug, configured, missing, service_id, last_deploy|null};
          `E_NOT_FOUND` for a slug that does not exist.
 
@@ -50,7 +53,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.core.errors import PolsiaError
 from app.services import deploy_service
+from app.services.activity_service import log_activity_isolated
 from app.services.site_service import delete_site, generate_site, list_sites, regenerate_site
 
 router = APIRouter(prefix="/sites", tags=["sites"], dependencies=[Depends(verify_api_key)])
@@ -124,11 +129,24 @@ class SiteRegeneratedResponse(BaseModel):
 
 
 class DeployRequest(BaseModel):
-    """The deploy body.  `dry_run` defaults TRUE — the route previews unless told otherwise."""
+    """The deploy body.  `dry_run` defaults TRUE — the route previews unless told otherwise.
+
+    `approval_token` (AC-03) is the single-use operator approval for the LIVE action.  A live
+    deploy is irreversible, so the firewall requires a token minted for
+    `deploy_service.deploy_payload(slug, service_id)`; without one the route answers the named
+    `E_POLICY_DENIED` carrying the fingerprint to approve.  A dry run ignores it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     dry_run: bool = True
+    approval_token: str = Field(
+        default="",
+        description=(
+            "single-use approval token for the APPROVED fingerprint of this live deploy "
+            "(POST /api/v1/approvals); ignored by a dry run"
+        ),
+    )
 
 
 class DeployPlanResponse(BaseModel):
@@ -180,6 +198,33 @@ class DeployResponse(BaseModel):
     plan: DeployPlanResponse
 
 
+DEPLOY_REFUSED_ACTION = "deploy_refused"
+
+
+async def _audit_deploy_refusal(db: AsyncSession, slug: str, exc: PolsiaError) -> None:
+    """ONE audit row for a REFUSED live deploy — the "receipt either way" (AC-03).
+
+    Written through the ISOLATED writer (the shipped F-47 pattern the phone send route uses):
+    the request session never commits a failed request, so a row added there would be rolled
+    back, while a failed audit write must never rewrite the refusal the owner is reading.  The
+    record names the code, the policy code and the approval FINGERPRINT — never the approval
+    token and never the Render credential.
+    """
+    await log_activity_isolated(
+        db,
+        deploy_service.OWNER_DEPLOY_SLOT,
+        DEPLOY_REFUSED_ACTION,
+        f"live Render deploy of site {slug} refused: {exc.code}",
+        level="warning",
+        detail={
+            "slug": slug,
+            "code": exc.code,
+            "policy_code": exc.context.get("policy_code"),
+            "fingerprint": exc.context.get("fingerprint"),
+        },
+    )
+
+
 @router.post("/{slug}/deploy", response_model=DeployResponse)
 async def deploy_site_route(
     slug: str,
@@ -187,6 +232,7 @@ async def deploy_site_route(
     dry_run: bool | None = Query(
         default=None, description="override the body; omitted = the body's value, else TRUE"
     ),
+    db: AsyncSession = Depends(get_db),
 ) -> DeployResponse:
     """Preview (dry run, the default) or submit a Render deploy of one generated site.
 
@@ -194,10 +240,26 @@ async def deploy_site_route(
     run makes no network call and writes nothing — it returns the exact planned call.  Live mode
     claims success only for a Render response carrying a deploy id, and persists `last_deploy`
     (status/url/at/id) into the site's `meta.json` through `site_service`.
+
+    LIVE MODE IS POLICY-GATED (AC-03/AC-04): the service refuses with the named
+    `E_SANDBOX_BLOCKED` while `SANDBOX_MODE=true`, with `E_POLICY_DENIED` when the operator kill
+    switch is `freeze`/`throttle`, when the render day cap is exhausted, or when the action has no
+    valid approval token — in every one of those cases Render is never called.  The request
+    session is passed down for the cap's measured count (one `channel_send:render` ledger row per
+    real deploy).  A refused LIVE attempt writes one isolated `deploy_refused` audit row (never the
+    token, never the credential) and then raises the same refusal to the caller.
     """
     requested = dry_run if dry_run is not None else (payload.dry_run if payload else True)
+    approval_token = (payload.approval_token if payload else "") or ""
     with refusal_guard():
-        result = await deploy_service.deploy_site(slug, dry_run=requested)
+        try:
+            result = await deploy_service.deploy_site(
+                slug, dry_run=requested, db=db, approval_token=approval_token
+            )
+        except PolsiaError as exc:
+            if not requested:
+                await _audit_deploy_refusal(db, slug, exc)
+            raise
     return DeployResponse.model_validate(result)
 
 
