@@ -113,7 +113,7 @@ def _as_decimal(value: Any) -> Decimal | None:
         return None
     if isinstance(value, Decimal):
         return value if value.is_finite() else None
-    if not isinstance(value, (int, float, str)):
+    if not isinstance(value, int | float | str):
         return None
     try:
         parsed = Decimal(str(value))
@@ -125,7 +125,7 @@ def _as_decimal(value: Any) -> Decimal | None:
 def _low_price(idea: dict[str, Any]) -> Decimal | None:
     """The low end of `price_band` as a Decimal, or None when it is not a 2-number band."""
     band = idea.get("price_band")
-    if not isinstance(band, (list, tuple)) or len(band) != 2:
+    if not isinstance(band, list | tuple) or len(band) != 2:
         return None
     return _as_decimal(band[0])
 
@@ -330,7 +330,7 @@ def require_who_pays(idea: dict[str, Any], index: int) -> None:
     low = _low_price(idea)
     high = None
     band = idea.get("price_band")
-    if isinstance(band, (list, tuple)) and len(band) == 2:
+    if isinstance(band, list | tuple) and len(band) == 2:
         high = _as_decimal(band[1])
     if low is None or high is None or low <= 0 or high < low:
         missing.append("price_band")

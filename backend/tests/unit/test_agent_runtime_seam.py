@@ -64,7 +64,7 @@ def test_key_present_dispatches_to_the_deepseek_runtime(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: "key-present")
     seen: dict = {}
 
-    def fake_deepseek(inv, *, task_title=None, images=None):
+    def fake_deepseek(inv, *, task_title=None, images=None, cost_guard=None):  # REQUESTS-2 seam kwarg
         # V25/L1: the invoke seam gained two keyword-only run-context kwargs (defaulted, so every
         # pre-V25 caller is unchanged); a run with no images still sends them as None.
         seen["inv"] = inv
@@ -122,7 +122,7 @@ def test_provider_is_chosen_once_per_logical_run(monkeypatch):
 
     dispatches = {"n": 0}
 
-    def always_rate_limited(inv, *, task_title=None, images=None):  # V25/L1 seam kwargs
+    def always_rate_limited(inv, *, task_title=None, images=None, cost_guard=None):  # V25/L1 + REQUESTS-2 seam kwargs
         dispatches["n"] += 1
         return _rate_limited_result()
 
@@ -143,7 +143,7 @@ def test_deepseek_timeout_refusal_is_retried_by_the_shared_ladder(monkeypatch):
     """A raised E_CLI_TIMEOUT from the DeepSeek runtime retries exactly like the CLI timeout."""
     calls = {"n": 0}
 
-    def flaky(inv, *, task_title=None, images=None):  # V25/L1 seam kwargs
+    def flaky(inv, *, task_title=None, images=None, cost_guard=None):  # V25/L1 + REQUESTS-2 seam kwargs
         calls["n"] += 1
         if calls["n"] == 1:
             raise PolsiaError(E_CLI_TIMEOUT, "deepseek API exceeded 7s",

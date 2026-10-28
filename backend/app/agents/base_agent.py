@@ -882,6 +882,15 @@ class BasePolsiaAgent(ABC):
         # on the next dispatch — the measured 3x replay.
         run_actions: list[dict[str, Any]] = []
 
+        # REQUESTS-2: ONE per-run dollar guard for this logical run, handed to every dispatch of the
+        # ladder.  A fresh guard per dispatch would let a retried run spend its cap again (the cap
+        # would multiply by `1 + agent_max_retries`); the guard's cap is read once, here, from the
+        # same policy the dispatch gate uses. The CLI path is unchanged (`--max-budget-usd`).
+        run_cost_guard = (
+            accounting.RunCostGuard.from_settings(deepseek_runtime.configured_model())
+            if runtime is not None else None
+        )
+
         def dispatch() -> claude_cli.InvokeResult:
             if runtime is not None:
                 # V25/L1: the run's context rides the SAME invoke seam, keyword-only and
@@ -893,6 +902,8 @@ class BasePolsiaAgent(ABC):
                     "task_title": self.task_title or None,
                     "images": self.task_images or None,
                 }
+                if run_cost_guard is not None:
+                    runtime_kwargs["cost_guard"] = run_cost_guard
                 if self.run_id:
                     runtime_kwargs["run_id"] = self.run_id
                 # F-13: what an earlier DELIVERY of this task did (`prior_actions`) plus what an
@@ -1599,7 +1610,14 @@ class BasePolsiaAgent(ABC):
 
     # ------------------------------------------------------------------ timing
     def timed_run(self, task: dict[str, Any] | None, context: dict[str, Any] | None) -> dict[str, Any]:
-        """run() + a float `duration_secs` key. Handles sync OR async run()."""
+        """run() + a float `duration_secs` key. Handles sync OR async run().
+
+        F-07 remainder: the run's OWN verdict is enforced HERE, at the seam every run passes
+        through (the worker's `run_agent_for_task` and the planner's two direct `timed_run` calls in
+        `planner_service` alike), so no dispatch site can hand a partial/refused payload to a
+        consumer with clean text.  See `app.agents.run_verdict` for the rule (structured status
+        only; no prose scan) and for the refused-run refusal.
+        """
         started = time.perf_counter()
         self.set_run_context(task or {})
         # F-05: run-scoped tool evidence — reset before the run that will produce it.
@@ -1608,10 +1626,12 @@ class BasePolsiaAgent(ABC):
         if inspect.isawaitable(result):
             result = _run_coroutine_sync(result)
         duration = float(round(time.perf_counter() - started, 2))
-        if isinstance(result, dict):
-            result["duration_secs"] = duration
-            return result
-        return {"result": result, "duration_secs": duration}
+        if not isinstance(result, dict):
+            result = {"result": result}
+        result["duration_secs"] = duration
+        from app.agents.run_verdict import apply_run_verdict
+
+        return apply_run_verdict(self.agent_type, result)
 
     @abstractmethod
     def run(self, task: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

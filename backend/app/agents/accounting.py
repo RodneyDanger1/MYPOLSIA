@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
+from app.agents import pricing
 from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
 
 # ---------------------------------------------------------------------------
@@ -294,10 +296,14 @@ class BudgetStop(PolsiaError):
 
     It IS a `PolsiaError` (code `E_BUDGET_EXCEEDED`, or `E_POLICY_DENIED` for the kill switch)
     so the API boundary and the activity log report the same name the gate decided with.
+
+    `how_to_fix` is optional and empty for the dispatch-gate refusals, whose remediation is the
+    generic `E_BUDGET_EXCEEDED` hint; the in-run dollar guard (`RunCostGuard`) names the exact knob
+    and arithmetic because its refusal is the only one a spending run can hit mid-flight.
     """
 
-    def __init__(self, reason: str, code: str = E_BUDGET_EXCEEDED, **context) -> None:
-        super().__init__(code, reason, context=context)
+    def __init__(self, reason: str, code: str = E_BUDGET_EXCEEDED, how_to_fix: str = "", **context) -> None:
+        super().__init__(code, reason, how_to_fix=how_to_fix, context=context)
         self.reason = reason
 
 
@@ -374,6 +380,246 @@ def cli_budget_flag(allowance_usd: float, headroom: float = 0.9) -> str:
     return f"{max(0.01, allowance_usd * headroom):.4f}"
 
 
+# ---------------------------------------------------------------------------
+# IN-RUN dollar guard (REQUESTS-2 / taskmaster §13.2)
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS WRONG: `AGENT_RUN_COST_CAP_USD` was consumed in exactly two places — the pre-dispatch
+# ESTIMATE (`authorize`, which compares `est = per_run_cap` to the day's allowance) and the Claude
+# CLI's own `--max-budget-usd` flag.  The DeepSeek runtime — the provider the live key selects —
+# received NO dollar bound at all: its only per-run stop was the OUTPUT-TOKEN ceiling
+# (`deepseek_max_tokens`), and its cost was measured AFTER the fact.  So "the per-run cap refuses by
+# name when exceeded" was true at dispatch and false DURING a DeepSeek run (taskmaster §6.3,
+# measured by code read and a live no-spend probe).
+#
+# WHAT THIS ADDS: a live guard the runtime consults around EVERY provider call, so the configured
+# cap is enforced in dollars, not tokens:
+#
+#   * BEFORE a call: refuse when `priced_usd() + upper_bound(next call) > cap`.  The bound is a
+#     TRUE upper bound over the rate table (`pricing.PRICING_VERSION`): the prompt's UTF-8 BYTE
+#     count billed at the cache-MISS rate (tokens <= bytes for every tokenizer: a token decodes to
+#     at least one byte) plus the request's own `max_tokens` output ceiling at the output rate.
+#     Peak rates are used whenever `pricing.is_peak_pricing()` says the call may be billed at them
+#     (the safe direction: the bound can only OVER-state a call).
+#   * AFTER a call: record the MEASURED cost (token arithmetic from the provider's own usage) and
+#     refuse before the next turn when the run has already passed its cap.  This is the backstop
+#     for a call whose input side cannot be bounded up front (a vision request — the provider's
+#     image tokenization is not pinned in this repo, so no honest bound exists; see
+#     `deepseek_runtime._prompt_tokens_bound`).
+#
+# The guarantee this gives the queue: no provider call is made when a PROVABLE worst case for it
+# would take the run over the cap, so a text-only run cannot spend past its cap by more than
+# rounding.  A run whose input side is unprovable (vision) can overrun by at most ONE call's input
+# cost — which the ledger then measures — and the next turn is refused.  Both directions are
+# recorded in the refusal's context, never inferred from prose.
+#
+# A refusal is a `BudgetStop` (`E_BUDGET_EXCEEDED`, a `PolsiaError`): `claude_cli.run_with_retries`
+# re-raises every code except `E_CLI_TIMEOUT`, so a capped run is NOT retried — the identical prompt
+# would spend again, which is the opposite of a cap.
+
+#: How much of a cap the pre-call check may round past (float summation slack only, not headroom).
+COST_GUARD_EPSILON_USD = 1e-9
+
+
+def per_run_cost_cap_usd() -> float:
+    """The configured per-run cap (`AGENT_RUN_COST_CAP_USD`) as the budget policy declares it.
+
+    Read through `budget_policy_from_settings` so this guard, the dispatch gate and the CLI flag
+    can never disagree about which number "the per-run cap" means.
+    """
+    return float(budget_policy_from_settings().per_run_cap_usd)
+
+
+def _most_expensive_rates() -> pricing.ModelRates:
+    """The most expensive pinned rate of each component — an UPPER BOUND over the whole table.
+
+    Used only when a call cannot be priced for its own model (`pricing.rates_for` -> None).  This
+    is not a guessed rate for that model: it is the worst case the PINNED table carries, the same
+    safe-direction rule `pricing.is_peak_pricing` applies to the peak window.  The run's COST stays
+    unmeasured (`pricing.estimate_cost_usd` still returns None), so no measurement is fabricated —
+    only the bound the guard enforces against.
+    """
+    table = list(pricing.MODEL_RATES.values())
+    return pricing.ModelRates(
+        cache_hit_per_mtok_offpeak=max(r.cache_hit_per_mtok_offpeak for r in table),
+        cache_hit_per_mtok_peak=max(r.cache_hit_per_mtok_peak for r in table),
+        cache_miss_per_mtok_offpeak=max(r.cache_miss_per_mtok_offpeak for r in table),
+        cache_miss_per_mtok_peak=max(r.cache_miss_per_mtok_peak for r in table),
+        output_per_mtok_offpeak=max(r.output_per_mtok_offpeak for r in table),
+        output_per_mtok_peak=max(r.output_per_mtok_peak for r in table),
+    )
+
+
+def call_cost_bound_usd(
+    model: str,
+    *,
+    prompt_tokens_bound: int | None,
+    output_tokens_bound: int,
+    now: datetime | None = None,
+) -> float | None:
+    """An UPPER BOUND on what ONE provider call can cost — or None when no bound can be priced.
+
+    `prompt_tokens_bound` is a bound on the PROMPT's token count (the caller's UTF-8 byte count for
+    text; `None` when a part of the request cannot be bounded here, e.g. inline images, in which
+    case only the output ceiling is priced — a PARTIAL bound, never a complete one).
+    `output_tokens_bound` is the request's own `max_tokens`.
+
+    The model's own pinned rates are used when it has them; an UNKNOWN model is bounded at the most
+    expensive pinned rate of each component (see `_most_expensive_rates`) instead of being exempted
+    from the cap — a run nobody can price must still not be allowed to spend without a ceiling.
+    None is returned only for an unusable output bound (0/negative/bool/non-integer), which would
+    otherwise price a call at $0 and make the guard meaningless.
+    """
+    rates = pricing.rates_for(model) or _most_expensive_rates()
+    try:
+        out_bound = int(output_tokens_bound)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(output_tokens_bound, bool) or out_bound <= 0:
+        return None
+    peak = pricing.is_peak_pricing(now)
+    miss_rate = rates.cache_miss_per_mtok_peak if peak else rates.cache_miss_per_mtok_offpeak
+    out_rate = rates.output_per_mtok_peak if peak else rates.output_per_mtok_offpeak
+    prompt_bound = 0
+    if prompt_tokens_bound is not None:
+        try:
+            prompt_bound = max(0, int(prompt_tokens_bound))
+        except (TypeError, ValueError):
+            return None
+    # The prompt is billed at the MISS rate (the expensive side): the bound can only over-state.
+    return prompt_bound / 1_000_000 * miss_rate + out_bound / 1_000_000 * out_rate
+
+
+@dataclass
+class RunCostGuard:
+    """One agent run's live dollar guard — see the section comment above.
+
+    State is per RUN, never per process: `deepseek_runtime.invoke` builds one for each logical run
+    (the same lifetime as its tool-loop bound) and reads `cap_usd` ONCE, so a setting changed
+    mid-run cannot move the finish line under a spending run.
+    """
+
+    cap_usd: float
+    model: str
+    #: Σ of the MEASURED per-call costs (token arithmetic over the provider's own usage).
+    measured_usd: float = 0.0
+    #: Σ of the per-call UPPER BOUNDS the guard was given before each call.
+    upper_bound_usd: float = 0.0
+    #: Calls whose cost the provider did not report enough to price (`unmeasured_calls > 0`).
+    unmeasured_calls: int = 0
+    calls: int = 0
+
+    @classmethod
+    def from_settings(cls, model: str) -> RunCostGuard:
+        """The guard for a run of `model` under the configured `AGENT_RUN_COST_CAP_USD`."""
+        return cls(cap_usd=per_run_cost_cap_usd(), model=str(model or ""))
+
+    @property
+    def priced_usd(self) -> float:
+        """What this run has provably cost so far.
+
+        When EVERY call was priced this is the measured total (the true best estimate).  When any
+        call left the provider's usage unpriceable, its cost is UNKNOWN, so the guarded quantity
+        becomes the sum of the per-call upper bounds — an upper limit, never the measured part
+        presented as the whole (the same NULL-vs-zero rule the rest of this module applies).
+        """
+        if self.unmeasured_calls:
+            return max(self.measured_usd, self.upper_bound_usd)
+        return self.measured_usd
+
+    @property
+    def cost_basis(self) -> str:
+        """What `priced_usd` is: `"measured"` (every call priced) or `"upper_bound"`."""
+        return "upper_bound" if self.unmeasured_calls else "measured"
+
+    def check_before_call(self, next_call_bound_usd: float | None, *, provider_calls: int) -> None:
+        """Refuse BEFORE a provider call whose provable worst case would pass the cap.
+
+        Raises `BudgetStop` (`E_BUDGET_EXCEEDED`) and nothing has been spent on that call.  An
+        unusable cap (0, negative, NaN/inf) fails CLOSED here rather than meaning "unlimited": a
+        non-positive cap in the CLI path becomes a one-cent `--max-budget-usd`, i.e. the same
+        refusal — and a cap nobody can honour must not silently become no cap at all.
+        """
+        if not math.isfinite(self.cap_usd) or self.cap_usd <= 0:
+            raise self._refusal(
+                f"per-run dollar cap is not usable: ${self.cap_usd!r} is not a positive, finite "
+                "number, so no provider call may be made under it",
+                provider_calls=provider_calls,
+                how_to_fix=(
+                    "set AGENT_RUN_COST_CAP_USD (Settings: agent_run_cost_cap_usd) to a positive "
+                    "dollar amount; a zero cap would otherwise mean an unbounded run"
+                ),
+            )
+        bound = 0.0 if next_call_bound_usd is None else max(0.0, float(next_call_bound_usd))
+        projected = self.priced_usd + bound
+        if projected > self.cap_usd + COST_GUARD_EPSILON_USD:
+            raise self._refusal(
+                f"per-run dollar cap: the next provider call could take this run over its "
+                f"${self.cap_usd:.4f} cap — refusing before the call "
+                f"(committed ${self.priced_usd:.6f} [{self.cost_basis}] + worst case "
+                f"${bound:.6f} > ${self.cap_usd:.4f})",
+                provider_calls=provider_calls,
+                next_call_bound_usd=round(bound, 8),
+                projected_usd=round(projected, 8),
+                how_to_fix=(
+                    "raise AGENT_RUN_COST_CAP_USD for a run this large, or split the task; the "
+                    "cap is enforced in dollars against the pinned price table"
+                ),
+            )
+
+    def record_call(
+        self,
+        *,
+        cost_usd: float | None,
+        call_bound_usd: float | None,
+        provider_calls: int,
+    ) -> None:
+        """Record ONE finished provider call and refuse if the run is already past its cap.
+
+        `cost_usd` is the measured cost of that call (`pricing.estimate_cost_usd` over the usage
+        the provider reported) or None when the provider's usage was not enough to price it.
+        Called BEFORE the loop decides whether to continue, so the refusal also covers a run whose
+        LAST call already overspent: a run that spent past its cap must not report success.
+        """
+        self.calls += 1
+        if call_bound_usd is not None and math.isfinite(float(call_bound_usd)):
+            self.upper_bound_usd += max(0.0, float(call_bound_usd))
+        if cost_usd is None or not math.isfinite(float(cost_usd)):
+            self.unmeasured_calls += 1
+        else:
+            self.measured_usd += max(0.0, float(cost_usd))
+        if self.priced_usd > self.cap_usd + COST_GUARD_EPSILON_USD:
+            raise self._refusal(
+                f"per-run dollar cap exceeded after {provider_calls} provider call(s): this run "
+                f"has spent ${self.priced_usd:.6f} [{self.cost_basis}] of its "
+                f"${self.cap_usd:.4f} cap — refusing before any further turn",
+                provider_calls=provider_calls,
+                how_to_fix=(
+                    "raise AGENT_RUN_COST_CAP_USD or split the task; the spend already made is "
+                    "recorded on this refusal's `usage` so the ledger accounts for it"
+                ),
+            )
+
+    def _refusal(self, reason: str, *, provider_calls: int, how_to_fix: str, **extra: Any) -> BudgetStop:
+        """The named `E_BUDGET_EXCEEDED` refusal, with the arithmetic that produced it."""
+        return BudgetStop(
+            reason,
+            how_to_fix=how_to_fix,
+            cap_usd=round(self.cap_usd, 8),
+            run_cost_usd=round(self.priced_usd, 8),
+            measured_cost_usd=round(self.measured_usd, 8),
+            upper_bound_usd=round(self.upper_bound_usd, 8),
+            cost_basis=self.cost_basis,
+            model=self.model,
+            provider_calls=provider_calls,
+            calls_recorded=self.calls,
+            unmeasured_calls=self.unmeasured_calls,
+            pricing_version=pricing.PRICING_VERSION,
+            runtime="deepseek",
+            **extra,
+        )
+
+
 def spend_summary(day_spent_usd: float | None, cap_usd: float) -> dict[str, float | None]:
     """The ONE honest spend summary (T8 / A2 F-08).
 
@@ -437,18 +683,22 @@ def unit_economics(spend_by_agent: dict[str, float], completed_by_agent: dict[st
 
 
 __all__ = [
+    "COST_GUARD_EPSILON_USD",
     "TOOLS_USED_MAX",
     "TOOLS_USED_TRUNCATION",
     "BudgetPolicy",
     "BudgetSnapshot",
     "BudgetStop",
+    "RunCostGuard",
     "RunUsage",
     "authorize",
     "bounded_tools_used",
     "budget_policy_from_settings",
     "burn_rate",
+    "call_cost_bound_usd",
     "cli_budget_flag",
     "compute_run_delta",
+    "per_run_cost_cap_usd",
     "spend_summary",
     "unit_economics",
     "usage_from_envelope",

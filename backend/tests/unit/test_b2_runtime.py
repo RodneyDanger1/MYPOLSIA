@@ -440,7 +440,7 @@ def _prompt_strings(path: pathlib.Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     docstrings: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             body = getattr(node, "body", [])
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
                 docstrings.add(id(body[0].value))

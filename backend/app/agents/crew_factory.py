@@ -38,8 +38,14 @@ from typing import Any
 from app.agents.base_agent import BasePolsiaAgent, is_mock_mode
 from app.agents.claude_cli import cli_path, safety_preflight
 from app.agents.policy_firewall import AGENT_CAPABILITIES, ActionClass, kill_grade_from_env
+from app.agents.run_verdict import (
+    PARTIAL_SUMMARY_PREFIX,
+    PAYLOAD_STATUS_KEY,
+    apply_run_verdict,
+    verdict_reason,
+)
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_POLICY_DENIED, ERROR_HINTS, PolsiaError
 
 logger = logging.getLogger(__name__)
 
@@ -294,88 +300,26 @@ def run_agent_for_task(
 
 
 #: The result key carrying the run's own `AgentEnvelope.status` at the TOP level of the stored
-#: output, so a consumer never has to parse prose to find it (F-07).
-PAYLOAD_STATUS_KEY = "payload_status"
-
-#: The visible label a PARTIAL run's summary carries into `tasks.result_summary` (F-07).
-PARTIAL_SUMMARY_PREFIX = "[partial] "
-
-
-def refusal_reason(result: dict[str, Any]) -> str:
-    """The honest reason a REFUSED run gives: its `notes`, else its `summary` (bounded)."""
-    notes = [str(note).strip() for note in (result.get("notes") or []) if str(note).strip()]
-    if notes:
-        return "; ".join(notes)[:1000]
-    return str(result.get("summary") or "").strip()[:1000] or "no reason given"
+#: output, so a consumer never has to parse prose to find it (F-07).  Defined ONCE in
+#: `app.agents.run_verdict` — the module that also enforces the rule at `BasePolsiaAgent.timed_run`,
+#: the seam every run passes through (this dispatch site alone could not cover the planner's direct
+#: `timed_run` calls).  Re-exported here because existing callers/tests import these names.
+#:
+#: `refusal_reason` is the legacy name of `run_verdict.verdict_reason`: the same reader, bounded the
+#: same way, kept because the wave-1 tests and reports refer to it.
+refusal_reason = verdict_reason
 
 
 def _record_run_verdict(agent_type: str, result: dict[str, Any]) -> None:
-    """F-07: carry the run's own verdict where the ledger and the owner can see it.
+    """F-07: delegate to the ONE verdict rule (`app.agents.run_verdict.apply_run_verdict`).
 
-    `AgentEnvelope.status` is `ok | partial | refused`.  The worker never read it (it derives the
-    task status from whether this call raised), so 8 of the trial's 10 tasks read `COMPLETED` while
-    their own text said "partial" or that no deliverable was produced — the badge, the ledger row
-    and the dashboard card all claimed a full success.
-
-    Two honest, additive signals, no fake failure:
-      * `refused` -> the NAMED refusal below (the task is recorded FAILED, never completed);
-      * `partial` -> `payload_status="partial"` on the stored output plus the visible
-        `[partial] ` prefix on `summary`, which is what the worker copies into
-        `tasks.result_summary` — so the feed/task page CANNOT present partial work as an
-        unqualified success.  The run is still a success (the work happened); inventing a task
-        status the vocabulary does not have is not this lane's call (see the report's REQUESTS).
+    `BasePolsiaAgent.timed_run` already applies it (so the planner seams are covered too); this
+    second, idempotent application is kept because `run_agent_for_task` is the seam the worker
+    owns and its callers historically read this function's name.  `refused` raises the NAMED
+    `E_VALIDATION` refusal (the task is recorded FAILED, never completed) — a second application
+    can never fire because the first one already raised.
     """
-    status = result.get("status")
-    if not isinstance(status, str):
-        return
-    if status == "refused":
-        _raise_refused_task(agent_type, result)
-        return
-    if status == "partial":
-        result[PAYLOAD_STATUS_KEY] = "partial"
-        summary = str(result.get("summary") or "").strip()
-        if not summary.startswith(PARTIAL_SUMMARY_PREFIX.strip()):
-            # The visible label goes on the summary the worker copies into `tasks.result_summary`.
-            # Deliberately NOT applied under the sanctioned `CLAUDE_CLI_MOCK` seam: that path's
-            # summary is the mock fixture's own text ("Mock Claude response for testing"), pinned
-            # verbatim by the queue-safety tests, and the placeholder already carries its
-            # "nothing was performed" note.  No product run is ever mock-shaped.
-            from app.agents.base_agent import is_mock_mode
-
-            if not is_mock_mode():
-                result["summary"] = (
-                    f"{PARTIAL_SUMMARY_PREFIX}{summary}" if summary else PARTIAL_SUMMARY_PREFIX.strip()
-                )
-
-
-def _raise_refused_task(agent_type: str, result: dict[str, Any]) -> None:
-    """Raise the NAMED refusal when the run's own verdict is `status="refused"` (F2-FEED-1).
-
-    `AgentEnvelope` documents `refused` as "a policy outcome, never as success", but nothing on
-    the completion path read it.  The measured usage/cost this run really incurred rides the
-    refusal's `context` (`usage`), the same carrier `base_agent.usage_from_outcome` reads for a
-    failed run, so a refused run does not vanish from the ledger's accounting.
-    """
-    from app.agents.base_agent import RUN_META_KEYS
-
-    reason = refusal_reason(result)
-    measured = {key: result[key] for key in RUN_META_KEYS if key in result}
-    raise PolsiaError(
-        E_VALIDATION,
-        f"agent {agent_type} refused its task: {reason}",
-        how_to_fix=(
-            "the run could not do this task honestly (its notes name why). Rewrite the task "
-            "instruction or supply the missing input; do not re-run the identical prompt. The "
-            "run's RUNTIME STATUS block names the deployment facts this worker knows."
-        ),
-        context={
-            "agent_type": agent_type,
-            "refused": True,
-            "summary": str(result.get("summary") or "")[:1000],
-            "notes": [str(note) for note in (result.get("notes") or [])][:20],
-            "usage": measured,
-        },
-    )
+    apply_run_verdict(agent_type, result)
 
 
 async def resolve_dispatch_paused(db: Any) -> bool:

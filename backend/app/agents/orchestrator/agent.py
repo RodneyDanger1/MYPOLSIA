@@ -100,7 +100,7 @@ def weekly_quality_drop(quality: Any) -> dict[str, Any] | None:
         if not isinstance(stats, dict):
             continue
         rate = stats.get("success_rate")
-        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        if isinstance(rate, bool) or not isinstance(rate, int | float):
             continue
         if float(rate) < WEEKLY_QUALITY_FLOOR:
             breachers.append((float(rate), str(agent_type), stats.get("runs_7d")))

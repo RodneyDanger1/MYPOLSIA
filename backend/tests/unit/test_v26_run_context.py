@@ -150,12 +150,15 @@ def test_invoke_gains_exactly_one_optional_run_id():
     # list stays pinned so a later addition has to be argued for here, and every optional keyword
     # must keep a `None` default: that is what lets an older double — whose signature carries only
     # the keywords it knows — keep working unchanged.
+    # WAVE-2 RE-PIN (2026-10-28): the real per-run DeepSeek dollar guard adds exactly ONE more
+    # optional keyword, `cost_guard`, defaulted None by the same additive rule. OLD list = the ten
+    # names below without it; NEW adds exactly that one; nothing else changed.
     assert list(signature.parameters) == [
         "inv", "client", "api_key", "model", "tools", "agent_type", "task_title",
-        "images", "run_id", "replay", "attempt",
+        "images", "run_id", "replay", "attempt", "cost_guard",
     ]
     for name in ("client", "api_key", "model", "tools", "agent_type", "task_title",
-                 "images", "run_id", "replay", "attempt"):
+                 "images", "run_id", "replay", "attempt", "cost_guard"):
         parameter = signature.parameters[name]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
         assert parameter.default is None, name
@@ -415,7 +418,7 @@ def test_the_agent_forwards_the_run_id_to_the_runtime(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: "key-present")
     seen: dict = {}
 
-    def fake_deepseek(inv, *, task_title=None, images=None, run_id=None):
+    def fake_deepseek(inv, *, task_title=None, images=None, run_id=None, cost_guard=None):
         seen["run_id"] = run_id
         return _ok_result()
 
@@ -433,7 +436,7 @@ def test_a_run_without_an_id_calls_the_runtime_with_the_old_signature(monkeypatc
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: "key-present")
     calls: list[dict] = []
 
-    def old_signature_invoke(inv, *, task_title=None, images=None):  # NOTE: no run_id
+    def old_signature_invoke(inv, *, task_title=None, images=None, cost_guard=None):  # NOTE: no run_id
         calls.append({"task_title": task_title})
         return _ok_result()
 

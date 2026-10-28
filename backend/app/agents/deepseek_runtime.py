@@ -96,7 +96,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.agents import claude_cli, pricing
+from app.agents import accounting, claude_cli, pricing
 from app.config import settings
 from app.core.errors import (
     E_ACTION_REPLAY_UNAVAILABLE,
@@ -315,7 +315,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
     """
     if not images:
         return []
-    if not isinstance(images, (list, tuple)):
+    if not isinstance(images, list | tuple):
         raise PolsiaError(
             E_VALIDATION,
             f"deepseek runtime: images must be a list, got {type(images).__name__}",
@@ -1435,6 +1435,38 @@ def _build_body(
 
 # ── result envelopes (the claude_cli contract, mirrored) ─────────────────────────────────────
 
+def _prompt_tokens_bound(messages: list[dict[str, Any]], tools: list[dict] | None) -> int | None:
+    """An UPPER BOUND on the prompt's token count — or None when a part cannot be bounded here.
+
+    The guard in `accounting.RunCostGuard` may only refuse on a PROVABLE worst case, so the input
+    side needs a bound, not an estimate.  For text the bound is exact in the safe direction: every
+    tokenizer maps a token to at least one byte, so the request's UTF-8 BYTE count is >= its token
+    count (a CJK character is 3 bytes and still at least one token).  The whole message list and
+    the tool specs ride that count, so a continuation turn is bounded with the conversation it
+    actually sends.
+
+    Inline images are the documented exception: the provider bills them by ITS OWN image
+    tokenization, which this repo does not pin (and will not invent), so a request carrying an
+    `image_url` part returns None.  The caller then prices only the output ceiling, and the
+    guard's POST-call check enforces the measured spend of that call — the honest split recorded in
+    `accounting`'s section comment.
+    """
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+        ):
+            return None
+    payload: dict[str, Any] = {"messages": messages}
+    if tools:
+        payload["tools"] = tools
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):  # pragma: no cover - the body is JSON by construction
+        return None
+    return len(encoded)
+
+
 def _failure_result(
     *,
     subtype: str,
@@ -1529,6 +1561,7 @@ def invoke(
     run_id: str | None = None,
     replay: list[dict[str, Any]] | None = None,
     attempt: int | None = None,
+    cost_guard: accounting.RunCostGuard | None = None,
 ) -> claude_cli.InvokeResult:
     """Run one DeepSeek chat completion for `inv`; same shape as `claude_cli.invoke`.
 
@@ -1617,9 +1650,29 @@ def invoke(
     # path stays byte-identical to the pre-F-33 runtime.
     budget_api = _tool_budget_api() if tool_specs else None
     tool_budget = budget_api.begin_run_tool_budget() if budget_api is not None else None
+    # REQUESTS-2 (taskmaster §13.2): the per-run DOLLAR cap this runtime never had.  The guard is
+    # PER LOGICAL RUN: `base_agent` opens one and hands it to every dispatch of the retry ladder, so
+    # a retried run cannot spend its cap again (a fresh guard per dispatch would have multiplied the
+    # cap by `1 + agent_max_retries`). A direct caller without one gets a guard for this invocation,
+    # its cap read ONCE (like `loop_bound`, so a mid-run settings change cannot move the finish
+    # line). It is enforced around EVERY provider call below: pre-call on a provable worst case,
+    # post-call on the measured spend.
+    guard = cost_guard if cost_guard is not None else accounting.RunCostGuard.from_settings(model_id)
     try:
         while True:
             provider_calls += 1
+            # The provable worst case of THIS call: the prompt's byte bound at the miss rate plus
+            # the request's own `max_tokens` ceiling (see `_prompt_tokens_bound` and
+            # `accounting.call_cost_bound_usd`). `body["max_tokens"]` is the value `_build_body`
+            # sent, so the bound prices the request that is actually about to leave.
+            call_bound = accounting.call_cost_bound_usd(
+                model_id,
+                prompt_tokens_bound=_prompt_tokens_bound(
+                    body.get("messages") or [], body.get("tools")
+                ),
+                output_tokens_bound=int(body.get("max_tokens") or 0),
+            )
+            guard.check_before_call(call_bound, provider_calls=provider_calls)
             payload, failure = _post_completion(
                 http=http,
                 url=url,
@@ -1650,6 +1703,21 @@ def invoke(
             finish_reason = str(choice.get("finish_reason") or "")
             usage_scalar = payload.get("usage")
             turns.append(_turn_usage(usage_scalar if isinstance(usage_scalar, dict) else {}))
+            # The MEASURED cost of the call that just finished (token arithmetic over the usage
+            # the provider itself reported, priced at the model it says served the reply). Recorded
+            # BEFORE the loop decides anything else: a run that has already passed its cap must be
+            # refused here, on its last call too, never reported as a clean success.
+            turn_hit, turn_miss, turn_out = _price_split([turns[-1]])
+            guard.record_call(
+                cost_usd=pricing.estimate_cost_usd(
+                    str(payload.get("model") or model_id),
+                    cache_hit_tokens=turn_hit,
+                    cache_miss_tokens=turn_miss,
+                    output_tokens=turn_out,
+                ),
+                call_bound_usd=call_bound,
+                provider_calls=provider_calls,
+            )
 
             calls = message.get("tool_calls")
             if tool_specs and (finish_reason == "tool_calls" or (isinstance(calls, list) and calls)):
