@@ -1714,6 +1714,29 @@ def invoke(
                     )
             content = content_raw
             break
+    except PolsiaError as exc:
+        # RT-01 (P0) — a RAISED refusal is the retry ladder's OTHER branch: `claude_cli.
+        # run_with_retries` retries a raised `E_CLI_TIMEOUT` exactly like a retryable envelope.
+        # Until this handler existed the loop's evidence (tool names + the action journal) and the
+        # tokens it had already measured lived ONLY in this frame, so the retry seam saw a tool-less
+        # run with nothing recorded and re-executed a call that had already had its effect
+        # (duplicate `github_commit`/PR/send).  Attach both to the refusal, on the SAME presence
+        # rule as `_loop_evidence`/`_accumulated_usage`: a tool-less run and an unmeasured run gain
+        # no new keys, so their context stays byte-identical.
+        context = dict(exc.context)
+        evidence = _loop_evidence(tool_specs, tools_used, journal)
+        if evidence:
+            context.update(evidence)
+        measured = _accumulated_usage(turns)
+        if measured:
+            # ENVELOPE shape (`input_tokens`/`output_tokens`/..., exactly what `usage_from_envelope`
+            # reads): `base_agent` owns the accounting dict, this runtime does not import it.
+            # `model` is the attribution the cost table needs — a configured model id is a fact,
+            # never a guess at what the provider served.
+            context["usage"] = measured
+            context["model"] = model_id
+        exc.context = context
+        raise
     finally:
         # Close THIS run's tool budget before anything else: the budget is run-scoped state, and a
         # run that leaves it open would meter (and charge) the next run in this context.
