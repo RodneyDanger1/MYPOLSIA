@@ -419,11 +419,24 @@ def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
         return False
     merged = dict(bag)
     merged[PARKED_APPROVAL_KEY] = []
+    # The parked set is a list of RECORD dicts (the wire shape) in the current producer, and a
+    # list of fingerprint strings in rows parked by older builds.  The audit wants the
+    # FINGERPRINTS either way — `str(record_dict)` was storing a Python dict repr, which is not an
+    # identifier an operator can clear or a test can match (live-proven on the F2 Deny probe).
+    fingerprints: list[str] = []
+    if isinstance(parked, list):
+        for item in parked:
+            if isinstance(item, dict):
+                fingerprint = str(item.get("fingerprint") or "").strip()
+            else:
+                fingerprint = str(item).strip()
+            if fingerprint:
+                fingerprints.append(fingerprint)
     merged[APPROVAL_CLEARED_KEY] = {
         "status": status,
         "actor": actor,
         "at": utcnow().isoformat(),
-        "fingerprints": [str(item) for item in parked] if isinstance(parked, list) else [],
+        "fingerprints": fingerprints,
     }
     # OR-02: the token dies WITH the parked set it was minted for.  `attach_approval_token` writes
     # `metadata.approval_token`, and a terminal write used to empty `approval_required` while

@@ -41,7 +41,13 @@ import logging
 from typing import Any
 
 from app.core.timeutil import as_bound_instant, now_utc
-from celery_app.tasks._common import create_task_deduped, enqueue_created, run_async
+from celery_app.tasks._common import (
+    create_task_deduped,
+    dispatch_paused_reason,
+    enqueue_created,
+    paused_skip,
+    run_async,
+)
 from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
@@ -74,6 +80,17 @@ async def _run_follow_up_sweep() -> dict[str, Any]:
 
     session_factory = get_session_factory()
     moment = now_utc()
+
+    # F2-FEED-2: the owner's STOP is enforced before this tick reads or creates anything, so a
+    # Beat resurrected while paused produces no follow-up rows and no broker hand-off.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        paused_result = paused_skip(
+            "email-followups", paused_reason, due=0, created=0, deduped=0, task_ids=[]
+        )
+        logger.warning("outreach follow-up sweep: %s", paused_result)
+        return paused_result
 
     created_ids: list[int] = []
     deduped = 0

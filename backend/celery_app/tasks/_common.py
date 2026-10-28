@@ -128,8 +128,31 @@ async def create_task_deduped(
     accepted it, but this deduped path did not — so the CS sweep's per-item attach
     (`metadata.inbox_item`, RD12 receipt §7 REQUEST 1) could not carry its item until R17.
     Additive: the default (None) writes exactly the previous row.
+
+    F2-FEED-2 (2026-10-28): a PAUSED company creates nothing here.  This is the one funnel every
+    scheduler fan-out uses (cadence, follow-ups, the morning plan, the night task, the sweeps, the
+    CS inbox attach), so the owner's STOP is enforced before the first INSERT rather than only at
+    claim time — a Beat that resurrects can no longer queue new work (and therefore cannot spend on
+    it later).  The refusal is NAMED (`E_POLICY_DENIED`) and no row is written; the tick bodies
+    catch the same decision themselves and return a clean skip, so this raise is the
+    defense-in-depth half for any future caller that forgets.
     """
+    from app.core.errors import PolsiaError
     from app.services.task_service import VALID_AGENT_TYPES, VALID_TASK_STATUSES
+
+    paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        raise PolsiaError(
+            PAUSED_DISPATCH_CODE,
+            f"task creation refused: {paused_reason}",
+            context={
+                "title": title,
+                "agent_type": agent_type,
+                "dedupe_key": dedupe_key,
+                "source": source,
+                "created": 0,
+            },
+        )
 
     if agent_type not in VALID_AGENT_TYPES:
         raise ValueError(
@@ -358,6 +381,56 @@ def actions_from_outcome(result: Any, failure: BaseException | None) -> list[dic
     return [r for r in records if isinstance(r, dict)] if isinstance(records, list) else []
 
 
+# ── paused dispatch: the owner's STOP, enforced where work is CREATED ────────
+#: The named refusal a PAUSED company produces at the CREATION site (F2-FEED-2, 2026-10-28).
+#:
+#: `company_config.dispatch_paused` is the owner's Settings Pause/Resume switch.  The worker's
+#: dispatch gate (`agent_tasks.run_agent_task`) already refuses at CLAIM time — but a Beat that
+#: comes back (compose recreate / `restart: unless-stopped`) could still CREATE scheduler rows and
+#: a cycle could still spend on its own orchestrator call while the owner has pressed STOP.  These
+#: helpers are the creation-side half: a paused Beat creates NOTHING and reports the refusal BY
+#: NAME, so a resurrected scheduler cannot silently spend.  Live evidence that this mattered:
+#: 2026-10-28 19:30 UTC, a restarted worker's queued reconciler tick re-dispatched four stranded
+#: rows and four real DeepSeek calls were made with no owner action (agent_runs 295-298, $0.0029).
+PAUSED_DISPATCH_CODE = "E_POLICY_DENIED"
+PAUSED_DISPATCH_REASON = (
+    "E_POLICY_DENIED: company paused by owner (company_config.dispatch_paused=true; "
+    "resume in Settings to allow dispatch)"
+)
+
+
+async def dispatch_paused_reason(db: AsyncSession) -> str | None:
+    """The owner's STOP resolved at the creation site, or None when dispatch is open.
+
+    Read through `crew_factory.resolve_dispatch_paused` — the SAME resolver the worker's claim-time
+    gate uses, so creation and dispatch cannot disagree about whether the company is paused (no
+    second source of truth, no env override to drift).
+    """
+    from app.agents.crew_factory import resolve_dispatch_paused
+
+    if await resolve_dispatch_paused(db):
+        return PAUSED_DISPATCH_REASON
+    return None
+
+
+def paused_skip(site: str, reason: str | None = None, **extra: Any) -> dict[str, Any]:
+    """The named skip a Beat body returns when the owner paused dispatch (no row, no spend).
+
+    Shape: `status="skipped"`, `reason="dispatch_paused"`, the policy code, the human-readable
+    reason, and the calling site — plus whatever counts the caller reports (`created=0` etc.).
+    A Beat tick that refuses must be observable in the worker log and in the task result, the same
+    contract `run_agent_task`'s paused refusal keeps.
+    """
+    return {
+        "status": "skipped",
+        "reason": "dispatch_paused",
+        "code": PAUSED_DISPATCH_CODE,
+        "detail": reason or PAUSED_DISPATCH_REASON,
+        "site": site,
+        **extra,
+    }
+
+
 # ── dispatch budget gate ─────────────────────────────────────────────────────
 async def day_spend_by_agent(db: AsyncSession) -> tuple[float, dict[str, float]]:
     """MEASURED spend for the company-local day: (total, per-agent) from `agent_runs.cost_usd`.
@@ -412,14 +485,18 @@ async def assert_budget_allows(agent_type: str) -> None:
 __all__ = [
     "ACTION_KEY",
     "MAX_ACTIONS",
+    "PAUSED_DISPATCH_CODE",
+    "PAUSED_DISPATCH_REASON",
     "actions_from_outcome",
     "assert_budget_allows",
     "create_task_deduped",
     "day_spend_by_agent",
     "dedupe_key",
+    "dispatch_paused_reason",
     "enqueue_created",
     "get_process_loop",
     "merge_actions",
+    "paused_skip",
     "plan_bucket",
     "prior_actions",
     "run_async",

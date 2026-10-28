@@ -51,8 +51,10 @@ from celery_app.tasks._common import (
     assert_budget_allows,
     create_task_deduped,
     dedupe_key,
+    dispatch_paused_reason,
     enqueue_created,
     merge_actions,
+    paused_skip,
     prior_actions,
     run_async,
     sweep_bucket,
@@ -2560,6 +2562,18 @@ async def _email_inbox_sweep() -> dict[str, Any]:
         count_expired_pending,
     )
 
+    # F2-FEED-2 (2026-10-28): the owner's STOP is checked BEFORE the inbox attach and before the
+    # task row — a paused Beat neither marks items dispatched nor queues a run, and the tick
+    # reports the refusal by name.  (The creation funnel `_common.create_task_deduped` refuses
+    # the same decision; this early return keeps the sweep a clean named skip instead of an
+    # exception, and stops `attach_pending` from consuming items for work that cannot dispatch.)
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        logger.warning("email inbox sweep: dispatch paused (%s)", paused_reason)
+        return paused_skip("email-inbox-sweep", paused_reason, attached=[])
+
     # D3: the day's measured spend gates dispatch (audit A1/L2-F01) — same policy decision the
     # sibling sweeps take in `_create_and_enqueue`.
     try:
@@ -2568,7 +2582,6 @@ async def _email_inbox_sweep() -> dict[str, Any]:
         logger.warning("email inbox sweep: budget denied (%s)", exc.reason)
         return {"status": "budget_denied", "reason": exc.reason, "attached": []}
 
-    session_factory = get_session_factory()
     async with session_factory() as db:
         attached = await attach_pending(db)
         # V8/C5 (code-gap §10.2): the named-skip half of the 14-day answer bound — items older
@@ -2662,6 +2675,15 @@ async def _ads_stripe_sync() -> dict[str, Any]:
         ("finance", "Check for failed Stripe payments and update revenue snapshot"),
     )
     session_factory = get_session_factory()
+
+    # F2-FEED-2 (2026-10-28): the 6-hourly sync is a Beat dispatch — paused means no row, no
+    # provider read attached, no broker hand-off, reported by name.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        logger.warning("ads/stripe sync: dispatch paused (%s)", paused_reason)
+        return paused_skip("ads-stripe-sync", paused_reason, queued={}, denied=[])
+
     created: list[tuple[str, int]] = []
     duplicates: list[str] = []
     denied: list[str] = []
@@ -2738,6 +2760,16 @@ async def _create_and_enqueue(
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
 
+    # F2-FEED-2 (2026-10-28): a paused company creates no sweep row and queues nothing.  Checked
+    # before the budget gate so the pause is the reason reported, and before the insert so no row
+    # waits to be dispatched the moment the worker comes back.
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        logger.warning("sweep %s: dispatch paused (%s)", agent_type, paused_reason)
+        return paused_skip(f"sweep:{agent_type}", paused_reason, task_id=None, dedupe_key=None)
+
     # D3: measured-spend gate (audit A1/L2-F01) — a full day creates no new sweep row.
     try:
         await assert_budget_allows(agent_type)
@@ -2746,7 +2778,6 @@ async def _create_and_enqueue(
         return {"status": "budget_denied", "reason": exc.reason}
 
     key = dedupe_key(agent_type, bucket)
-    session_factory = get_session_factory()
     async with session_factory() as db:
         task = await create_task_deduped(
             db,

@@ -40,7 +40,12 @@ import logging
 from typing import Any
 
 from app.core.timeutil import company_tz, now_utc
-from celery_app.tasks._common import enqueue_created, run_async
+from celery_app.tasks._common import (
+    dispatch_paused_reason,
+    enqueue_created,
+    paused_skip,
+    run_async,
+)
 from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
@@ -153,6 +158,15 @@ async def _night_task() -> dict[str, Any]:
             tz.key,
         )
         return {"status": "skipped", "reason": "outside_night_window", "window": window}
+
+    # F2-FEED-2 (2026-10-28): a paused company's night tick hands NOTHING to the broker and writes
+    # no "ran X of Y" receipt — there is no run to report.  Checked before the selection/hand-off
+    # so a Beat resurrected while paused cannot re-feed the dispatcher.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        logger.warning("night task: dispatch paused (%s)", paused_reason)
+        return paused_skip("night-task", paused_reason, ran=0, limit=limit, task_ids=[])
 
     # ── 3. ONE transaction: select the dispatcher's own TOP-N (read-only), plus receipts data ─
     async with session_factory() as db:

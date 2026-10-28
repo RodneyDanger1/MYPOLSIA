@@ -89,10 +89,13 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.core.timeutil import company_tz, now_utc
 from celery_app.tasks._common import (
+    PAUSED_DISPATCH_CODE,
     assert_budget_allows,
     create_task_deduped,
     dedupe_key,
+    dispatch_paused_reason,
     enqueue_created,
+    paused_skip,
     plan_bucket,
     run_async,
     stamp_rearmed,
@@ -688,6 +691,42 @@ async def _deny_cycle_tick(
     }
 
 
+async def _skip_paused_cycle_tick(
+    *, cycle: str, day: date, window: dict[str, Any], reason: str
+) -> dict[str, Any]:
+    """Record and return the named skip for a cycle tick refused by the owner's PAUSE.
+
+    F2-FEED-2 (2026-10-28): `company_config.dispatch_paused` is the owner's STOP.  A cycle is a
+    scheduled dispatch that spends REAL money on its own orchestrator call, so a paused tick must
+    refuse **before** the hour/claim path — no model call, no `agent_runs` row, no planned work,
+    and (because the caller checks this before `_claim_cycle_tick`) no consumption of the durable
+    once-per-(cycle, local-day) claim.  The refusal is an owner-visible activity row, the same
+    shape `_deny_cycle_tick` writes for a budget refusal: a paused Beat is never a silent no-op.
+    Work is not lost — the next in-window tick after resume runs the cycle.
+    """
+    from app.core.database import get_session_factory
+    from app.services.activity_service import log_activity
+
+    async with get_session_factory()() as db:
+        await log_activity(
+            db,
+            agent_type="orchestrator",
+            action="cycle_dispatch_paused",
+            summary=f"{cycle} cycle skipped: company paused by owner",
+            level="warning",
+            detail={
+                "cycle": cycle,
+                "code": PAUSED_DISPATCH_CODE,
+                "reason": reason,
+                "day": day.isoformat(),
+                "window": window,
+            },
+        )
+        await db.commit()
+    logger.warning("%s cycle: dispatch paused (%s)", cycle, reason)
+    return paused_skip("daily_cycle", reason, cycle=cycle, day=day.isoformat(), window=window)
+
+
 async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
@@ -717,6 +756,18 @@ async def _morning_cycle() -> dict[str, Any]:
         "start": start.isoformat(),
         "end": end.isoformat(),
     }
+    # F2-FEED-2 (2026-10-28): the owner's STOP is checked BEFORE the owed catch-up claim, the
+    # per-(cycle, day) claim and any model call.  A Beat resurrected while paused (compose
+    # recreate / `restart: unless-stopped`) therefore spends nothing, consumes no claim, and
+    # reports the refusal by name; the next in-window tick after resume still runs the cycle and
+    # any owed hand-off is still owed.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        return await _skip_paused_cycle_tick(
+            cycle="morning", day=day, window=window, reason=paused_reason
+        )
+
     # F-21: BEFORE the hour gate (and before any spend), ask whether TODAY's cycle owes a hand-off.
     # A broker refusal re-arms the day (its plan and rows are already committed), and the next tick
     # of the same company-local day finishes it FROM THAT PLAN — never a second plan, never a second
@@ -1231,6 +1282,15 @@ async def _evening_cycle() -> dict[str, Any]:
             tz.key,
         )
         return {"status": "skipped", "reason": "outside_evening_window", "window": window}
+
+    # F2-FEED-2 (2026-10-28): the owner's STOP refuses the evening dispatch before the day claim
+    # and before any model call — no spend, no claim consumed, named refusal on the activity feed.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        return await _skip_paused_cycle_tick(
+            cycle="evening", day=day, window=window, reason=paused_reason
+        )
 
     # 3-02 (B6): the evening cycle owns its OWN (cycle, local-day) claim — morning's claim
     # never blocks it; a redelivered evening tick skips here, before any spend.

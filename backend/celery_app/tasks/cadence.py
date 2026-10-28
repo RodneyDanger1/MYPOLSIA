@@ -32,7 +32,12 @@ import logging
 from typing import Any
 
 from app.core.timeutil import company_tz, now_utc
-from celery_app.tasks._common import enqueue_created, run_async
+from celery_app.tasks._common import (
+    dispatch_paused_reason,
+    enqueue_created,
+    paused_skip,
+    run_async,
+)
 from celery_app.worker import app
 
 logger = logging.getLogger(__name__)
@@ -53,6 +58,20 @@ async def _run_due_schedules() -> dict[str, Any]:
     session_factory = get_session_factory()
     moment = now_utc()
     zone = company_tz()
+
+    # F2-FEED-2 (2026-10-28): a PAUSED company's Beat tick creates NOTHING.  Checked BEFORE
+    # `claim_due_schedules`, because that call CONSUMES the due occurrence (the advance commits
+    # with the child insert) — refusing after it would eat a due instant and create no child.
+    # A Beat that resurrects while the owner has pressed STOP therefore hands no work to the
+    # broker and spends nothing; on resume the next tick still sees the same due rows.
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        paused_result = paused_skip(
+            "task-cadence", paused_reason, due=0, created=0, deduped=0, task_ids=[]
+        )
+        logger.warning("task cadence: %s", paused_result)
+        return paused_result
 
     created_ids: list[int] = []
     deduped = 0

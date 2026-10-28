@@ -100,7 +100,11 @@ from app.core.errors import E_CONFIG, E_VALIDATION, PolsiaError
 from app.core.events import publish_stats
 from app.core.timeutil import UTC, as_bound_instant, now_utc
 from app.services.task_service import requeue_stale_claims
-from celery_app.tasks._common import run_async
+from celery_app.tasks._common import (
+    dispatch_paused_reason,
+    paused_skip,
+    run_async,
+)
 from celery_app.worker import app
 
 if TYPE_CHECKING:  # annotation-only: the task module keeps its runtime imports lazy
@@ -352,6 +356,29 @@ async def _reconcile_stranded_pending() -> dict[str, Any]:
 
     session_factory = get_session_factory()
     cutoff = now_utc() - timedelta(seconds=PENDING_RECONCILE_AFTER_SECONDS)
+
+    # F2-FEED-2 (2026-10-28): while the owner has pressed STOP this reconciler hands NOTHING to the
+    # broker.  This is the function that made the live unattended spend measurable: at
+    # 2026-10-28 19:30:06 UTC a queue tick already in the broker re-dispatched four stranded rows
+    # (`redispatched: 4`) and the restarted worker ran them — real DeepSeek calls, agent_runs
+    # 295-298, $0.0029, with no owner action.  A paused company must not re-feed the dispatcher;
+    # rows stay `pending` and are re-dispatched by the next tick after resume (nothing is lost).
+    async with session_factory() as db:
+        paused_reason = await dispatch_paused_reason(db)
+    if paused_reason is not None:
+        result = paused_skip(
+            "stranded-pending-reconciler",
+            paused_reason,
+            scanned=0,
+            redispatched=0,
+            failed=[],
+            skipped_recent=[],
+            task_ids=[],
+            rearmed_ids=[],
+            window_seconds=PENDING_RECONCILE_AFTER_SECONDS,
+        )
+        logger.warning("pending reconciler: %s", result)
+        return result
 
     async with session_factory() as db:
         bound = as_bound_instant(cutoff, db)
@@ -779,7 +806,7 @@ def _runs_dir_for(workspace_root: str | Path | None) -> Path:
         text = raw.strip() if isinstance(raw, str) else ""
         candidate = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
     else:
-        if not isinstance(workspace_root, (str, Path)):
+        if not isinstance(workspace_root, str | Path):
             raise PolsiaError(
                 E_VALIDATION,
                 f"run workspace cleanup: workspace_root must be a path string "
@@ -885,7 +912,7 @@ def plan_expired_run_workspaces(
         if name in protected:
             continue
         mtime = item["mtime"]
-        assert isinstance(mtime, (int, float))  # populated above; mypy cannot read the dict shape
+        assert isinstance(mtime, int | float)  # populated above; mypy cannot read the dict shape
         if float(mtime) >= cutoff:
             continue
         try:
