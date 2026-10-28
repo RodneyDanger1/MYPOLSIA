@@ -484,24 +484,40 @@ async def upsert_revenue_snapshot(
 
     The finance agent runs this daily; a retried run must update the same row, not
     raise `IntegrityError` on the unique index.
+
+    DT-01 — "omitted" and "measured 0" are different states.  The INSERT used to pass only
+    the keys a caller supplied, and the DDL's `DEFAULT 0` (migration 0001) then wrote a
+    fabricated zero into every omitted money column, which `GET /finance/summary` served as a
+    measurement.  Now every `_SNAPSHOT_COLUMNS` key this call did NOT supply is written as an
+    explicit NULL (migration 0017 drops the server defaults; the explicit NULL keeps the
+    statement honest even against a database that still carries them).  A supplied `0` is a
+    measured zero and is written as `0`.
+
+    The UPDATE half only moves the columns THIS call supplied: a retry that omits a column must
+    not erase a value an earlier same-day run did measure (the row is the DAY's snapshot, not
+    the last attempt's).
     """
-    if not values:
-        existing = (
-            await db.execute(
-                select(RevenueSnapshot).where(RevenueSnapshot.snapshot_date == snapshot_date)
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-        values = {}
+    unknown = sorted(set(values) - set(_SNAPSHOT_COLUMNS))
+    if unknown:
+        # A key with no column used to reach the INSERT and die as an uncoded CompileError.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"revenue snapshot has no column(s) {unknown}",
+            how_to_fix=f"supply only these snapshot columns: {', '.join(_SNAPSHOT_COLUMNS)}",
+            context={"unknown": unknown},
+        )
 
     insert_fn = pg_insert if dialect_name(db) == "postgresql" else sqlite_insert
-    base = insert_fn(RevenueSnapshot).values(snapshot_date=snapshot_date, **values)
-    if values:
+    insert_values = {column: values.get(column) for column in _SNAPSHOT_COLUMNS}
+    base = insert_fn(RevenueSnapshot).values(snapshot_date=snapshot_date, **insert_values)
+    supplied = [column for column in _SNAPSHOT_COLUMNS if column in values]
+    if supplied:
         stmt = base.on_conflict_do_update(
-            index_elements=["snapshot_date"], set_={k: insert_fn(RevenueSnapshot).excluded[k] for k in values}
+            index_elements=["snapshot_date"],
+            set_={column: base.excluded[column] for column in supplied},
         ).returning(RevenueSnapshot)
     else:
+        # Nothing to update: a conflicting row is the answer, not an error (see the read-back).
         stmt = base.on_conflict_do_nothing(index_elements=["snapshot_date"]).returning(
             RevenueSnapshot
         )
@@ -510,6 +526,15 @@ async def upsert_revenue_snapshot(
     # updated (measured: the DB said mrr=250 while the returned object still said 100).
     stmt = stmt.execution_options(synchronize_session=False, populate_existing=True)
     snapshot = (await db.execute(stmt)).scalars().one_or_none()
+    if snapshot is None:
+        # `on_conflict_do_nothing` returns no row when the date already exists — re-read it.
+        snapshot = (
+            await db.execute(
+                select(RevenueSnapshot)
+                .where(RevenueSnapshot.snapshot_date == snapshot_date)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().one_or_none()
     if snapshot is None:
         raise PolsiaError(
             E_DB,
@@ -823,7 +848,7 @@ async def record_stripe_event(
     )
 
 
-def _persisted_payment_intent_id(row: StripeEvent) -> str | None:
+def persisted_payment_intent_id(row: StripeEvent) -> str | None:
     """The refundable id recorded on a `stripe_events` row — annotation first, event fallback.
 
     The annotation (`raw_payload["_polsia"]["payment_intent_id"]`, written by the webhook when it
@@ -832,6 +857,11 @@ def _persisted_payment_intent_id(row: StripeEvent) -> str | None:
     by another path (raw SQL/ops, a pre-T14 writer) — is answered by re-reading the verbatim event
     through the same extractor: the id is durably there (fix-5 §8) and this is the code path that
     finally reads it.  Honest `None` when neither answers.
+
+    Public because TWO readers now need the same answer (DT-03): `recent_failed_payments` (the
+    refund producer) and `report_service.build_cash_block`, which groups the 30-day inflow by this
+    id so one card payment (charge + payment_intent + invoice.paid + invoice.payment_succeeded)
+    is counted once instead of once per event family.
     """
     payload = row.raw_payload
     if not isinstance(payload, dict):
@@ -871,7 +901,7 @@ async def recent_failed_payments(db: AsyncSession, limit: int = 20) -> list[dict
         {
             "event_id": row.stripe_event_id,
             "event_type": row.event_type,
-            "payment_intent_id": _persisted_payment_intent_id(row),
+            "payment_intent_id": persisted_payment_intent_id(row),
             "amount_cents": row.amount_cents,
             "currency": row.currency,
             "customer_id": row.customer_id,
@@ -1067,6 +1097,7 @@ __all__ = [
     "list_stripe_events",
     "money",
     "persist_finance_run",
+    "persisted_payment_intent_id",
     "recent_failed_payments",
     "record_expense",
     "record_stripe_event",

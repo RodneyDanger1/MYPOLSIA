@@ -25,6 +25,14 @@ response are byte-identical to the pre-T02b behaviour.
 Auth is the same owner API key as every other owner route.  With no `APPROVAL_SECRET` configured
 there is no channel at all, and this route says so by name (`E_CONFIG`) instead of minting a token
 that could never verify — issuing is impossible by construction, not by protocol.
+
+DT-07 — THE MINT IS AUDITED.  Minting an approval credential is the AUTHORIZATION event, and the
+ledger is the product's durable audit trail; before this, the only trace was the token itself in
+`tasks.metadata` (a live credential in a data column, never cleared) and the data export shipped
+it verbatim.  Every successful mint now writes ONE `approval_minted` activity row (fingerprint,
+task_id, ttl, expiry — never the token) and every attach ONE `approval_attached` row, in the same
+transaction as the delivery.  The token still works exactly as before: `attach_approval_token`
+stores it for the next run and the firewall verifies it — the audit is additive.
 """
 from __future__ import annotations
 
@@ -40,11 +48,39 @@ from app.agents.policy_firewall import configured_approval_secret, issue_approva
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_CONFIG, E_REDIS, PolsiaError
 from app.schemas.approval import ApprovalIssueRequest, ApprovalIssueResponse
+from app.services.activity_service import log_activity
 from app.services.task_service import attach_approval_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/approvals", tags=["approvals"], dependencies=[Depends(verify_api_key)])
+
+#: DT-07: the activity actions this route writes.  Minting an approval credential IS the
+#: authorization event (who approved what, for how long), so it goes on the durable ledger — the
+#: only trace used to be the token itself in `tasks.metadata` (never cleared), which is both
+#: unauditable and a credential in a data column.
+APPROVAL_MINTED_ACTION = "approval_minted"
+APPROVAL_ATTACHED_ACTION = "approval_attached"
+
+
+def _audit_detail(
+    *,
+    action_fingerprint: str,
+    expires_at: int,
+    ttl_s: int | None,
+    task_id: int | None,
+) -> dict[str, object]:
+    """The audit row's detail — fingerprint/expiry/task ONLY.  The token is NEVER recorded.
+
+    A token in an audit row would be the same credential leak the export scrub (DT-07/A9-02)
+    closes, one table over: the ledger is read by the dashboard feed and the data export.
+    """
+    return {
+        "action_fingerprint": action_fingerprint,
+        "expires_at": expires_at,
+        "ttl_s": ttl_s,
+        "task_id": task_id,
+    }
 
 
 class ApprovalIssueRequestWithTask(ApprovalIssueRequest):
@@ -63,14 +99,20 @@ class ApprovalIssueRequestWithTask(ApprovalIssueRequest):
     task_id: int | None = Field(default=None, ge=1)
 
 
-async def _attach_and_requeue(db: AsyncSession, task_id: int, token: str) -> None:
-    """Deliver the token onto the parked row, commit, then hand the re-queued row to a worker.
+async def _attach_and_requeue(
+    db: AsyncSession, task_id: int, token: str, *, action_fingerprint: str
+) -> None:
+    """Deliver the token onto the parked row, audit the attach, commit, then hand off to a worker.
 
     The ordering is deliberate and mirrors `celery_app.tasks.daily_cycle`'s "fan out AFTER the
     commit" rule: a worker that claims the row must be able to read the token it was dispatched
     with, and its claim runs in its own session.  The commit also makes the write independent of
     `get_db`'s teardown commit, so the route behaves identically under a plain test-client session
     override.
+
+    DT-07: the `approval_attached` row is written BEFORE that commit, so the attach is audited on
+    BOTH exits — including the `E_REDIS` path below, where the token really was attached to the row
+    even though the dispatch failed.
 
     A broker that refuses the hand-off is the named `E_REDIS` refusal — the identical contract
     `app/api/v1/agents.py` implements for the manual trigger, and for the same measured reason
@@ -82,6 +124,16 @@ async def _attach_and_requeue(db: AsyncSession, task_id: int, token: str) -> Non
     re-queued with its token, but NOT dispatched.
     """
     await attach_approval_token(db, task_id, token)   # refuses by name; never a partial write
+    await log_activity(
+        db,
+        "orchestrator",
+        APPROVAL_ATTACHED_ACTION,
+        summary=(
+            f"Owner approval token attached to task #{task_id} for "
+            f"{action_fingerprint} and the row re-queued"
+        ),
+        detail={"task_id": task_id, "action_fingerprint": action_fingerprint},
+    )
     await db.commit()
     try:
         from celery_app.tasks.agent_tasks import run_agent_task
@@ -144,11 +196,35 @@ async def issue_approval_endpoint(
             action_fingerprint=payload.action_fingerprint,
             ttl_s=payload.ttl_s,
         )
+        # DT-07: AUDIT THE AUTHORIZATION EVENT.  One row per mint, in the same transaction as the
+        # delivery (an attach refusal rolls the whole request back — the caller never received a
+        # usable token, so there is no delivered authorization to record).  The detail carries the
+        # fingerprint/expiry/task and NEVER the token (`_audit_detail`).
+        await log_activity(
+            db,
+            "orchestrator",
+            APPROVAL_MINTED_ACTION,
+            summary=(
+                f"Owner approval token minted for {minted.action_fingerprint} "
+                f"(expires {int(minted.expires_at)}, ttl {payload.ttl_s})"
+            ),
+            detail=_audit_detail(
+                action_fingerprint=minted.action_fingerprint,
+                expires_at=int(minted.expires_at),
+                ttl_s=payload.ttl_s,
+                task_id=payload.task_id,
+            ),
+        )
         if payload.task_id is not None:
             # Inside the guard on purpose: the task-side refusals (404/422) must reach the client
             # named, and a refusal must never leave a half-written row — the helper commits only
             # after the attach itself has succeeded.
-            await _attach_and_requeue(db, payload.task_id, minted.token)
+            await _attach_and_requeue(
+                db,
+                payload.task_id,
+                minted.token,
+                action_fingerprint=minted.action_fingerprint,
+            )
     return ApprovalIssueResponse(
         token=minted.token,
         action_fingerprint=minted.action_fingerprint,

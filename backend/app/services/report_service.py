@@ -33,9 +33,10 @@ from app.services import pricing_service
 from app.services.finance_service import (
     REPORTING_CURRENCY,
     excluded_currency_filter,
+    persisted_payment_intent_id,
     reporting_currency_filter,
 )
-from app.services.query_helpers import fetch_rows, fetch_scalar, json_or_none
+from app.services.query_helpers import fetch_rows, fetch_scalar, fetch_scalars, json_or_none
 
 
 class _Unset:
@@ -498,10 +499,86 @@ MONEY_IN_EVENT_TYPES = (
     "invoice.payment_succeeded",
     "payment_intent.succeeded",
 )
+#: DT-03: when one payment is reported by several families, which family states its AMOUNT most
+#: authoritatively (best first).  A settled `charge` is the money that actually moved; the
+#: PaymentIntent and the invoice agree with it in the normal case, and when they disagree the
+#: disagreement is NAMED in `reasons["in_30d.amount_conflict"]` rather than summed.
+MONEY_IN_AMOUNT_PRECEDENCE = (
+    "charge.succeeded",
+    "payment_intent.succeeded",
+    "invoice.paid",
+    "invoice.payment_succeeded",
+)
+_MONEY_IN_PRECEDENCE_RANK = {
+    event_type: rank for rank, event_type in enumerate(MONEY_IN_AMOUNT_PRECEDENCE)
+}
 #: Expense categories that mean "money set aside for tax".
 TAX_EXPENSE_CATEGORIES = ("tax", "taxes", "tax_set_aside")
 #: The rolling window the in/out figures cover, in company-local days (today inclusive).
 CASH_WINDOW_DAYS = 30
+
+
+@dataclass(frozen=True)
+class _PaymentGroup:
+    """One PAYMENT in the window: the amounts the event families reported for it.
+
+    `amount_cents` is the authoritative measured amount (the highest-precedence family that
+    states one), or `None` when no family stated one.  `amount_conflict` records that two
+    families stated DIFFERENT amounts for the same payment — the block counts the payment once
+    and names the disagreement instead of adding both up.
+    """
+
+    amount_cents: int | None
+    event_count: int
+    amount_conflict: bool
+
+
+def _is_reporting_currency(currency: str | None) -> bool:
+    """The read-side half of `reporting_currency_filter`, for a row already in Python.
+
+    Same predicate as the SQL (`lower(coalesce(currency, '')) == 'usd'`): a NULL/blank currency is
+    NOT usd, and nothing is converted.
+    """
+    return (currency or "").lower() == REPORTING_CURRENCY
+
+
+def _payment_groups(events: list[StripeEvent]) -> list[_PaymentGroup]:
+    """Group the window's USD money-in EVENTS into PAYMENTS (DT-03).
+
+    One card payment produces up to four Stripe deliveries — `charge.succeeded`,
+    `payment_intent.succeeded`, `invoice.paid`, `invoice.payment_succeeded` — and the block used to
+    sum every one of them: one $100.00 payment read as $400.00 of money received.  The stored
+    identity is the PaymentIntent id the webhook persisted on the event row
+    (`finance_service.persisted_payment_intent_id`), so events that share it are one payment.
+
+    An event with NO PaymentIntent cannot be PROVEN to be the same payment as any other; it is its
+    own group and is counted exactly once (never dropped, never guessed into a family pair).
+    """
+    grouped: dict[str, list[StripeEvent]] = {}
+    for event in events:
+        payment_intent = persisted_payment_intent_id(event)
+        key = f"pi:{payment_intent}" if payment_intent else f"event:{event.stripe_event_id}"
+        grouped.setdefault(key, []).append(event)
+    groups: list[_PaymentGroup] = []
+    for rows in grouped.values():
+        ordered = sorted(
+            rows,
+            key=lambda event: (
+                _MONEY_IN_PRECEDENCE_RANK.get(event.event_type, len(MONEY_IN_AMOUNT_PRECEDENCE)),
+                int(event.id or 0),
+            ),
+        )
+        amounts = [
+            int(event.amount_cents) for event in ordered if event.amount_cents is not None
+        ]
+        groups.append(
+            _PaymentGroup(
+                amount_cents=amounts[0] if amounts else None,
+                event_count=len(ordered),
+                amount_conflict=len(set(amounts)) > 1,
+            )
+        )
+    return groups
 
 
 async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
@@ -524,11 +601,17 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
     * `cash_on_hand` — the newest revenue snapshot's Stripe balance; none recorded -> null.
     * `out_30d` — summed USD expense records in the window; no rows -> UNMEASURED (null), never 0;
       rows that all sit in another currency -> UNMEASURED (null) with that reason.
-    * `in_30d` — summed USD money-in stripe events in the window; no events at all -> UNMEASURED
-      (the webhook may simply not be configured); USD events exist but none succeeded -> a measured
-      0; money-in events that all sit in another currency -> UNMEASURED (null); money-in events
-      whose amount was never stated -> UNMEASURED (null), because a partial sum is not a total
-      (A2A7-02's rule, applied to the inflow: a NULL amount cannot be summed into $0.00).
+    * `in_30d` — the window's USD money IN, counted ONCE PER PAYMENT (DT-03): one card payment
+      arrives as up to four Stripe deliveries (`charge.succeeded`, `payment_intent.succeeded`,
+      `invoice.paid`, `invoice.payment_succeeded`) and the block groups them by the stored
+      PaymentIntent id before summing, so $100.00 is $100.00 and not $200–$400.  An event with no
+      PaymentIntent cannot be proven to repeat another, so it is counted exactly once on its own.
+      No events at all -> UNMEASURED (the webhook may simply not be configured); USD events exist
+      but none succeeded -> a measured 0; money-in events that all sit in another currency ->
+      UNMEASURED (null); a USD payment whose amount no family stated -> UNMEASURED (null), because
+      a partial sum is not a total (A2A7-02's rule, applied to the inflow).  A payment whose
+      families state DIFFERENT amounts is counted once at the highest-precedence family's amount
+      and the disagreement is named in `reasons["in_30d.amount_conflict"]`.
     * `tax_set_aside` — USD tax-categorised expenses in the window; a USD ledger with rows but no
       tax category is a measured 0; an empty (or entirely foreign) ledger is null.
 
@@ -619,73 +702,28 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
             f"the USD outflow (nothing was converted)"
         )
 
-    # The inflow read: every event in the window is telemetry ("did the webhook deliver?"), while
-    # the SUM counts only USD money-in events and the exclusions are counted separately.
-    event_rows = await fetch_rows(
+    # The inflow read (DT-03): every event in the window is telemetry ("did the webhook deliver?"),
+    # but the MONEY is counted per PAYMENT, not per event family.  The rows are read and grouped by
+    # the stored PaymentIntent id before summing (`_payment_groups`); exclusions are still counted
+    # separately so a scoped total can never present itself as the whole.
+    inflow_events = await fetch_scalars(
         db,
-        select(
-            func.count().label("rows"),
-            func.sum(
-                case(
-                    (
-                        and_(
-                            reporting_currency_filter(StripeEvent.currency),
-                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
-                        ),
-                        StripeEvent.amount_cents,
-                    ),
-                    else_=None,
-                )
-            ).label("usd_in_cents"),
-            func.sum(
-                case(
-                    (
-                        and_(
-                            reporting_currency_filter(StripeEvent.currency),
-                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("usd_in_rows"),
-            func.sum(
-                case(
-                    (
-                        and_(
-                            excluded_currency_filter(StripeEvent.currency),
-                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("foreign_in_rows"),
-            # A2A7-02's rule, on the inflow side: `SUM` skips a NULL amount ROW BY ROW, so a
-            # money-in delivery Stripe stated no amount for would be summed away and the rest
-            # served as the complete inflow.  Counted here so the caller can refuse the partial.
-            func.sum(
-                case(
-                    (
-                        and_(
-                            reporting_currency_filter(StripeEvent.currency),
-                            StripeEvent.event_type.in_(MONEY_IN_EVENT_TYPES),
-                            StripeEvent.amount_cents.is_(None),
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("usd_in_unmeasured"),
-        ).where(StripeEvent.processed_at >= start, StripeEvent.processed_at < end),
-        what="cash block stripe telemetry",
+        select(StripeEvent)
+        .where(StripeEvent.processed_at >= start, StripeEvent.processed_at < end)
+        .order_by(StripeEvent.id),
+        what="cash block stripe inflow",
     )
-    events_count, usd_in_cents, usd_in_count, foreign_in_count, usd_in_unmeasured = (
-        event_rows[0] if event_rows else (0, None, 0, 0, 0)
-    )
-    usd_in_count = int(usd_in_count or 0)
-    foreign_in_count = int(foreign_in_count or 0)
-    usd_in_unmeasured = int(usd_in_unmeasured or 0)
+    events_count = len(inflow_events)
+    money_in_events = [
+        event for event in inflow_events if event.event_type in MONEY_IN_EVENT_TYPES
+    ]
+    usd_money_in = [
+        event for event in money_in_events if _is_reporting_currency(event.currency)
+    ]
+    foreign_in_count = len(money_in_events) - len(usd_money_in)
+    groups = _payment_groups(usd_money_in)
+    unmeasured_payments = sum(1 for group in groups if group.amount_cents is None)
+    conflicting_payments = sum(1 for group in groups if group.amount_conflict)
 
     in_30d: float | None = None
     if not events_count:
@@ -693,25 +731,44 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
             f"no Stripe events in the last {CASH_WINDOW_DAYS} days — inflow is unmeasured "
             "(check that the webhook is configured)"
         )
-    elif not usd_in_count and foreign_in_count:
+    elif not groups and foreign_in_count:
         reasons["in_30d"] = (
             f"the window's {foreign_in_count} money-in Stripe event(s) are in another currency "
             f"than {REPORTING_CURRENCY} — the USD inflow is unmeasured (nothing was converted)"
         )
-    elif usd_in_unmeasured:
+    elif unmeasured_payments:
         reasons["in_30d"] = (
-            f"{usd_in_unmeasured} of the window's {usd_in_count} USD money-in Stripe event(s) "
+            f"{unmeasured_payments} of the window's {len(groups)} USD money-in payment(s) "
             "carry no measured amount — the USD inflow cannot be summed (a partial sum is not a "
             "total, and $0.00 would be a measurement nobody made)"
         )
     else:
         # A USD ledger with events and no USD money-in is a MEASURED zero, unlike the
-        # no-telemetry case above.
-        in_30d = round(float(usd_in_cents or 0) / 100, 2)
+        # no-telemetry case above.  `unmeasured_payments == 0` here, so every group states one.
+        total_cents = 0
+        for group in groups:
+            if group.amount_cents is None:  # pragma: no cover - excluded by the branch above
+                continue
+            total_cents += group.amount_cents
+        in_30d = round(total_cents / 100, 2)
         if foreign_in_count:
             reasons["in_30d.currency"] = (
                 f"{foreign_in_count} money-in Stripe event(s) in another currency were EXCLUDED "
                 f"from the USD inflow (nothing was converted)"
+            )
+        if conflicting_payments:
+            reasons["in_30d.amount_conflict"] = (
+                f"{conflicting_payments} payment(s) were reported with different amounts by "
+                f"different Stripe event families; each is counted ONCE at the amount stated by "
+                f"the first family in {', '.join(MONEY_IN_AMOUNT_PRECEDENCE)} — the disagreement "
+                f"is named here, never added up"
+            )
+        collapsed_events = len(usd_money_in) - len(groups)
+        if collapsed_events:
+            reasons["in_30d.dedupe"] = (
+                f"{collapsed_events} of the window's {len(usd_money_in)} USD money-in Stripe "
+                f"event(s) repeat another event's payment (same payment_intent) and were counted "
+                f"ONCE: the inflow is {len(groups)} payment(s), not {len(usd_money_in)} event(s)"
             )
 
     tax_rows = await fetch_rows(

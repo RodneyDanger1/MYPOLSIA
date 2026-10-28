@@ -19,7 +19,13 @@ THE EXPORT (V10-D2)
     would not round-trip); datetimes are ISO-8601.  The export NEVER carries the DeepSeek key
     store or `.env` contents — the store is a FILE outside every member table, and
     `tests/unit/api/test_v10_data_export.py` asserts a seeded key sentinel appears in NO member
-    (the brief's absolute rule).  Reads run inside `refusal_guard()`; the ZIP is fully built and
+    (the brief's absolute rule).  DT-07/A9-02: an owner approval TOKEN is a live credential too, and
+    `tasks.metadata.approval_token` used to ship verbatim in `tasks.csv` while the manifest said
+    secrets are not exported.  Every credential-bearing key (`EXPORT_REDACTED_KEYS`) is now
+    replaced, recursively, with a marker in ANY member cell, and MANIFEST.json DECLARES the
+    redaction.  The manifest also declares `tables_not_included` — the export is the shipped
+    8-member portability surface, and it is not allowed to read as a complete copy of the 24
+    tables the wipe covers.  Reads run inside `refusal_guard()`; the ZIP is fully built and
     counted BEFORE the response object exists (the `runs.py` streaming doctrine: an honest count
     cannot be declared before the first byte otherwise) — but the archive itself is written to a
     TEMP FILE in the system scratch dir (`mkstemp`, U2-10), never materialized as one in-memory
@@ -27,13 +33,22 @@ THE EXPORT (V10-D2)
     chunks.  The temp file is removed by a background task once the response has been sent (and
     on any build failure), so the endpoint cannot leak scratch files.
 
-THE WIPE (V10-D3)
-    `DELETE /api/v1/data` deletes the member tables' rows in ONE transaction and KEEPS
-    `company_config` rows and the DeepSeek key store (a file — nothing here can touch it).
+THE WIPE (V10-D3, completed by DT-06)
+    `DELETE /api/v1/data` deletes EVERY shipped owner-data table (all 24: the 8 export members
+    plus the 16 the V10 scope left behind — prospects, email_logs, email_campaigns,
+    support_inbox_items, stripe_events, expense_records, ad_campaigns/ad_metrics, daily_reports,
+    auto_mode_sessions, competitors, social_*, task_attachments, vision_descriptions, …), the
+    memory rows' ChromaDB documents (through the shipped fail-closed `memory_service.delete_memory`,
+    never a bare `DELETE FROM memory_entries`), and the owner's file stores (attachment blobs,
+    generated sites, site packages/exports, run workspaces, stale export temp archives).  It KEEPS
+    `company_config` rows, the DeepSeek key store and the single-use consumed-token record — the
+    three entries `kept` names.  `kept` is the COMPLETE statement of what survives; the previous
+    list named two of eighteen surviving stores, which made the control's promise false.
+
     Two query modes:
 
-      * `?dry_run=true` — answers WOULD-delete counts; never deletes, needs no token, never
-        consumes one;
+      * `?dry_run=true` — answers WOULD-delete counts (tables + file stores); never deletes,
+        needs no token, never consumes one;
       * `?confirm_token=<token>` — the guarded wipe.  The token is minted through the SHIPPED
         approvals machinery (`POST /api/v1/approvals` with `action_fingerprint =
         DATA_WIPE_ACTION_FINGERPRINT`), which mints `"{exp}.{sig}"` via
@@ -68,12 +83,14 @@ SINGLE-USE — HOW, AND WHY IT LOOKS LIKE THIS
     SIMULTANEOUS same-token requests can both pass step 2 — step 3's lock + empty-state re-check
     closes that window (the loser deletes nothing and reports its own affected-row counts).
 
-FK NOTE (kept tables that reference wiped rows)
-    `support_inbox_items.task_id` FKs `tasks.id` and the inbox is NOT a member (the owner's
-    customer mail is not this endpoint's to delete).  On PostgreSQL the task deletes would fail
-    with an IntegrityError on a referenced row, so the same transaction NULLs those references
-    first: the inbox rows keep their content, they lose only a pointer to a task that no longer
-    exists.  With no reference left, nothing dangles.
+FK NOTE (delete order)
+    The deletes run CHILDREN FIRST, derived from the ORM's own foreign keys and frozen in
+    `WIPE_ORDER` (a test re-derives the graph and fails if the order ever violates an edge).
+    `support_inbox_items` is now a MEMBER (DT-06): its rows are deleted too, so the old
+    "NULL the task reference and keep the mail" step is gone — keeping the mail while wiping
+    everything else was exactly the undisclosed-survivor defect this revision removes.  A wipe
+    that refuses mid-way rolls the whole transaction back (a crash costs a re-mint, never a
+    half-wipe that claims otherwise).
 """
 from __future__ import annotations
 
@@ -83,6 +100,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import zipfile
@@ -95,7 +113,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,6 +122,7 @@ from starlette.background import BackgroundTask
 from app.agents.policy_firewall import configured_approval_secret, verify_approval
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.totals import declared_total
+from app.config import settings
 from app.core.errors import (
     E_CONFIG,
     E_DB,
@@ -113,20 +132,34 @@ from app.core.errors import (
     PolsiaError,
 )
 from app.core.timeutil import iso_utc
+from app.models.ads import AdCampaign, AdMetric
+from app.models.auto_mode import AutoModeSession
 from app.models.chat import ChatMessage
 from app.models.company import CompanyConfig
-from app.models.finance import RevenueSnapshot
+from app.models.competitor import Competitor
+from app.models.finance import (
+    ExpenseRecord,
+    InvoiceDunningClaimResult,
+    RevenueSnapshot,
+    StripeEvent,
+)
 from app.models.invoice import Invoice
 from app.models.memory import MemoryEntry
-from app.models.report import ActivityLog
+from app.models.outreach import EmailCampaign, EmailLog, Prospect
+from app.models.report import ActivityLog, DailyReport
 from app.models.schedule import TaskSchedule
+from app.models.social import SocialEngagement, SocialPost
 from app.models.support import SupportInboxItem
-from app.models.task import AgentRun, Task
+from app.models.task import AgentRun, Task, TaskAttachment
+from app.models.vision import VisionDescriptionRow
+from app.services import memory_service, site_package_service, site_service, task_attachment_service
 
 router = APIRouter(prefix="/data", tags=["data"], dependencies=[Depends(verify_api_key)])
 
-#: The export/wipe members (V10-D2), in the brief's order.  table name -> ORM class.
-MEMBER_MODELS: dict[str, type[Any]] = {
+#: The EXPORT members (V10-D2), in the brief's order.  table name -> ORM class.  This is the
+#: shipped portability surface and it does NOT change with the wipe scope: the manifest declares
+#: the tables it leaves out (`tables_not_included`) instead of pretending it carries them.
+EXPORT_MODELS: dict[str, type[Any]] = {
     "tasks": Task,
     "agent_runs": AgentRun,
     "activity_log": ActivityLog,
@@ -137,25 +170,98 @@ MEMBER_MODELS: dict[str, type[Any]] = {
     "chat_messages": ChatMessage,
 }
 
-#: Tabular members export as CSV; the rest as JSON (D2's split).
+#: The WIPE members (DT-06): EVERY shipped owner-data table — all 24 ORM tables except the KEPT
+#: `company_config` (the 8 export members plus the 16 the V10 scope silently left behind).
+#: `DATA_WIPE_ACTION_FINGERPRINT` digests this map, so changing the scope invalidates old tokens.
+MEMBER_MODELS: dict[str, type[Any]] = {
+    "tasks": Task,
+    "agent_runs": AgentRun,
+    "activity_log": ActivityLog,
+    "revenue_snapshots": RevenueSnapshot,
+    "invoices": Invoice,
+    "task_schedules": TaskSchedule,
+    "memory_entries": MemoryEntry,
+    "chat_messages": ChatMessage,
+    "ad_campaigns": AdCampaign,
+    "ad_metrics": AdMetric,
+    "auto_mode_sessions": AutoModeSession,
+    "competitors": Competitor,
+    "daily_reports": DailyReport,
+    "email_campaigns": EmailCampaign,
+    "email_logs": EmailLog,
+    "expense_records": ExpenseRecord,
+    "invoice_dunning_claim_results": InvoiceDunningClaimResult,
+    "prospects": Prospect,
+    "social_engagements": SocialEngagement,
+    "social_posts": SocialPost,
+    "stripe_events": StripeEvent,
+    "support_inbox_items": SupportInboxItem,
+    "task_attachments": TaskAttachment,
+    "vision_descriptions": VisionDescriptionRow,
+}
+
+#: Tabular members export as CSV; the rest as JSON (D2's split).  Export-only.
 CSV_MEMBERS: frozenset[str] = frozenset(
     {"tasks", "agent_runs", "activity_log", "revenue_snapshots", "invoices", "task_schedules"}
 )
 
-#: Wipe order: FK children first (chat_messages/agent_runs -> tasks), then the rest.
+#: Wipe order: every FK child before its parent, so no delete is refused by a reference on
+#: PostgreSQL.  The edges (task.py/outreach.py/ads.py/vision.py) are re-derived from the ORM and
+#: asserted by `tests/unit/test_w4_dt06_wipe_complete.py::test_the_wipe_order_is_a_valid_fk_order`,
+#: so a future FK cannot silently make this list stale.
 WIPE_ORDER: tuple[str, ...] = (
-    "chat_messages",
-    "agent_runs",
+    "chat_messages",                    # -> tasks
+    "agent_runs",                       # -> tasks
+    "support_inbox_items",              # -> tasks
+    "vision_descriptions",              # -> task_attachments, tasks
+    "task_attachments",                 # -> tasks
     "tasks",
+    "email_logs",                       # -> email_campaigns, prospects
+    "email_campaigns",
+    "prospects",
+    "ad_metrics",                       # -> ad_campaigns
+    "ad_campaigns",
     "activity_log",
-    "revenue_snapshots",
+    "auto_mode_sessions",
+    "competitors",
+    "daily_reports",
+    "expense_records",
+    "invoice_dunning_claim_results",
     "invoices",
-    "task_schedules",
     "memory_entries",
+    "revenue_snapshots",
+    "social_engagements",
+    "social_posts",
+    "stripe_events",
+    "task_schedules",
 )
 
-#: What the wipe provably leaves alone (the response serves this so a client need not assume).
-KEPT: tuple[str, ...] = ("company_config", "deepseek_key_store")
+#: What the wipe provably leaves alone.  This is the COMPLETE list of surviving data stores: a
+#: client must not have to assume, and the wipe must not under-report (DT-06).
+#:   * `company_config` — the owner's company profile rows;
+#:   * `deepseek_key_store` — `backend/data/deepseek_api_key.json` (a FILE; never a member);
+#:   * `data_wipe_consumed_record` — `backend/data/data_wipe_consumed.json`, the single-use marker
+#:     that must survive the wipe or a used token could wipe again.
+#: Process configuration (`.env`), the database engine's own files and the code are not data
+#: stores; they are not owner content and are not listed.
+KEPT: tuple[str, ...] = ("company_config", "deepseek_key_store", "data_wipe_consumed_record")
+
+#: The owner's FILE stores, label -> an absolute-ish root.  The wipe removes the CONTENTS of each
+#: (the directory itself is kept, so the running service does not lose its mount point).  Each
+#: resolver is read at CALL time so a test can point the service at a scratch directory.
+FILE_STORE_LABELS: tuple[str, ...] = (
+    "attachments",
+    "sites",
+    "exports",
+    "run_workspaces",
+    "export_temp_archives",
+)
+
+#: Credential-bearing keys that must never reach an export member (DT-07 / A9-02).  The VALUE is
+#: replaced by `EXPORT_REDACTION_MARK`; the key is kept so the manifest can declare the omission.
+EXPORT_REDACTED_KEYS: frozenset[str] = frozenset({"approval_token"})
+#: What a redacted cell reads as — visible, never confusable with a real token.
+EXPORT_REDACTION_MARK = "[redacted: credential]"
 
 #: The action fingerprint the owner mints for.  The digest binds the constant to the frozen
 #: member set: adding/removing a member changes the string, so a token minted before the change
@@ -187,7 +293,11 @@ CSV_FLUSH_ROWS = 500
 
 
 class DataWipeResponse(BaseModel):
-    """The DELETE wire shape: the dry run answers `would_delete`, the wipe answers `deleted`."""
+    """The DELETE wire shape: the dry run answers `would_delete`/`would_delete_files`, the wipe
+    answers `deleted`/`deleted_files`.
+
+    `kept` is the complete statement of every surviving data store (DT-06) — not a sample of it.
+    """
 
     ok: bool = True
     dry_run: bool
@@ -195,6 +305,10 @@ class DataWipeResponse(BaseModel):
     would_delete: dict[str, int] | None = None
     deleted: dict[str, int] | None = None
     total_rows: int
+    #: File-store entries the wipe removes (dry run: WOULD remove) — attachments/sites/exports/
+    #: run workspaces/temp export archives.  `None` only on a caller that asked for neither mode.
+    would_delete_files: dict[str, int] | None = None
+    deleted_files: dict[str, int] | None = None
     kept: list[str]
     how_to_execute: str | None = None
 
@@ -206,12 +320,15 @@ def _json_safe(value: Any) -> Any:
     """One at-rest value as JSON-safe data (`datetime`/`date` -> ISO-8601, `Decimal` -> str).
 
     `Decimal` stays a STRING on purpose: money exported through a float loses cents, and this
-    surface exists to move the owner's data without silent conversion.
+    surface exists to move the owner's data without silent conversion.  A dict/list value is
+    passed through `_redact_export_value` first (DT-07: credential keys never reach the archive).
     """
     if isinstance(value, datetime | date):
         return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, dict | list):
+        return _redact_export_value(value)
     return value
 
 
@@ -226,6 +343,31 @@ def _csv_cell(value: Any) -> str:
     if isinstance(value, Decimal):
         return str(value)
     return str(value)
+
+
+def _redact_export_value(value: Any) -> Any:
+    """Replace every credential-bearing key's VALUE with `EXPORT_REDACTION_MARK`, recursively.
+
+    DT-07 / A9-02: `tasks.metadata.approval_token` is a LIVE bearer credential (the approvals mint
+    stores it there for the next run) and the export shipped it verbatim in `tasks.csv` while
+    MANIFEST.json said secrets are not exported.  The key is kept and the value replaced so the
+    archive says "a credential was here, omitted" instead of silently dropping the evidence.
+
+    Applied to dict/list cells in EVERY member (a nested `approved_payloads` entry that embeds the
+    same key is covered by the recursion), and to the JSON members' objects the same way.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                EXPORT_REDACTION_MARK
+                if key in EXPORT_REDACTED_KEYS
+                else _redact_export_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_export_value(item) for item in value]
+    return value
 
 
 def _member_attrs(model: type[Any]) -> list[Any]:
@@ -312,7 +454,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
     manifest_members: list[dict[str, Any]] = []
     declared: dict[str, int] = {}
 
-    for table, model in MEMBER_MODELS.items():
+    for table, model in EXPORT_MODELS.items():
         columns = [attr.columns[0].name for attr in _member_attrs(model)]
         declared[table] = await declared_total(db, model, [], what=f"{table} export count")
         manifest_members.append(
@@ -335,9 +477,22 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
         "exported_at": iso_utc(exported_at),
         "members": manifest_members,
         "total_rows": total_rows,
+        # DT-06: the wipe covers EVERY owner-data table; this export is the shipped 8-member
+        # surface.  A manifest that listed only its own members let an owner believe the archive
+        # was a complete copy, so the tables it does NOT carry are named here.
+        "tables_not_included": sorted(set(MEMBER_MODELS) - set(EXPORT_MODELS)),
+        # DT-07 / A9-02: credential VALUES are replaced, never exported.  Declared so the archive
+        # cannot be read as a byte-complete copy of a cell.
+        "redacted_fields": [
+            f"any key named {key!r} in any member cell (recursively) — replaced with "
+            f"{EXPORT_REDACTION_MARK!r}"
+            for key in sorted(EXPORT_REDACTED_KEYS)
+        ],
         "not_included": [
             "the DeepSeek key store (backend/data/deepseek_api_key.json) — a file, never a member",
             ".env contents — secrets are not exported",
+            "attachment blobs, generated sites, site packages and run-workspace files — disk "
+            "stores, not members (the wipe removes their contents; this export never carried them)",
         ],
     }
 
@@ -357,7 +512,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
     try:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
-            for table, model in MEMBER_MODELS.items():
+            for table, model in EXPORT_MODELS.items():
                 written = await _write_member(db, model, table=table, archive=archive)
                 if written != declared[table]:
                     _remove_export_tempfile(path)
@@ -567,6 +722,187 @@ async def _count_members(db: AsyncSession) -> dict[str, int]:
     return counts
 
 
+# ── the owner's file stores (DT-06) ──────────────────────────────────────────────────────────
+
+
+def _runs_root() -> Path:
+    """`<code_workspace_dir>/runs` — the per-run workspace root `tool_registry` writes.
+
+    Same resolution the tool seam performs (`tool_registry._workspace_root`: settings value or
+    `data/workspace`, `expanduser()`, `resolve()`), so the wipe and the writer cannot disagree.
+    """
+    raw = str(getattr(settings, "code_workspace_dir", "data/workspace") or "data/workspace")
+    return Path(raw).expanduser().resolve() / "runs"
+
+
+def _export_temp_dir() -> Path:
+    """Where `_build_export` writes its temp archives — a seam the tests can point at scratch."""
+    return Path(tempfile.gettempdir())
+
+
+def _file_store_roots() -> dict[str, Path]:
+    """Every owner-data file store, label -> root.
+
+    Read at CALL time (module attributes / settings / the service's own resolver), so a test can
+    monkeypatch one root without the wipe reading a stale import.  `task_attachment_service.
+    attachments_root()` is the service's own resolution of `settings.attachments_dir`; `SITES_ROOT`
+    and `EXPORTS_ROOT` are the module attributes the services (and `main`'s static mount) use.
+    """
+    return {
+        "attachments": task_attachment_service.resolve_root(),
+        "sites": site_service.SITES_ROOT,
+        "exports": site_package_service.EXPORTS_ROOT,
+        "run_workspaces": _runs_root(),
+    }
+
+
+def _store_entries(root: Path, label: str) -> list[Path]:
+    """The top-level entries of one store root; a hostile root is a named refusal.
+
+    A root that IS a link/junction is refused rather than traversed (the wipe must never delete
+    through a reparse point into a directory this endpoint was not pointed at); a root that exists
+    but is not a directory is refused for the same reason.
+    """
+    try:
+        if not root.exists():
+            return []
+        if root.is_symlink() or _is_junction(root):
+            raise PolsiaError(
+                E_STORAGE,
+                f"the {label} store root {str(root)!r} is a link/junction — refusing to wipe "
+                "through it",
+                how_to_fix="point the store at a real directory (settings), then retry the wipe",
+                context={"store": label, "path": str(root)},
+            )
+        if not root.is_dir():
+            raise PolsiaError(
+                E_STORAGE,
+                f"the {label} store root {str(root)!r} exists but is not a directory",
+                how_to_fix="fix the store path in settings, then retry the wipe",
+                context={"store": label, "path": str(root)},
+            )
+        with os.scandir(root) as scanned:
+            return [Path(entry.path) for entry in scanned]
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"the {label} store {str(root)!r} could not be read ({type(exc).__name__}: {exc})",
+            how_to_fix="check the directory permissions, then retry the wipe",
+            context={"store": label, "path": str(root)},
+        ) from exc
+
+
+def _is_junction(path: Path) -> bool:
+    """True for a Windows directory junction (a reparse point `is_symlink()` does not report)."""
+    probe = getattr(os.path, "isjunction", None)
+    return bool(probe(path)) if callable(probe) else False
+
+
+def _remove_store_entry(entry: Path) -> None:
+    """Remove ONE top-level entry: a link is unlinked, a junction un-joined, a dir tree removed.
+
+    NEVER follows a link into its target: a symlink/junction is detached (`unlink`/`rmdir`), so the
+    wipe cannot delete a directory it was not pointed at.
+    """
+    if entry.is_symlink():
+        entry.unlink()
+        return
+    if _is_junction(entry):
+        os.rmdir(entry)  # removes the reparse point only; the target is untouched
+        return
+    if entry.is_dir():
+        shutil.rmtree(entry)
+        return
+    entry.unlink()
+
+
+def _export_temp_entries() -> list[Path]:
+    """The wiped export's own scratch archives (`polsia-data-export-*.zip`, U2-10's prefix).
+
+    They are owner data (a full copy of the exported tables) and a crashed export leaves one
+    behind, so the wipe removes them too.  Only THIS product's exact prefix+suffix matches.
+    """
+    root = _export_temp_dir()
+    try:
+        if not root.is_dir():
+            return []
+        with os.scandir(root) as scanned:
+            return [
+                Path(entry.path)
+                for entry in scanned
+                if entry.name.startswith(EXPORT_TEMP_PREFIX)
+                and entry.name.endswith(EXPORT_TEMP_SUFFIX)
+                and entry.is_file()
+            ]
+    except OSError as exc:
+        raise PolsiaError(
+            E_STORAGE,
+            f"the export temp directory {str(root)!r} could not be read "
+            f"({type(exc).__name__}: {exc})",
+            how_to_fix="check the system scratch directory permissions, then retry the wipe",
+            context={"store": "export_temp_archives", "path": str(root)},
+        ) from exc
+
+
+def _wipe_file_stores(*, remove: bool) -> dict[str, int]:
+    """Count (dry run) or remove (wipe) the owner's file-store contents, by label.
+
+    `remove=False` is a pure read: it counts top-level entries and touches nothing.  `remove=True`
+    deletes each entry with `_remove_store_entry`; the FIRST failure is a named `E_STORAGE` refusal
+    that says what was already removed — never a silent partial success.  The store DIRECTORIES
+    survive (the running service's mount points), their owner content does not.
+    """
+    counts: dict[str, int] = {}
+    for label, root in _file_store_roots().items():
+        entries = _store_entries(root, label)
+        if not remove:
+            counts[label] = len(entries)
+            continue
+        removed = 0
+        for entry in entries:
+            try:
+                _remove_store_entry(entry)
+            except OSError as exc:
+                raise PolsiaError(
+                    E_STORAGE,
+                    f"the data wipe could not remove {str(entry)!r} from the {label} store "
+                    f"({type(exc).__name__}: {exc}); {removed} entr(ies) of this store were "
+                    "already removed before the failure — the database rows were NOT deleted "
+                    "(the transaction rolls back), so re-run the wipe after fixing the path",
+                    how_to_fix=f"check the permissions/ownership of {str(root)!r} and retry the "
+                               "wipe with a fresh confirm token",
+                    context={"store": label, "path": str(entry), "removed_before_failure": removed},
+                ) from exc
+            removed += 1
+        counts[label] = removed
+    temp_entries = _export_temp_entries()
+    if not remove:
+        # A dry run is a READ: it counts the archives and removes nothing (the loop below is the
+        # only destructive leg left in this function).
+        counts["export_temp_archives"] = len(temp_entries)
+        return counts
+    removed_temp = 0
+    for entry in temp_entries:
+        try:
+            entry.unlink()
+        except OSError as exc:
+            raise PolsiaError(
+                E_STORAGE,
+                f"the data wipe could not remove the export temp archive {str(entry)!r} "
+                f"({type(exc).__name__}: {exc}); {removed_temp} archive(s) were already removed — "
+                "the database rows were NOT deleted (the transaction rolls back)",
+                how_to_fix="check the system scratch directory permissions, then retry the wipe",
+                context={
+                    "store": "export_temp_archives",
+                    "path": str(entry),
+                    "removed_before_failure": removed_temp,
+                },
+            ) from exc
+        removed_temp += 1
+    counts["export_temp_archives"] = removed_temp
+    return counts
+
+
 @router.delete("")
 async def delete_data_route(
     dry_run: bool = Query(False),
@@ -576,13 +912,16 @@ async def delete_data_route(
     """Dry run (no token) or the guarded wipe (single-use confirm token).  Refusals by name."""
     with refusal_guard():
         if dry_run:
-            # A read, like the export: never deletes, never touches a token.
+            # A read, like the export: never deletes, never touches a token.  The file-store read
+            # validates each root the same way the wipe will (a link/junction refuses by name).
             counts = await _count_members(db)
+            file_counts = _wipe_file_stores(remove=False)
             return DataWipeResponse(
                 dry_run=True,
                 action_fingerprint=DATA_WIPE_ACTION_FINGERPRINT,
                 would_delete=counts,
                 total_rows=sum(counts.values()),
+                would_delete_files=file_counts,
                 kept=list(KEPT),
                 how_to_execute=(
                     "mint the confirm token with POST /api/v1/approvals "
@@ -631,13 +970,14 @@ async def delete_data_route(
             await db.execute(select(CompanyConfig.id).limit(1).with_for_update())
 
             counts_before = await _count_members(db)
+            files_before = _wipe_file_stores(remove=False)
             total_before = sum(counts_before.values())
-            if total_before == 0:
+            if total_before == 0 and sum(files_before.values()) == 0:
                 await db.rollback()
                 raise PolsiaError(
                     E_VALIDATION,
-                    "there is nothing to delete: every member table is already empty — the "
-                    "confirm token was NOT consumed",
+                    "there is nothing to delete: every member table and every file store is "
+                    "already empty — the confirm token was NOT consumed",
                     how_to_fix="nothing to do; run DELETE /api/v1/data?dry_run=true if this is "
                                "unexpected",
                     context={"action_fingerprint": DATA_WIPE_ACTION_FINGERPRINT},
@@ -654,18 +994,40 @@ async def delete_data_route(
             )
             _persist_consumed(consumed)
 
-            # Kept tables that FK wiped rows: clear the reference, keep the row (module docstring).
-            await db.execute(
-                update(SupportInboxItem)
-                .where(SupportInboxItem.task_id.is_not(None))
-                .values(task_id=None)
-            )
+            # DT-06 (1/3): the memory rows go through the SHIPPED dual-store delete.  A bare
+            # `DELETE FROM memory_entries` leaves every document searchable in ChromaDB, so an
+            # agent prompt kept receiving "deleted" memory content after the wipe.  `delete_memory`
+            # removes the document FIRST and refuses `E_STORAGE` if it cannot — the whole wipe then
+            # rolls back with the refusal NAMED (never a silent partial success).
+            memory_ids = [
+                int(memory_id)
+                for memory_id in (
+                    await db.execute(select(MemoryEntry.id).order_by(MemoryEntry.id))
+                ).scalars()
+            ]
+            for memory_id in memory_ids:
+                await memory_service.delete_memory(db, memory_id)
 
+            # DT-06 (2/3): the owner's file stores.  Not transactional, so it runs BEFORE the row
+            # deletes: a storage refusal leaves the database untouched and says what was removed.
+            deleted_files = _wipe_file_stores(remove=True)
+
+            # DT-06 (3/3): every member table, children first (`WIPE_ORDER`).  `memory_entries`
+            # rows are already gone through `delete_memory`; the count still reports them so the
+            # response accounts for every row the wipe destroyed.
             deleted: dict[str, int] = {}
             for table in WIPE_ORDER:
                 model = MEMBER_MODELS[table]
                 result = await db.execute(delete(model))
                 rowcount = result.rowcount
+                if table == "memory_entries":
+                    # The rows went through `delete_memory` above; the statement deletes what is
+                    # left (0 in the normal case).  The response counts every row the wipe
+                    # destroyed, so the two legs are summed.
+                    deleted[table] = len(memory_ids) + (
+                        int(rowcount) if isinstance(rowcount, int) and rowcount >= 0 else 0
+                    )
+                    continue
                 deleted[table] = (
                     int(rowcount)
                     if isinstance(rowcount, int) and rowcount >= 0
@@ -687,5 +1049,6 @@ async def delete_data_route(
         action_fingerprint=DATA_WIPE_ACTION_FINGERPRINT,
         deleted=deleted,
         total_rows=sum(deleted.values()),
+        deleted_files=deleted_files,
         kept=list(KEPT),
     )
