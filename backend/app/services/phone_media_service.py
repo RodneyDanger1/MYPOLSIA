@@ -325,7 +325,7 @@ def read_part(part_id: int, *, max_bytes: int | None = None) -> MediaPart:
     row = rows[0]
 
     blob = row["blob"]
-    if blob is None or not isinstance(blob, (bytes, bytearray, memoryview)):
+    if blob is None or not isinstance(blob, bytes | bytearray | memoryview):
         raise _not_found(part_id, reason="the part carries no stored blob")
     declared = int(row["size"] or 0)
     actual = len(blob)

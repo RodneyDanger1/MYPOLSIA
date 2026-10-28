@@ -413,7 +413,7 @@ def _session_free_send(
             ),
             context={"status": "unsubscribed", "source": "run context suppression list"},
         )
-    if not isinstance(raw_suppressed, (list, tuple)):
+    if not isinstance(raw_suppressed, list | tuple):
         raise PolsiaError(
             E_CONFIG,
             "the run context suppression list ('suppressed') is malformed: expected a list of "

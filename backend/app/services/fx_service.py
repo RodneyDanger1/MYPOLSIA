@@ -93,7 +93,7 @@ def _amount(value: object) -> float:
     `float`'s range is its own named refusal: `math.isfinite` raises `OverflowError` on it, and
     JSON parses arbitrarily long integers, so this is caller input, not an internal invariant.
     """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         raise PolsiaError(
             E_VALIDATION,
             f"amount must be a non-negative finite number (got {value!r})",
@@ -198,7 +198,7 @@ def _fetch(frm: str, to: str) -> dict[str, Any]:
     raw_rate = body.get("rate")
     if (
         isinstance(raw_rate, bool)
-        or not isinstance(raw_rate, (int, float))
+        or not isinstance(raw_rate, int | float)
         or not math.isfinite(float(raw_rate))
         or float(raw_rate) <= 0
     ):

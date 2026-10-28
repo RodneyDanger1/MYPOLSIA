@@ -314,7 +314,7 @@ def filetime_to_local(ticks: int | float | str | None) -> str | None:
         if not re.fullmatch(r"-?\d+", stripped):
             raise ValueError(f"non-numeric FILETIME ticks {ticks!r}")
         ticks = int(stripped)
-    elif not isinstance(ticks, (int, float)):
+    elif not isinstance(ticks, int | float):
         raise ValueError(f"non-numeric FILETIME ticks {ticks!r}")
     if not ticks:
         return None

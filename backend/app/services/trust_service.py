@@ -761,7 +761,7 @@ def pinned_http_get(
             how_to_fix="pass a positive byte bound",
             context={"field": "max_bytes", "max_bytes": max_bytes},
         )
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+    if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
         raise PolsiaError(
             E_VALIDATION,
             f"pinned_http_get: timeout must be a positive number of seconds (got {timeout!r})",

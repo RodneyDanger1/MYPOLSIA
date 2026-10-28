@@ -70,7 +70,7 @@ def _strict_date(value: Any) -> Any:
         return value
     if isinstance(value, bool):
         raise ValueError(f"non-date input {value!r} refused; pass an ISO-8601 date (YYYY-MM-DD)")
-    if isinstance(value, (int, float)) or (
+    if isinstance(value, int | float) or (
         isinstance(value, str) and _ANY_NUMERIC_RE.fullmatch(value.strip())
     ):
         raise ValueError(

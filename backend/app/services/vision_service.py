@@ -58,7 +58,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import claude_cli, deepseek_runtime  # noqa: F401  (deepseek_runtime is the seam doc)
+from app.agents import (  # noqa: F401  (deepseek_runtime is the seam doc)
+    claude_cli,
+    deepseek_runtime,
+)
 from app.agents.deepseek_runtime import invoke
 from app.core.errors import (
     E_CLI_JSON,

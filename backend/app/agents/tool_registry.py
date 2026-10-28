@@ -1599,7 +1599,7 @@ def _search_row(row: Any) -> dict | None:
         # Measured-or-None: an absent/awkward value is NULL, never a fabricated 0/0.0.
         "authority": (authority if isinstance(authority, int) and not isinstance(authority, bool)
                       else None),
-        "rerank_score": (float(score) if isinstance(score, (int, float))
+        "rerank_score": (float(score) if isinstance(score, int | float)
                          and not isinstance(score, bool) else None),
     }
 
@@ -2287,7 +2287,7 @@ def cleanup_expired_run_workspaces(
             how_to_fix="pass the number of newest run directories to keep (0 is allowed)",
             context={"keep_latest": repr(keep_latest)},
         )
-    if (not isinstance(max_age_hours, (int, float)) or isinstance(max_age_hours, bool)
+    if (not isinstance(max_age_hours, int | float) or isinstance(max_age_hours, bool)
             or max_age_hours < 0):
         raise PolsiaError(
             E_VALIDATION,
@@ -2374,7 +2374,7 @@ def cleanup_expired_run_workspaces(
         if name in protected:
             continue
         mtime = item["mtime"]
-        assert isinstance(mtime, (int, float))  # populated above; mypy cannot read the dict shape
+        assert isinstance(mtime, int | float)  # populated above; mypy cannot read the dict shape
         if float(mtime) >= cutoff:
             continue
         try:

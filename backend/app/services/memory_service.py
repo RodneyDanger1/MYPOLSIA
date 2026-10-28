@@ -401,7 +401,7 @@ async def resolve_agent_memories(
         distance = hit.get("distance")
         similarity = (
             max(0.0, round(1.0 - float(distance), 4))
-            if isinstance(distance, (int, float))
+            if isinstance(distance, int | float)
             else 0.0
         )
         views.append({

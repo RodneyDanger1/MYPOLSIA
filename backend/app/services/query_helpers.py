@@ -40,9 +40,9 @@ def json_or_none(raw: Any) -> Any:
     """
     if raw is None:
         return None
-    if isinstance(raw, (dict, list)):
+    if isinstance(raw, dict | list):
         return raw
-    if not isinstance(raw, (str, bytes, bytearray)):
+    if not isinstance(raw, str | bytes | bytearray):
         logger.warning("ignoring JSON at rest of unexpected type %s", type(raw).__name__)
         return None
     try:

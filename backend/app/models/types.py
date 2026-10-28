@@ -65,7 +65,7 @@ class TolerantJSON(JSON):
         return process
 
     def process_result_value(self, value, dialect):  # type: ignore[no-untyped-def]
-        if value is None or isinstance(value, (dict, list)):
+        if value is None or isinstance(value, dict | list):
             return value
         try:
             return json.loads(value)

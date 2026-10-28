@@ -87,7 +87,7 @@ def sniff_image_mime(head: bytes) -> str | None:
     bytes are inspected — callers pass the whole payload (cheap enough at <= 5 MiB) and this
     function reads what it needs.
     """
-    if not isinstance(head, (bytes, bytearray)) or len(head) < 4:
+    if not isinstance(head, bytes | bytearray) or len(head) < 4:
         return None
     if head.startswith(_PNG_MAGIC):
         return "image/png"
@@ -247,7 +247,7 @@ async def save_attachment(
     the caller can pass what the client claimed — it is recorded in the refusal context and
     never trusted for the stored `mime`.
     """
-    if not isinstance(data, (bytes, bytearray)):
+    if not isinstance(data, bytes | bytearray):
         raise PolsiaError(
             E_VALIDATION,
             f"attachment upload: expected bytes, got {type(data).__name__}",

@@ -142,7 +142,7 @@ ERROR_HINTS: dict[str, str] = {
     E_CLI_TIMEOUT: "raise CLAUDE_TIMEOUT_SECONDS (DEEPSEEK_TIMEOUT_SECONDS on the DeepSeek runtime) or shrink the prompt; a timed-out attempt is retried up to AGENT_MAX_RETRIES times (jittered backoff), each retry costing the full timeout again",
     E_CLI_EXIT: "run the CLI by hand with the same prompt and read its stderr",
     E_CLI_JSON: "check the CLI version supports --output-format json",
-    E_AGENT_BAD_OUTPUT: "the repair ladder will retry; otherwise tighten the agent schema",
+    E_AGENT_BAD_OUTPUT: "the run's own repair ladder already re-asked; this failure is terminal — change the instruction/schema, then re-run deliberately",
     E_PROMPT_TOO_LARGE: "enable CLAUDE_PROMPT_VIA_STDIN or lower the context budget",
     E_DEEPSEEK_KEY: "enter your DeepSeek API key in Settings (or set DEEPSEEK_API_KEY) and retry",
     E_STORAGE: "repair or remove the local secret store file (backend/data/deepseek_api_key.json) and retry",
