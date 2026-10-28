@@ -481,8 +481,18 @@ async def test_a_broker_outage_after_the_attach_is_a_named_refusal_and_the_row_s
     assert body["error"]["context"]["task_id"] == task_id
     assert body["error"]["how_to_fix"]
     row = queue_db.row(task_id)
-    assert row["status"] == "failed", "nothing reconciles a row no worker was told about"
+    # B2 (C3-R2) — the pin repaired with its arithmetic.  It used to read `== "failed"` on the
+    # rationale "nothing reconciles a row no worker was told about".  That rationale was the defect:
+    # a refused publish cannot prove NOTHING was delivered, so terminalising the row orphans real
+    # work.  The row now keeps `pending` (claimable) and carries the reconciler's `rearmed_at`
+    # marker, so a bounded retry is owed instead of a row nobody will ever pick up.
+    #   OLD: assert row["status"] == "failed"   (one terminal state, no retry owed)
+    #   NEW: assert row["status"] == "pending"  (claimable) + `rearmed_at` present (retry owed)
+    assert row["status"] == "pending", "a publish refusal cannot prove nothing was delivered: the row stays claimable"
     assert "E_REDIS" in (row["error_message"] or "")
+    stored_rearm = json.loads(row["metadata"])
+    assert stored_rearm.get("rearmed_at"), "the reconciler's marker is what turns a refusal into a bounded retry"
+    assert stored_rearm.get("rearm_reason", "").startswith("enqueue_refused:")
     stored = json.loads(row["metadata"])
     assert stored["approval_token"], "the attach itself succeeded and survives for audit"
 

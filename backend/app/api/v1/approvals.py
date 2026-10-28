@@ -33,13 +33,14 @@ import logging
 
 from fastapi import APIRouter, Depends, status
 from pydantic import Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.policy_firewall import configured_approval_secret, issue_approval
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.core.errors import E_CONFIG, E_REDIS, PolsiaError
 from app.schemas.approval import ApprovalIssueRequest, ApprovalIssueResponse
-from app.services.task_service import attach_approval_token, update_task_status
+from app.services.task_service import attach_approval_token
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,14 @@ async def _attach_and_requeue(db: AsyncSession, task_id: int, token: str) -> Non
     `get_db`'s teardown commit, so the route behaves identically under a plain test-client session
     override.
 
-    A broker that refuses the hand-off is the named `E_REDIS` refusal with the row's measured
-    terminal state recorded (`failed` + the reason) — the identical contract
-    `app/api/v1/agents.py` implements for the manual trigger: nothing reconciles a row no worker
-    was ever told about, so a `pending` row left behind would look queued forever.
+    A broker that refuses the hand-off is the named `E_REDIS` refusal — the identical contract
+    `app/api/v1/agents.py` implements for the manual trigger, and for the same measured reason
+    (A2-03): a publish refusal cannot prove that NOTHING was delivered, so terminalising the row
+    `failed` would write off work that may already be queued (and `claim_task` accepts only
+    `pending` rows).  The row therefore STAYS `pending`, carries `metadata.rearmed_at` (the
+    marker `maintenance._reconcile_stranded_pending` re-dispatches on) plus the `E_REDIS` reason
+    for the human reading it, and the caller gets a refusal that says exactly that: accepted and
+    re-queued with its token, but NOT dispatched.
     """
     await attach_approval_token(db, task_id, token)   # refuses by name; never a partial write
     await db.commit()
@@ -84,18 +89,30 @@ async def _attach_and_requeue(db: AsyncSession, task_id: int, token: str) -> Non
         # `.delay()` is a BLOCKING call (the same measured redis-py retry ladder the manual
         # trigger documents); `to_thread` keeps the event loop responsive during the hand-off.
         await asyncio.to_thread(run_agent_task.delay, task_id)
-    except Exception as exc:  # broker unavailable: NO delivery was accepted for this row
+    except Exception as exc:  # broker unavailable: delivery is UNPROVEN, not proven absent
+        from app.models.task import Task  # lazy: keeps this module's import graph as it was
+        from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
+
         logger.warning("approvals: failed to enqueue re-queued task %s", task_id, exc_info=True)
-        await update_task_status(
-            db,
-            task_id,
-            "failed",
-            error_message=f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})",
-        )
+        await stamp_rearmed(db, [task_id], reason=f"enqueue_refused:{exc.__class__.__name__}")
+        row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+        if row is not None:
+            # The refusal lands ON the row while its status keeps the truth: nothing proved the
+            # message was never queued, so the row must stay claimable.
+            row.error_message = f"{E_REDIS}: enqueue failed ({exc.__class__.__name__})"
+        # Load-bearing commit: `stamp_rearmed` only FLUSHES, and the request session is not
+        # guaranteed to commit a path that raises right below.
         await db.commit()
         raise PolsiaError(
             E_REDIS,
-            f"task #{task_id} was re-queued with the token but could not be handed to a worker",
+            f"task #{task_id} was re-queued with its approval token but NOT dispatched: the "
+            f"broker refused the hand-off ({exc.__class__.__name__}), so the row stays queued "
+            "for the stranded-row reconciler to re-dispatch",
+            how_to_fix=(
+                "no action is required — the row is pending with its token and the 5-minute "
+                "stranded-row sweep re-dispatches it; check REDIS_URL and that the broker and a "
+                "worker are running if this keeps happening"
+            ),
             context={"task_id": task_id},
         ) from exc
 

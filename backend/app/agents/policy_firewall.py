@@ -42,6 +42,7 @@ from typing import Any
 from app.core.errors import (
     E_POLICY_DENIED,
     E_RATE_LIMITED,
+    E_RUN_CANCELLED,
     E_SANDBOX_BLOCKED,
     PolsiaError,
 )
@@ -52,16 +53,10 @@ logger = logging.getLogger(__name__)
 # Policy codes this module owns
 # ---------------------------------------------------------------------------
 
-#: F-16's named refusal: the run lost its claim, so its next side effect must not happen.
-#:
-#: WHY module-local and not in `app/core/errors.py`: that file is another seat's territory this
-#: wave, and the tree already ships exactly this pattern for codes a module needs before the
-#: taxonomy carries them (`tool_registry.E_BALANCE` / `E_RATE_LIMIT` / `E_UNAVAILABLE`, whose
-#: comment states the same reason).  The rule those constants follow is honoured here: EVERY
-#: refusal built with this code passes an explicit `how_to_fix`, so nothing depends on
-#: `ERROR_HINTS` carrying it.  Adoption into `errors.py` (constant + `ERROR_HINTS` + a 409 in
-#: `HTTP_STATUS_BY_CODE`, the `E_TASK_CLAIMED` status) is filed in the seat's REQUESTS.md.
-E_RUN_CANCELLED = "E_RUN_CANCELLED"
+#: F-16's named refusal (the run lost its claim) is the SHARED `app.core.errors.E_RUN_CANCELLED`
+#: (imported above): one constant, one `ERROR_HINTS` entry and one 409 in `HTTP_STATUS_BY_CODE`,
+#: so the code the firewall denies with is the code the API answers with.  It used to be declared
+#: module-locally, which meant a status census could not see that the taxonomy already carried it.
 
 #: The POLSIA policy code a cancelled-run denial carries in `PolicyDecision.code` and the audit row.
 #: `PolicyDecision.e_code` maps it to `E_RUN_CANCELLED`; the registry's tool gate names it in its
@@ -546,8 +541,9 @@ def reset_run_channel_sends() -> None:
 # ---------------------------------------------------------------------------
 # Run-level cancellation: the contextvar the WORKER publishes and the gate refuses on
 # ---------------------------------------------------------------------------
-# `E_RUN_CANCELLED` / `_CANCELLED_POLICY_CODE` are declared at the top of this module, beside the
-# other codes; the STATE and its verbs live here, in the run-scope section.
+# `E_RUN_CANCELLED` is the shared `app.core.errors` constant (imported at the top of this
+# module); `_CANCELLED_POLICY_CODE` is this module's own POLSIA policy code, declared beside the
+# other codes.  The STATE and its verbs live here, in the run-scope section.
 
 
 @dataclass

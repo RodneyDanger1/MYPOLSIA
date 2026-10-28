@@ -1021,6 +1021,23 @@ def execute_tool(name: str, arguments: dict, *, agent_type: str,
     return text
 
 
+def _github_from_branch(arguments: Any) -> Any:
+    """The base branch this call creates FROM — `None` means the call is a READ (F-30).
+
+    The ONE predicate both seams use: `_tool_action_class` classifies the call with it and
+    `_run_github_branch` dispatches on it.  It used to live twice in two dialects — the gate
+    tested falsiness, the runner tested `is None` — so `from_branch: ""` was a READ at the gate
+    (no approval, no cap slot) and a CREATE at the runner: an unapproved write decided as clean.
+    Absent, JSON null and the empty string are now the same answer at both seams; any other
+    value stays a create, so a malformed base is refused by `github_service` instead of being
+    silently downgraded to a read here.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    raw = arguments.get("from_branch")
+    return None if raw is None or raw == "" else raw
+
+
 def _tool_action_class(name: str, arguments: Any) -> ActionClass:
     """The class THIS call is gated as: the tool's table entry, refined by the call's own mode.
 
@@ -1033,7 +1050,7 @@ def _tool_action_class(name: str, arguments: Any) -> ActionClass:
     action_class = _TOOL_ACTION_CLASS.get(name) or ActionClass.READ
     if not isinstance(arguments, dict):
         return action_class           # malformed arguments are refused below, not guessed at
-    if name == "github_branch" and not arguments.get("from_branch"):
+    if name == "github_branch" and _github_from_branch(arguments) is None:
         return ActionClass.READ
     if name in _TOOL_CHANNEL and arguments.get("dry_run") is not False:
         return ActionClass.READ
@@ -2427,22 +2444,46 @@ def _run_pricing_catalog(*, agent_type: str, arguments: dict) -> dict:  # noqa: 
 # phone_read — the owner's phone, read-only, codes structurally absent
 # ---------------------------------------------------------------------------
 
-def _phone_tool_text(text: str) -> str:
-    """The store's body — or the NAMED withholding when it looks like a verification code.
+#: F-34 — what a body that is NOTHING BUT a token looks like: one 4-8 character run, optionally
+#: separated by spaces/hyphens/dots ("482913", "G-482913", "12 34 56").  Character-class, not a
+#: keyword pattern: a service that texts the bare code sends no cue for `CODE_RE` to anchor on.
+_BARE_CODE_RE = re.compile(r"^[\s\-–—.]*[0-9A-Za-z]{4,8}[\s\-–—.]*$")
 
-    `phone_link_service` masks numbers where it masks them; this function is the TOOL-side
-    equivalent for codes: `PHONE_CODE_WITHHELD` replaces a code-shaped body, mirroring
-    `celery_app/tasks/phone_activity.py::_detail_for` (the activity feed is agent-visible and
-    refuses to carry a 2FA body).  `phone_link_service.codes()` itself is NEVER called here —
-    there is no codes field in the result shape at all (absent by construction), and this
-    withholding is what keeps a code VALUE from riding a raw message body out of the tool.
-    The `CODE_RE` is the service's own measured pattern, so the tool and the feed agree.
+
+def _looks_like_bare_code(text: str) -> bool:
+    """Is this body a token on its own (the keyword-free code shape)?"""
+    body = (text or "").strip()
+    if not body or not _BARE_CODE_RE.match(body):
+        return False
+    # "Thanks" is one 6-letter run and is NOT a code: the shape needs a digit in it.
+    return any(ch.isdigit() for ch in re.sub(r"[\s\-–—.]", "", body))
+
+
+class _PhoneBody:
+    """A message body that cannot carry a verification code into the model (F-34).
+
+    The withholding is decided ONCE, when the row is read, and the RAW text is not a field of
+    this value at all — `_run_phone_read` copies `safe_text` into the result, so no serialisation
+    of the tool payload can reach the original body.  Two legs, both evaluated before the value
+    exists: the service's own keyword pattern (`phone_link_service.CODE_RE`, the SAME pattern the
+    activity feed uses) and the keyword-free SHAPE above.  The pattern alone was probabilistic in
+    exactly one direction that matters: a bare code ("482913") carried no cue, so it rode the
+    body out to the model untouched.
     """
-    from app.services import phone_link_service
 
-    if phone_link_service.CODE_RE.search(text or ""):
-        return PHONE_CODE_WITHHELD
-    return text
+    __slots__ = ("safe_text",)
+
+    def __init__(self, safe_text: str) -> None:
+        self.safe_text = safe_text
+
+    @classmethod
+    def of(cls, text: str) -> _PhoneBody:
+        from app.services import phone_link_service
+
+        body = text or ""
+        if phone_link_service.CODE_RE.search(body) or _looks_like_bare_code(body):
+            return cls(PHONE_CODE_WITHHELD)
+        return cls(body)
 
 
 def _phone_argument_int(
@@ -2562,7 +2603,7 @@ def _run_phone_read(*, agent_type: str, arguments: dict) -> dict:
                 "when": message["when"],
                 "dir": message["dir"],
                 "who": message["who"],
-                "text": _phone_tool_text(message["text"]),
+                "text": _PhoneBody.of(message["text"]).safe_text,
             }
             for message in rows[:limit]
         ]
@@ -2657,7 +2698,7 @@ def _run_github_branch(*, agent_type: str, arguments: dict) -> dict:
     dry_run, refusal = _github_dry_run("github_branch", args, agent_type=agent_type)
     if refusal is not None:
         return refusal
-    from_branch = args.get("from_branch")
+    from_branch = _github_from_branch(args)
     try:
         if from_branch is None:
             result = github_service.get_branch(args.get("repo"), args.get("branch"))
