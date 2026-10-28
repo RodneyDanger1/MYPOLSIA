@@ -669,7 +669,7 @@ async def test_the_declared_total_matches_the_rows_written_for_every_member(asyn
     assert written == declared, "a manifest may only declare what the archive really carries"
     assert total_rows == sum(written.values()) == manifest["total_rows"]
 
-    for table, model in data_module.MEMBER_MODELS.items():
+    for table, model in data_module.EXPORT_MODELS.items():
         live = len((await async_db_session.execute(select(model).limit(10_000))).scalars().all())
         assert declared[table] == live, f"{table}: the manifest disagrees with the ledger"
 

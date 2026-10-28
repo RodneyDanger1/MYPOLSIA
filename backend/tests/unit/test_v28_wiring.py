@@ -63,6 +63,11 @@ API_ONLY: dict[tuple[str, str], str] = {
         "Agent tool `link_status` only. A model checks a cited URL before sending it; no page "
         "renders a link-health card, so no browser call exists by design."
     ),
+    ("POST", "/api/v1/support/inbox/inbound"): (
+        "Provider->us inbound-email webhook (feature W5). It is called by the mail provider, "
+        "never by the SPA; auth is the dedicated SUPPORT_INBOUND_SECRET header, not the owner "
+        "key. The resulting inbox item is read/consumed by the support page and attach sweep."
+    ),
 }
 
 #: Settings read through a COMPUTED attribute name (invisible to a literal scan).  Empty today:

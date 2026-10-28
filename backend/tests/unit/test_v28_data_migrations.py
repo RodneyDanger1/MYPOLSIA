@@ -1,4 +1,4 @@
-"""V28/L5 — the migration chain from ZERO: fresh SQLite file → `0016` with all 24 tables.
+"""V28/L5 — the migration chain from ZERO: fresh SQLite file → `0017` with all 25 tables.
 
 Why this file exists
 --------------------
@@ -10,12 +10,17 @@ the API expect.  A chain that only works when a previous database exists is not 
 
 What is pinned
 --------------
-1. from an empty file the chain reaches the single head `0016` and creates exactly the 24 ORM
+1. from an empty file the chain reaches the single head `0017` and creates exactly the 25 ORM
    tables (no extra table, no missing table), with `PRAGMA foreign_key_check` empty;
-2. the revision graph is one line of 16 revisions ending at `0016` — no branch, no orphan;
+2. the revision graph is one line of 17 revisions ending at `0017` — no branch, no orphan;
 3. a second `upgrade head` on the already-migrated database is a NO-OP (schema bytes unchanged);
 4. the ads money columns the chain ships carry NO server default, which is what makes "absent"
    representable at rest (the 0014/0015 law).
+
+W4/F3 DELIBERATE RE-PIN (2026-10-28; DT-01 + DT-05, migration 0017): old head `0016` → `0017`,
+old revision count 16 → 17, old table count 24 → 25 (`invoice_dunning_claim_results`, the
+append-only dunning claim ledger).  The four laws above are unchanged; the 0017 revision is
+additive except for DT-01's deliberate drop of the seven fabricated server defaults.
 """
 from __future__ import annotations
 
@@ -29,10 +34,13 @@ from alembic import command
 from alembic import config as alembic_config
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
-HEAD = "0016"
-REVISION_COUNT = 16
+# W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017 (migration
+# `0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05), 16 -> 17 revisions.
+HEAD = "0017"
+REVISION_COUNT = 17
 
-#: The schema's 24 product tables, measured from `Base.metadata` at `f0ce8a2`.  Spelled out (not
+#: The schema's 25 product tables (24 at `f0ce8a2` + 0017's append-only dunning result table,
+#: measured from `Base.metadata` by F3 on 2026-10-28).  Spelled out (not
 #: derived) so a migration that silently drops a table cannot also silently drop the assertion.
 EXPECTED_TABLES = {
     "activity_log",
@@ -47,6 +55,8 @@ EXPECTED_TABLES = {
     "email_campaigns",
     "email_logs",
     "expense_records",
+    # W4/DT-05 (0017): the append-only finalization rows for `invoice_dunning_claim`.
+    "invoice_dunning_claim_results",
     "invoices",
     "memory_entries",
     "prospects",
@@ -102,7 +112,7 @@ def _schema_dump(con: sqlite3.Connection) -> list[tuple[str, str, str]]:
     )
 
 
-def test_the_chain_from_zero_reaches_0016_with_exactly_the_24_model_tables(fresh_db) -> None:
+def test_the_chain_from_zero_reaches_0017_with_exactly_the_25_model_tables(fresh_db) -> None:
     """THE brief's first case: empty file → head → the schema the app believes it has."""
     import app.models  # noqa: F401 — registers every table on Base.metadata
     from app.core.database import Base
@@ -114,7 +124,10 @@ def test_the_chain_from_zero_reaches_0016_with_exactly_the_24_model_tables(fresh
     try:
         assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD
         tables = _product_tables(con)
-        assert len(tables) == 24, f"expected 24 product tables, found {len(tables)}: {sorted(tables)}"
+        # W4/F3 DELIBERATE RE-PIN (2026-10-28): old 24 -> new 25 product tables; the addition is
+        # 0017's `invoice_dunning_claim_results` (DT-05).  The equality to both the spelled-out
+        # set and the ORM is unchanged.
+        assert len(tables) == 25, f"expected 25 product tables, found {len(tables)}: {sorted(tables)}"
         assert tables == EXPECTED_TABLES, {
             "missing": sorted(EXPECTED_TABLES - tables),
             "unexpected": sorted(tables - EXPECTED_TABLES),
@@ -131,11 +144,13 @@ def test_the_chain_from_zero_reaches_0016_with_exactly_the_24_model_tables(fresh
         con.close()
 
 
-def test_the_revision_graph_is_one_line_of_sixteen_revisions_ending_at_0016(fresh_db) -> None:
+def test_the_revision_graph_is_one_line_of_seventeen_revisions_ending_at_0017(fresh_db) -> None:
     """No branch, no orphan: every revision is reachable from the single head by `down_revision`."""
     cfg, _db_path = fresh_db
     script = ScriptDirectory.from_config(cfg)
 
+    # W4/F3 DELIBERATE RE-PIN (2026-10-28): head ["0016"] -> ["0017"]; 16 -> 17 chain links
+    # (`0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05).  Linearity itself unchanged.
     assert script.get_heads() == [HEAD], script.get_heads()
     chain: list[str] = []
     revision = script.get_revision(HEAD)
@@ -170,6 +185,7 @@ def test_a_second_upgrade_head_is_a_noop_on_the_migrated_database(fresh_db) -> N
     con = _connect(db_path)
     try:
         assert _schema_dump(con) == before, "a second upgrade head changed the schema"
+        # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017 (see HEAD above).
         assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD
         assert con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1, (
             "a second upgrade head must not touch rows"

@@ -337,18 +337,18 @@ _COMPLETENESS_COUNT = re.compile(
 )
 
 
-def test_readme_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None:
-    """V29 measured 106; A3's `GET /config/phone` was the 107th; B2 added /ready and /ws/ticket."""
+def test_readme_keeps_the_110_count_and_attributes_it_to_wave_a3() -> None:
+    """V29 106; A3 phone 107th; B2 /ready+/ws/ticket 108-109; W5 inbound webhook 110th."""
     readme = _read(README)
     match = _README_COUNT.search(readme)
     assert match, "README no longer states the /api/v1 route count — update this pin"
-    assert int(match.group(1)) == 109, (
+    assert int(match.group(1)) == 110, (
         f"README claims {match.group(1)} /api/v1 operations; `create_app().openapi()` serves "
-        "109 (measured 2026-10-28: 106 V29 + A3 phone + B2 /ready + B2 /ws/ticket)."
+        "110 (measured 2026-10-28: 106 V29 + A3 phone + B2 /ready + B2 /ws/ticket + W5 inbound webhook)."
     )
     sentence = readme[match.start() : readme.index(")", match.start()) + 1]
     assert "A3" in sentence, (
-        "README's 109-operation count still credits no wave A3: the measured source of the "
+        "README's 110-operation count still credits no wave A3: the measured source of the "
         f"107th route (`GET /api/v1/config/phone`) is wave A3. Sentence: {sentence!r}"
     )
     assert "V29 measurement" not in sentence, (
@@ -358,13 +358,13 @@ def test_readme_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None:
     )
 
 
-def test_completeness_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None:
-    """The same correction in COMPLETENESS §2: 109 operations, 35 modules."""
+def test_completeness_keeps_the_110_count_and_attributes_it_to_wave_a3() -> None:
+    """The same correction in COMPLETENESS §2: 110 operations, 35 modules."""
     text = _read(COMPLETENESS)
     match = _COMPLETENESS_COUNT.search(text)
     assert match, "COMPLETENESS §2 count sentence changed shape — update this pin"
-    assert int(match.group(1)) == 109, (
-        f"COMPLETENESS claims {match.group(1)} method+path operations; the app serves 109"
+    assert int(match.group(1)) == 110, (
+        f"COMPLETENESS claims {match.group(1)} method+path operations; the app serves 110"
         " (measured 2026-10-28 from create_app().openapi())"
     )
     assert int(match.group(2)) == 35, (
@@ -372,7 +372,7 @@ def test_completeness_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None
     )
     sentence = text[match.start() : text.index(".", match.end()) + 1]
     assert "A3" in sentence, (
-        "COMPLETENESS still credits the 109-operation surface without wave A3 — A3 added "
+        "COMPLETENESS still credits the 110-operation surface without wave A3 — A3 added "
         f"`GET /api/v1/config/phone`, the 107th operation. Sentence: {sentence!r}"
     )
     assert "V29 measurement" not in sentence, (

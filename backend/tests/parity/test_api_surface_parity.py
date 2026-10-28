@@ -224,6 +224,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # X-API-Key header, over REST) for a short-lived HMAC ticket and connects with ?ticket=.
     # OLD handshake accepted ?key= — that form is now refused 1008 by name.
     ("/api/v1/ws/ticket", ("POST",)),
+    # feature W5 (2026-10-28): provider->us inbound email webhook for the support inbox. Auth is
+    # a dedicated shared secret header (SUPPORT_INBOUND_SECRET), NEVER the owner X-API-Key; the
+    # route creates the same pending item the owner POST creates, idempotently by provider id.
+    ("/api/v1/support/inbox/inbound", ("POST",)),
     # wave V26 (L2/L4): six NEW route pins added deliberately WITH the routes — the integrations
     # surface (masked status list + one, save/clear, read-only test probe) and vision describe.
     ("/api/v1/integrations", ("GET",)),

@@ -14,6 +14,17 @@ Pinned here:
    `invoice_dunning` ledger row still lands, byte-compatible — T2;
 3. a refused send RELEASES the claim ("refused") so the same step can fire later, and the
    `invoice_dunning` ledger stays empty (the shipped V9 pin) — T3.
+
+W4/DT-05 SEMANTIC CORRECTION (2026-10-28, migration `0017`).  The OLD T2/T3 assertions read the
+outcome off the `activity_log` claim row (`claim.detail["state"] == "sent"|"refused"`).  That
+encoded a MUTABLE UPDATE of `activity_log` — exactly what PostgreSQL's 0002 append-only trigger
+(`trg_activity_log_no_update`) refuses, so on the production engine no claim ever finalized and a
+refusal was consumed forever.  The claim row is now INSERT-only (it stays `pending` for its whole
+life); its outcome is APPENDED to `invoice_dunning_claim_results` (`claim_row_id` UNIQUE, state
+`sent`|`refused`, migration 0017).  T2/T3 below assert the SAME outcomes on the append-only
+result row AND that the claim row was not rewritten.  This is a semantic correction, not a
+weakening: `sent` still consumes the step, `refused` still consumes nothing, the "at most one
+result per claim" unique still holds, and every ledger assertion is unchanged.
 """
 from __future__ import annotations
 
@@ -77,8 +88,19 @@ def _claims(queue_db) -> list[dict]:
     import json
 
     rows = queue_db.query(
-        "SELECT summary, detail FROM activity_log WHERE action = 'invoice_dunning_claim' "
+        "SELECT id, summary, detail FROM activity_log WHERE action = 'invoice_dunning_claim' "
         "ORDER BY id"
+    )
+    return [{**row, "detail": json.loads(row["detail"]) if row["detail"] else {}} for row in rows]
+
+
+def _claim_results(queue_db) -> list[dict]:
+    """The APPEND-ONLY claim outcomes (migration 0017, DT-05) — never an UPDATE of the claim."""
+    import json
+
+    rows = queue_db.query(
+        "SELECT claim_row_id, invoice_id, step, state, message_id, code, detail "
+        "FROM invoice_dunning_claim_results ORDER BY id"
     )
     return [{**row, "detail": json.loads(row["detail"]) if row["detail"] else {}} for row in rows]
 
@@ -158,8 +180,21 @@ def test_a_confirmed_send_finalizes_the_claim(queue_db, mock_redis, mail_seam):
 
     assert len(mail_seam) == 1
     (claim,) = _claims(queue_db)
-    assert claim["detail"]["state"] == "sent"
-    assert claim["detail"]["message_id"] == "sg-f5-1"
+    # W4/DT-05 SEMANTIC CORRECTION: old assertion was claim["detail"]["state"] == "sent" — a
+    # mutable UPDATE of the append-only activity_log that PostgreSQL's 0002 trigger refuses.
+    # The claim activity row is INSERT-only and stays pending forever.
+    assert claim["detail"]["state"] == "pending", (
+        "the activity_log claim row must never be UPDATE-d (PostgreSQL refuses it); finalization "
+        "is an APPENDED invoice_dunning_claim_results row"
+    )
+    (finalized,) = _claim_results(queue_db)
+    assert finalized["claim_row_id"] == claim["id"], (
+        "the result must close exactly this claim row (the append-only ledger's identity)"
+    )
+    assert finalized["state"] == "sent", "a confirmed delivery is recorded as an appended sent"
+    assert finalized["message_id"] == "sg-f5-1"
+    assert finalized["code"] is None
+    assert finalized["detail"]["status_flipped_to"] is None  # pre_due is not a flip rung
     assert result["unfinalized_claims"] == []
     (row,) = _ledger(queue_db)  # byte-compatible with the V9 pins
     assert row["detail"]["step"] == "pre_due" and row["detail"]["invoice_id"] == invoice_id
@@ -178,7 +213,14 @@ def test_a_refused_send_releases_the_claim_and_the_step_can_fire_later(
     result = _run(queue_db, date(2026, 11, 7))
     assert result["refused"] and result["refused"][0]["code"] == E_SANDBOX_BLOCKED
     (claim,) = _claims(queue_db)
-    assert claim["detail"]["state"] == "refused"
+    # W4/DT-05 SEMANTIC CORRECTION: old assertion was claim["detail"]["state"] == "refused" — the
+    # refused UPDATE the PG append-only trigger rejects.  The claim row stays pending; the
+    # refusal is the appended result below.
+    assert claim["detail"]["state"] == "pending"
+    (refused,) = _claim_results(queue_db)
+    assert refused["claim_row_id"] == claim["id"]
+    assert refused["state"] == "refused"
+    assert refused["code"] == E_SANDBOX_BLOCKED
     assert _ledger(queue_db) == [], "a refused send consumes nothing"
     assert mail_seam == []
 
@@ -188,4 +230,7 @@ def test_a_refused_send_releases_the_claim_and_the_step_can_fire_later(
     assert len(mail_seam) == 1, "the released step must be able to fire"
     assert result["sent"] and result["sent"][0]["step"] == "pre_due"
     assert len(_claims(queue_db)) == 2  # the refused claim + the new one
+    # W4/DT-05: the outcome is APPENDED — one refused result then one sent result, never an
+    # UPDATE; the refused result did not consume the step (it fired), the sent result did.
+    assert [row["state"] for row in _claim_results(queue_db)] == ["refused", "sent"]
     assert _ledger(queue_db)[0]["detail"]["step"] == "pre_due"

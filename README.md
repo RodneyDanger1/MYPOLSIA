@@ -155,7 +155,7 @@ not a V26 one.
               │                       │                   │
      ┌────────▼────────┐   ┌──────────▼──────┐  ┌────────▼──────┐
      │  PostgreSQL 16  │   │  Redis + Celery  │  │  ChromaDB     │
-     │  (24 tables)    │   │  (task queue)    │  │  (vector mem) │
+     │  (25 tables)    │   │  (task queue)    │  │  (vector mem) │
      └─────────────────┘   └──────────────────┘  └───────────────┘
 ```
 
@@ -451,7 +451,7 @@ polsia/
 │   │   │   └── finance/
 │   │   ├── api/v1/          # REST endpoints + WebSocket
 │   │   ├── core/            # DB, Redis, ChromaDB, events, security
-│   │   ├── models/          # SQLAlchemy ORM (24 tables)
+│   │   ├── models/          # SQLAlchemy ORM (25 tables)
 │   │   ├── schemas/         # Pydantic request/response models
 │   │   └── services/        # Business logic layer
 │   ├── celery_app/          # Celery worker, Beat schedule, tasks
@@ -630,12 +630,13 @@ rebuild.
   needed). `DELETE /api/v1/data?confirm_token=<token>` wipes the member tables in one transaction
   and keeps `company_config` + the key store. The token is **single-use**, minted through
   `POST /api/v1/approvals` for the `action_fingerprint` the dry run returns (same
-  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 109
+  `APPROVAL_SECRET`); a reused token is refused by name. The `/api/v1` surface is 110
   method+path operations (measured from the app's own OpenAPI schema; V29 measured
-  106, wave A3's `GET /api/v1/config/phone` was the 107th, and wave B2 added the last two —
+  106, wave A3's `GET /api/v1/config/phone` was the 107th, and wave B2 added two of them —
   `GET /api/v1/ready`, the readiness probe beside liveness, and `POST /api/v1/ws/ticket`, the
   short-lived ticket the browser exchanges for its WebSocket handshake because a handshake cannot
-  carry the key header. The original 65-route
+  carry the key header, and feature W5 added the provider-facing inbound support webhook
+  (`POST /api/v1/support/inbox/inbound`) as the 110th. The original 65-route
   tree documented through V9 is pinned route-by-route in `backend/tests/parity/`).
 
 ## CI/CD

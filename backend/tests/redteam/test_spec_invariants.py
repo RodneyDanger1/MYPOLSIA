@@ -387,7 +387,11 @@ def test_models_compile_to_pg_types_and_sqlite_types():
     assert "metadata JSONB" in pg_ddl or "metadata JSON" in pg_ddl
     # wave V25 (L1): 22 -> 23 — `task_attachments` (image input for tasks) joined the schema.
     # wave V27 (L4): 23 -> 24 — `vision_descriptions` joined via migration 0016.
-    assert len(Base.metadata.tables) == 24, sorted(Base.metadata.tables)
+    # W4 MONEY+DATA (DT-05, migration 0017): 24 -> 25 — `invoice_dunning_claim_results`, the
+    # append-only dunning claim finalization (the claim activity row stays INSERT-only because
+    # PostgreSQL's activity_log trigger refuses its UPDATE).  Deliberate re-pin, same commit as
+    # the migration; the type census above is unchanged.
+    assert len(Base.metadata.tables) == 25, sorted(Base.metadata.tables)
     # 17 -> 18: `support_inbox_items`, added by alembic 0004 (R17) — the CS inbox ingest the
     # RD12 receipt §7 names as the remaining schema decision.  It has its own migration, which
     # is what section 11's "the migration declares" clause is about; the pinned COUNT moves

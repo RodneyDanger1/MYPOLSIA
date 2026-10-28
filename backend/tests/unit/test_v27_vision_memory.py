@@ -8,7 +8,8 @@ import with `ModuleNotFoundError`), `vision_descriptions` is not in the chain (0
 
 What is pinned here:
 
-  A. MIGRATION 0016 — single head, chains after 0015, creates `vision_descriptions` with the
+  A. MIGRATION 0016 — chains directly after 0015 (the chain head moved 0016 -> 0017 in W4's
+     DT-01/DT-05 revision), creates `vision_descriptions` with the
      documented columns, the two FKs (`ON DELETE CASCADE` to `task_attachments` AND `tasks`),
      the sha256 index (NOT unique: history needs many rows) and the task_id history index; the
      cascade is proven at the ENGINE level, not only in the DDL string; `downgrade()` removes
@@ -269,10 +270,15 @@ def _revision_graph() -> dict[str, str | None]:
     return graph
 
 
-def test_migration_0016_is_the_single_head_and_chains_after_0015():
+def test_migration_0016_chains_after_0015_and_the_single_head_is_0017():
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
-    assert heads == ["0016"], f"expected a single head (0016), found {heads}"
+    # W4/F3 DELIBERATE RE-PIN (2026-10-28): the chain head moved 0016 -> 0017
+    # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05).  Old assertion:
+    # heads == ["0016"].  0016's own V27 assertion — it chains directly after 0015 — is
+    # unchanged and still asserted (plus 0017 now chains directly after 0016).
+    assert heads == ["0017"], f"expected a single head (0017), found {heads}"
+    assert graph["0017"] == "0016", "W4's DT-01/DT-05 revision must chain directly after 0016"
     assert graph["0016"] == "0015", "V27/L4's migration must chain directly after 0015"
 
 
@@ -384,7 +390,10 @@ def test_migration_0016_round_trips_creates_both_cascades_and_both_indexes(monke
     command.upgrade(cfg, "head")
     con = sqlite3.connect(db_path.as_posix())
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
+        # W4/F3 DELIBERATE RE-PIN (2026-10-28): `upgrade head` now lands at 0017 (W4's DT-01 +
+        # DT-05 revision chains directly after 0016).  Old assertion: "0016".  The 0016 table
+        # itself is still asserted present below — 0017 is additive for this table.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0017"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='vision_descriptions'"
         ).fetchone() is not None

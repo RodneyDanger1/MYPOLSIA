@@ -119,15 +119,18 @@ def test_the_migration_chain_is_linear_with_a_single_head():
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
     # V26/L6: head 0014 -> 0015; V27/L4: 0015 -> 0016 (`0016_vision_descriptions.py`).
-    assert heads == ["0016"], f"expected a single head (0016), found {heads}"
+    # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
+    # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05); the linearity law is
+    # unchanged.  Old assertion: heads == ["0016"].
+    assert heads == ["0017"], f"expected a single head (0017), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0016"
+    cursor: str | None = "0017"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
+        "0017", "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
         "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
@@ -325,7 +328,9 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
         # V25: 0013 (L1, task_attachments) and 0014 (L4, ads nullable revenue) — deliberate re-pin;
         # the 0005/0006 legs below are unchanged.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
+        # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017 (migration 0017, DT-01 + DT-05,
+        # W4 MONEY+DATA); the 0005/0006 legs below are unchanged.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0017"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

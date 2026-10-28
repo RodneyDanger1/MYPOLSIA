@@ -449,7 +449,7 @@ async def test_the_data_export_streams_members_instead_of_holding_them(
         data_module._remove_export_tempfile(path)
 
     assert names == {"MANIFEST.json", *(
-        f"{table}.{'csv' if table in data_module.CSV_MEMBERS else 'json'}" for table in data_module.MEMBER_MODELS
+        f"{table}.{'csv' if table in data_module.CSV_MEMBERS else 'json'}" for table in data_module.EXPORT_MODELS
     )}
     assert by_name["agent_runs.csv"]["row_count"] == seeded
     assert manifest["total_rows"] == total_rows == seeded

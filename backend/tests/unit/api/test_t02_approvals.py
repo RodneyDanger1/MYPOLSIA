@@ -171,18 +171,31 @@ async def test_the_mint_route_bounds_ttl_and_fingerprint(api_client, auth_header
 
 
 @pytest.mark.asyncio
-async def test_a_route_minted_token_turns_decision_require_approval_into_allow(monkeypatch):
-    """The two ends joined on one loop: the ROUTE mints, `decide()` verifies."""
+async def test_a_route_minted_token_turns_decision_require_approval_into_allow(
+    monkeypatch, mock_redis, async_db_session
+):
+    """The two ends joined on one loop: the ROUTE mints, `decide()` verifies.
+
+    DT-07 (2026-10-28) added the approval_minted audit row; this test builds its own app (no
+    api_client fixture), so it must carry the suite Redis mock like every other route test —
+    otherwise the audit publish tries a real connection and the route answers 500.
+    """
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
     from app.api.v1 import approvals as approvals_route
+    from app.core.database import get_db
     from app.main import create_app
 
     _configure_secret(monkeypatch, SECRET)
     fp = _refund_fingerprint()
 
     application: FastAPI = create_app()
+    # DT-07: the mint writes an audited activity row through get_db; a bare app would dial the
+    # configured PostgreSQL. Use the in-memory session like the api_client fixture does.
+    # The repo's hygiene census requires an auto-restoring install (monkeypatch.setitem);
+    # a bare assignment outlives the test module and reddens test_b1_regression.
+    monkeypatch.setitem(application.dependency_overrides, get_db, lambda: async_db_session)
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(

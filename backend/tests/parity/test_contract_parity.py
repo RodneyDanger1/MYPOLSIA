@@ -237,6 +237,9 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # WS ticket (POST, owner-authenticated) — NEW surfaces added deliberately WITH their tests.
     ("GET", "/api/v1/ready"),
     ("POST", "/api/v1/ws/ticket"),
+    # feature W5: the provider-facing inbound-email webhook (dedicated shared secret; the
+    # support inbox is the documented consumer, the owner POST remains the manual leg).
+    ("POST", "/api/v1/support/inbox/inbound"),
 ]
 
 DOCUMENTED_AGENTS = {

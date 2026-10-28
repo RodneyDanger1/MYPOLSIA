@@ -176,6 +176,22 @@ default. 23 tables -> 24; two explicit indexes.  No existing row changed.  Old c
 `b0587cd74b57db17676325c5eceae4e50e17b9723df9bf07599b56b74cb276ff` ->
 `0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (W4 MONEY+DATA, 2026-10-28; DT-01 + DT-05, migration `0017`): TWO
+deliberate schema moves in ONE revision.  (1) DT-01: `revenue_snapshots` loses the fabricated
+`DEFAULT 0` (server) and `default=0` (python) on all seven money/count columns (`mrr_cents`,
+`arr_cents`, `active_subscribers`, `churned_today`, `new_today`, `total_revenue_month_cents`,
+`stripe_balance_cents`) — an omitted value now stores NULL ("the run did not measure it"), while
+a caller-supplied 0 is still stored as a measured zero.  Those seven rows change only in their
+`python_default` / `server_default` fields.  (2) DT-05: the NEW table
+`invoice_dunning_claim_results` (24 tables -> 25) is the APPEND-ONLY finalization of one dunning
+claim (`claim_row_id` INTEGER NOT NULL UNIQUE, `state` sent|refused, nullable
+message_id/code/detail) plus `ix_invoice_dunning_claim_results_invoice`; PostgreSQL's
+`activity_log` trigger refuses the UPDATE the ladder used to finalize its claim, so the outcome
+is a new row and the claim activity row stays `pending` forever.  No other row changed.  Old
+canonical sha256 `0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39` ->
+`e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`).
 """
 from __future__ import annotations
 
@@ -194,7 +210,11 @@ from app.models import ActivityLog, CompanyConfig, DailyReport, Task
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 
-DDL_SHA256 = "0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39"
+# W4/F3 DELIBERATE RE-PIN (2026-10-28; migration 0017, DT-01 + DT-05): old
+# 0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39 ->
+# e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09 (the seven
+# revenue_snapshots DEFAULT 0s gone + the new append-only invoice_dunning_claim_results table).
+DDL_SHA256 = "e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -210,6 +230,8 @@ FROZEN_TABLE_NAMES = (
     'email_campaigns',
     'email_logs',
     'expense_records',
+    # W4/DT-05 (0017): the append-only dunning claim results (table 25).
+    'invoice_dunning_claim_results',
     'invoices',
     'memory_entries',
     'prospects',
@@ -471,13 +493,16 @@ FROZEN_COLUMNS = {
     'revenue_snapshots': (
         ('id', 'INTEGER', False, '', '', '', False),
         ('snapshot_date', 'DATE', False, '', '', '', True),
-        ('mrr_cents', 'INTEGER', True, '0', '0', '', False),
-        ('arr_cents', 'INTEGER', True, '0', '0', '', False),
-        ('active_subscribers', 'INTEGER', True, '0', '0', '', False),
-        ('churned_today', 'INTEGER', True, '0', '0', '', False),
-        ('new_today', 'INTEGER', True, '0', '0', '', False),
-        ('total_revenue_month_cents', 'INTEGER', True, '0', '0', '', False),
-        ('stripe_balance_cents', 'INTEGER', True, '0', '0', '', False),
+        # W4/DT-01 (0017): the seven money/count columns lose BOTH the python `default=0` and the
+        # `DEFAULT 0` server default. NULL = the run did not measure it; a supplied 0 is a
+        # measured zero and still stored/served as 0.
+        ('mrr_cents', 'INTEGER', True, '', '', '', False),
+        ('arr_cents', 'INTEGER', True, '', '', '', False),
+        ('active_subscribers', 'INTEGER', True, '', '', '', False),
+        ('churned_today', 'INTEGER', True, '', '', '', False),
+        ('new_today', 'INTEGER', True, '', '', '', False),
+        ('total_revenue_month_cents', 'INTEGER', True, '', '', '', False),
+        ('stripe_balance_cents', 'INTEGER', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
     ),
     'social_engagements': (
@@ -582,10 +607,29 @@ FROZEN_COLUMNS = {
         ('tokens', 'INTEGER', True, '', '', '', False),
         ('created_at', 'DATETIME', False, '', 'now()', '', False),
     ),
+    # W4/DT-05 (0017): the APPEND-ONLY finalization of one dunning claim. `claim_row_id` is the
+    # `activity_log.id` of the `invoice_dunning_claim` row it closes (UNIQUE: a claim finalizes
+    # at most once); `state` is sent|refused; `detail` carries the same JSON the claim row used
+    # to be UPDATE-d with (`superseded`, `status_flipped_to`, `message`). The claim row itself is
+    # never rewritten — PostgreSQL's activity_log trigger refuses UPDATE.
+    'invoice_dunning_claim_results': (
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('claim_row_id', 'INTEGER', False, '', '', '', True),
+        ('invoice_id', 'INTEGER', False, '', '', 'ix_invoice_dunning_claim_results_invoice', False),
+        ('step', 'VARCHAR(50)', False, '', '', '', False),
+        ('state', 'VARCHAR(20)', False, '', '', '', False),
+        ('message_id', 'VARCHAR(255)', True, '', '', '', False),
+        ('code', 'VARCHAR(100)', True, '', '', '', False),
+        ('detail', 'JSON', True, '', '', '', False),
+        ('created_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
 }
 
 FROZEN_UNIQUE_CONSTRAINTS = {
     'daily_reports.report_date',
+    # W4/DT-05 (0017): an append-only ledger that finalized one claim twice would be an
+    # ambiguous fact — the unique is the "at most once" law at the DDL level.
+    'invoice_dunning_claim_results.claim_row_id',
     # V8/0008: the invoice identity key (single-column unique on the new table).
     'invoices.number',
     'memory_entries.chroma_id',
@@ -610,6 +654,8 @@ FROZEN_INDEXES = {
     # V27/L4 (0016): the vision memory reads — cache lookup (sha256) and task history (task_id).
     ('ix_vision_descriptions_sha256', ('sha256',), False),
     ('ix_vision_descriptions_task_id', ('task_id',), False),
+    # W4/DT-05 (0017): the ladder's per-invoice read of the append-only claim results.
+    ('ix_invoice_dunning_claim_results_invoice', ('invoice_id',), False),
     ('ix_tasks_created_at', ('created_at',), False),
     ('ix_tasks_dedupe_key', ('dedupe_key',), True),
     ('ix_tasks_pending_queue', ('status', 'priority', 'scheduled_date'), False),

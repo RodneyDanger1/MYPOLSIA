@@ -113,7 +113,10 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
         # `0014_ads_nullable_revenue.py`) — deliberate re-pin; the guard legs below are unchanged.
         # V26/L6: head 0014 -> 0015 (`0015_ads_spend_nullable.py`) — deliberate re-pin.
         # V27/L4: head 0015 -> 0016 (`0016_vision_descriptions.py`) — deliberate re-pin.
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0016"
+        # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
+        # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05); the FK-enforcement
+        # guard legs below are unchanged (0017's SQLite rebuild keeps a valid FK order).
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0017"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1

@@ -71,9 +71,11 @@ def _isolated_key_store(monkeypatch, tmp_path):
 
 
 async def _seed_members(db) -> dict[str, int]:
-    """One row in every member table (+ one KEPT support row pointing at the seeded task).
+    """One row in every seeded table; returns the FULL 24-member census.
 
-    Returns the expected per-member counts (the export/wipe assertions compare against these).
+    DT-06 (2026-10-28) widened the wipe from 8 owner-data tables to all 24 members and made
+    `support_inbox_items` a MEMBER (deleted), so a hard-coded 8-key expectation is now blind to
+    16 members and contradicts the shipped contract. The census IS what the route reports.
     """
     from app.models.chat import ChatMessage
     from app.models.company import CompanyConfig
@@ -115,10 +117,7 @@ async def _seed_members(db) -> dict[str, int]:
         )
     )
     await db.flush()
-    return {
-        "tasks": 1, "agent_runs": 1, "activity_log": 1, "revenue_snapshots": 1,
-        "invoices": 1, "task_schedules": 1, "memory_entries": 1, "chat_messages": 1,
-    }
+    return await _member_counts(db)
 
 
 async def _member_counts(db) -> dict[str, int]:
@@ -172,7 +171,9 @@ async def test_export_zip_members_and_counts_match_the_seeded_rows(
     resp = await api_client.get("/api/v1/data/export", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/zip"
-    assert resp.headers["X-Polsia-Row-Count"] == str(sum(seeded.values()))
+    assert resp.headers["X-Polsia-Row-Count"] == str(
+        sum(seeded[table] for table in data_module.EXPORT_MODELS)
+    ), "the export header counts the EXPORTED members, verbatim; the wipe census is wider"
 
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
     assert set(zf.namelist()) == {"MANIFEST.json", *ALL_MEMBERS}
@@ -245,6 +246,7 @@ async def test_dry_run_with_a_token_still_never_deletes(
 ):
     seeded = await _seed_members(async_db_session)
     token = await _mint_wipe_token(api_client, auth_headers)
+    seeded = await _member_counts(async_db_session)  # DT-07: the mint row joins the census
 
     resp = await api_client.delete(
         f"/api/v1/data?dry_run=true&confirm_token={token}", headers=auth_headers
@@ -288,6 +290,7 @@ async def test_malformed_token_is_refused_by_name(api_client, auth_headers, asyn
 async def test_tampered_token_is_refused_by_name(api_client, auth_headers, async_db_session):
     seeded = await _seed_members(async_db_session)
     token = await _mint_wipe_token(api_client, auth_headers)
+    seeded = await _member_counts(async_db_session)  # DT-07: the mint row joins the census
     exp_part, sig_part = token.split(".", 1)
     flipped = "0" if sig_part[0] != "0" else "1"
     tampered = f"{exp_part}.{flipped}{sig_part[1:]}"
@@ -330,6 +333,7 @@ async def test_minted_token_wipes_members_and_keeps_config_and_key_store(
     seeded = await _seed_members(async_db_session)
     secret_store.set_deepseek_api_key(KEY_SENTINEL)
     token = await _mint_wipe_token(api_client, auth_headers)
+    seeded = await _member_counts(async_db_session)  # DT-07: the mint row joins the census
 
     resp = await api_client.delete(
         f"/api/v1/data?confirm_token={token}", headers=auth_headers
@@ -339,7 +343,8 @@ async def test_minted_token_wipes_members_and_keeps_config_and_key_store(
     assert body["dry_run"] is False
     assert body["deleted"] == seeded
     assert body["total_rows"] == sum(seeded.values())
-    assert body["kept"] == ["company_config", "deepseek_key_store"]
+    # DT-06: `kept` is the COMPLETE statement of what survives — now three stores.
+    assert body["kept"] == ["company_config", "deepseek_key_store", "data_wipe_consumed_record"]
 
     assert await _member_counts(async_db_session) == {table: 0 for table in seeded}
 
@@ -349,11 +354,14 @@ async def test_minted_token_wipes_members_and_keeps_config_and_key_store(
     # The key store is a FILE, kept by design.
     assert secret_store.get_deepseek_api_key() == KEY_SENTINEL
 
-    # The kept support row lost only its now-dangling task reference.
+    # DT-06 SEMANTIC RE-PIN: support_inbox_items is a MEMBER now (it holds customer PII), so the
+    # old "kept support row, task ref nulled" assertion is the reversed contract. Assert removal.
     from app.models.support import SupportInboxItem
 
-    support = (await async_db_session.execute(select(SupportInboxItem))).scalar_one()
-    assert support.subject == "kept subject" and support.task_id is None
+    support = (
+        await async_db_session.execute(select(func.count()).select_from(SupportInboxItem))
+    ).scalar_one()
+    assert int(support) == 0, "DT-06: the inbox member is deleted by the wipe"
 
 
 @pytest.mark.asyncio

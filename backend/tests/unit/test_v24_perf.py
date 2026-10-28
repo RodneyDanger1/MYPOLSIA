@@ -404,12 +404,15 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         graph[revision] = None if down in (None, "None") else down
     heads = sorted(r for r in graph if r not in set(graph.values()))
     # V25: the head moved 0012 -> 0014; V26/L6: 0014 -> 0015; V27/L4: 0015 -> 0016.
+    # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
+    # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05).
     # V24's 0012 -> 0011 leg is unchanged and still asserted below.
-    assert heads == ["0016"], f"expected a single head (0016), found {heads}"
+    assert heads == ["0017"], f"expected a single head (0017), found {heads}"
     assert graph["0012"] == "0011"
     assert (
         graph["0013"] == "0012"
         and graph["0014"] == "0013"
         and graph["0015"] == "0014"
         and graph["0016"] == "0015"
+        and graph["0017"] == "0016"
     )

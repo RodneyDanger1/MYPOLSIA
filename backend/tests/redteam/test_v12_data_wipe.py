@@ -64,10 +64,9 @@ async def _seed_members(db) -> dict[str, int]:
     db.add(MemoryEntry(category="strategy", title="seed memory", content="seeded"))
     db.add(ChatMessage(role="owner", content="seed chat"))
     await db.commit()
-    return {
-        "tasks": 1, "agent_runs": 1, "activity_log": 1, "revenue_snapshots": 1,
-        "invoices": 1, "task_schedules": 1, "memory_entries": 1, "chat_messages": 1,
-    }
+    # DT-06 (2026-10-28): the wipe now covers ALL member tables, so the survival census must too —
+    # returning a hard-coded 8-key dict made "survived unchanged" blind to the other 16 members.
+    return await _counts(db)
 
 
 async def _counts(db) -> dict[str, int]:
@@ -115,6 +114,8 @@ async def test_tampered_and_expired_tokens_are_named_refusals(api_client, auth_h
     """ATTACK: flip one signature byte; or present a token minted with a negative TTL."""
     seeded = await _seed_members(async_db_session)
     good = await _mint(api_client, auth_headers)
+    # DT-07: the mint writes its own activity row, so the post-mint census is the truth.
+    seeded = await _counts(async_db_session)
     exp_part, sig_part = good.split(".", 1)
     flipped = "0" if sig_part[0] != "0" else "1"
     tampered = f"{exp_part}.{flipped}{sig_part[1:]}"
@@ -143,6 +144,7 @@ async def test_a_replayed_token_cannot_wipe_reseeded_data(api_client, auth_heade
     """
     seeded = await _seed_members(async_db_session)
     token = await _mint(api_client, auth_headers)
+    seeded = await _counts(async_db_session)  # DT-07: the mint's audit row is part of the census
 
     first = await api_client.delete(f"{WIPE}?confirm_token={token}", headers=auth_headers)
     assert first.status_code == 200, first.text
@@ -171,6 +173,7 @@ async def test_dry_run_never_deletes_even_with_a_valid_token_and_does_not_burn_i
     """
     seeded = await _seed_members(async_db_session)
     token = await _mint(api_client, auth_headers)
+    seeded = await _counts(async_db_session)  # DT-07: the mint's audit row is part of the census
 
     dry = await api_client.delete(f"{WIPE}?dry_run=true&confirm_token={token}", headers=auth_headers)
     assert dry.status_code == 200, dry.text
