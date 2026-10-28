@@ -54,6 +54,15 @@ type CashBlock = {
 /**
  * Middle column, bottom: the Documents slot of the live dashboard.
  *
+ * F-10 (wave 2): the panel's states are named and distinguishable, and the absent state makes no
+ * promise. `undefined` = not read yet (aria-busy skeleton), `error` = "Read failed" with the real
+ * server refusal and a Retry, `null` = the reports store's own EMPTY ANSWER ("not written yet —
+ * this is not a failed read"), object = the report. The old absent copy said "the daily cycle
+ * writes one after the evening run — check back once it has run", which promised a write this
+ * panel cannot see: the live box had no report since 2026-10-20 and the sentence still rendered.
+ * The panel now states its own boundary — it can see reports, not the scheduler — and points at
+ * VIEW ALL, where every report that DOES exist is listed with its date.
+ *
  * It is titled **Daily Report** and not "Documents" on purpose — this deployment has no
  * documents store (no documents router exists in `backend/app/api/v1/`), and a "Documents"
  * panel over a report would be mislabelling. What DID ship in V8 (C5) is the reports LIST read —
@@ -118,20 +127,42 @@ export function DailyReportPanel() {
       >
       {loading ? <PanelSkeleton rows={3} /> : null}
       {!loading && error ? (
-        <PanelError
-          label="the daily report"
-          message={error}
-          onRetry={() => setAttempt((n) => n + 1)}
-          retryTestId="daily-report-retry"
-        />
+        // F-10 (wave 2): the FAILED READ is its own state and its own name ("Read failed") — it was
+        // never the same thing as "no report was written", and the two used to be one grey sentence.
+        <div data-testid="daily-report-error" data-state="error">
+          <PanelError
+            label="the daily report"
+            message={error}
+            onRetry={() => setAttempt((n) => n + 1)}
+            retryTestId="daily-report-retry"
+          />
+        </div>
       ) : null}
       {!loading && !error && report === null ? (
-        <p className="text-sm text-ink-muted">
-          No report for today yet. The daily cycle writes one after the evening run — check back
-          once it has run.
-        </p>
+        // F-10 (wave 2): the ABSENT state, named honestly. The endpoint answered 200 with `null`
+        // (the documented "no report for the day" — not an error), so this says exactly that and
+        // claims NOTHING about the cycle: the old copy promised "the daily cycle writes one after
+        // the evening run", but this panel cannot see the scheduler — on the live box no report
+        // had been written since 2026-10-20 and the promise still rendered. The last sentence is
+        // the boundary: this panel reports what was written; it does not know why nothing was.
+        <div data-testid="daily-report-absent" data-state="absent" className="space-y-2">
+          <p className="ui-label text-ink">Not written yet — this is not a failed read</p>
+          <p className="text-sm text-ink-muted" data-testid="daily-report-absent-copy">
+            The reports store answered that no report exists for today. Nothing was written for
+            this day; the read itself succeeded.
+          </p>
+          <p className="ui-label text-ink-muted">
+            This panel can see reports, not the scheduler — it cannot tell whether the daily cycle
+            is still to run, is not scheduled, or stopped. VIEW ALL lists every report that HAS
+            been written, with its date.
+          </p>
+        </div>
       ) : null}
-      {!loading && !error && report ? <ReportBody report={report} /> : null}
+      {!loading && !error && report ? (
+        <div data-testid="daily-report-body" data-state="present">
+          <ReportBody report={report} />
+        </div>
+      ) : null}
       </Card>
       <DocumentsOverlay open={docsOpen} onClose={closeOverlay} />
     </>

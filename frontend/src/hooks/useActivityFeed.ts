@@ -1,15 +1,41 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { api, type ActivityEvent } from "@/lib/api";
 
 /**
- * The feed's transport state as ONE honest value (audit Q-07/Q-30):
+ * The activity feed's transport — ONE engine per browser page (F-03, wave 2).
+ *
+ * WHAT THIS FILE IS.  `useActivityFeed` is the only consumer-facing surface, but the socket,
+ * the ticket mint, the reconnect ladder and the REST snapshot live in a MODULE-LEVEL engine
+ * (`ActivityTransport`).  Every mounted consumer subscribes to that one engine with
+ * `useSyncExternalStore`; the hook is a view.
+ *
+ * WHY (the measured defect).  The root layout mounts `ActivityStrip` and `/dashboard` mounts
+ * `ActivityFeed` — two consumers of this hook on one page — and each consumer ran its OWN copy of
+ * the connect effect: two tickets, two `new WebSocket`s, two reconnect ladders.  On the live box
+ * that produced 17 handshakes in 15 s and, once the backend's 4-per-proxy cap was hit, THREE
+ * status words on ONE screen (LIVE / LIVE / RECONNECTING) — a green LIVE badge beside a refused
+ * handshake, because each transport reported its own truth.  Snapshot reads were deduped, the
+ * TRANSPORT was not.
+ *
+ * The fix is the wave-1 design (R-F03-1): one engine, `useSyncExternalStore` subscribers.
+ *   - one ticket mint + one socket per page, closed when the LAST consumer unmounts;
+ *   - ONE status, one error and one attempt count, so two views cannot disagree;
+ *   - the snapshot is read once per open (as before) — the per-page REST dedupe is no longer
+ *     needed because there is only one reader.
+ *
+ * Status vocabulary is unchanged and still honest (audit Q-07/Q-30):
  *  - `connecting`   — the first handshake is in flight; nothing has failed yet.
  *  - `live`         — the socket is OPEN right now. Nothing else may claim this.
  *  - `reconnecting` — a failure happened; the next attempt is scheduled or in flight
  *                     (`attempts` carries the count of consecutive failures).
  *  - `offline`      — ≥ OFFLINE_AFTER_FAILURES consecutive failures. Retries CONTINUE at the capped
  *                     backoff so recovery is automatic; the label says disconnected, not "gave up".
+ *
+ * Per-instance options: `maxEvents` slices each consumer's view (the engine buffers the largest
+ * requested window); `snapshot`/`snapshotLimit` are fixed by the FIRST subscriber, because the
+ * page has one transport and a second view cannot renegotiate the shared read.  No new request is
+ * issued by subscribing.
  */
 export type FeedStatus = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -111,32 +137,12 @@ export function declaredTotal(raw: string | null): number | null {
  *  keeps its old total (the pre-dedupe behaviour) instead of committing a count nobody measured. */
 type ActivitySnapshot = { rows: ActivityEvent[]; total: number | null; ok: boolean };
 
-/** In-flight snapshot reads, keyed by URL.
- *
- *  V24/L5 (measured duplicate): the root layout mounts `ActivityStrip` and the dashboard mounts
- *  `ActivityFeed` — two consumers of this hook on ONE page — and each fired its own
- *  `GET /dashboard/activity?limit=50` on socket open. The reads are identical, so the second joins
- *  the first's promise instead of issuing a second request.
- *
- *  Only a read started while ANOTHER consumer is mounted is shared; a lone consumer always reads
- *  fresh. A shared entry is dropped the moment it settles, and when the last consumer unmounts the
- *  map is cleared — so no stale body, and no pending read from a previous page/test can leak into
- *  a later one. */
-type SharedSnapshotRead = { promise: Promise<ActivitySnapshot> };
-const snapshotReads = new Map<string, SharedSnapshotRead>();
-
-/** Live hook instances. Sharing is only safe between consumers alive at the same time. */
-let mountedFeeds = 0;
-
 function readActivitySnapshot(limit: number): Promise<ActivitySnapshot> {
   const path = `/dashboard/activity?limit=${limit}`;
-  const existing = snapshotReads.get(path);
-  if (existing && mountedFeeds > 1) return existing.promise;
-
   // V23/L4: the declared total rides the SAME response as the rows (the shared onHeaders hook), so
   // the label can never describe a different read.
   const captured: { total: number | null } = { total: null };
-  const read = api
+  return api
     .get<ActivityEvent[]>(path, {
       onHeaders: (headers) => {
         captured.total = declaredTotal(headers.get("X-Polsia-Total"));
@@ -146,13 +152,7 @@ function readActivitySnapshot(limit: number): Promise<ActivitySnapshot> {
       rows: Array.isArray(body) ? body : [],
       total: captured.total,
       ok: Array.isArray(body),
-    }))
-    .finally(() => {
-      if (snapshotReads.get(path)?.promise === read) snapshotReads.delete(path);
-    });
-
-  snapshotReads.set(path, { promise: read });
-  return read;
+    }));
 }
 
 /** Close description for a CloseEvent that may be missing fields (close code 1006 = abnormal). */
@@ -177,342 +177,409 @@ export type UseActivityFeedOptions = {
   snapshotLimit?: number;
 };
 
-export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions = {}) {
-  const { snapshot = true, snapshotLimit = 50 } = options;
-  const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [status, setStatus] = useState<FeedStatus>("connecting");
-  const [error, setError] = useState<string | null>(null);
-  const [attempts, setAttempts] = useState(0);
-  /** The server's own full match count from the LAST successful snapshot's `X-Polsia-Total`
-   *  (V23/L4).  null = the response declared none; the header region then prints no count. */
-  const [total, setTotal] = useState<number | null>(null);
+/** The immutable state one render reads. Identity changes IFF something changed. */
+type FeedState = {
+  events: ActivityEvent[];
+  status: FeedStatus;
+  error: string | null;
+  attempts: number;
+  total: number | null;
+};
 
-  const seen = useRef<Set<string>>(new Set());
-  const mounted = useRef(true);
-  const closedByUs = useRef(false);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stableTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const snapshotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+const INITIAL_STATE: FeedState = {
+  events: [],
+  status: "connecting",
+  error: null,
+  attempts: 0,
+  total: null,
+};
 
-  // Count live consumers so the shared snapshot map is only consulted between concurrent mounts
-  // and is dropped when the last one leaves (no cross-page/test residue).
-  useEffect(() => {
-    mountedFeeds += 1;
+type TransportOptions = { maxEvents: number; snapshot: boolean; snapshotLimit: number };
+
+/** One-page transport: ONE ticket mint, ONE socket, ONE status, N subscribers. */
+class ActivityTransport {
+  private state: FeedState = INITIAL_STATE;
+  private readonly listeners = new Set<() => void>();
+  private options: TransportOptions = { maxEvents: 100, snapshot: true, snapshotLimit: 50 };
+
+  private running = false;
+  private generation = 0;
+  private socket: WebSocket | null = null;
+
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private consecutiveFailures = 0;
+  private backoffAttempt = 0;
+  private snapshotInFlight = false;
+  private snapshotQueued = false;
+  private lastSnapshotAt = 0;
+  private pausedForHidden = false;
+  private seen = new Set<string>();
+
+  /** Stable identity so `document.addEventListener` and `removeEventListener` pair exactly. */
+  private readonly onVisibilityChange = (): void => {
+    if (!this.running) return;
+    if (tabHidden()) {
+      if (this.reconnectTimer) {
+        this.clearTimer("reconnect");
+        this.pausedForHidden = true;
+      }
+      return;
+    }
+    const idle =
+      this.socket === null ||
+      this.socket.readyState === WebSocket.CLOSED;
+    if (!this.pausedForHidden && !idle) return;
+    this.pausedForHidden = false;
+    this.backoffAttempt = 0;
+    this.connect();
+  };
+
+  /** `useSyncExternalStore` reads THIS. Stable identity; state object swaps only on change. */
+  getSnapshot = (): FeedState => this.state;
+
+  /** Called by every consumer's subscription; the engine starts on the first, stops on the last. */
+  subscribe(listener: () => void, options: TransportOptions): () => void {
+    this.listeners.add(listener);
+    if (this.listeners.size === 1) {
+      // The FIRST subscriber fixes the shared read. Later views cannot renegotiate one transport's
+      // snapshot; they may only widen the in-memory event window.
+      this.options = { ...options };
+      this.start();
+    } else if (options.maxEvents > this.options.maxEvents) {
+      this.options = { ...this.options, maxEvents: options.maxEvents };
+    }
     return () => {
-      mountedFeeds -= 1;
-      if (mountedFeeds === 0) snapshotReads.clear();
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0) this.stop();
     };
-  }, []);
+  }
 
-  /** Merge incoming events: drop duplicates by id, newest first, cap at maxEvents. */
-  const merge = useCallback(
-    (incoming: ActivityEvent[]) => {
-      if (!Array.isArray(incoming) || incoming.length === 0) return;
-      // Q-10: dedupe OUTSIDE the state updater. React 18 StrictMode invokes updaters twice and keeps
-      // the second result; the old in-updater `seen` mutation dropped every event on the second pass.
-      const fresh: ActivityEvent[] = [];
-      for (const e of incoming) {
-        if (!e) continue;
-        const key = String(e.id ?? `${e.created_at}-${e.summary}`);
-        if (seen.current.has(key)) continue;
-        seen.current.add(key);
-        fresh.push(e);
+  // ── engine lifecycle ───────────────────────────────────────────────────────
+
+  private start(): void {
+    this.running = true;
+    // NOTE: `generation` is deliberately NOT reset. It is monotonic for the life of the module,
+    // so a close/retry callback left over from a PREVIOUS start can never collide with the new
+    // engine's numbering and be mistaken for a current event (measured: a previous mount's
+    // close timer overwrote the next mount's real error).
+    this.consecutiveFailures = 0;
+    this.backoffAttempt = 0;
+    this.snapshotInFlight = false;
+    this.snapshotQueued = false;
+    this.lastSnapshotAt = 0;
+    this.pausedForHidden = false;
+    this.seen = new Set<string>();
+    this.state = INITIAL_STATE;
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.onVisibilityChange);
+    }
+    this.connect();
+  }
+
+  private stop(): void {
+    this.running = false;
+    this.generation += 1; // everything in flight from this engine is now stale
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    }
+    this.clearTimer("connect");
+    this.clearTimer("reconnect");
+    this.clearTimer("stable");
+    this.clearTimer("snapshot");
+    try {
+      this.socket?.close();
+    } catch {
+      /* already closed */
+    }
+    this.socket = null;
+    // No listener remains: reset without notifying, so a later mount starts from a clean page
+    // (no event/attempt residue from a previous page or test).
+    this.state = INITIAL_STATE;
+    this.seen = new Set<string>();
+  }
+
+  private emit(patch: Partial<FeedState>): void {
+    this.state = { ...this.state, ...patch };
+    for (const listener of Array.from(this.listeners)) listener();
+  }
+
+  private clearTimer(which: "connect" | "reconnect" | "stable" | "snapshot"): void {
+    const timer =
+      which === "connect"
+        ? this.connectTimer
+        : which === "reconnect"
+          ? this.reconnectTimer
+          : which === "stable"
+            ? this.stableTimer
+            : this.snapshotTimer;
+    if (timer) clearTimeout(timer);
+    if (which === "connect") this.connectTimer = null;
+    else if (which === "reconnect") this.reconnectTimer = null;
+    else if (which === "stable") this.stableTimer = null;
+    else this.snapshotTimer = null;
+  }
+
+  // ── the snapshot ───────────────────────────────────────────────────────────
+
+  private scheduleSnapshot(): void {
+    if (!this.options.snapshot) return;
+    if (this.snapshotInFlight) {
+      // Coalesce: one queued follow-up at most, however many opens flap past while in flight.
+      this.snapshotQueued = true;
+      return;
+    }
+    const dueIn = this.lastSnapshotAt + SNAPSHOT_MIN_INTERVAL_MS - Date.now();
+    if (this.lastSnapshotAt > 0 && dueIn > 0) {
+      // Coalesce across time as well: opens inside the window schedule ONE trailing fetch.
+      if (!this.snapshotTimer) {
+        this.snapshotTimer = setTimeout(() => {
+          this.snapshotTimer = null;
+          void this.runSnapshot();
+        }, dueIn);
       }
-      if (fresh.length === 0) return;
-      // Bound the dedupe set: the feed itself is capped at maxEvents, so remembering twice that is
-      // strictly more than can ever render; the oldest keys (Sets iterate in insertion order) fall
-      // out first.
-      if (seen.current.size > maxEvents * 2) {
-        seen.current = new Set(Array.from(seen.current).slice(-maxEvents * 2));
+      return;
+    }
+    void this.runSnapshot();
+  }
+
+  private async runSnapshot(): Promise<void> {
+    this.snapshotInFlight = true;
+    this.lastSnapshotAt = Date.now();
+    try {
+      const snapshot = await readActivitySnapshot(this.options.snapshotLimit);
+      if (!this.running) return;
+      if (snapshot.ok) {
+        this.emit({ total: snapshot.total });
+        this.merge(snapshot.rows);
       }
-      setEvents((prev) => {
-        const next = [...fresh, ...prev];
-        next.sort((a, b) => {
-          const ta = Date.parse(a?.created_at ?? "") || 0;
-          const tb = Date.parse(b?.created_at ?? "") || 0;
-          return tb - ta || (b?.id ?? 0) - (a?.id ?? 0);
-        });
-        return next.slice(0, maxEvents);
-      });
-    },
-    [maxEvents],
-  );
-
-  // The mount-lifetime engine below reads the LATEST merge/options at event time through this ref,
-  // so no re-render can ever need to restart the socket. (The old effect depended on a `useCallback`
-  // chain — `[connect]` — and any identity churn closed/reopened the socket, which is exactly the
-  // reconnect-loop class observed live.)
-  const engineOptions = useRef({ merge, snapshot, snapshotLimit });
-  useEffect(() => {
-    engineOptions.current = { merge, snapshot, snapshotLimit };
-  });
-
-  useEffect(() => {
-    mounted.current = true;
-    closedByUs.current = false;
-
-    let generation = 0; // bumped per connect() and on unmount — stale handlers are inert
-    let currentSocket: WebSocket | null = null;
-    let consecutiveFailures = 0; // for the honest status label ("attempt N")
-    let backoffAttempt = 0; // for the retry delay; reset only after STABLE_RESET_MS of live
-    let snapshotInFlight = false;
-    let snapshotQueued = false;
-    let lastSnapshotAt = 0;
-    /** F-41: true from the moment a retry was suppressed because the tab was hidden until the tab
-     *  is shown again. Distinct from "no socket": the tab may still hold an OPEN socket. */
-    let pausedForHidden = false;
-
-    const clearTimer = (t: { current: ReturnType<typeof setTimeout> | null }) => {
-      if (t.current) {
-        clearTimeout(t.current);
-        t.current = null;
+    } catch (e) {
+      // The live socket is the primary channel: a failed snapshot must not break the feed — but it
+      // must not be invisible either (audit Q-07), so it surfaces through `error` like any failure.
+      if (this.running) {
+        // The count is only ever THIS read's evidence: with the read failed, a number left on
+        // screen would be a guess about rows nobody measured.
+        this.emit({ total: null, error: `activity snapshot failed: ${message(e)}` });
       }
-    };
+    } finally {
+      this.snapshotInFlight = false;
+      if (this.snapshotQueued) {
+        this.snapshotQueued = false;
+        this.scheduleSnapshot();
+      }
+    }
+  }
 
-    const runSnapshot = async () => {
-      snapshotInFlight = true;
-      lastSnapshotAt = Date.now();
-      try {
-        const { snapshotLimit: limit, merge: mergeNow } = engineOptions.current;
-        const snapshot = await readActivitySnapshot(limit);
-        if (mounted.current && snapshot.ok) {
-          setTotal(snapshot.total);
-          mergeNow(snapshot.rows);
-        }
-      } catch (e) {
-        // The live socket is the primary channel: a failed snapshot must not break the feed — but it
-        // must not be invisible either (audit Q-07), so it surfaces through `error` like any failure.
-        if (mounted.current) {
-          // The count is only ever THIS read's evidence: with the read failed, a number left on
-          // screen would be a guess about rows nobody measured.
-          setTotal(null);
-          setError(`activity snapshot failed: ${message(e)}`);
-        }
-      } finally {
-        snapshotInFlight = false;
-        if (snapshotQueued) {
-          snapshotQueued = false;
-          scheduleSnapshot();
-        }
-      }
-    };
+  // ── events ─────────────────────────────────────────────────────────────────
 
-    const scheduleSnapshot = () => {
-      if (!engineOptions.current.snapshot) return;
-      if (snapshotInFlight) {
-        // Coalesce: one queued follow-up at most, however many opens flap past while in flight.
-        snapshotQueued = true;
-        return;
-      }
-      const dueIn = lastSnapshotAt + SNAPSHOT_MIN_INTERVAL_MS - Date.now();
-      if (lastSnapshotAt > 0 && dueIn > 0) {
-        // Coalesce across time as well: opens inside the window schedule ONE trailing fetch.
-        if (!snapshotTimer.current) {
-          snapshotTimer.current = setTimeout(() => {
-            snapshotTimer.current = null;
-            void runSnapshot();
-          }, dueIn);
-        }
-        return;
-      }
-      void runSnapshot();
-    };
+  /** Merge incoming events: drop duplicates by id, newest first, cap at the widest view. */
+  private merge(incoming: ActivityEvent[]): void {
+    if (!this.running || !Array.isArray(incoming) || incoming.length === 0) return;
+    // Q-10: dedupe OUTSIDE React state (StrictMode invokes updaters twice and keeps the second
+    // result; the old in-updater set mutation dropped every event on the second pass).
+    const fresh: ActivityEvent[] = [];
+    for (const e of incoming) {
+      if (!e) continue;
+      const key = String(e.id ?? `${e.created_at}-${e.summary}`);
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
+      fresh.push(e);
+    }
+    if (fresh.length === 0) return;
+    const cap = this.options.maxEvents;
+    // Bound the dedupe set: the feed itself is capped at `cap`, so remembering twice that is
+    // strictly more than can ever render; the oldest keys (Sets iterate in insertion order) fall
+    // out first.
+    if (this.seen.size > cap * 2) {
+      this.seen = new Set(Array.from(this.seen).slice(-cap * 2));
+    }
+    const next = [...fresh, ...this.state.events];
+    next.sort((a, b) => {
+      const ta = Date.parse(a?.created_at ?? "") || 0;
+      const tb = Date.parse(b?.created_at ?? "") || 0;
+      return tb - ta || (b?.id ?? 0) - (a?.id ?? 0);
+    });
+    this.emit({ events: next.slice(0, cap) });
+  }
 
-    function reportFailure(why: string): void {
-      if (!mounted.current || closedByUs.current) return;
-      consecutiveFailures += 1;
-      backoffAttempt += 1;
-      setAttempts(consecutiveFailures);
-      setError(why);
-      setStatus(consecutiveFailures >= OFFLINE_AFTER_FAILURES ? "offline" : "reconnecting");
-      clearTimer(reconnectTimer); // never two pending retries
-      // F-41: a hidden tab has nobody to notify and browsers throttle its timers, so the old loop
-      // kept a dead socket retrying forever behind a background page. While hidden NOTHING is
-      // scheduled; `onVisibilityChange` resumes the engine (with a reset backoff) on the way back.
-      if (tabHidden()) {
-        pausedForHidden = true;
-        return;
-      }
-      reconnectTimer.current = setTimeout(() => {
-        reconnectTimer.current = null;
-        connect();
-      }, backoffDelay(backoffAttempt - 1));
+  private reportFailure(why: string): void {
+    if (!this.running) return;
+    this.consecutiveFailures += 1;
+    this.backoffAttempt += 1;
+    this.emit({
+      attempts: this.consecutiveFailures,
+      error: why,
+      status: this.consecutiveFailures >= OFFLINE_AFTER_FAILURES ? "offline" : "reconnecting",
+    });
+    this.clearTimer("reconnect"); // never two pending retries
+    // F-41: a hidden tab has nobody to notify and browsers throttle its timers, so the old loop
+    // kept a dead socket retrying forever behind a background page. While hidden NOTHING is
+    // scheduled; `onVisibilityChange` resumes the engine (with a reset backoff) on the way back.
+    if (tabHidden()) {
+      this.pausedForHidden = true;
+      return;
+    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, backoffDelay(this.backoffAttempt - 1));
+  }
+
+  // ── the socket ─────────────────────────────────────────────────────────────
+
+  private connect(ticket?: string): void {
+    if (!this.running) return;
+    if (
+      this.socket &&
+      (this.socket.readyState === WebSocket.OPEN ||
+        this.socket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
     }
 
-    function connect(ticket?: string): void {
-      if (!mounted.current || closedByUs.current) return;
-      if (
-        currentSocket &&
-        (currentSocket.readyState === WebSocket.OPEN ||
-          currentSocket.readyState === WebSocket.CONNECTING)
-      ) {
-        return;
-      }
+    const myGeneration = ++this.generation;
 
-      const myGeneration = ++generation;
+    // F-46: mint first, connect second. The key goes to the ticket endpoint in a header; the
+    // socket URL carries only the short-lived ticket. A mint failure is a named, retried failure
+    // like any other — never a silent fallback to `?key=`, which the server now refuses.
+    if (ticket === undefined) {
+      void mintSocketTicket()
+        .then((fresh) => {
+          if (myGeneration !== this.generation || !this.running) return;
+          this.connect(fresh);
+        })
+        .catch((e: unknown) => {
+          if (myGeneration !== this.generation || !this.running) return;
+          this.reportFailure(`could not mint a socket ticket: ${message(e)}`);
+        });
+      return;
+    }
 
-      // F-46: mint first, connect second. The key goes to the ticket endpoint in a header; the
-      // socket URL carries only the short-lived ticket. A mint failure is a named, retried failure
-      // like any other — never a silent fallback to `?key=`, which the server now refuses.
-      if (ticket === undefined) {
-        void mintSocketTicket()
-          .then((fresh) => {
-            if (myGeneration !== generation) return;
-            if (!mounted.current || closedByUs.current) return;
-            connect(fresh);
-          })
-          .catch((e: unknown) => {
-            if (myGeneration !== generation) return;
-            reportFailure(`could not mint a socket ticket: ${message(e)}`);
-          });
-        return;
-      }
+    const url = socketUrl(ticket);
 
-      const url = socketUrl(ticket);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch (e) {
+      // Q-02: a relative/misconfigured URL throws synchronously. Caught here so the dashboard can
+      // never die on it; the honest reason goes to `error` and the retry is scheduled. The message
+      // carries the URL WITHOUT the key.
+      this.reportFailure(`could not open a WebSocket to ${displaySocketUrl()}: ${message(e)}`);
+      return;
+    }
+    this.socket = socket;
 
-      let socket: WebSocket;
-      try {
-        socket = new WebSocket(url);
-      } catch (e) {
-        // Q-02: a relative/misconfigured URL throws synchronously. Caught here so the dashboard can
-        // never die on it; the honest reason goes to `error` and the retry is scheduled. The message
-        // carries the URL WITHOUT the key.
-        reportFailure(`could not open a WebSocket to ${displaySocketUrl()}: ${message(e)}`);
-        return;
-      }
-      currentSocket = socket;
+    let connectTimedOut = false;
 
-      let connectTimedOut = false;
-
-      // Q-30: bound the CONNECTING phase. A handshake that never completes is closed, which routes
-      // through onclose (flagged via `connectTimedOut`) into the normal backoff retry.
-      connectTimer.current = setTimeout(() => {
-        if (myGeneration !== generation) return;
-        if (socket.readyState === WebSocket.CONNECTING) {
-          connectTimedOut = true;
-          try {
-            socket.close();
-          } catch {
-            /* already closed */
-          }
-        }
-      }, CONNECT_TIMEOUT_MS);
-
-      socket.onopen = () => {
-        if (myGeneration !== generation) {
-          // A stale socket that opened after its engine moved on: close it, write nothing.
-          try {
-            socket.close();
-          } catch {
-            /* already closed */
-          }
-          return;
-        }
-        if (!mounted.current || closedByUs.current) {
-          try {
-            socket.close();
-          } catch {
-            /* already closed */
-          }
-          return;
-        }
-        clearTimer(connectTimer);
-        clearTimer(stableTimer);
-        consecutiveFailures = 0;
-        setAttempts(0);
-        setStatus("live");
-        setError(null);
-        stableTimer.current = setTimeout(() => {
-          if (myGeneration === generation) backoffAttempt = 0;
-        }, STABLE_RESET_MS);
-        scheduleSnapshot();
-      };
-
-      socket.onmessage = (e) => {
-        if (myGeneration !== generation) return;
-        try {
-          const parsed = JSON.parse(e.data as string) as ActivityEvent | ActivityEvent[];
-          if (mounted.current) engineOptions.current.merge(Array.isArray(parsed) ? parsed : [parsed]);
-        } catch {
-          // A malformed frame is ignored on purpose: one bad message must not kill the socket.
-        }
-      };
-
-      socket.onclose = (event: CloseEvent | undefined) => {
-        // A stale socket must not write state, nor schedule a retry (duplicate close cycles used to
-        // pile up reconnect timers and snapshot fetches this way).
-        if (myGeneration !== generation) return;
-        clearTimer(connectTimer);
-        clearTimer(stableTimer);
-        if (currentSocket === socket) currentSocket = null;
-        if (!mounted.current || closedByUs.current) return;
-        reportFailure(
-          connectTimedOut
-            ? `socket to ${displaySocketUrl()} did not open within ${CONNECT_TIMEOUT_MS}ms`
-            : closeText(event),
-        );
-      };
-
-      socket.onerror = () => {
-        // The browser fires close after a failed socket; closing routes through the single onclose
-        // retry path instead of double-scheduling one.
+    // Q-30: bound the CONNECTING phase. A handshake that never completes is closed, which routes
+    // through onclose (flagged via `connectTimedOut`) into the normal backoff retry.
+    this.connectTimer = setTimeout(() => {
+      if (myGeneration !== this.generation) return;
+      if (socket.readyState === WebSocket.CONNECTING) {
+        connectTimedOut = true;
         try {
           socket.close();
         } catch {
           /* already closed */
         }
-      };
-    }
+      }
+    }, CONNECT_TIMEOUT_MS);
 
-    /**
-     * F-41 — the tab's own visibility is part of the transport's state.
-     *  - HIDDEN: cancel any pending retry. A background tab must not retry forever at all.
-     *  - VISIBLE: resume at once, with the backoff counter RESET — the pause was not the server's
-     *    fault, so a returning tab must not inherit the attempt count of a storm it slept through.
-     */
-    function onVisibilityChange(): void {
-      if (!mounted.current || closedByUs.current) return;
-      if (tabHidden()) {
-        if (reconnectTimer.current) {
-          clearTimer(reconnectTimer);
-          pausedForHidden = true;
+    socket.onopen = () => {
+      if (myGeneration !== this.generation) {
+        // A stale socket that opened after its engine moved on: close it, write nothing.
+        try {
+          socket.close();
+        } catch {
+          /* already closed */
         }
         return;
       }
-      const idle = currentSocket === null || currentSocket.readyState === WebSocket.CLOSED;
-      if (!pausedForHidden && !idle) return;
-      pausedForHidden = false;
-      backoffAttempt = 0;
-      connect();
-    }
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", onVisibilityChange);
-    }
-
-    connect();
-
-    return () => {
-      closedByUs.current = true;
-      mounted.current = false;
-      generation += 1; // everything in flight from this engine is now stale
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (!this.running) {
+        try {
+          socket.close();
+        } catch {
+          /* already closed */
+        }
+        return;
       }
-      clearTimer(connectTimer);
-      clearTimer(reconnectTimer);
-      clearTimer(stableTimer);
-      clearTimer(snapshotTimer);
+      this.clearTimer("connect");
+      this.clearTimer("stable");
+      this.consecutiveFailures = 0;
+      this.emit({ attempts: 0, status: "live", error: null });
+      this.stableTimer = setTimeout(() => {
+        if (myGeneration === this.generation) this.backoffAttempt = 0;
+      }, STABLE_RESET_MS);
+      this.scheduleSnapshot();
+    };
+
+    socket.onmessage = (e) => {
+      if (myGeneration !== this.generation) return;
       try {
-        currentSocket?.close();
+        const parsed = JSON.parse(e.data as string) as ActivityEvent | ActivityEvent[];
+        this.merge(Array.isArray(parsed) ? parsed : [parsed]);
+      } catch {
+        // A malformed frame is ignored on purpose: one bad message must not kill the socket.
+      }
+    };
+
+    socket.onclose = (event: CloseEvent | undefined) => {
+      // A stale socket must not write state, nor schedule a retry (duplicate close cycles used to
+      // pile up reconnect timers and snapshot fetches this way).
+      if (myGeneration !== this.generation) return;
+      this.clearTimer("connect");
+      this.clearTimer("stable");
+      if (this.socket === socket) this.socket = null;
+      if (!this.running) return;
+      this.reportFailure(
+        connectTimedOut
+          ? `socket to ${displaySocketUrl()} did not open within ${CONNECT_TIMEOUT_MS}ms`
+          : closeText(event),
+      );
+    };
+
+    socket.onerror = () => {
+      // The browser fires close after a failed socket; closing routes through the single onclose
+      // retry path instead of double-scheduling one.
+      try {
+        socket.close();
       } catch {
         /* already closed */
       }
-      currentSocket = null;
     };
-    // The engine lives for the MOUNT's lifetime: nothing about a re-render can restart the socket.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }
+}
 
-  return { events, connected: status === "live", status, error, attempts, total };
+/** The page's ONE transport. Module-level: two consumers in one page share it. */
+const transport = new ActivityTransport();
+
+/** A consumer's view of the shared state, sliced to its own event ceiling. */
+export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions = {}) {
+  const { snapshot = true, snapshotLimit = 50 } = options;
+
+  // The options ride the SUBSCRIBE call (not a render-time mutation): React invokes subscribe in
+  // an effect, so the engine is configured exactly when it starts, and a changed option set
+  // re-subscribes instead of silently restarting a socket mid-render.
+  const subscribe = useCallback(
+    (onChange: () => void) => transport.subscribe(onChange, { maxEvents, snapshot, snapshotLimit }),
+    [maxEvents, snapshot, snapshotLimit],
+  );
+
+  const state = useSyncExternalStore(
+    subscribe,
+    transport.getSnapshot,
+    () => INITIAL_STATE,
+  );
+
+  return {
+    events: state.events.length > maxEvents ? state.events.slice(0, maxEvents) : state.events,
+    connected: state.status === "live",
+    status: state.status,
+    error: state.error,
+    attempts: state.attempts,
+    total: state.total,
+  };
 }

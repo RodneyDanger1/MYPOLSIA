@@ -278,7 +278,10 @@ describe("contract — captured live bodies rendered by the shipped consumers", 
   it("GET /dashboard/reports/daily → a literal null body is the honest 'no report today' state", async () => {
     answerWith({ "/dashboard/reports/daily": null });
     render(<DailyReportPanel />);
-    expect(await screen.findByText(/No report for today yet/)).toBeInTheDocument();
+    // W2/F-10 REPAIR (old -> new copy): was /No report for today yet/ — the panel now names the
+    // empty-answer state and its own boundary instead of promising the cycle will write one.
+    expect(await screen.findByText(/Not written yet — this is not a failed read/)).toBeInTheDocument();
+    expect(screen.getByTestId("daily-report-absent").getAttribute("data-state")).toBe("absent");
   });
 
   it("GET /social/posts?limit=50 → SocialPage renders the captured rows (status/published_at nulls included)", async () => {

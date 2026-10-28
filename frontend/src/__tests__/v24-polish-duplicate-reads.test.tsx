@@ -97,9 +97,15 @@ describe("activity snapshot — two mounted consumers share one read", () => {
     const snapshotCalls = mockApiGet.mock.calls.filter(([path]) =>
       String(path).startsWith("/dashboard/activity"),
     );
-    expect(FakeWebSocket.instances).toHaveLength(2);
+    // F-03 wave 2 REPAIR (old -> new arithmetic): this pinned `2` sockets — one per consumer —
+    // because each `useActivityFeed` mount ran its own connect effect. That is the defect the
+    // finding is about (two transports on one page, three status words on one screen); the
+    // transport is now module-level with `useSyncExternalStore` subscribers, so the arithmetic is
+    // ONE shared socket + ONE shared snapshot read for two mounted views. The read count is
+    // unchanged; only the socket count drops 2 -> 1.
+    expect(FakeWebSocket.instances).toHaveLength(1);
     expect(snapshotCalls).toHaveLength(1);
-    // Both views received nothing (the shared read resolved [] twice) but stayed mounted.
+    // Both views received nothing (the shared read resolved [] once) but stayed mounted.
     expect(screen.getByTestId("feed-strip")).toHaveTextContent("0");
     expect(screen.getByTestId("feed-feed")).toHaveTextContent("0");
   });
@@ -123,7 +129,9 @@ describe("activity snapshot — two mounted consumers share one read", () => {
     const snapshotCalls = mockApiGet.mock.calls.filter(([path]) =>
       String(path).startsWith("/dashboard/activity"),
     );
-    expect(FakeWebSocket.instances).toHaveLength(2);
+    // F-03 wave 2 REPAIR (old -> new arithmetic): 2 sockets -> 1 shared transport socket; the
+    // snapshot read stays 1 (it is read by the engine, not by each consumer).
+    expect(FakeWebSocket.instances).toHaveLength(1);
     expect(snapshotCalls).toHaveLength(1);
   });
 

@@ -248,7 +248,7 @@ describe("dashboard composition (wave U1)", () => {
     expect(
       await screen.findByText(/No tasks yet\. Agents add tasks during their cycles/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/No report for today yet\. The daily cycle writes one/)).toBeInTheDocument();
+    expect(screen.getByText(/Not written yet — this is not a failed read/)).toBeInTheDocument();
     expect(
       screen.getByText(/No posts yet\. The social media agent drafts posts during its cycles/),
     ).toBeInTheDocument();
@@ -451,9 +451,15 @@ describe("right-column widgets", () => {
 
     render(<DailyReportPanel />);
 
+    // W2/F-10 REPAIR (old -> new copy): the old assertion pinned
+    // "No report for today yet. The daily cycle writes one after the evening run — check back once
+    // it has run." — a PROMISE about a scheduler the panel cannot see (the live box had no report
+    // since 2026-10-20 and the sentence still rendered). The empty-answer state is now named
+    // explicitly and says it is not a failed read; the no-error assertion is unchanged.
     expect(
-      await screen.findByText(/No report for today yet\. The daily cycle writes one/),
+      await screen.findByText(/Not written yet — this is not a failed read/),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("daily-report-absent").getAttribute("data-state")).toBe("absent");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
