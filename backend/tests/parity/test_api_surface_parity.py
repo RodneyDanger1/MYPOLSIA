@@ -50,6 +50,16 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/agents/status", ("GET",)),
     ("/api/v1/agents/{agent_type}/trigger", ("POST",)),
     ("/api/v1/approvals", ("POST",)),                            # T02/D1: the owner's approval-token mint
+    # wave 2 (bridge, F-08/F-15): the ARTIFACT read surface over `code_workspace_dir/runs/<id>/` —
+    # list run workspaces, list one run's files, read one file's text, download one file's bytes.
+    # Documented by app/api/v1/artifacts.py + app/services/artifact_service.py and pinned by
+    # tests/unit/test_w2_bridge_artifacts.py; the routes did not exist before this wave (the live
+    # OpenAPI census served 88 paths and none could read a file an agent wrote). Read-only: no
+    # write/upload/delete anywhere on this surface.
+    ("/api/v1/artifacts", ("GET",)),
+    ("/api/v1/artifacts/{run_id}", ("GET",)),
+    ("/api/v1/artifacts/{run_id}/content", ("GET",)),
+    ("/api/v1/artifacts/{run_id}/download", ("GET",)),
     # wave U5 (P2/B22): the bounded Auto Mode window — OLD surface had no auto-mode route; NEW
     # pins added deliberately with the routes (count 36 -> 39): POST start (ends_at = now +
     # duration, 1 h..5 d), GET status (live counters; lazy duration_end close), DELETE stop early

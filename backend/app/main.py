@@ -26,6 +26,7 @@ from app.api.v1 import (
     ads,
     agents,
     approvals,
+    artifacts,  # wave 2 (bridge): the READ surface over run workspaces (F-08/F-15)
     auto_mode,
     channels,
     chat,
@@ -280,7 +281,7 @@ def _sanitize_non_finite(value: Any) -> Any:
         return repr(value)
     if isinstance(value, dict):
         return {key: _sanitize_non_finite(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_sanitize_non_finite(item) for item in value]
     return value
 
@@ -293,7 +294,7 @@ def _contains_non_finite(value: Any) -> bool:
         return not value.is_finite()
     if isinstance(value, dict):
         return any(_contains_non_finite(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return any(_contains_non_finite(item) for item in value)
     return False
 
@@ -599,6 +600,11 @@ def create_app() -> FastAPI:
     api_v1.include_router(signals.router)    # V29 (L5): fixed keyless feed headlines (owner)
     api_v1.include_router(trust.router)      # V29 (L6): DoH/TLS + Wayback link status (owner)
     api_v1.include_router(data.router)       # wave V10 (H1/D7): the data portability surface — export ZIP + guarded wipe (owner)
+    # wave 2 (bridge, F-08/F-15): the artifact READ surface over `code_workspace_dir/runs/<id>/` —
+    # list runs / list a run's files / read one file / download it.  Read-only, owner-key, and the
+    # ONLY route that serves a run workspace; the writer stays `code_write` and the deleter stays
+    # `POST /ops/run-workspace-cleanup`.
+    api_v1.include_router(artifacts.router)
     # wave V24 (L3): the website builder — POST generate / GET list, disk-backed (data/sites/<slug>/
     # meta.json).  The router is included BEFORE the /sites static mount so the /api/v1 prefix is
     # matched by a route, never by the mount.

@@ -68,6 +68,12 @@ API_ONLY: dict[tuple[str, str], str] = {
         "never by the SPA; auth is the dedicated SUPPORT_INBOUND_SECRET header, not the owner "
         "key. The resulting inbox item is read/consumed by the support page and attach sweep."
     ),
+    # wave-2 F-08: the owner-read artifact API ships before its /ops consumer.  The consumer is a
+    # recorded wave-4 REQUEST (R-W2-B3); until it lands these four are API-only BY DESIGN.
+    ("GET", "/api/v1/artifacts"): "owner-read artifact index; /ops consumer is R-W2-B3 (wave 4)",
+    ("GET", "/api/v1/artifacts/{run_id}"): "owner-read run artifact list; /ops consumer is R-W2-B3",
+    ("GET", "/api/v1/artifacts/{run_id}/content"): "owner-read artifact text; /ops consumer is R-W2-B3",
+    ("GET", "/api/v1/artifacts/{run_id}/download"): "owner-read artifact bytes; /ops consumer is R-W2-B3",
 }
 
 #: Settings read through a COMPUTED attribute name (invisible to a literal scan).  Empty today:

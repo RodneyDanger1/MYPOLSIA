@@ -240,6 +240,16 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # feature W5: the provider-facing inbound-email webhook (dedicated shared secret; the
     # support inbox is the documented consumer, the owner POST remains the manual leg).
     ("POST", "/api/v1/support/inbox/inbound"),
+    # wave 2 (bridge, F-08/F-15): the ARTIFACT read surface over the run workspaces the code tools
+    # write (`<code_workspace_dir>/runs/<run_id>/`).  Documented by app/api/v1/artifacts.py and
+    # app/services/artifact_service.py, and by tests/unit/test_w2_bridge_artifacts.py; NEW pins
+    # added deliberately WITH the routes — before them the product served 88 /api/v1 paths and not
+    # one of them could read a file an agent wrote (`GET /api/v1/artifacts` → `{"detail":"Not
+    # Found"}`, measured live).  Read-only: no write/upload/delete route exists on this surface.
+    ("GET", "/api/v1/artifacts"),
+    ("GET", "/api/v1/artifacts/{run_id}"),
+    ("GET", "/api/v1/artifacts/{run_id}/content"),
+    ("GET", "/api/v1/artifacts/{run_id}/download"),
 ]
 
 DOCUMENTED_AGENTS = {

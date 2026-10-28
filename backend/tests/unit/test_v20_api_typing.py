@@ -108,6 +108,9 @@ RESPONSE_MODEL_EXEMPTIONS = {
     "/api/v1/phone/codes": "frozen V16 {ok,data} envelope (phone.py:17)",
     "/api/v1/phone/media": "frozen V16 {ok,data} envelope (phone.py:17)",
     "/api/v1/phone/send": "frozen V16 {ok,data} envelope (phone.py:17)",
+    # wave-2 F-08 (artifact surface): bytes/text, not a JSON envelope.
+    "/api/v1/artifacts/{run_id}/content": "raw UTF-8 artifact text (text/plain) with byte headers",
+    "/api/v1/artifacts/{run_id}/download": "exact artifact bytes as an attachment",
 }
 
 
