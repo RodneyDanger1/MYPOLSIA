@@ -20,10 +20,12 @@ import pytest
 from app.core.errors import E_AUTH, E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
 
 #: The ONLY operations allowed to answer without X-API-Key. Each is public for a stated
-#: reason: liveness (health), Stripe cannot send a header (webhook), and a mail recipient
-#: has no key (unsubscribe). Adding a name here is an auth decision, not a test detail.
+#: reason: liveness (health), a readiness probe an orchestrator cannot authenticate (ready),
+#: Stripe cannot send a header (webhook), and a mail recipient has no key (unsubscribe). Adding a
+#: name here is an auth decision, not a test detail.
 PUBLIC_OPERATIONS = {
     "/api/v1/health",
+    "/api/v1/ready",
     "/api/v1/finance/stripe/webhook",
     "/api/v1/outreach/unsubscribe",
 }

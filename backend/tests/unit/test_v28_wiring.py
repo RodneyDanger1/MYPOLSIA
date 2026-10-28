@@ -49,6 +49,12 @@ API_ONLY: dict[tuple[str, str], str] = {
         "list endpoint, so it never needs a detail fetch; e2e/invoices.spec.ts:82 asserts the "
         "route for API clients."
     ),
+    ("GET", "/api/v1/ready"): (
+        "Orchestrator/health-check read. A readiness probe is called by the platform before it "
+        "routes traffic, and a probe carries no owner key; the SPA never reads it. Its body is one "
+        "status word per dependency (no DSN, host, credential or traceback), and a failure is the "
+        "frozen E_DB 503."
+    ),
     ("GET", "/api/v1/outreach/unsubscribe"): (
         "Recipient-facing HTML page behind the one-click unsubscribe link in outgoing email "
         "(signed token, no login). It is consumed by a mail client's browser, not by the SPA."

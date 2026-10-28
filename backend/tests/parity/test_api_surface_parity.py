@@ -84,6 +84,11 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/finance/stripe/webhook", ("POST",)),             # unauthenticated by design
     ("/api/v1/finance/summary", ("GET",)),
     ("/api/v1/health", ("GET",)),
+    # wave B2 (F-50): the readiness probe is a SECOND route, deliberately public like liveness —
+    # an orchestrator cannot send the owner key. It answers 200 {status, checks} or the frozen
+    # E_DB 503; its payload carries one status word per dependency and no DSN/host/traceback.
+    # OLD surface had one constant probe — NEW pin added deliberately with the route.
+    ("/api/v1/ready", ("GET",)),
     ("/api/v1/memory", ("GET",)),
     ("/api/v1/memory", ("POST",)),
     ("/api/v1/memory/{memory_id}", ("DELETE",)),                # the memory-delete lane's route (R19); pinned here because R17 owns this file this wave and the lane left it unpinned
@@ -215,6 +220,10 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     # route below (never "unknown").  NEW pin added deliberately WITH the mount.
     ("/sites", None),
     ("/ws/activity", None),                                    # websocket: methods is None
+    # wave B2 (F-46): the browser cannot set handshake headers, so it exchanges its key (in the
+    # X-API-Key header, over REST) for a short-lived HMAC ticket and connects with ?ticket=.
+    # OLD handshake accepted ?key= — that form is now refused 1008 by name.
+    ("/api/v1/ws/ticket", ("POST",)),
     # wave V26 (L2/L4): six NEW route pins added deliberately WITH the routes — the integrations
     # surface (masked status list + one, save/clear, read-only test probe) and vision describe.
     ("/api/v1/integrations", ("GET",)),
