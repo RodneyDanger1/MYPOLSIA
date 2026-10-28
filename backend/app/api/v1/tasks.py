@@ -81,6 +81,7 @@ from app.services.task_service import (
     get_task_run_totals,
     list_tasks,
     task_completed_at,
+    task_execution_state,
     transition_task_status,
 )
 
@@ -113,6 +114,9 @@ def _fill_truth(response: TaskResponse, task: Task, totals: TaskRunTotals | None
     defect — which the U2 tests pin per site.
     """
     response.completed_at = task_completed_at(task)
+    execution_status, needs_attention = task_execution_state(task)
+    response.execution_status = execution_status
+    response.needs_attention = needs_attention
     if totals is not None:
         response.cost_usd = float(totals.cost_usd) if totals.cost_usd is not None else None
         response.tokens_in = totals.tokens_in

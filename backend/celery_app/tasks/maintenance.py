@@ -65,6 +65,19 @@ means the broker took the publish, so a message accepted then lost leaves the ro
 marker-less — `reconcile_stranded_pending_tasks` covers that population too, through the
 `rearmed_at` stamp the clear leaves behind (any `source`, unclaimed, older than one window).
 
+`recover_orphaned_deliveries` is the eighth job (F-22, 2026-10-28) and the ONLY one with a
+non-Beat production caller: a `worker_ready` hook.  Live incident: the worker prefetched two
+`run_agent_task` messages, lost Redis mid-prefetch (TimeoutError) and was SIGKILLed alive-but-
+wedged with `unacked=2`; a restart did NOT restore them, because kombu's Redis transport restores
+an unacked delivery only from a LIVE worker's event loop and only after `visibility_timeout`
+(1800 s here) — and its crash-path restore never ran.  Task 315 was left `in_progress` with its
+delivery still in `unacked`, and two `unacked_index` tags had no payload at all (a manual HDEL
+left them behind — the ghost shape).  This tick runs the claim-lease sweep, then restores exactly
+the deliveries the DB still owes (pending/due, or a claim whose lease expired), DROPS deliveries
+whose row is terminal or gone (a redelivery there can only be refused at claim and re-lost), and
+LEAVES a live claim's delivery to the transport's visibility timeout.  It dispatches nothing and
+publishes nothing: every restored message still passes the claim, pause and budget gates.
+
 `cleanup_run_workspaces` is the seventh job (V27/L2): V26 shipped
 `tool_registry.cleanup_expired_run_workspaces` (policy: keep the newest 20 run directories under
 `<workspace>/runs/`, max age 72 h) and NOTHING called it, so a run workspace outlived its policy
@@ -84,6 +97,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+from celery.signals import worker_ready
 
 from app.agents.tool_registry import (
     _RUN_ID_RE,
@@ -242,6 +257,260 @@ async def _requeue_stale_claims_in_session() -> dict[str, Any]:
 
     logger.info("task-lease sweep: recovered %s of %s in-flight claim(s)", requeued, scanned)
     return {"status": "completed", "requeued": requeued, "scanned": scanned}
+
+
+# ── F-22: the broker's orphaned deliveries (no Beat required) ─────────────────────────────────
+#: One recovery pass inspects at most this many unacked deliveries (the F-51 bounded-sweep rule:
+#: a bound is announced, never silently truncated — the next pass continues).
+DELIVERY_RECOVERY_BATCH = 200
+#: The activity action ONE pass writes when it changed anything.  A pass that changed nothing
+#: writes nothing (the F-51/H-02 rule: an activity row must describe a real change).
+DELIVERY_RECOVERY_ACTION = "broker_delivery_recovery"
+#: The named reason a pass reports when the broker could not be reached.  It is a SKIP, not a
+#: failure: a worker started before Redis must still become ready (`broker_connection_retry_on_startup`).
+DELIVERY_RECOVERY_UNAVAILABLE = "E_REDIS"
+
+
+@app.task(name="celery_app.tasks.maintenance.recover_orphaned_deliveries")
+def recover_orphaned_deliveries() -> dict[str, Any]:
+    """F-22 — get the broker's unacked deliveries and the DB's claims back in agreement.
+
+    Callers: the WORKER STARTUP hook below (always) and any operator/Beat tick that wants a pass.
+    It is bookkeeping, never dispatch: no row is created, no message is published, no agent runs.
+    The one spend-adjacent act is RESTORING a delivery the DB still owes — and that message then
+    goes through the same claim, pause gate and budget gate as every other delivery, so a paused
+    company's restored message is released by name instead of spending.
+    """
+    return run_async(_recover_orphaned_deliveries())
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    """A row timestamp as an aware UTC instant (SQLite stores naive UTC wall clocks)."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+async def _recover_orphaned_deliveries(*, broker: Any | None = None) -> dict[str, Any]:
+    """The async body of `recover_orphaned_deliveries`; `broker` is injectable for tests."""
+    from sqlalchemy import func, select
+
+    from app.core.database import get_session_factory
+    from app.models.task import Task
+    from celery_app.tasks.broker_recovery import (
+        KombuRedisDeliveryBroker,
+        RecoveryResult,
+    )
+
+    result = RecoveryResult(bound=DELIVERY_RECOVERY_BATCH)
+    session_factory = get_session_factory()
+
+    # 1. The claim-lease sweep FIRST: a stale claim becomes `pending` (and carries the reconciler's
+    #    `rearmed_at` stamp) before its delivery is put back, so the redelivery claims a row it is
+    #    allowed to take instead of being refused and burning the message.  This is the same
+    #    bookkeeping sweep Beat runs — it spends nothing and is safe while the company is paused
+    #    (pinned by `test_f2_feed2_paused_beat`), which is exactly why it is the right first step
+    #    on a stack whose Beat is off by design.
+    try:
+        async with session_factory() as db:
+            result.reaped_scanned = int(
+                await db.scalar(
+                    select(func.count()).select_from(Task).where(Task.status == "in_progress")
+                )
+            )
+            result.reaped_requeued = await requeue_stale_claims(db)
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 — a DB outage must not stop the delivery decision
+        result.errored.append({"step": "lease_sweep", "error": exc.__class__.__name__})
+        logger.warning("delivery recovery: lease sweep failed (%s)", exc.__class__.__name__,
+                       exc_info=True)
+
+    own_broker = broker is None
+    if own_broker:
+        try:
+            broker = KombuRedisDeliveryBroker()
+        except Exception as exc:  # noqa: BLE001 — a worker started before Redis is not a crash
+            result.status = "skipped"
+            result.reason = DELIVERY_RECOVERY_UNAVAILABLE
+            result.errored.append({"step": "broker_connect", "error": exc.__class__.__name__})
+            logger.warning(
+                "delivery recovery: broker unavailable (%s); no delivery was inspected and "
+                "nothing was mutated — a redelivery stays owned by the transport's visibility "
+                "timeout until a pass can reach Redis",
+                exc.__class__.__name__,
+            )
+            return result.as_dict()
+
+    # The unavailable-broker branch above returns; reaching here means a broker exists.
+    # Stated explicitly so the rest of the pass (and the finally close) is provably non-None;
+    # mypy flagged these eight union-attr reads in the wave-2 recovery path.
+    if broker is None:
+        result.status = "skipped"
+        result.reason = DELIVERY_RECOVERY_UNAVAILABLE
+        return result.as_dict()
+
+    try:
+        deliveries = broker.snapshot()
+        result.scanned = len(deliveries)
+        if len(deliveries) > DELIVERY_RECOVERY_BATCH:
+            result.bound_reached = True
+            logger.warning(
+                "delivery recovery: %s unacked deliveries, inspecting the first %s (oldest "
+                "delivery first); the next pass continues",
+                len(deliveries),
+                DELIVERY_RECOVERY_BATCH,
+            )
+            deliveries = deliveries[:DELIVERY_RECOVERY_BATCH]
+
+        managed = [delivery for delivery in deliveries if delivery.managed]
+        rows: dict[int, Any] = {}
+        if managed:
+            task_ids = sorted({int(delivery.task_id) for delivery in managed
+                               if delivery.task_id is not None})
+            async with session_factory() as db:
+                rows = {
+                    int(task.id): task
+                    for task in (
+                        await db.execute(select(Task).where(Task.id.in_(task_ids)))
+                    ).scalars().all()
+                }
+
+        now = now_utc()
+        lease_seconds = int(settings.task_claim_lease_seconds)
+        terminal = {"completed", "failed", "cancelled", "rejected"}
+        for delivery in deliveries:
+            if not delivery.has_payload:
+                # An `unacked_index` entry with no `unacked` field: the message is GONE (a manual
+                # HDEL leaves exactly this — the live capture had two).  The index entry is a
+                # phantom delivery: drop it so a later visibility-timeout restore cannot resurrect
+                # nothing and so the index cannot grow without bound.
+                broker.drop(delivery.tag)
+                result.dropped.append(f"{delivery.tag}:index-only")
+                continue
+            if not delivery.managed:
+                result.left_unmanaged.append(f"{delivery.tag}:{delivery.task_name or 'undecoded'}")
+                continue
+            task = rows.get(int(delivery.task_id))
+            if task is None:
+                # The row is gone: nobody owes a run.  Dropping the delivery is the only action
+                # that cannot resurrect work a data decision deleted.
+                broker.drop(delivery.tag)
+                result.dropped.append(f"{delivery.tag}:task-{delivery.task_id}:missing-row")
+                continue
+            status = str(task.status or "")
+            if status in terminal:
+                # A ghost delivery: the work already ended.  Dropping it is safe AND is what stops
+                # a redelivery from being refused at claim and re-lost (the "ghost double-run"
+                # half of F-22: the claim would refuse it, so it must not be requeued at all).
+                broker.drop(delivery.tag)
+                result.dropped.append(f"{delivery.tag}:task-{delivery.task_id}:{status}")
+                continue
+            if status == "pending":
+                due = _aware_utc(task.scheduled_date)
+                if due is not None and due > now:
+                    # `claim_task` refuses a future `scheduled_date` (E_TASK_NOT_RUNNABLE), so
+                    # restoring now would burn the only delivery on a refusal.  The cadence owns
+                    # this row when it is due; the row itself stays pending.
+                    broker.drop(delivery.tag)
+                    result.dropped.append(f"{delivery.tag}:task-{delivery.task_id}:not-due")
+                    continue
+                broker.restore(delivery.tag)
+                result.restored.append(int(delivery.task_id))
+                continue
+            if status == "in_progress":
+                last_seen = _aware_utc(task.heartbeat_at or task.claimed_at or task.created_at)
+                if last_seen is not None and (now - last_seen).total_seconds() < lease_seconds:
+                    # A worker that may still be alive owns this row.  The transport's visibility
+                    # timeout is the correct owner of that case — restoring now would race a live
+                    # run for nothing.
+                    result.left_live_claim.append(int(delivery.task_id))
+                    continue
+                broker.restore(delivery.tag)
+                result.restored.append(int(delivery.task_id))
+                continue
+            # Any other row state (a NULL status is schema-legal): leave the delivery untouched and
+            # name it — an unknown state is a finding, not a licence to guess.
+            result.left_unmanaged.append(
+                f"{delivery.tag}:task-{delivery.task_id}:status-{status or 'null'}"
+            )
+
+        if result.changed:
+            from app.services.activity_service import log_activity
+
+            async with session_factory() as db:
+                await log_activity(
+                    db,
+                    agent_type="orchestrator",
+                    action=DELIVERY_RECOVERY_ACTION,
+                    summary=(
+                        f"broker delivery recovery: restored {len(result.restored)} orphaned "
+                        f"delivery(ies), dropped {len(result.dropped)} ghost delivery(ies), left "
+                        f"{len(result.left_live_claim)} live claim(s) to the visibility timeout"
+                    ),
+                    level="warning" if result.dropped else "info",
+                    detail={
+                        "scanned": result.scanned,
+                        "restored": result.restored,
+                        "dropped": result.dropped,
+                        "left_live_claim": result.left_live_claim,
+                        "reaped_requeued": result.reaped_requeued,
+                        "bound": result.bound,
+                    },
+                )
+                await db.commit()
+        logger.info(
+            "delivery recovery: scanned=%s restored=%s dropped=%s live_left=%s reaped=%s/%s",
+            result.scanned,
+            result.restored,
+            result.dropped,
+            result.left_live_claim,
+            result.reaped_requeued,
+            result.reaped_scanned,
+        )
+        return result.as_dict()
+    except Exception as exc:  # noqa: BLE001 — report what was done; the next pass is idempotent
+        result.status = "partial"
+        result.reason = exc.__class__.__name__
+        result.errored.append({"step": "delivery_pass", "error": exc.__class__.__name__})
+        logger.warning("delivery recovery: pass failed (%s)", exc.__class__.__name__, exc_info=True)
+        return result.as_dict()
+    finally:
+        if own_broker and broker is not None:
+            try:
+                broker.close()
+            except Exception:  # noqa: BLE001 — closing a probe connection cannot fail the pass
+                logger.debug("delivery recovery: closing the broker connection failed",
+                             exc_info=True)
+
+
+#: One startup pass per worker process.  The signal can fire once per consumer start; the recovery
+#: is idempotent, but one pass per process start is the honest unit (the log line is the evidence).
+_STARTUP_RECOVERY_DONE = False
+
+
+@worker_ready.connect
+def _recover_deliveries_on_worker_startup(sender: Any = None, **kwargs: Any) -> None:
+    """F-22's production caller: a restarted worker recovers its orphaned deliveries IMMEDIATELY.
+
+    Why a worker-startup hook rather than a Beat entry: this wave's posture is Beat OFF, and the
+    live incident proved the worker's own restart is when a stranded delivery must be dealt with.
+    The transport would restore it only after `visibility_timeout` (1800 s) and only from a live
+    worker's event loop; a `SIGKILL`-ed worker restores nothing at close.  This hook runs after the
+    consumer is ready, before any redelivery is owed, and never raises into the worker.
+    """
+    global _STARTUP_RECOVERY_DONE
+    if _STARTUP_RECOVERY_DONE:
+        return
+    _STARTUP_RECOVERY_DONE = True
+    try:
+        result = run_async(_recover_orphaned_deliveries())
+        logger.info("worker-startup delivery recovery: %s", result)
+    except Exception:  # noqa: BLE001 — a recovery failure must never stop a worker from starting
+        logger.warning(
+            "worker-startup delivery recovery failed; the next worker start (and the transport's "
+            "visibility timeout) still cover the orphaned deliveries",
+            exc_info=True,
+        )
 
 
 @app.task(name="celery_app.tasks.maintenance.check_activity_publish_health")

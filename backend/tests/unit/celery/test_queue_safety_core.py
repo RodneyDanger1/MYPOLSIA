@@ -22,6 +22,8 @@ Invariants covered (each names its RED leg — the defect that makes it fail):
 """
 from __future__ import annotations
 
+import json
+
 from app.config import settings
 from app.core.database import utcnow
 from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, PolsiaError
@@ -158,8 +160,19 @@ def test_invariant_2_a_successful_run_writes_the_row_and_clears_the_claim(
     assert runs[0]["duration_secs"] is not None
 
     activity = queue_db.query("SELECT * FROM activity_log")
-    assert [a["action"] for a in activity] == ["task_completed"]
-    assert activity[0]["level"] == "success"
+    # RE-PINNED DELIBERATELY (W2 / F-07, 2026-10-28).  Old pin: `["task_completed"]` at level
+    # "success".  The run here is the sanctioned `CLAUDE_CLI_MOCK` agent, whose envelope carries
+    # `status="partial"` by definition (a mock produces no structured output), so the run's OWN
+    # verdict is `partial` and `run_verdict.apply_run_verdict` writes the structured
+    # `payload_status`/`verdict` marker for it — deliberately, so a mocked run is never unmarked in
+    # the ledger (`app/agents/run_verdict.py::_label_summary_once`).  The worker now mirrors that
+    # verdict on the FEED instead of claiming a clean completion, which is the defect this wave
+    # closes (live: tasks 311/312/314 read COMPLETED with `[partial] ` summaries).  New pin:
+    # `["task_partial"]` at level "warning"; no production run's verdict is mocked — the marker is
+    # the mock seam's, the feed merely stops contradicting it.
+    assert [a["action"] for a in activity] == ["task_partial"]
+    assert activity[0]["level"] == "warning"
+    assert json.loads(activity[0]["detail"])["payload_status"] == "partial"
 
 
 def test_invariant_2_a_failed_run_records_error_and_counts_the_failure(

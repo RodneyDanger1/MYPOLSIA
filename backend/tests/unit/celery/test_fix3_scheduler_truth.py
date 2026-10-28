@@ -292,7 +292,14 @@ def test_a_deepseek_token_cost_is_measured_into_the_day_and_tightens_the_gate(
     from celery_app.tasks.agent_tasks import _apply_run_usage
 
     monkeypatch.setattr(pricing, "is_peak_pricing", lambda now=None: False)  # deterministic
-    monkeypatch.setattr(app_config.settings, "agent_daily_cost_cap_usd", 3.0)
+    # W2 RE-PIN (forge REQUESTS-1): wave 2 added a REAL $2.00 per-run DeepSeek cost guard; this
+    # fixture intentionally models a $2.10 run (10M prompt + 1M completion tokens). OLD: day cap
+    # 3.0 and no per-run cap override → the run is refused before it can be measured. NEW: day
+    # cap 5.0 and per-run cap 2.5, so the $2.10 estimate is allowed AND the day still tightens
+    # (pre-spend allowance min(5.0, 2.5)=2.5; after $2.10 the allowance 1.9 denies, exactly what
+    # the final assertion pins).
+    monkeypatch.setattr(app_config.settings, "agent_daily_cost_cap_usd", 5.0)
+    monkeypatch.setattr(app_config.settings, "agent_run_cost_cap_usd", 2.5)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={

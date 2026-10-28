@@ -124,6 +124,23 @@ class TaskResponse(TimestampedORM):
     tokens_in: int | None = None
     tokens_out: int | None = None
 
+    # ── F-07 (ADDITIVE, computed): the run's OWN verdict beside the lifecycle status ─────────
+    # `status` is the persisted lifecycle (`completed` means the run ended and its work is
+    # persisted — TRUE).  What used to be false was serving that as a CLEAN completion for a run
+    # that declared itself `partial` (live: tasks 311/312/314 carried `[partial] ` summaries and
+    # still read COMPLETED on every surface).  These two fields carry the verdict:
+    #   * `execution_status` — `partial` (the run did real work and said so in its own envelope),
+    #     `refused` (defensive: the agent-side producer raises before a completion is written), or
+    #     null when no non-ok verdict was recorded.  NEVER a new value of `status`: the persisted
+    #     vocabulary is frozen (ck_tasks_status) and the frontend's status matrix pins it.
+    #   * `needs_attention` — true exactly when `execution_status` is non-null.  Filled by
+    #     `task_service.task_execution_state` through the ONE `_fill_truth` helper every
+    #     construction site in `app/api/v1/tasks.py` uses.
+    # The badge is the frontend's half (`weaver`): a `completed` row with `needs_attention` must not
+    # render as a clean success.
+    execution_status: str | None = None
+    needs_attention: bool = False
+
     # ── S7-R1 / A5-02: the plan provenance + the parked-approval flag (ADDITIVE, computed) ────
     # The bag is read by its ORM ATTRIBUTE name and EXCLUDED from the wire.  It must NOT be
     # declared as `metadata`: on a SQLAlchemy declarative instance `task.metadata` IS the class's

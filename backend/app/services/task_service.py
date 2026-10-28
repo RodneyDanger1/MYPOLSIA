@@ -398,6 +398,59 @@ _TERMINAL_TASK_STATUSES: frozenset[str] = frozenset(
      TaskStatus.CANCELLED.value, TaskStatus.REJECTED.value}
 )
 
+# ── F-07: the run's own verdict, beside the lifecycle status ─────────────────────────────────
+#: The TOP-LEVEL result key `app/agents/run_verdict.py` (the agent-side F-07 producer) writes with
+#: the run's own `AgentEnvelope.status`.  Read by its WIRE name here — the service layer must not
+#: import the agent package (the worker/agent import graph), and the key is a wire contract, not an
+#: implementation detail.
+RUN_PAYLOAD_STATUS_KEY = "payload_status"
+#: The `tasks.metadata` key the WORKER stamps at completion from `RUN_PAYLOAD_STATUS_KEY`.  This is
+#: the durable side of the verdict: `tasks.status` is the lifecycle (`completed`), this says how the
+#: run itself ended (`partial`).  A JSON bag key, so no migration and no change to the frozen
+#: 7-value status vocabulary (`ck_tasks_status`, the frontend's own status matrix).
+RESULT_STATUS_KEY = "result_status"
+#: The verdict record (`{status,label,reason,source}`) copied beside it, bounded.
+VERDICT_METADATA_KEY = "verdict"
+#: The machine-written label on a partial run's summary (`run_verdict.PARTIAL_SUMMARY_PREFIX`).
+#: Read ONLY as the legacy fallback: rows completed before `RESULT_STATUS_KEY` existed still carry
+#: it, and it is our own producer's text, never the model's prose.
+PARTIAL_SUMMARY_PREFIX = "[partial] "
+#: The execution-status vocabulary this service serves.  NOT `tasks.status` values.
+PARTIAL_EXECUTION_STATUS = "partial"
+REFUSED_EXECUTION_STATUS = "refused"
+NEEDS_ATTENTION_EXECUTION_STATUSES: frozenset[str] = frozenset(
+    {PARTIAL_EXECUTION_STATUS, REFUSED_EXECUTION_STATUS}
+)
+
+
+def task_execution_state(task: Task) -> tuple[str | None, bool]:
+    """The run's OWN verdict for this row + whether it needs the owner's attention (F-07).
+
+    Live defect: tasks 311/312/314 carried `status: completed`, a `[partial] ` summary and a
+    `payload_status: "partial"` in the stored run, while every badge, ledger row and dashboard card
+    read COMPLETED.  The lifecycle status is TRUE (the run ended and its work is persisted) — what
+    was false was presenting that outcome as a clean completion.  So the persisted status keeps its
+    frozen meaning and the verdict is served BESIDE it:
+
+      * `metadata.result_status` — written by the worker at completion from the run's own
+        `payload_status` (`partial` / `refused`); the durable, structured truth;
+      * the legacy `[partial] ` summary prefix — for rows completed before that marker existed
+        (the live 311/312/314 rows), our own producer's label, read as a fallback only;
+      * nothing else: prose is never scanned for a verdict (a keyword rule would relabel healthy
+        runs and invent a status, the same reason `run_verdict` has no prose scan).
+
+    Returns `(execution_status, needs_attention)`; `(None, False)` means no non-ok verdict was
+    recorded — an honest clean completion, or a row with no run at all.
+    """
+    bag = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    recorded = bag.get(RESULT_STATUS_KEY)
+    if isinstance(recorded, str) and recorded in NEEDS_ATTENTION_EXECUTION_STATUSES:
+        return recorded, True
+    summary = task.result_summary
+    if isinstance(summary, str) and summary.startswith(PARTIAL_SUMMARY_PREFIX):
+        return PARTIAL_EXECUTION_STATUS, True
+    return None, False
+
 
 def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
     """Drop a parked approval from the row's bag in the WRITER's own transaction (R3/B2-C4-R3).
@@ -490,6 +543,10 @@ async def update_task_status(
         task.result_summary = result_summary
     if error_message is not None:
         task.error_message = error_message
+    elif status == TaskStatus.COMPLETED:
+        # F-23 residue (see `transition_task_status`'s twin): a completion ends the failure
+        # history — a `completed` row must not keep an earlier attempt's error text.
+        task.error_message = None
     task.updated_at = utcnow()
     await db.flush()
     return task
@@ -589,6 +646,12 @@ async def transition_task_status(
         task.result_summary = result_summary
     if error_message is not None:
         task.error_message = error_message
+    elif target is TaskStatus.COMPLETED:
+        # F-23 residue: a COMPLETED row carrying an earlier attempt's failure text is a lie the
+        # owner reads (live: task 313 completed at 21:23 with `E_AGENT_BAD_OUTPUT … <= 280 chars`
+        # still on the row).  A completion ENDS the failure history; the retry path that preserves
+        # it writes `pending`, not `completed`, so it is untouched.
+        task.error_message = None
     task.updated_at = utcnow()
     await db.flush()
 
@@ -749,6 +812,7 @@ async def claim_task(
     lease_seconds: int | None = None,
     task_id: int | None = None,
     agent_type: str | None = None,
+    takeover_stale: bool = False,
 ) -> Task | None:
     """Atomically take the next runnable task, or return None when there is none.
 
@@ -775,6 +839,18 @@ async def claim_task(
     With an explicit `task_id`, "no rows" is not silently None — it raises
     `E_NOT_FOUND` / `E_TASK_NOT_RUNNABLE` so a caller cannot mistake "someone else
     owns it" for "nothing to do".
+
+    `takeover_stale` (F-22) is the REDELIVERY boundary and only ever applies to an explicit
+    `task_id`.  A message that comes back from the broker after its worker died names a row that is
+    still `in_progress`; refusing it (`E_TASK_CLAIMED`) and acking the message is how the live
+    incident turned a stranded claim into a PERMANENTLY stranded task — the delivery is the only
+    copy, and the lease sweep that would have requeued the row is a Beat tick (off by design this
+    wave).  With `takeover_stale=True` the claim makes ONE atomic statement that takes the row when
+    its last sign of life (`heartbeat_at` else `claimed_at` else `created_at`) is older than the
+    lease, and leaves a live claim exactly as it was.  The attempt ladder is the bound: a stale
+    claim that has already spent `settings.task_max_attempts` executions is written `failed` with
+    the SAME reason `requeue_stale_claims` uses, so a crash-looping row ends by name instead of
+    being re-run forever.
     """
     if not worker or not str(worker).strip():
         raise PolsiaError(
@@ -830,6 +906,26 @@ async def claim_task(
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
             context={"task_id": task_id},
         )
+
+    # F-22: the message came back.  If the row's claim is EXPIRED the redelivery is the recovery
+    # path this function must not refuse; `takeover_stale` makes it atomic (one UPDATE whose WHERE
+    # carries the lease) so two redeliveries cannot both take the row.
+    if takeover_stale:
+        recovered = await _take_over_expired_claim(
+            db, task_id, worker=worker, lease=_resolve_lease(lease_seconds)
+        )
+        if recovered is not None:
+            return recovered
+        # Re-read: the takeover may have written the row `failed` (the ladder is spent) — the
+        # refusal below must describe the row as it is now, not as it was before that write.
+        # `populate_existing` because the two UPDATEs above deliberately do not sync the session.
+        fresh = (
+            await db.execute(
+                select(Task).where(Task.id == task_id).execution_options(populate_existing=True)
+            )
+        ).scalars().one_or_none()
+        current = fresh or current
+
     raise PolsiaError(
         E_TASK_CLAIMED if current.claimed_by else E_TASK_NOT_RUNNABLE,
         f"task {task_id} cannot be claimed: status={str(current.status)!r}, "
@@ -837,6 +933,106 @@ async def claim_task(
         how_to_fix=ERROR_HINTS[E_TASK_CLAIMED],
         context={"task_id": task_id, "status": current.status, "claimed_by": current.claimed_by},
     )
+
+
+async def _take_over_expired_claim(
+    db: AsyncSession,
+    task_id: int,
+    *,
+    worker: str,
+    lease: int,
+) -> Task | None:
+    """F-22: take a row whose claim lease expired, atomically — or end it by name.
+
+    Returns the claimed row, or None when the row is not in a stale-claim state (a live claim, a
+    different status).  When the stale claim has already spent the attempt ladder the row goes
+    `failed` with `requeue_stale_claims`'s own reason and None is returned, so the caller's claim
+    refusal names the true state.  Both writes are single compare-and-set statements: two workers
+    racing the same redelivery cannot both win.
+    """
+    from app.services.activity_service import log_activity
+
+    now = as_bound_instant(utcnow(), db)
+    cutoff = as_bound_instant(utcnow() - timedelta(seconds=lease), db)
+    max_attempts = int(settings.task_max_attempts)
+    stale_predicates = (
+        Task.status == TaskStatus.IN_PROGRESS,
+        func.coalesce(Task.heartbeat_at, Task.claimed_at, Task.created_at) < cutoff,
+    )
+    attempts = func.coalesce(Task.attempts, 0)
+    takeover = (
+        update(Task)
+        .where(Task.id == task_id, *stale_predicates, attempts < max_attempts)
+        .values(
+            status=TaskStatus.IN_PROGRESS,
+            claimed_by=str(worker),
+            claimed_at=now,
+            heartbeat_at=now,
+            attempts=attempts + 1,
+        )
+        .returning(Task)
+        .execution_options(synchronize_session=False, populate_existing=True)
+    )
+    claimed = (await db.execute(takeover)).scalars().one_or_none()
+    if claimed is not None:
+        await log_activity(
+            db,
+            agent_type=str(claimed.agent_type or "orchestrator"),
+            action="task_claim_recovered",
+            summary=(
+                f"task {task_id}: expired claim on {claimed.claimed_by or 'a dead worker'} taken "
+                f"over by {worker} after a redelivery; lease {lease} s, attempt "
+                f"{int(claimed.attempts or 0)}"
+            ),
+            level="warning",
+            detail={
+                "task_id": task_id,
+                "worker": str(worker),
+                "lease_seconds": lease,
+                "attempts": int(claimed.attempts or 0),
+                "reason": "stale_claim_taken_over",
+            },
+        )
+        return claimed
+
+    exhausted = (
+        update(Task)
+        .where(Task.id == task_id, *stale_predicates, attempts >= max_attempts)
+        .values(
+            status=TaskStatus.FAILED,
+            error_message=f"lease expired after {max_attempts} attempts (worker died?)",
+            claimed_by=None,
+            claimed_at=None,
+            heartbeat_at=None,
+        )
+        .returning(Task.id, Task.agent_type)
+        .execution_options(synchronize_session=False)
+    )
+    ended = (await db.execute(exhausted)).all()
+    for ended_id, agent_type in ended:
+        await log_activity(
+            db,
+            agent_type=str(agent_type or "orchestrator"),
+            action="task_claim_recovery_exhausted",
+            summary=(
+                f"task {ended_id}: its claim expired with {max_attempts} attempts already spent; "
+                "the row is terminal instead of being run again"
+            ),
+            level="error",
+            detail={
+                "task_id": int(ended_id),
+                "lease_seconds": lease,
+                "max_attempts": max_attempts,
+                "reason": "stale_claim_attempts_exhausted",
+            },
+        )
+    if ended:
+        # COMMIT HERE, deliberately: the caller's claim is about to raise `E_TASK_NOT_RUNNABLE`
+        # (the worker's skip path), and a rollback on the way out would erase the terminal write
+        # that the raise is describing — the crash-loop bound would never land.  This is a
+        # self-contained recovery outcome, not part of the caller's work.
+        await db.commit()
+    return None
 
 
 async def claimable_task_ids(db: AsyncSession, *, limit: int) -> list[int]:
@@ -1988,6 +2184,12 @@ __all__ = [
     "APPROVAL_PARK_TTL_S",
     "APPROVAL_REAP_BATCH",
     "APPROVAL_TOKEN_METADATA_KEY",
+    "NEEDS_ATTENTION_EXECUTION_STATUSES",
+    "PARTIAL_EXECUTION_STATUS",
+    "PARTIAL_SUMMARY_PREFIX",
+    "REFUSED_EXECUTION_STATUS",
+    "RESULT_STATUS_KEY",
+    "RUN_PAYLOAD_STATUS_KEY",
     "STALE_CLAIM_BATCH",
     "TASK_STATUS_CHANGED_ACTION",
     "TASK_TRANSITIONS",
@@ -2016,6 +2218,7 @@ __all__ = [
     "release_ready_dependents",
     "requeue_stale_claims",
     "task_completed_at",
+    "task_execution_state",
     "task_terminal_at_expr",
     "transition_task_status",
     "update_task_status",

@@ -118,6 +118,13 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
         "UPSTREAM_MAX_RESULTS", "UPSTREAM_RESULT_SUMMARY_CHARS",
         "reap_stale_approvals", "APPROVAL_PARK_TTL_S", "APPROVAL_REAP_BATCH",
         "STALE_CLAIM_BATCH",
+        # wave 2 F-07 (2026-10-28): the honest partial/refused execution vocabulary — the two
+        # execution-status constants, the legacy summary prefix, the needs-attention set, the
+        # run payload/result metadata keys, and the derivation the task API fills additively.
+        # OLD set = the names above without these seven; NEW adds exactly these; nothing removed.
+        "PARTIAL_EXECUTION_STATUS", "REFUSED_EXECUTION_STATUS", "PARTIAL_SUMMARY_PREFIX",
+        "NEEDS_ATTENTION_EXECUTION_STATUSES", "RUN_PAYLOAD_STATUS_KEY", "RESULT_STATUS_KEY",
+        "task_execution_state",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__

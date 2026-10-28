@@ -54,7 +54,15 @@ IMPORTED = {
     "release_claim",
 }
 
-CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type"]
+CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type", "takeover_stale"]
+#: RE-PINNED DELIBERATELY (W2 / F-22, 2026-10-28): `takeover_stale` was added to `claim_task` and
+#: the worker's claim call passes it.  Old pin: `["db", "worker", "lease_seconds", "task_id",
+#: "agent_type"]`; new pin: those five plus `takeover_stale`.  The shape the pin protects is
+#: unchanged — `db` positional, every other parameter keyword-only — and the redelivery boundary
+#: needs the flag (a message that comes back after its worker died must be able to take over an
+#: EXPIRED claim, while every other caller keeps the old refusal: live evidence 2026-10-28, the
+#: redelivery of a killed worker's task was refused `E_TASK_CLAIMED` and the delivery lost).  The
+#: caller's service-import set is unchanged by the change (the F-07 metadata keys are literals).
 
 
 def _tree() -> ast.Module:
@@ -149,13 +157,14 @@ def test_every_service_call_in_the_caller_binds_to_the_real_signature():
 
 
 def test_claim_task_is_keyword_only_because_the_caller_calls_it_that_way():
-    """The reconciled shape: `claim_task(db, *, worker, lease_seconds, task_id, agent_type)`."""
+    """The reconciled shape: `claim_task(db, *, worker, lease_seconds, task_id, agent_type,
+    takeover_stale)` — `takeover_stale` re-pinned with F-22 (see `CLAIM_TASK_PARAMETERS`)."""
     parameters = inspect.signature(task_service.claim_task).parameters
     assert list(parameters) == CLAIM_TASK_PARAMETERS, (
         "claim_task's parameter list changed — the caller calls these names"
     )
     assert parameters["db"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    for name in ("worker", "lease_seconds", "task_id", "agent_type"):
+    for name in ("worker", "lease_seconds", "task_id", "agent_type", "takeover_stale"):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, (
             f"{name} must stay keyword-only: the caller passes it by keyword"
         )

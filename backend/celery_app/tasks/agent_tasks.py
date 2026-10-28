@@ -31,7 +31,6 @@ from typing import Any
 from app.config import settings
 from app.core.errors import (
     E_ACTION_REPLAY_UNAVAILABLE,
-    E_AGENT_BAD_OUTPUT,
     E_CLI_EXIT,
     E_CLI_JSON,
     E_CLI_TIMEOUT,
@@ -57,6 +56,7 @@ from celery_app.tasks._common import (
     paused_skip,
     prior_actions,
     run_async,
+    stamp_rearmed,
     sweep_bucket,
 )
 from celery_app.worker import app
@@ -68,6 +68,13 @@ logger = logging.getLogger(__name__)
 # unknown agent, a sandbox refusal, a budget stop, a validation error — is terminal by
 # definition (SPEC-AGENTS D-07: "backoff for infrastructure errors only; business
 # failures stay terminal").
+#
+# `E_AGENT_BAD_OUTPUT` was in this set and is NOT infrastructure: it is the agent's own output
+# failing its output contract (F-23, live: `social_media` produced a twitter post > 280 chars,
+# `POLSIA-E110`, and the worker spent TWO more model calls re-asking the identical prompt before
+# the row was left wedged).  A schema validator is deterministic about the same instruction — the
+# measured retries all failed — so this code is terminal now: ONE attempt, the named failure on
+# the row, and the owner re-runs deliberately (possibly after a prompt change) if they want it.
 #
 # D7 (owner ruling): `E_RATE_LIMITED` is deliberately NOT here.  It is a DAILY-CAP REFUSAL
 # ("refused before charge" — the per-channel cap, the day budget cap, or the provider-side
@@ -82,7 +89,6 @@ RETRYABLE_CODES = frozenset(
         E_CLI_TIMEOUT,
         E_CLI_EXIT,
         E_CLI_JSON,
-        E_AGENT_BAD_OUTPUT,
         E_INTEGRATION,
         E_DB,
         E_REDIS,
@@ -1702,7 +1708,21 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # TypeError, which is loud but broken).
     try:
         async with session_factory() as db:
-            task = await claim_task(db, worker=me, task_id=task_id, lease_seconds=lease_seconds)
+            # F-22: `takeover_stale=True` is the redelivery boundary.  A message that comes back
+            # after its worker died names a row that is still `in_progress`; refusing it and acking
+            # the message is how a stranded claim became a permanently stranded task (the delivery
+            # is the only copy, and the lease sweep that would requeue the row is a Beat tick —
+            # off by design this wave).  The claim takes the row atomically ONLY when the claim's
+            # last sign of life is older than the lease, so a live claim is still refused
+            # (E_TASK_CLAIMED) exactly as before; a stale claim that has spent the attempt ladder
+            # ends `failed` by name instead of being re-run (see `_take_over_expired_claim`).
+            task = await claim_task(
+                db,
+                worker=me,
+                task_id=task_id,
+                lease_seconds=lease_seconds,
+                takeover_stale=True,
+            )
             await db.commit()
             if task is None:  # claim_task returns None ONLY when no task_id was requested
                 # With an explicit task_id the service RAISES instead, so this is unreachable today — but
@@ -2142,6 +2162,19 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     run_status = "failed" if error else "completed"
     summary = result.get("summary") if isinstance(result, dict) else None
     retryable = is_retryable(failure) if failure is not None else False
+    # F-07: the run's OWN verdict, when the payload declares one (`run_verdict.PAYLOAD_STATUS_KEY`,
+    # read by its wire name so this module does not import the agent package).  A `partial` run did
+    # real work — it is not a failure — but it is NOT a clean completion either, and until now the
+    # row, the feed and the API all said COMPLETED.  `refused` raises before reaching here; it is
+    # handled defensively because the payload key is a wire contract.
+    payload_status: str | None = None
+    if run_status == "completed" and isinstance(result, dict):
+        raw_payload_status = result.get("payload_status")
+        if isinstance(raw_payload_status, str) and raw_payload_status in (
+            "partial",
+            "refused",
+        ):
+            payload_status = raw_payload_status
     attempts = 0
     requeued = False
     # T02/D1: a completed run that recorded a firewall REQUIRE_APPROVAL for an external action
@@ -2274,6 +2307,27 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 task_row.claimed_by = None
                 task_row.claimed_at = None
                 task_row.heartbeat_at = None
+                if payload_status is not None:
+                    # F-07: the run's verdict is PERSISTED beside the lifecycle status, so the
+                    # tasks API can serve `execution_status`/`needs_attention` (derived by
+                    # `task_service.task_execution_state`) instead of presenting a partial run as a
+                    # clean completion.  A metadata bag key, so the frozen status vocabulary, the
+                    # CHECK constraint and the frontend's status matrix are untouched.  Merged, not
+                    # replaced — the approval/action merges below re-read this same bag.
+                    # The two key literals are `task_service.RESULT_STATUS_KEY` /
+                    # `VERDICT_METADATA_KEY`; they are written as literals HERE because the caller's
+                    # service-import set is a pinned contract (`test_service_contract`) and a JSON
+                    # bag key is a wire name, not a service callable.
+                    merged = dict(task_row.metadata_json or {})
+                    merged["result_status"] = payload_status
+                    verdict = result.get("verdict") if isinstance(result, dict) else None
+                    if isinstance(verdict, dict):
+                        merged["verdict"] = {
+                            key: str(verdict.get(key))[:1000]
+                            for key in ("status", "label", "reason", "source")
+                            if verdict.get(key) is not None
+                        }
+                    task_row.metadata_json = merged
                 if task_status == "awaiting_approval":
                     # "recorded in its result metadata": merge — never replace — the required
                     # fingerprints into `tasks.metadata`, the documented per-task payload channel.
@@ -2347,6 +2401,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         # retryable, or the ladder exhausted) still ends `failed`.
                         task_row.status = TaskStatus.PENDING
                         requeued = True
+                        # F-23: the retry is a NEW message published by `self.retry` AFTER this
+                        # commit.  If the process dies inside that window the row is `pending`
+                        # with no delivery, and a non-scheduler row had no second net — the same
+                        # silent wedge the live `social_media` validator failure produced.  The
+                        # marker is the reconciler's own (`stamp_rearmed`): a retry that IS
+                        # delivered is claimed long before the window, and one that is lost is
+                        # re-dispatched by `reconcile_stranded_pending_tasks` within one window.
+                        await stamp_rearmed(db, [task_id], reason="retry_requeued")
 
                 if replay and isinstance(result, dict) and run_status == "failed":
                     # OR-02: settle the parked approval set NOW that the retry decision is final.
@@ -2381,14 +2443,25 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     },
                 )
             else:
+                # F-07: a partial run gets its OWN action and a warning level — "task_completed"
+                # with level "success" was the feed's half of the completed-while-partial defect.
                 await log_activity(
                     db,
                     agent_type=agent_type,
-                    action="task_completed" if run_status == "completed" else "task_failed",
+                    action=(
+                        "task_partial"
+                        if payload_status is not None
+                        else ("task_completed" if run_status == "completed" else "task_failed")
+                    ),
                     summary=summary or error or "No output",
-                    level="success" if run_status == "completed" else "error",
+                    level=(
+                        "warning"
+                        if payload_status is not None
+                        else ("success" if run_status == "completed" else "error")
+                    ),
                     detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued,
-                            "manual_override": bool(manual_override)},
+                            "manual_override": bool(manual_override),
+                            "payload_status": payload_status},
                 )
             if replay_settlement is not None:
                 # OR-02: the partial replay's own record — what was NOT performed and where it
@@ -2486,6 +2559,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         "attempts": attempts,
         "error": error,
         "retryable": retryable,
+        # F-07: the run's own non-ok verdict (`partial`), or None for a clean completion / failure.
+        # Named here so the delivery result carries the same fact the row's metadata now does.
+        "payload_status": payload_status,
         "requeued": requeued,  # True when this failure put the row back in the queue for its retry
         # T04: `manual_override` (True + `manual_override_reason`) when this run proceeded past the
         # daily cap on the owner's manual trigger; `manual_override: False` for every gated run.

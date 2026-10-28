@@ -32,11 +32,14 @@ from app.core.errors import (
 #   {E_CLI_TIMEOUT, E_CLI_EXIT, E_CLI_JSON, E_AGENT_BAD_OUTPUT, E_INTEGRATION, E_RATE_LIMITED,
 #    E_DB, E_REDIS}
 # NEW: the same set with `E_RATE_LIMITED` removed and nothing else touched.
+# WAVE-2 F-23 RE-PIN (2026-10-28): `E_AGENT_BAD_OUTPUT` is now TERMINAL. A validation failure is
+# not transient (the repo's own doctrine), and live it retried a >280-char social post twice before
+# wedging the task. OLD set (pre-F-23) included it; NEW removes exactly that one code and nothing
+# else — the other six remain retryable.
 _EXPECTED_RETRYABLE = frozenset({
     E_CLI_TIMEOUT,
     E_CLI_EXIT,
     E_CLI_JSON,
-    E_AGENT_BAD_OUTPUT,
     E_INTEGRATION,
     E_DB,
     E_REDIS,
@@ -52,6 +55,8 @@ def test_the_retryable_set_is_exactly_the_pinned_one():
         f"removed={sorted(_EXPECTED_RETRYABLE - RETRYABLE_CODES)}"
     )
     assert E_RATE_LIMITED not in RETRYABLE_CODES
+    # wave-2 F-23: a validator failure is TERMINAL, not a transient retry.
+    assert E_AGENT_BAD_OUTPUT not in RETRYABLE_CODES
 
 
 def test_the_decision_function_refuses_a_cap_refusal_and_keeps_the_rest():

@@ -492,7 +492,11 @@ def test_two_attempts_execute_the_tool_once_and_keep_one_record(
     assert metadata["rearmed_at"], (
         "stamp_rearmed's marker must survive the run's metadata merge and the second attempt"
     )
-    assert metadata["rearm_reason"] == "b1: undelivered tick"
+    # WAVE-2 F-22/F-23 RE-PIN (2026-10-28): a retryable failure now stamps its OWN retry marker
+    # (`retry_requeued`) so an accept-then-lost retry is reconciled; the sweep's `rearmed_at`
+    # still survives (asserted above). OLD value pre-wave-2: "b1: undelivered tick"; NEW: the
+    # most recent re-arm action name, "retry_requeued".
+    assert metadata["rearm_reason"] == "retry_requeued"
 
 
 # ── (5) the broker's truth: publisher confirmation + the visibility timeout ──────────────────
