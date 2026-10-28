@@ -15,6 +15,7 @@ renders null + a reason in `reasons` — never a fabricated 0.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -23,9 +24,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
+from app.core.errors import PolsiaError
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
-from app.models.report import DailyReport
+from app.models.report import ActivityLog, DailyReport
+from app.models.task import Task
 from app.services import pricing_service
 from app.services.finance_service import (
     REPORTING_CURRENCY,
@@ -255,8 +258,239 @@ async def get_latest_daily_report(db: AsyncSession) -> DailyReport | None:
     return _report_from_row(rows[0]) if rows else None
 
 
-# ── the daily report's cash/tax block (V9 B2, plan §9 lines 454-456) ──────────────────────────
+# ── F-43: the day digest (what the evening report could not see) ─────────────────────────────
 
+#: How many completed/failed rows ONE digest carries (bounded like every other feed payload).
+DAY_DIGEST_MAX_ROWS = 25
+#: Characters of ONE task's recorded result/error inside the digest (truncation is STATED).
+DAY_DIGEST_TEXT_CHARS = 400
+
+
+@dataclass(frozen=True)
+class DayDigestTask:
+    """ONE task that reached an outcome today — the fact the evening report was missing."""
+
+    task_id: int
+    title: str
+    agent_type: str
+    status: str
+    text: str | None
+    truncated: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "title": self.title,
+            "agent_type": self.agent_type,
+            "status": self.status,
+            "text": self.text,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class DayDigest:
+    """The company-local day's outcomes, as the evening report records them (F-43).
+
+    `status` is part of the contract: `measured` means the rows below are the day's real
+    outcomes, `empty` means the day really had none (that is a fact, and the report says it),
+    `unavailable` means the read FAILED — and then `reason` carries the error code, because a
+    report that cannot see its data must say so instead of printing zeros that look measured.
+    """
+
+    day: date
+    status: str                       # measured | empty | unavailable
+    counts_created: dict[str, int]
+    completed: list[DayDigestTask]
+    failed: list[DayDigestTask]
+    cancelled: int
+    requeued: int
+    reaped_approvals: int
+    reason: str | None = None
+
+    def headline(self) -> str:
+        """ONE honest sentence about the day, built from what was actually read."""
+        if self.status == "unavailable":
+            return (
+                f"the day's task data could not be read ({self.reason}); this report carries no "
+                "task counts"
+            )
+        if self.status == "empty":
+            return "no task reached an outcome today (nothing completed, failed or was cancelled)"
+        parts = [
+            f"{len(self.completed)} completed",
+            f"{len(self.failed)} failed",
+            f"{self.cancelled} cancelled",
+        ]
+        if self.requeued:
+            parts.append(f"{self.requeued} stalled claim(s) requeued")
+        if self.reaped_approvals:
+            parts.append(f"{self.reaped_approvals} parked approval(s) reaped")
+        return ", ".join(parts) + " today"
+
+    def as_metrics(self) -> dict[str, Any]:
+        """The JSON shape stored in `daily_reports.metrics_snapshot['day_digest']`."""
+        return {
+            "day": self.day.isoformat(),
+            "status": self.status,
+            "reason": self.reason,
+            "counts_created": self.counts_created,
+            "completed": [row.as_dict() for row in self.completed],
+            "failed": [row.as_dict() for row in self.failed],
+            "cancelled": self.cancelled,
+            "requeued": self.requeued,
+            "reaped_approvals": self.reaped_approvals,
+            "headline": self.headline(),
+        }
+
+    def prompt_block(self) -> str:
+        """The digest as text an agent reads (the evening run's brief carries this, F-26/F-43)."""
+        lines = [f"DAY OUTCOMES ({self.day.isoformat()}): {self.headline()}"]
+        for label, rows in (("COMPLETED", self.completed), ("FAILED", self.failed)):
+            for row in rows:
+                text = (row.text or "").strip()
+                if text:
+                    lines.append(f"- [{label}] #{row.task_id} {row.title} (@{row.agent_type}): {text}")
+                else:
+                    lines.append(
+                        f"- [{label}] #{row.task_id} {row.title} (@{row.agent_type}): "
+                        "no result was recorded"
+                    )
+        return "\n".join(lines)
+
+
+def _digest_text(value: Any) -> tuple[str | None, bool]:
+    """ONE recorded result/error as digest text: bounded, with the cut STATED."""
+    if value is None:
+        return None, False
+    text = str(value).strip()
+    if not text:
+        return None, False
+    if len(text) > DAY_DIGEST_TEXT_CHARS:
+        return text[: DAY_DIGEST_TEXT_CHARS - 1] + "…", True
+    return text, False
+
+
+async def build_day_digest(
+    db: AsyncSession, day: date, *, tz_name: str | None = None
+) -> DayDigest:
+    """What actually happened on `day` — the evening report's missing half (F-43).
+
+    The report counted only tasks CREATED that day (`daily_cycle._evening_cycle`), so a task
+    created yesterday and finished today never appeared in today's report, and nothing in the
+    report said what the agents PRODUCED.  This reads the rows that reached an outcome in the
+    day's window (`updated_at`, company-local half-open bounds — the same window every other
+    "today" uses), one bounded query, and returns the typed digest.
+
+    Outcomes only: `completed`/`failed`/`cancelled`.  `pending`/`in_progress` rows are still
+    running and `awaiting_approval` rows are waiting on the owner — neither is an outcome, and
+    counting them as "today's work" is the thinness this replaces.
+
+    A failed read is `status="unavailable"` with the error code in `reason` — never zeros.
+    """
+    start, end = day_window(db, day=day, tz_name=tz_name)
+    digest_rows: list[DayDigestTask] = []
+    cancelled = 0
+    try:
+        rows = await fetch_rows(
+            db,
+            select(
+                Task.id,
+                Task.title,
+                Task.agent_type,
+                Task.status,
+                Task.result_summary,
+                Task.error_message,
+                Task.updated_at,
+            )
+            .where(
+                Task.updated_at >= start,
+                Task.updated_at < end,
+                Task.status.in_(("completed", "failed", "cancelled")),
+            )
+            .order_by(Task.updated_at.desc(), Task.id.desc())
+            .limit(DAY_DIGEST_MAX_ROWS),
+            what=f"day digest {day}",
+        )
+        counts = await fetch_rows(
+            db,
+            select(Task.status, func.count())
+            .where(Task.created_at >= start, Task.created_at < end)
+            .group_by(Task.status),
+            what=f"day digest created counts {day}",
+        )
+        activity = await fetch_rows(
+            db,
+            select(ActivityLog.action, func.count())
+            .where(
+                ActivityLog.created_at >= start,
+                ActivityLog.created_at < end,
+                ActivityLog.action.in_(("stale_claims_requeued", "stale_approvals_reaped")),
+            )
+            .group_by(ActivityLog.action),
+            what=f"day digest recovery counts {day}",
+        )
+    except PolsiaError as exc:
+        # "A report that cannot see its data says so": the code travels, the counts do not.
+        return DayDigest(
+            day=day,
+            status="unavailable",
+            counts_created={},
+            completed=[],
+            failed=[],
+            cancelled=0,
+            requeued=0,
+            reaped_approvals=0,
+            reason=exc.code,
+        )
+
+    for task_id, title, agent_type, status, result_summary, error_message, _at in rows:
+        state = str(status)
+        if state == "cancelled":
+            cancelled += 1
+            continue
+        text, truncated = _digest_text(result_summary if state == "completed" else error_message)
+        digest_rows.append(
+            DayDigestTask(
+                task_id=int(task_id),
+                title=str(title or ""),
+                agent_type=str(agent_type or ""),
+                status=state,
+                text=text,
+                truncated=truncated,
+            )
+        )
+    completed = [row for row in digest_rows if row.status == "completed"]
+    failed = [row for row in digest_rows if row.status == "failed"]
+    recovery = {str(action): int(count) for action, count in activity}
+    return DayDigest(
+        day=day,
+        status="measured" if (digest_rows or cancelled) else "empty",
+        counts_created={str(status): int(count) for status, count in counts},
+        completed=completed,
+        failed=failed,
+        cancelled=cancelled,
+        requeued=recovery.get("stale_claims_requeued", 0),
+        reaped_approvals=recovery.get("stale_approvals_reaped", 0),
+    )
+
+
+async def get_evening_summary_for(db: AsyncSession, report_date: date) -> str | None:
+    """THAT day's evening summary, or `None` — never another day's (F-43's `LIMIT 1` defect).
+
+    `company_service.get_full_context` read "the newest `evening_summary` in the table" and
+    labelled it `yesterday_summary`, so every prompt for weeks was fed the summary of the last
+    day the cycle happened to run — with no hint of its date.  This answers the question the key
+    actually asks ("yesterday's"), and the caller decides what to do when it is `None`.
+    """
+    report = await get_daily_report(db, report_date)
+    if report is None:
+        return None
+    summary = report.evening_summary
+    return summary if isinstance(summary, str) and summary.strip() else None
+
+
+# ── the daily report's cash/tax block (V9 B2, plan §9 lines 454-456) ──────────────────────────
 #: Stripe event types that are money IN (a payment that succeeded).
 MONEY_IN_EVENT_TYPES = (
     "charge.succeeded",

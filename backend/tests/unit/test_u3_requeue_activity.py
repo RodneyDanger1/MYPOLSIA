@@ -114,19 +114,26 @@ def test_one_sweep_with_both_outcomes_still_writes_exactly_one_row(queue_db):
     result = requeue_stale_task_claims()
 
     assert result == {"status": "completed", "requeued": 2, "scanned": 2}
+    # F-51 (wave B2): ONE ROW PER RECOVERED TASK.  OLD: `len(rows) == 1` with every id on one
+    # `detail` (unbounded with the queue, and no single task's history could be read from it).
     rows = _activity_rows(queue_db)
-    assert len(rows) == 1, f"one sweep is one row, saw {rows!r}"
-    detail = json.loads(rows[0]["detail"])
-    assert detail["requeued_ids"] == [survivor]
-    assert detail["failed_ids"] == [exhausted]
-    assert "1 stalled run(s) requeued" in rows[0]["summary"]
-    assert "1 sent terminal" in rows[0]["summary"], "the terminal half is named, not hidden in the count"
+    assert len(rows) == 2, f"one row per recovered task, saw {rows!r}"
+    by_outcome = {json.loads(row["detail"])["outcome"]: row for row in rows}
+    requeued_row = by_outcome["requeued"]
+    failed_row = by_outcome["failed"]
+    assert json.loads(requeued_row["detail"])["requeued_ids"] == [survivor]
+    assert json.loads(failed_row["detail"])["failed_ids"] == [exhausted]
+    assert "1 stalled run(s) requeued" in requeued_row["summary"]
+    assert "1 stalled run(s) sent terminal" in failed_row["summary"], (
+        "the terminal half is named, not hidden in the count"
+    )
 
 
-def test_a_multi_row_sweep_writes_exactly_one_batched_row(queue_db):
-    """Batch discipline: three stale claims -> ONE row carrying all three ids (not three rows).
+def test_a_multi_row_sweep_writes_one_row_per_task(queue_db):
+    """F-51 (wave B2): three stale claims -> THREE rows, each naming exactly its own id.
 
-    RED (pre-fix): no rows.
+    OLD (pre-fix): `len(rows) == 1`, a single row whose summary and `detail` carried every id of
+    the sweep — a feed line that grew without bound with the queue.
     """
     ids = sorted(_stale_claim(queue_db, f"u3-requeue-batch-{index}") for index in range(3))
 
@@ -134,9 +141,12 @@ def test_a_multi_row_sweep_writes_exactly_one_batched_row(queue_db):
 
     assert result == {"status": "completed", "requeued": 3, "scanned": 3}
     rows = _activity_rows(queue_db)
-    assert len(rows) == 1, f"expected ONE batched row for the sweep, saw {len(rows)}"
-    detail = json.loads(rows[0]["detail"])
-    assert detail["requeued_ids"] == ids
-    assert "3 stalled run(s) requeued" in rows[0]["summary"]
-    for task_id in ids:
-        assert f"#{task_id}" in rows[0]["summary"]
+    assert len(rows) == 3, f"expected one row per recovered task, saw {len(rows)}"
+    named = sorted(json.loads(row["detail"])["task_id"] for row in rows)
+    assert named == ids, "every row names exactly one recovered task"
+    for row in rows:
+        detail = json.loads(row["detail"])
+        assert detail["requeued_ids"] == [detail["task_id"]]
+        assert detail["sweep_size"] == 3
+        assert f"#{detail['task_id']}" in row["summary"]
+        assert "1 stalled run(s) requeued" in row["summary"]

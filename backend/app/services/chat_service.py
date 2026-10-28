@@ -215,8 +215,13 @@ _DASHBOARD_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: Agent routing keywords.  FIXED table order decides ties ("email the research team" ->
-#: the first table entry whose keyword matches), so routing is as deterministic as the rest.
+#: Agent routing keywords.  FIXED table order decides ties ("email the research team" -> the
+#: first table entry whose keyword matches), so routing is as deterministic as the rest.
+#:
+#: F-04 (wave B2): each keyword is matched as a WORD (`_keyword_pattern`), never as a substring.
+#: The old `keyword in lowered` scan routed "find new leads" to `ads_management` (`ads` inside
+#: "leads") and every message that merely contained "plan" to `business_planning`.  Outreach
+#: gained `lead`/`leads` because that is whose work a lead is; `ads` no longer matches it.
 _AGENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("competitor_research", ("research", "competitor", "market analysis", "niche")),
     ("business_planning", ("plan", "planning", "strategy", "roadmap", "business model")),
@@ -224,11 +229,29 @@ _AGENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
                       "youtube", "post to")),
     ("ads_management", ("ads", "ad campaign", "advertising", "campaign", "meta ads",
                         "google ads")),
-    ("email_outreach", ("email", "outreach", "cold outreach", "prospect")),
+    ("email_outreach", ("email", "outreach", "cold outreach", "prospect", "prospects",
+                        "lead", "leads")),
     ("code_generation", ("code", "bug", "repo", "github", "deploy", "website",
                          "landing page")),
     ("customer_support", ("support", "customer", "inbox", "ticket", "complaint")),
     ("finance", ("finance", "invoice", "revenue", "budget", "bookkeeping")),
+)
+
+
+def _keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """ONE keyword as a `\\b`-anchored pattern (F-04: the substring scan was the misrouter).
+
+    `\\bads\\b` does not fire inside "leads", and a multi-word keyword keeps its inner space
+    (`market analysis` -> `market\\s+analysis`), so the table's meaning is the word's meaning.
+    """
+    body = r"\s+".join(re.escape(part) for part in keyword.split())
+    return re.compile(rf"\b{body}\b", re.IGNORECASE)
+
+
+#: The table, compiled ONCE at import: `(agent_type, ((keyword, pattern), ...))`, in tie order.
+_AGENT_KEYWORD_PATTERNS: tuple[tuple[str, tuple[tuple[str, re.Pattern[str]], ...]], ...] = tuple(
+    (agent_type, tuple((keyword, _keyword_pattern(keyword)) for keyword in keywords))
+    for agent_type, keywords in _AGENT_KEYWORDS
 )
 
 #: The task source recorded on tasks chat files (the trigger route records "manual").
@@ -279,13 +302,59 @@ def classify_message(message: str) -> Classification:
     return Classification(kind="answer", rule="fallback")
 
 
+@dataclass(frozen=True)
+class AgentRoute:
+    """The delegation decision for ONE message: the agent, the word that chose it, and WHY.
+
+    `understood=False` is the explicit "I did not understand which agent you mean" answer — the
+    caller must SAY it (the chat confirm card does), never paper over it with a silent default.
+    """
+
+    agent_type: str | None
+    matched: str | None
+    understood: bool
+    reason: str  # keyword | not_a_task_request | refused | no_agent_keyword | blank
+
+
+def route_agent_decision(message: str) -> AgentRoute:
+    """Route a create-task message on INTENT + WORD, or say plainly it did not understand (F-04).
+
+    Two rules replace the old `keyword in lowered` substring scan:
+
+      1. INTENT FIRST.  Only a create-task message is delegable: a message the classifier REFUSES
+         (money/external) or ANSWERS (status/runs/finance/report/lookup/fallback) is not a task
+         request and routes nowhere — `reason` names which case.  This is what stops "explain the
+         plan" (a question, no task) from being filed as a `business_planning` task.
+      2. WORD MATCH SECOND.  The first table entry whose `\\b`-anchored keyword matches wins, in
+         the fixed tie order — so "find new leads" reaches `email_outreach` (the word "leads")
+         instead of `ads_management` (the substring "ads" of "leads").
+
+    `agent_type is None` with `understood=False` is an ANSWER, not a failure: the callers serve it
+    as "I did not recognise a specific agent" instead of filing to a default in silence.
+    """
+    text = (message or "").strip()
+    if not text:
+        return AgentRoute(None, None, False, "blank")
+    verdict = classify_message(text)
+    if verdict.kind == "refused":
+        return AgentRoute(None, None, False, "refused")
+    if verdict.kind != "create_task" and not _CREATE_TASK_RE.search(text):
+        return AgentRoute(None, None, False, "not_a_task_request")
+    for agent_type, patterns in _AGENT_KEYWORD_PATTERNS:
+        for keyword, pattern in patterns:
+            if pattern.search(text):
+                return AgentRoute(agent_type, keyword, True, "keyword")
+    return AgentRoute(None, None, False, "no_agent_keyword")
+
+
 def route_agent_type(message: str) -> str:
-    """The agent a create_task message is routed to (fixed keyword table; default orchestrator)."""
-    lowered = message.lower()
-    for agent_type, keywords in _AGENT_KEYWORDS:
-        if any(keyword in lowered for keyword in keywords):
-            return agent_type
-    return DEFAULT_CHAT_AGENT
+    """The agent a create_task message is routed to (frozen signature).
+
+    `DEFAULT_CHAT_AGENT` when the decision did not understand the message — the DECISION carries
+    that fact (`AgentRoute.understood`), so a caller that wants to say "I did not understand"
+    reads `route_agent_decision`, never this default.
+    """
+    return route_agent_decision(message).agent_type or DEFAULT_CHAT_AGENT
 
 
 # ── confirm tokens (the approvals mint pattern, V8-D4) ───────────────────────
@@ -582,9 +651,21 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
                 refusal=refusal,
             )
 
-        agent_type = route_agent_type(clean)
+        decision = route_agent_decision(clean)
+        agent_type = decision.agent_type or DEFAULT_CHAT_AGENT
         title = clean[:500]
-        plan = {"title": title, "agent_type": agent_type, "description": clean}
+        plan = {
+            "title": title,
+            "agent_type": agent_type,
+            "description": clean,
+            # F-04: the routing DECISION is recorded with the proposal, so a filed task can
+            # always answer "which word chose this agent, and did the router understand?".
+            "route": {
+                "understood": decision.understood,
+                "matched": decision.matched,
+                "reason": decision.reason,
+            },
+        }
         owner_row = ChatMessage(
             role="owner",
             content=clean,
@@ -599,6 +680,16 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
             "Confirm and I'll queue it — nothing is created until you confirm "
             f"(single-use token, expires in {CONFIRM_TOKEN_TTL_S // 60} min)." + _sandbox_note()
         )
+        if not decision.understood:
+            # F-04: the router says it did not understand, out loud, instead of filing to the
+            # default agent as if it had.  The list is the SAME table the router matches on.
+            reply_text += (
+                "\nI did not recognise a specific agent in that message"
+                + (" (money actions are refused, never queued)" if decision.reason == "refused" else "")
+                + f", so it goes to the {DEFAULT_CHAT_AGENT} agent. Name one to change it: "
+                + ", ".join(agent_type for agent_type, _keywords in _AGENT_KEYWORDS)
+                + "."
+            )
         polsia_row = ChatMessage(
             role="polsia",
             content=reply_text,

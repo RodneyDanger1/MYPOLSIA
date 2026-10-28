@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, ValidationError, computed_field, field_validator
 
 from app.schemas.common import TimestampedORM, UtcDatetime
 
@@ -20,6 +20,7 @@ PLAN_METADATA_KEYS: tuple[str, ...] = (
     "depends_on_titles",
     "depends_on_ids",
     "depends_on_cycle",
+    "depends_on_cycle_members",
     "depends_on_unresolved",
     "side_effect",
     "acceptance",
@@ -27,9 +28,44 @@ PLAN_METADATA_KEYS: tuple[str, ...] = (
     "estimate_seconds",
 )
 
+
+class CycleMember(BaseModel):
+    """One node of a released dependency CYCLE (B2-C4-R2), as the producer recorded it."""
+
+    id: int
+    title: str
+
 #: The `tasks.metadata` key a parked run's required fingerprints are recorded under
 #: (`celery_app/tasks/agent_tasks.py:553` `APPROVAL_REQUIRED_KEY`, written at :1094).
 APPROVAL_REQUIRED_KEY = "approval_required"
+
+#: The `tasks.metadata` key a DOWNSTREAM task records its upstream agents' results under (F-26).
+#: Written by `task_service.materialize_upstream_results` at the moment the dependency release
+#: makes the row runnable; read here (the wire), by `task_service.upstream_results_for` (a run's
+#: own read) and by the worker's `task_dict["metadata"]` (the agent's payload channel).
+UPSTREAM_RESULTS_KEY = "upstream_results"
+#: When those results were copied onto the row (ISO-8601 UTC) — the record's own timestamp.
+UPSTREAM_RESULTS_RECORDED_KEY = "upstream_results_recorded_at"
+
+
+class UpstreamResult(BaseModel):
+    """ONE upstream task's result, as a downstream agent consumes it (F-26).
+
+    Before this, `tasks.result_summary` had NO reader: an agent's output was written to its own
+    row and nothing downstream ever read it, so "agent B consumes what agent A produced" could
+    only be faked through a similarity-memory lookup.  This is the typed record that travels:
+    the upstream row's id, title and terminal status, its OWN `result_summary` bounded to
+    `UPSTREAM_RESULT_SUMMARY_CHARS` (`truncated` says the cut happened — a consumer can never
+    mistake a clipped summary for the whole one), and when it finished.  A row that recorded no
+    summary carries `result_summary: null`, never `""`.
+    """
+
+    task_id: int
+    title: str
+    status: str
+    result_summary: str | None = None
+    truncated: bool = False
+    completed_at: datetime | None = None
 
 
 class TaskCreate(BaseModel):
@@ -140,6 +176,8 @@ class TaskResponse(TimestampedORM):
                 if isinstance(dep, int) and not isinstance(dep, bool)
             ] if isinstance(ids, list) else [],
             "depends_on_cycle": isinstance(cycle, list) and bool(cycle),
+            # B2-C4-R2: the cycle's MEMBERS (id + title), not just "a cycle happened".
+            "depends_on_cycle_members": list(self.depends_on_cycle_members),
             "depends_on_titles": bag.get("depends_on_titles"),
             "depends_on_unresolved": bag.get("depends_on_unresolved"),
             "plan_day": bag.get("plan_day"),
@@ -148,6 +186,65 @@ class TaskResponse(TimestampedORM):
             "estimate_usd": bag.get("estimate_usd"),
             "estimate_seconds": bag.get("estimate_seconds"),
         }
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def depends_on_cycle_members(self) -> list[CycleMember]:
+        """The nodes that formed a released dependency CYCLE, id + title (B2-C4-R2).
+
+        `depends_on_cycle` answers "was there a cycle?" as a bool, which threw away the members
+        the producer had already resolved.  This serves them typed, from the same bag; a malformed
+        entry is dropped (with a log line) rather than 500-ing the row, and no key means no cycle.
+        """
+        bag = self.metadata_json or {}
+        raw = bag.get("depends_on_cycle_members")
+        if not isinstance(raw, list):
+            return []
+        out: list[CycleMember] = []
+        for item in raw:
+            try:
+                out.append(CycleMember.model_validate(item))
+            except ValidationError:
+                logger.warning(
+                    "code=task_cycle_member_malformed: tasks.metadata['depends_on_cycle_members'] "
+                    "holds an entry that is not a CycleMember; serving it as absent",
+                )
+        return out
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def upstream_results(self) -> list[UpstreamResult]:
+        """The upstream agents' results this row RECORDED when its dependencies completed (F-26).
+
+        Empty is a measured answer, not an unknown one: a row with no completed upstream (a root
+        task, or one whose edges were dropped) recorded no `upstream_results` key at all.  Entries
+        are re-validated through `UpstreamResult` and a malformed one is dropped WITH a log line —
+        a raw writer can put any JSON in `tasks.metadata`, and one bad entry must not 500 the whole
+        task list (the L1-11 rule this file already follows).
+        """
+        bag = self.metadata_json or {}
+        raw = bag.get(UPSTREAM_RESULTS_KEY)
+        if not isinstance(raw, list):
+            return []
+        out: list[UpstreamResult] = []
+        for item in raw:
+            try:
+                out.append(UpstreamResult.model_validate(item))
+            except ValidationError:
+                logger.warning(
+                    "code=task_upstream_result_malformed: tasks.metadata['%s'] holds an entry "
+                    "that is not an UpstreamResult; serving it as absent",
+                    UPSTREAM_RESULTS_KEY,
+                )
+        return out
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def upstream_results_recorded_at(self) -> str | None:
+        """When those results were copied on (ISO-8601, as written) — null when none were."""
+        bag = self.metadata_json or {}
+        recorded = bag.get(UPSTREAM_RESULTS_RECORDED_KEY)
+        return recorded if isinstance(recorded, str) and recorded else None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

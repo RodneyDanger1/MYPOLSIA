@@ -25,6 +25,7 @@ where their consumers are.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -48,6 +49,8 @@ from app.core.errors import (
 from app.core.timeutil import as_bound_instant, day_window, dialect_name, today_in
 from app.models.task import AgentRun, Task, TaskStatus
 from app.services.query_helpers import fetch_rows, fetch_scalar, fetch_scalars
+
+logger = logging.getLogger(__name__)
 
 VALID_AGENT_TYPES: tuple[str, ...] = (
     "orchestrator",
@@ -390,6 +393,42 @@ def _require_valid_task_status(status: str) -> None:
         )
 
 
+_TERMINAL_TASK_STATUSES: frozenset[str] = frozenset(
+    {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value,
+     TaskStatus.CANCELLED.value, TaskStatus.REJECTED.value}
+)
+
+
+def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
+    """Drop a parked approval from the row's bag in the WRITER's own transaction (R3/B2-C4-R3).
+
+    A `rejected`/`cancelled`/`completed`/`failed` write used to leave `metadata.approval_required`
+    exactly as the worker parked it, so the served `approval_required` flag (derived from that
+    list) still said "pending" for a row that had been DENIED — the owner's Approve control offered
+    a token for an approval the row no longer had.  The list is emptied (the flag's one source),
+    the fingerprints that were dropped are kept in `metadata.approval_cleared` with who ended them
+    and when, and the change lands in the same flush as the status write.
+
+    Returns True when there was a parked approval to clear.
+    """
+    bag = task.metadata_json
+    if not isinstance(bag, dict):
+        return False
+    parked = bag.get(PARKED_APPROVAL_KEY)
+    if not parked:
+        return False
+    merged = dict(bag)
+    merged[PARKED_APPROVAL_KEY] = []
+    merged[APPROVAL_CLEARED_KEY] = {
+        "status": status,
+        "actor": actor,
+        "at": utcnow().isoformat(),
+        "fingerprints": [str(item) for item in parked] if isinstance(parked, list) else [],
+    }
+    task.metadata_json = merged
+    return True
+
+
 async def update_task_status(
     db: AsyncSession,
     task_id: int,
@@ -423,6 +462,9 @@ async def update_task_status(
     # service's public signature stays `status: str` — the F2 signature pin
     # (tests/unit/celery/test_service_contract.py:172) is deliberately untouched.
     task.status = TaskStatus(status)
+    if status in _TERMINAL_TASK_STATUSES:
+        # R3: a terminal write ENDS any parked approval — the flag must stop saying "pending".
+        _clear_parked_approval(task, status=status, actor="update_task_status")
     if result_summary is not None:
         task.result_summary = result_summary
     if error_message is not None:
@@ -518,6 +560,10 @@ async def transition_task_status(
         )
 
     task.status = target
+    if target.value in _TERMINAL_TASK_STATUSES:
+        # R3: a denial/cancellation is an END to the parked approval too — the served
+        # `approval_required` flag reads this list, so it must be cleared in THIS transaction.
+        _clear_parked_approval(task, status=target.value, actor=actor)
     if result_summary is not None:
         task.result_summary = result_summary
     if error_message is not None:
@@ -909,9 +955,51 @@ async def release_claim(
     )
 
 
-#: How many recovered ids the sweep's SUMMARY line names (it is a feed line, not a ledger dump).
-#: `detail` always carries every id, and the count in the summary is always exact.
-_STALE_CLAIM_IDS_IN_SUMMARY = 20
+#: How many claims ONE sweep may recover (F-51).  The UPDATE used to be unbounded: a lease
+#: misconfiguration rewrote every `in_progress` row in one transaction, and the single activity
+#: row it wrote carried every id.  A bounded pass keeps the transaction small and the feed honest;
+#: the next tick continues from the oldest remaining id.
+STALE_CLAIM_BATCH = 200
+
+
+def _stale_claim_event(
+    task_id: int, *, requeued: bool, lease: int, sweep_size: int
+) -> dict[str, Any]:
+    """ONE recovered task as ONE activity event (F-51: never a row per sweep).
+
+    The row names exactly its own id and outcome — the shape a task's own timeline can be read
+    from.  `sweep_size` records how many rows the same pass recovered, so the batch is still
+    measurable without every id riding one `detail` blob.
+    """
+    if requeued:
+        summary = f"1 stalled run(s) requeued: #{task_id}"
+        detail = {
+            "task_id": task_id,
+            "requeued_ids": [task_id],
+            "failed_ids": [],
+            "outcome": "requeued",
+            "rearmed": True,
+        }
+    else:
+        summary = f"1 stalled run(s) sent terminal (attempts exhausted): #{task_id}"
+        detail = {
+            "task_id": task_id,
+            "requeued_ids": [],
+            "failed_ids": [task_id],
+            "outcome": "failed",
+            "rearmed": False,
+        }
+    detail["lease_seconds"] = lease
+    detail["sweep_size"] = sweep_size
+    return {
+        # The scheduler role, the same `agent_type` the cycle's own bookkeeping rows carry: this
+        # is queue maintenance, not one agent's work.
+        "agent_type": "orchestrator",
+        "action": "stale_claims_requeued",
+        "summary": summary,
+        "level": "warning",
+        "detail": detail,
+    }
 
 
 async def requeue_stale_claims(
@@ -930,8 +1018,9 @@ async def requeue_stale_claims(
     sweep task's return dict and a `logger.info` (`celery_app/tasks/maintenance.py`), so no owner
     surface could tell that a stalled run had been requeued — B7's "stalled run requeued" line had
     no producer.  The statement now returns the recovered ids AND their outcome, and this function
-    writes ONE batched `log_activities` row per sweep naming the count and the ids.  The row rides
-    the CALLER's transaction (the sweep task commits it together with the UPDATE), so a rolled-back
+    writes ONE activity row PER recovered task (F-51: one sweep row carrying every id was
+    unbounded with the queue, so nobody could read one task's history from it).  The rows ride
+    the CALLER's transaction (the sweep task commits them together with the UPDATE), so a rolled-back
     sweep cannot leave an activity row claiming a recovery that never happened; a sweep that
     recovers nothing writes nothing.  The return value stays the recovered-row COUNT (the sweep
     task's result shape and every shipped pin depend on it).
@@ -940,12 +1029,23 @@ async def requeue_stale_claims(
     cutoff = as_bound_instant((now or utcnow()) - timedelta(seconds=lease), db)
     max_attempts = int(settings.task_max_attempts)
     attempts = func.coalesce(Task.attempts, 0)
+    stale_predicates = (
+        Task.status == "in_progress",
+        func.coalesce(Task.heartbeat_at, Task.claimed_at, Task.created_at) < cutoff,
+    )
+    # F-51: the recovery UPDATE was UNBOUNDED — one statement rewrote every stale claim in the
+    # table, so a bad lease setting swept the whole queue in a single transaction and wrote a
+    # single activity row carrying every id.  The id set is now bounded by `STALE_CLAIM_BATCH`
+    # (oldest id first), so one pass recovers at most that many and the next tick continues.
+    stale_ids = (
+        select(Task.id)
+        .where(*stale_predicates)
+        .order_by(Task.id)
+        .limit(STALE_CLAIM_BATCH)
+    )
     stmt = (
         update(Task)
-        .where(
-            Task.status == "in_progress",
-            func.coalesce(Task.heartbeat_at, Task.claimed_at, Task.created_at) < cutoff,
-        )
+        .where(*stale_predicates, Task.id.in_(stale_ids))
         .values(
             status=case((attempts >= max_attempts, "failed"), else_="pending"),
             error_message=case(
@@ -975,14 +1075,6 @@ async def requeue_stale_claims(
         failed_ids = sorted(
             int(task_id) for task_id, status in recovered if str(status) != "pending"
         )
-        parts = [f"{len(requeued_ids)} stalled run(s) requeued"]
-        if failed_ids:
-            parts.append(f"{len(failed_ids)} sent terminal (attempts exhausted)")
-        shown = requeued_ids + failed_ids
-        listed = ", ".join(f"#{task_id}" for task_id in shown[:_STALE_CLAIM_IDS_IN_SUMMARY])
-        if len(shown) > _STALE_CLAIM_IDS_IN_SUMMARY:
-            listed += f", … (+{len(shown) - _STALE_CLAIM_IDS_IN_SUMMARY} more)"
-
         # Lazy import: this module's import graph stays exactly what it was, and the batch writer is
         # the documented seam for "one round trip, one shared `created_at`, no Redis publish".
         from app.services.activity_service import log_activities
@@ -999,28 +1091,253 @@ async def requeue_stale_claims(
 
             await stamp_rearmed(db, requeued_ids, reason="stale_claim_requeued")
 
+        # F-51: ONE ACTIVITY ROW PER RECOVERED TASK.  The sweep used to write a single row whose
+        # summary and `detail` carried EVERY id of the pass — unbounded with the queue, and
+        # unreadable as one task's history.  Each row now names exactly its own id and outcome;
+        # the writer call stays batched (one round trip, one shared `created_at`).
         await log_activities(
             db,
             [
-                {
-                    # The scheduler role, the same `agent_type` the cycle's own bookkeeping rows
-                    # carry: this is queue maintenance, not one agent's work.
-                    "agent_type": "orchestrator",
-                    "action": "stale_claims_requeued",
-                    "summary": f"{'; '.join(parts)}: {listed}",
-                    "level": "warning",
-                    "detail": {
-                        "requeued_ids": requeued_ids,
-                        "failed_ids": failed_ids,
-                        "lease_seconds": lease,
-                        # F-15: the ledger and the row agree — every requeued id carries a
-                        # `metadata.rearmed_at` written in this same transaction.
-                        "rearmed": bool(requeued_ids),
-                    },
-                }
+                _stale_claim_event(
+                    task_id, requeued=True, lease=lease, sweep_size=len(recovered)
+                )
+                for task_id in requeued_ids
+            ]
+            + [
+                _stale_claim_event(
+                    task_id, requeued=False, lease=lease, sweep_size=len(recovered)
+                )
+                for task_id in failed_ids
             ],
         )
+        if len(recovered) >= STALE_CLAIM_BATCH:
+            logger.info(
+                "requeue_stale_claims: recovered %s rows, the batch bound; more remain for the "
+                "next sweep",
+                len(recovered),
+            )
     return len(recovered)
+
+
+# ── F-43(c): the approval reaper (a parked row nobody answered) ──────────────────────────────
+
+#: How long a parked approval may sit before the reaper fails it.  72 h: long enough for a
+#: weekend answer, short enough that a forgotten park cannot hold a plan hostage for a week.
+#: A module constant, not a new environment variable — no knob without a measured need.
+APPROVAL_PARK_TTL_S = 72 * 3600
+#: How many parked rows ONE reap pass may end (the same bounded-pass rule as the claim sweep).
+APPROVAL_REAP_BATCH = 200
+
+
+async def reap_stale_approvals(
+    db: AsyncSession,
+    *,
+    now: datetime | None = None,
+    ttl_s: int | None = None,
+) -> list[int]:
+    """Fail `awaiting_approval` rows parked longer than the TTL, one activity row each (F-43).
+
+    F-43's measured gap: nothing ever reaped a parked approval.  A run that asked for approval and
+    was never answered stayed `awaiting_approval` FOREVER — invisible to the claim sweep (it only
+    looks at `in_progress`), never re-dispatched, and its plan node blocked the rows that depended
+    on it.  The owner-facing surfaces called that "waiting on you"; the truth was "dead".
+
+    A reaped row is `failed` with the reason recorded (not `pending`: re-queueing would re-run an
+    agent whose question nobody answered), its claim columns cleared, and its parked approval
+    cleared through `_clear_parked_approval` — so the served `approval_required` flag stops saying
+    "pending" at the same instant the row stops being able to accept a token.  The rows ride the
+    CALLER's transaction and are BOUNDED to `APPROVAL_REAP_BATCH` per pass.
+
+    Returns the reaped task ids (oldest first).
+    """
+    ttl = APPROVAL_PARK_TTL_S if ttl_s is None else int(ttl_s)
+    if ttl <= 0:
+        raise ValueError(f"reap_stale_approvals requires a positive ttl_s, got {ttl!r}")
+    cutoff = as_bound_instant((now or utcnow()) - timedelta(seconds=ttl), db)
+    parked_ids = (
+        await db.execute(
+            select(Task.id)
+            .where(
+                Task.status == TaskStatus.AWAITING_APPROVAL.value,
+                func.coalesce(
+                    Task.heartbeat_at, Task.claimed_at, Task.updated_at, Task.created_at
+                ) < cutoff,
+            )
+            .order_by(Task.id)
+            .limit(APPROVAL_REAP_BATCH)
+        )
+    ).scalars().all()
+
+    reaped: list[int] = []
+    events: list[dict[str, Any]] = []
+    for parked_id in parked_ids:
+        task = await get_task(db, int(parked_id))
+        if task is None or str(task.status) != TaskStatus.AWAITING_APPROVAL.value:
+            continue                      # a concurrent writer answered it — not ours to end
+        bag = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+        fingerprints = bag.get(PARKED_APPROVAL_KEY)
+        task.status = TaskStatus.FAILED
+        task.error_message = (
+            f"no approval was given within {ttl} s of parking; the run expired and nothing "
+            "was sent"
+        )
+        task.claimed_by = None
+        task.claimed_at = None
+        task.heartbeat_at = None
+        task.updated_at = utcnow()
+        _clear_parked_approval(task, status=TaskStatus.FAILED.value, actor="approval_reaper")
+        task_id = int(task.id)
+        reaped.append(task_id)
+        events.append(
+            {
+                "agent_type": "orchestrator",
+                "action": "stale_approvals_reaped",
+                "summary": f"task #{task_id} was parked awaiting approval for more than "
+                           f"{ttl} s and has been failed",
+                "level": "warning",
+                "detail": {
+                    "task_id": task_id,
+                    "ttl_s": ttl,
+                    "fingerprints": (
+                        [str(item) for item in fingerprints]
+                        if isinstance(fingerprints, list)
+                        else []
+                    ),
+                    "status": TaskStatus.FAILED.value,
+                },
+            }
+        )
+    if reaped:
+        await db.flush()
+        # Lazy import, the file's standing rule: one batched write, one row per reaped task.
+        from app.services.activity_service import log_activities
+
+        await log_activities(db, events)
+    return reaped
+
+
+# ── F-26: the upstream-result channel (one agent's output, typed and read downstream) ────────
+
+#: How many upstream results ONE dependent row records.  A node with a wider fan-in keeps the
+#: first `depends_on_ids` entries (the plan's own order) and the rest are simply not copied — the
+#: payload can never grow with the plan.
+UPSTREAM_MAX_RESULTS = 5
+#: Characters of ONE upstream `result_summary` a dependent row carries (truncation is STATED).
+UPSTREAM_RESULT_SUMMARY_CHARS = 1200
+
+#: The metadata keys this channel writes (mirrored in `app.schemas.task`, the wire's own read).
+PARKED_APPROVAL_KEY = "approval_required"          # the same key `agent_tasks` parks under
+APPROVAL_CLEARED_KEY = "approval_cleared"
+
+
+def _depends_on_ids(metadata: Any) -> list[int]:
+    """The planned edges on a row, as ints (a malformed entry is dropped, never coerced)."""
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("depends_on_ids")
+    if not isinstance(raw, list):
+        return []
+    return [
+        dep for dep in raw
+        if isinstance(dep, int) and not isinstance(dep, bool)
+    ]
+
+
+def _upstream_record(
+    task_id: Any,
+    title: Any,
+    status: Any,
+    result_summary: Any,
+    completed_at: Any,
+) -> dict[str, Any]:
+    """ONE upstream row as the RECORDED shape: bounded summary, stated truncation.
+
+    The cut keeps the summary at exactly `UPSTREAM_RESULT_SUMMARY_CHARS` characters (the last one
+    is an ellipsis), and `truncated` says it happened — a consumer must never read a clipped
+    summary as the agent's whole output.
+    """
+    text: str | None = None
+    truncated = False
+    if result_summary is not None:
+        text = str(result_summary)
+        if len(text) > UPSTREAM_RESULT_SUMMARY_CHARS:
+            text = text[: UPSTREAM_RESULT_SUMMARY_CHARS - 1] + "…"
+            truncated = True
+    return {
+        "task_id": int(task_id),
+        "title": str(title or ""),
+        "status": str(status or ""),
+        "result_summary": text,
+        "truncated": truncated,
+        "completed_at": completed_at.isoformat() if completed_at is not None else None,
+    }
+
+
+async def _load_upstream(db: AsyncSession, metadata: Any) -> list[Any]:
+    """The COMPLETED upstream rows of `metadata`'s edges, typed and bounded, in plan order.
+
+    Only `completed` rows are copied: a failed upstream produced no result to consume, and
+    `release_ready_dependents` only releases a node whose whole set completed — the filter is the
+    second half of that same rule, so a concurrent writer cannot smuggle a non-terminal row in.
+    """
+    from app.schemas.task import UpstreamResult
+
+    ids = _depends_on_ids(metadata)[:UPSTREAM_MAX_RESULTS]
+    if not ids:
+        return []
+    rows = (
+        await db.execute(
+            select(
+                Task.id, Task.title, Task.status, Task.result_summary, Task.updated_at
+            )
+            .where(Task.id.in_(ids))
+            .order_by(Task.id)
+        )
+    ).all()
+    by_id = {int(row[0]): row for row in rows}
+    results: list[Any] = []
+    for upstream_id in ids:                      # the PLAN's order, not the database's
+        row = by_id.get(upstream_id)
+        if row is None or str(row[2]) != "completed":
+            continue
+        results.append(UpstreamResult(**_upstream_record(*row)))
+    return results
+
+
+async def upstream_results_for(db: AsyncSession, task_id: int) -> list[Any]:
+    """A task's upstream results, read LIVE from its edges (F-26's agent-facing read).
+
+    This is the reader `tasks.result_summary` never had: given the downstream row, it answers
+    exactly what the upstream agents produced, typed as `UpstreamResult`.  The recorded copy on
+    the row (`materialize_upstream_results`) is what the wire serves; this is the same truth read
+    on demand, for a run that was re-delivered before the copy was refreshed.
+    """
+    task = await get_task(db, task_id)
+    if task is None:
+        return []
+    return await _load_upstream(db, task.metadata_json)
+
+
+async def materialize_upstream_results(db: AsyncSession, task: Task) -> list[Any]:
+    """Copy the task's completed upstream results onto its OWN metadata (F-26's producer).
+
+    Called by `release_ready_dependents` in the SAME transaction that releases the row, so by the
+    time the row is dispatchable it already records what it owes to whom — and the worker forwards
+    that bag to the agent as `task_dict["metadata"]`.  Idempotent: a second pass overwrites with
+    the same truth and a fresh `recorded_at`.  A row with no completed upstream writes nothing.
+    Returns the typed records it recorded (empty when there was nothing to record).
+    """
+    from app.schemas.task import UPSTREAM_RESULTS_KEY, UPSTREAM_RESULTS_RECORDED_KEY
+
+    results = await _load_upstream(db, task.metadata_json)
+    if not results:
+        return []
+    bag = dict(task.metadata_json or {})
+    bag[UPSTREAM_RESULTS_KEY] = [record.model_dump(mode="json") for record in results]
+    bag[UPSTREAM_RESULTS_RECORDED_KEY] = utcnow().isoformat()
+    task.metadata_json = bag
+    await db.flush()
+    return results
 
 
 #: One release pass' bound (the same order as the sibling ticks; the next completion continues).
@@ -1079,6 +1396,16 @@ async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> li
         if all(int(dep) in done for dep in meta["depends_on_ids"])
     ]
     if ready:
+        # F-26: the rows about to run RECORD their upstream agents' results HERE, in the same
+        # transaction as the release — so agent B's run payload (`task_dict["metadata"]`, which the
+        # worker forwards verbatim) carries what agent A produced.  A failure to record is not
+        # swallowed: it propagates and the caller's commit rolls the release back with it.
+        ready_tasks = (
+            await db.execute(select(Task).where(Task.id.in_(ready)))
+        ).scalars().all()
+        for ready_task in ready_tasks:
+            await materialize_upstream_results(db, ready_task)
+
         from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
 
         await stamp_rearmed(db, ready, reason=f"dag_parent_{completed_id}")
@@ -1405,10 +1732,15 @@ async def get_task_run_totals(
 
 
 __all__ = [
+    "APPROVAL_PARK_TTL_S",
+    "APPROVAL_REAP_BATCH",
     "APPROVAL_TOKEN_METADATA_KEY",
+    "STALE_CLAIM_BATCH",
     "TASK_STATUS_CHANGED_ACTION",
     "TASK_TRANSITIONS",
     "TASK_TRANSITION_WRITERS",
+    "UPSTREAM_MAX_RESULTS",
+    "UPSTREAM_RESULT_SUMMARY_CHARS",
     "VALID_AGENT_TYPES",
     "VALID_TASK_STATUSES",
     "TaskRunTotals",
@@ -1425,10 +1757,14 @@ __all__ = [
     "is_valid_agent_type",
     "legal_task_status_targets",
     "list_tasks",
+    "materialize_upstream_results",
+    "reap_stale_approvals",
     "release_claim",
+    "release_ready_dependents",
     "requeue_stale_claims",
     "task_completed_at",
     "task_terminal_at_expr",
     "transition_task_status",
     "update_task_status",
+    "upstream_results_for",
 ]

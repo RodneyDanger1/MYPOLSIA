@@ -27,13 +27,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import Select, and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant, company_tz, day_window, now_utc
+from app.models.finance import StripeEvent
 from app.models.outreach import EmailLog
+from app.models.report import ActivityLog
 from app.models.social import SocialPost
 from app.services.query_helpers import fetch_rows, fetch_scalar
 
@@ -46,6 +49,15 @@ from app.services.query_helpers import fetch_rows, fetch_scalar
 # configured caps by name, fail closed). A channel absent from this tuple still counts as None.
 _SOCIAL_CHANNELS = ("twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube")   # social_posts, 'published'
 _EMAIL_CHANNEL = "email"                     # email_logs, status='sent'
+#: B2-C4-R1: channels that had NO local record, so an approved PR/refund replay was refused
+#: `E114 cap_unknown` — the cap could not be verified, so it refused.  They now have real sources:
+#:   * `stripe`  — money-moving events land in `stripe_events` (one row per event received);
+#:   * `github`  — nothing recorded a PR, so `record_channel_send` writes ONE `activity_log` row
+#:     per send under `channel_send:github`, and this module counts those rows.
+_STRIPE_CHANNEL = "stripe"
+_ACTIVITY_RECORDED_CHANNELS = ("github",)
+#: The action prefix of a send recorded in the audit ledger (`channel_send:<channel>`).
+CHANNEL_SEND_ACTION_PREFIX = "channel_send:"
 
 
 def _as_utc(now: datetime | None) -> datetime:
@@ -67,6 +79,70 @@ async def _count(db: AsyncSession, stmt: Select, *, what: str) -> int:
             E_DB, f"count for {what} returned no value",
             how_to_fix=ERROR_HINTS[E_DB], context={"query": what})
     return int(value)
+
+
+def _stripe_stmt(start: datetime, end: datetime) -> Select:
+    """Stripe traffic in `[start, end)` — one row per event RECEIVED on `stripe_events`.
+
+    A refund this product creates comes back as an event, so this is the money-movement count the
+    `stripe` channel cap is about (B2-C4-R1: the channel had no source at all and every configured
+    cap was refused `E114 cap_unknown`).
+    """
+    return (
+        select(func.count())
+        .select_from(StripeEvent)
+        .where(StripeEvent.processed_at >= start, StripeEvent.processed_at < end)
+    )
+
+
+def _recorded_send_stmt(channel: str, start: datetime, end: datetime) -> Select:
+    """`channel_send:<channel>` ledger rows in `[start, end)` — that channel's recorded sends.
+
+    The audit ledger IS the send record for a channel with no table of its own (`github`); a row
+    is written by `record_channel_send` at the moment the send succeeded, so the count is a
+    measured zero before the first send and a real number after it.
+    """
+    return (
+        select(func.count())
+        .select_from(ActivityLog)
+        .where(
+            ActivityLog.action == f"{CHANNEL_SEND_ACTION_PREFIX}{channel}",
+            ActivityLog.created_at >= start,
+            ActivityLog.created_at < end,
+        )
+    )
+
+
+async def record_channel_send(
+    db: AsyncSession,
+    channel: str,
+    *,
+    summary: str | None = None,
+    detail: dict[str, Any] | None = None,
+    agent_type: str = "orchestrator",
+) -> None:
+    """Record ONE send on a channel that has no table of its own (B2-C4-R1).
+
+    The counter has to be written by whoever really sends.  `social_posts` and `email_logs` are
+    written by their own services; `github` never recorded anything, so the firewall could not
+    verify a configured github cap and refused the send (`E114 cap_unknown`) — including the
+    replay of an approval the owner had already granted.  This writes ONE `activity_log` row
+    (`channel_send:<channel>`) in the CALLER's transaction, which `channel_sends_today` /
+    `channel_sends_this_hour` count; it publishes the live event through `log_activity`, so the
+    owner's feed sees the send at the same moment the cap counts it.
+    """
+    if not channel or not str(channel).strip():
+        raise ValueError("record_channel_send requires a channel name")
+    from app.services.activity_service import log_activity
+
+    await log_activity(
+        db,
+        agent_type=agent_type,
+        action=f"{CHANNEL_SEND_ACTION_PREFIX}{channel}",
+        summary=summary or f"{channel}: one send recorded",
+        level="info",
+        detail={"channel": channel, **(detail or {})},
+    )
 
 
 async def channel_sends_today(
@@ -101,6 +177,12 @@ async def channel_sends_today(
             )
         )
         return await _count(db, stmt, what="email sends today")
+    if channel == _STRIPE_CHANNEL:
+        return await _count(db, _stripe_stmt(start, end), what="stripe events today")
+    if channel in _ACTIVITY_RECORDED_CHANNELS:
+        return await _count(
+            db, _recorded_send_stmt(channel, start, end), what=f"{channel} sends today"
+        )
     return None
 
 
@@ -137,6 +219,12 @@ async def channel_sends_this_hour(
             )
         )
         return await _count(db, stmt, what="email sends in the last hour")
+    if channel == _STRIPE_CHANNEL:
+        return await _count(db, _stripe_stmt(start, end), what="stripe events in the last hour")
+    if channel in _ACTIVITY_RECORDED_CHANNELS:
+        return await _count(
+            db, _recorded_send_stmt(channel, start, end), what=f"{channel} sends in the last hour"
+        )
     return None
 
 
@@ -167,7 +255,12 @@ async def channel_sends_snapshot(
 
     social = [channel for channel in requested if channel in _SOCIAL_CHANNELS]
     email_wanted = _EMAIL_CHANNEL in requested
-    if not social and not email_wanted:
+    # B2-C4-R1: the two channels that had no counter at all.  A snapshot that answered `None`
+    # for them made the firewall refuse every configured cap (`E114 cap_unknown`), including the
+    # replay of an approval the owner had already granted.
+    stripe_wanted = _STRIPE_CHANNEL in requested
+    recorded = [channel for channel in requested if channel in _ACTIVITY_RECORDED_CHANNELS]
+    if not (social or email_wanted or stripe_wanted or recorded):
         return snapshot
 
     day_start, day_end = day_window(db, day=anchor.astimezone(company_tz()).date())
@@ -241,11 +334,95 @@ async def channel_sends_snapshot(
         # HAS a local send table — so this is a measured 0, never the unknown None.
         snapshot[_EMAIL_CHANNEL] = {"today": today, "hour": hour}
 
+    if stripe_wanted:
+        rows = await fetch_rows(
+            db,
+            select(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                StripeEvent.processed_at >= day_start,
+                                StripeEvent.processed_at < day_end,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("today"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                StripeEvent.processed_at > hour_start,
+                                StripeEvent.processed_at <= hour_end,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("hour"),
+            ).where(
+                StripeEvent.processed_at >= lower,
+                StripeEvent.processed_at <= upper,
+            ),
+            what="stripe channel event counts",
+        )
+        row = rows[0] if rows else None
+        # No event in either window is a MEASURED zero: `stripe_events` is the source, it was read.
+        snapshot[_STRIPE_CHANNEL] = {
+            "today": int(row[0] or 0) if row is not None else 0,
+            "hour": int(row[1] or 0) if row is not None else 0,
+        }
+
+    for channel in recorded:
+        rows = await fetch_rows(
+            db,
+            select(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                ActivityLog.created_at >= day_start,
+                                ActivityLog.created_at < day_end,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("today"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                ActivityLog.created_at > hour_start,
+                                ActivityLog.created_at <= hour_end,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("hour"),
+            ).where(
+                ActivityLog.action == f"{CHANNEL_SEND_ACTION_PREFIX}{channel}",
+                ActivityLog.created_at >= lower,
+                ActivityLog.created_at <= upper,
+            ),
+            what=f"{channel} channel send counts",
+        )
+        row = rows[0] if rows else None
+        snapshot[channel] = {
+            "today": int(row[0] or 0) if row is not None else 0,
+            "hour": int(row[1] or 0) if row is not None else 0,
+        }
+
     return snapshot
 
 
 __all__ = [
+    "CHANNEL_SEND_ACTION_PREFIX",
     "channel_sends_snapshot",
     "channel_sends_this_hour",
     "channel_sends_today",
+    "record_channel_send",
 ]

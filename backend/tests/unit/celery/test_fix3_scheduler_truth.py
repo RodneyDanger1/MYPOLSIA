@@ -113,7 +113,14 @@ def test_the_evening_cycle_fires_in_the_company_local_hour_and_files_the_local_d
         "agent_type": "orchestrator",
         "task": {
             "title": "Evening reporting cycle",
-            "description": "Generate evening summary for 2026-10-13",
+            # wave B2/C4 (F-43 + F-26): the evening run's brief now CARRIES the day's measured
+            # outcomes — the agent consumes what the other agents produced instead of being asked
+            # to invent a summary.  OLD: "Generate evening summary for 2026-10-13", and nothing else.
+            "description": (
+                "Generate evening summary for 2026-10-13\n\n"
+                "DAY OUTCOMES (2026-10-13): no task reached an outcome today "
+                "(nothing completed, failed or was cancelled)"
+            ),
             "metadata": {"cycle": "evening"},
         },
     }]

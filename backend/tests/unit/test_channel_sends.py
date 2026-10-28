@@ -160,15 +160,21 @@ async def test_channels_with_no_local_record_are_unknown_not_zero(async_db_sessi
     """`None` = "no local table records a send for this channel" — never `0`, never a guess."""
     monkeypatch.setattr(app_config.settings, "company_timezone", "UTC")
     db = async_db_session
-    for channel in ("github", "google_ads", "meta_ads", "stripe", "render", "mastodon"):
+    # B2-C4-R1 (wave B2): `github` and `stripe` LEFT this list — they have a real source now
+    # (`channel_send:github` ledger rows and `stripe_events`), so they answer a measured 0 instead
+    # of `None`, and a configured cap on them can be verified instead of refused `E114 cap_unknown`.
+    for channel in ("google_ads", "meta_ads", "render", "mastodon"):
         assert await channel_sends_today(db, channel, now=NOW) is None
         assert await channel_sends_this_hour(db, channel, now=NOW) is None
+    assert await channel_sends_today(db, "github", now=NOW) == 0
+    assert await channel_sends_today(db, "stripe", now=NOW) == 0
 
     snapshot = await channel_sends_snapshot(db, ["twitter", "email", "github"], now=NOW)
     assert set(snapshot) == {"twitter", "email", "github"}
     assert snapshot["twitter"] == {"today": 0, "hour": 0}          # measured zero: table read
     assert snapshot["email"] == {"today": 0, "hour": 0}            # measured zero: table read
-    assert snapshot["github"] == {"today": None, "hour": None}     # no source -> unknown
+    # B2-C4-R1: github is measured now too (the ledger was read and had no send)
+    assert snapshot["github"] == {"today": 0, "hour": 0}
 
 
 # ── (f) integration: the real count drives the firewall ───────────────────────────────────────

@@ -109,6 +109,15 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
         "TaskRunTotals", "get_task_run_totals", "task_completed_at", "task_terminal_at_expr",
         "TASK_TRANSITIONS", "TASK_TRANSITION_WRITERS", "TASK_STATUS_CHANGED_ACTION",
         "legal_task_status_targets", "transition_task_status",
+        # wave B2/C4 (2026-10-25): the orchestration/reporting surfaces this seat shipped —
+        # `release_ready_dependents` (the DAG release the F-26 channel rides), the F-26 upstream
+        # read/record pair + its two bounds, the F-43 approval reaper + its TTL/batch, and the
+        # F-51 sweep bound.  OLD set = the 26 names above; NEW adds exactly these nine; nothing
+        # removed.  Delta recorded in the wave-B2 C4 report (pins_repaired).
+        "release_ready_dependents", "upstream_results_for", "materialize_upstream_results",
+        "UPSTREAM_MAX_RESULTS", "UPSTREAM_RESULT_SUMMARY_CHARS",
+        "reap_stale_approvals", "APPROVAL_PARK_TTL_S", "APPROVAL_REAP_BATCH",
+        "STALE_CLAIM_BATCH",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__

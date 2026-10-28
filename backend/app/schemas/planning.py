@@ -37,6 +37,12 @@ class BurnLineItemResponse(BaseModel):
     source: str | None
     #: Present ONLY on an unmeasured row (see the module docstring).
     reason: str | None = None
+    #: B2-C4-R4: how many expense rows this line EXCLUDED (a non-reporting currency, an
+    #: unparseable amount).  The count used to ride the free-text `reason` string, so a client
+    #: that wanted the number had to parse prose.  `None` = the reading did not measure it; a
+    #: measured zero IS served.  The `reason` text stays (a client renders it), and the two are
+    #: written from the same reading.
+    excluded_rows: int | None = None
 
 
 class PlanningCapacityResponse(BaseModel):

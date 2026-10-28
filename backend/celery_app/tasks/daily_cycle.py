@@ -692,7 +692,8 @@ async def _morning_cycle() -> dict[str, Any]:
     from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
     from app.services.finance_service import recent_failed_payments
-    from app.services.report_service import save_morning_plan
+    from app.services.report_service import get_evening_summary_for, save_morning_plan
+    from app.services.task_service import reap_stale_approvals
 
     session_factory = get_session_factory()
 
@@ -752,6 +753,22 @@ async def _morning_cycle() -> dict[str, Any]:
 
     async with session_factory() as db:
         context = await get_full_context(db)
+        # F-43(c): the parked-approval reaper.  A run that asked for approval and was never
+        # answered sat `awaiting_approval` FOREVER — the claim sweep only looks at `in_progress`,
+        # so nothing ever ended it and every node depending on it stayed blocked.  The morning
+        # tick is the cycle's natural place to sweep yesterday's dead parks: bounded, one activity
+        # row per reaped task, committed here with the context read.
+        reaped_approvals = await reap_stale_approvals(db)
+        await db.commit()
+
+    # F-43(b): `yesterday_summary` must be YESTERDAY's, not "the newest summary in the table"
+    # (`company_service` reads `LIMIT 1`); the cycle asks for the date it actually means, and
+    # records the absence when there is none instead of feeding the agent an unknown day.
+    yesterday = day - timedelta(days=1)
+    async with session_factory() as db:
+        yesterday_summary = await get_evening_summary_for(db, yesterday)
+    context["yesterday_summary"] = yesterday_summary
+    context["yesterday_report_date"] = yesterday.isoformat() if yesterday_summary else None
 
     # The orchestrator's CLI call is blocking: run it off the loop, and hold no DB
     # session across it (the upload pinned a connection for the whole run).
@@ -962,6 +979,12 @@ async def _morning_cycle() -> dict[str, Any]:
                 row = rows_by_id[node]
                 meta = dict(row.metadata_json or {})
                 meta["depends_on_cycle"] = [titles_by_id[dep] for dep in edges[node]]
+                # B2-C4-R2: the wire flattened the cycle to a BOOLEAN, throwing away the members
+                # the producer already had in hand.  Record them with their ids so the plan edge is
+                # answerable ("which nodes formed the cycle?") instead of merely "yes, one did".
+                meta["depends_on_cycle_members"] = [
+                    {"id": int(dep), "title": str(titles_by_id[dep])} for dep in edges[node]
+                ]
                 meta["depends_on_ids"] = []
                 row.metadata_json = meta
                 logger.warning(
@@ -1100,20 +1123,23 @@ async def _morning_cycle() -> dict[str, Any]:
         "plan_entries": len(planned),
         "plan_entries_dropped_by_cap": dropped_by_cap,
         "plan_summary": plan_text,
+        # F-43(c): what the tick's reaper ended (a parked approval nobody answered).
+        "reaped_approvals": reaped_approvals,
+        "yesterday_report_date": context.get("yesterday_report_date"),
         "window": window,
     }
 
 
 async def _evening_cycle() -> dict[str, Any]:
-    from sqlalchemy import func, select
-
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
-    from app.core.timeutil import day_window
-    from app.models.task import Task
     from app.services.activity_service import log_activity
     from app.services.company_service import get_full_context
-    from app.services.report_service import save_evening_summary
+    from app.services.report_service import (
+        build_day_digest,
+        get_evening_summary_for,
+        save_evening_summary,
+    )
 
     session_factory = get_session_factory()
 
@@ -1157,19 +1183,22 @@ async def _evening_cycle() -> dict[str, Any]:
 
     async with session_factory() as db:
         context = await get_full_context(db)
-        # ONE grouped aggregate for the company-local day, half-open [start, end) bounds
-        # bound for the active dialect.  Replaces the upload's two `count(*)` round-trips
-        # against `datetime.combine(date.today(), time.min)` (naive local midnight).
-        start, end = day_window(db, day)
-        rows = await db.execute(
-            select(Task.status, func.count())
-            .where(Task.created_at >= start, Task.created_at < end)
-            .group_by(Task.status)
-        )
-        counts = {status: int(n) for status, n in rows.all()}
+        # F-43(b): "yesterday" must be YESTERDAY's summary, not the newest row in the table.
+        yesterday = day - timedelta(days=1)
+        yesterday_summary = await get_evening_summary_for(db, yesterday)
+        # F-43(a): what actually HAPPENED today.  The tick used to count only tasks CREATED today
+        # (so yesterday's task finished today was invisible) and to record nothing about what the
+        # agents PRODUCED.  `build_day_digest` reads the day's real outcomes, typed and bounded,
+        # and answers `unavailable` (with the code) when it cannot read — a report that cannot see
+        # its data says so instead of printing zeros.
+        digest = await build_day_digest(db, day)
 
-    completed = counts.get("completed", 0)
-    failed = counts.get("failed", 0)
+    context["yesterday_summary"] = yesterday_summary
+    context["yesterday_report_date"] = yesterday.isoformat() if yesterday_summary else None
+
+    counts = digest.counts_created
+    completed = len(digest.completed)
+    failed = len(digest.failed)
 
     # H-03: the evening cycle's own model call is gated and recorded too (the second call site).
     try:
@@ -1177,7 +1206,11 @@ async def _evening_cycle() -> dict[str, Any]:
             agent_type="orchestrator",
             task_dict={
                 "title": "Evening reporting cycle",
-                "description": f"Generate evening summary for {day.isoformat()}",
+                # F-26 + F-43: the reporting agent READS what the other agents produced today —
+                # the day digest is part of its brief, not a similarity-memory guess.
+                "description": (
+                    f"Generate evening summary for {day.isoformat()}\n\n{digest.prompt_block()}"
+                ),
                 # L3-06: the caller declares the cycle; the agent reads this FIRST.
                 "metadata": {"cycle": "evening"},
             },
@@ -1189,7 +1222,15 @@ async def _evening_cycle() -> dict[str, Any]:
         return await _deny_cycle_tick(
             cycle="evening", day=day, window=window, code=exc.code, reason=exc.reason
         )
-    summary_text = str(result.get("summary") or "Evening summary generated")
+    model_summary = result.get("summary")
+    if isinstance(model_summary, str) and model_summary.strip():
+        summary_text = model_summary.strip()
+    else:
+        # F-43: never the fabricated "Evening summary generated".  When the model returned no
+        # summary the report states the records' own answer and says the model gave nothing.
+        summary_text = (
+            f"{digest.headline()}. The reporting agent returned no summary for this run."
+        )
     raw_insights = result.get("insights")
     insights = [str(item) for item in raw_insights] if isinstance(raw_insights, list) else []
 
@@ -1201,7 +1242,12 @@ async def _evening_cycle() -> dict[str, Any]:
             insights=insights,
             tasks_completed=completed,
             tasks_failed=failed,
-            metrics_snapshot=context.get("kpis", {}),
+            # F-43: the full digest rides the report's own JSON column — the counts alone could
+            # not answer "what did the agents actually do today?".
+            metrics_snapshot={
+                **dict(context.get("kpis") or {}),
+                "day_digest": digest.as_metrics(),
+            },
         )
         # T13/D20: the evening cycle produces exactly ONE event and no per-item records (its
         # aggregate is the event; the per-status detail rides the row's `detail`), so there is
@@ -1219,6 +1265,13 @@ async def _evening_cycle() -> dict[str, Any]:
                 "tasks_failed": failed,
                 "tasks_total": sum(counts.values()),
                 "day": day.isoformat(),
+                # F-43: the report says what it could and could not see.
+                "day_digest_status": digest.status,
+                "day_digest_reason": digest.reason,
+                "tasks_cancelled": digest.cancelled,
+                "requeued": digest.requeued,
+                "reaped_approvals": digest.reaped_approvals,
+                "yesterday_report_date": context.get("yesterday_report_date"),
             },
         )
         await db.commit()
@@ -1234,5 +1287,7 @@ async def _evening_cycle() -> dict[str, Any]:
         "tasks_failed": failed,
         "counts": counts,
         "summary": summary_text,
+        "day_digest": digest.as_metrics(),
+        "reaped_approvals": digest.reaped_approvals,
         "window": window,  # L4-11: which company-local hour this tick matched (audit parity with the morning cycle)
     }
