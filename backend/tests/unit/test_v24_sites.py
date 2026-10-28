@@ -98,7 +98,12 @@ def test_a_missing_value_prop_falls_back_to_the_next_profile_field_never_to_a_pl
 # ── 2. escaping: hostile profile values render inert ────────────────────────────────────────
 def test_a_script_tag_in_the_company_name_renders_inert() -> None:
     hostile = 'Acme <script>alert("x")</script> & Sons'
-    html_doc = _html(_company(name=hostile), title="Site")
+    # W2/F-16 REPAIR (old -> new): the old renderer printed the COMPANY name in the header/footer
+    # even when the caller supplied a title, so this escaped value rendered with title="Site".
+    # The rendered site now has ONE name — the caller's title when given — so the hostile COMPANY
+    # name reaches the page only when no title overrides it. No assertion is weakened: the same
+    # hostile bytes must still come out inert, and now they actually reach the page.
+    html_doc = _html(_company(name=hostile))
     assert "<script>" not in html_doc
     assert 'alert("x")' not in html_doc
     assert "&lt;script&gt;" in html_doc

@@ -260,7 +260,15 @@ async def test_a_legacy_site_regenerates_to_the_full_v26_shape_and_can_be_delete
     ]
     index = (site_dir / "index.html").read_text(encoding="utf-8")
     assert index.lstrip().lower().startswith("<!doctype html>")
-    assert "Acme Robotics" in index
+    # W2/F-16 REPAIR (old -> new): this asserted the COMPANY name ("Acme Robotics") in index.html.
+    # The old renderer branded every page with the company name even when the site had its own
+    # stored title, so one site showed two brands (index title "Legacy", header brand "Acme
+    # Robotics"). The site's ONE name is now its stored title, used for <title>/H1/header/footer —
+    # the regenerated legacy site therefore carries "Legacy", and the company name is not the
+    # brand (it remains the contact page's "Legal name" detail only when a sender_legal_name is
+    # configured, which is "Acme Robotics AB", not this string).
+    assert "Legacy" in index
+    assert "Acme Robotics" not in index
     meta = _meta(site_dir)
     assert meta["pages"] == ["index.html", "about.html", "contact.html"]
     assert meta["template"] == "classic"  # a legacy site regenerates as the V24 look

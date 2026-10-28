@@ -157,6 +157,16 @@ export function SiteCreateForm({
         ) : null}
       </div>
 
+      {/* WAVE 2 / F-17: the site is PUBLIC, and the contact page publishes the profile's sender
+          identity (legal name + mailing address). The trial found that exposure happening with no
+          warning anywhere on this form. The generator still prints what the owner set in Settings
+          (removing it would silently break contact); this line makes the choice explicit. */}
+      <p className="text-xs text-ink-muted" data-testid="sites-publish-warning">
+        Publishing warning: the contact page prints the contact email, website, legal name and
+        mailing address from the company profile, and the catalogue prints product names and
+        selling prices. Clear a field in Settings → Company to keep it off the site.
+      </p>
+
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" variant="glossy" disabled={busy}>
           {busy ? "Creating…" : "Create site"}

@@ -38,10 +38,22 @@ Wave V27 adds the owner-managed lifecycle on the same disk contract:
     the files actually written; every other `meta.json` key (e.g. `last_deploy`) is preserved.
 
 The generated page, in the order it is assembled:
-  * `title` — the caller's title, else the company name;
+  * `title` — the caller's title, else the company name.  From wave 2 it is the SITE's ONE name:
+    the H1, every page `<title>` and the header/footer brand all use it, so a caller-supplied title
+    can never leave one site displaying two brands (F-16).  The company's legal name remains a
+    contact-page detail;
   * `tagline` — the caller's tagline, else the profile's value prop / description / mission;
   * about — the profile's description (else mission), omitted rather than invented when empty;
   * who-we-serve — `target_market`, omitted when the profile has none;
+  * products (wave 2 / F-09) — a CATALOGUE built from `company_config.pricing_model` when it holds
+    a product list (a list of objects under `skus`/`plans`/`products`/`items`/`tiers`/`packages`/
+    `offerings`, each with a name-ish and a selling-price-ish field).  ONLY the name and the
+    selling price are printed — `unit_cost`, `margin_pct` and every other internal number are
+    deliberately never read, because a public page must not leak the company's costs.  A row with
+    no recorded price says "price not recorded"; a profile with no recognisable list renders NO
+    products section at all (nothing is invented).  The section is explicitly a catalogue, NOT a
+    shop: there is no cart, no checkout, no payment step and no order form — the CTA is an
+    "Ask about an order" `mailto:` when a contact address exists, or a plain "get in touch" line;
   * one CTA — a `mailto:` link ONLY when the company profile carries a contact address
     (`notification_email`, this schema's contact field: there is no `sender_email` column), else a
     plain "get in touch" line with NO address invented; and
@@ -66,6 +78,7 @@ from __future__ import annotations
 import contextlib
 import html
 import json
+import math
 import os
 import re
 import uuid
@@ -73,7 +86,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -199,6 +212,125 @@ def _website_line(website: str) -> str:
     return f'<p class="footer-site">Website: {_esc(website)} (not an http(s) link)</p>'
 
 
+# ── the catalogue (wave 2 / F-09) ────────────────────────────────────────────────────────────
+# `company_config.pricing_model` is a FREE-FORM JSON object: the seed wrote `{"plans": [{name,
+# price}]}` and the candle trial wrote `{"currency": "USD", "skus": [{sku, name, retail,
+# unit_cost, margin_pct}], ...}`.  There is no server schema to validate against, so the site
+# generator recognisably reads the shapes real writers produced and prints NOTHING for any other
+# shape — an invented product row would be a fabricated claim on a public page.
+_PRODUCT_LIST_KEYS = ("skus", "plans", "products", "items", "tiers", "packages", "offerings")
+_PRODUCT_NAME_KEYS = ("name", "sku", "title", "label", "product")
+#: SELLING price fields only.  Cost/margin keys (`unit_cost`, `margin_pct`, `cogs`) are
+#: deliberately absent: they are internal numbers, and a public page must never print them.
+_PRODUCT_PRICE_KEYS = ("retail", "price", "price_usd", "amount", "unit_price", "list_price")
+#: Upper bound on rendered rows: a hostile/huge pricing_model cannot turn the page into a dump.
+MAX_PRODUCTS = 50
+
+
+def _currency_prefix(currency: Any) -> str:
+    """The price prefix: `$` for USD (the app's money convention) or `<CODE> ` for any other ISO
+    code; an absent/blank/non-ISO currency falls back to `$`, the app's single money display."""
+    code = _clean(currency).upper()
+    if re.fullmatch(r"[A-Z]{3}", code):
+        return "$" if code == "USD" else f"{code} "
+    return "$"
+
+
+def _price_text(value: Any, prefix: str) -> str:
+    """`$28` / `$28.50` — or `""` when the value is not a real, finite, non-negative number.
+
+    A string ("28"), a bool, NaN/Infinity and a negative amount all render as no price: the page
+    says "price not recorded" rather than laundering a non-measurement into a number."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return ""
+    if not math.isfinite(float(value)) or float(value) < 0:
+        return ""
+    if float(value).is_integer():
+        return f"{prefix}{int(value):,}"
+    return f"{prefix}{float(value):,.2f}"
+
+
+def _product_rows(pricing_model: Any) -> list[tuple[str, str]]:
+    """The catalogue rows `(name, price_text)` a pricing_model carries — `[]` when it carries none.
+
+    Recognised: the first list of objects under a known list key; each row needs a non-blank
+    name-ish string; the price is the first SELLING-price field that is a real number (`""` when
+    none).  Unknown shapes produce NO rows (the section is omitted, never invented).
+    """
+    if not isinstance(pricing_model, dict):
+        return []
+    prefix = _currency_prefix(pricing_model.get("currency"))
+    lists: dict[str, Any] = {}
+    for key, value in pricing_model.items():
+        lists[str(key).lower()] = value
+    for list_key in _PRODUCT_LIST_KEYS:
+        candidate = lists.get(list_key)
+        if not isinstance(candidate, list):
+            continue
+        rows: list[tuple[str, str]] = []
+        for item in candidate:
+            if not isinstance(item, dict):
+                continue
+            lowered = {str(key).lower(): value for key, value in item.items()}
+            name = ""
+            for name_key in _PRODUCT_NAME_KEYS:
+                text = _clean(lowered.get(name_key))
+                if text:
+                    name = text
+                    break
+            if not name:
+                continue
+            price = ""
+            for price_key in _PRODUCT_PRICE_KEYS:
+                price = _price_text(lowered.get(price_key), prefix)
+                if price:
+                    break
+            rows.append((name, price))
+        if rows:
+            return rows
+    return []
+
+
+def _products_section(rows: Sequence[tuple[str, str]], contact: str) -> list[str]:
+    """The catalogue section — names + selling prices only, and EXPLICITLY not a shop.
+
+    No cart, no checkout, no payment step and no order form: the only order path is an inquiry
+    (a `mailto:` with a prefilled subject when the profile carries an address, a plain line
+    otherwise).  Every interpolated value goes through `_esc`."""
+    if not rows:
+        return []
+    shown = list(rows)[:MAX_PRODUCTS]
+    parts: list[str] = ['<section id="products">', "<h2>Products</h2>", '<ul class="product-list">']
+    for name, price in shown:
+        price_html = _esc(price) if price else "price not recorded"
+        parts.append(
+            '<li><span class="product-name">'
+            f"{_esc(name)}</span> <span class=\"product-price\">{price_html}</span></li>"
+        )
+    parts.append("</ul>")
+    if len(rows) > len(shown):
+        parts.append(
+            f'<p class="note">{len(rows) - len(shown)} more product(s) are recorded in the '
+            "company profile than are listed here.</p>"
+        )
+    if contact:
+        subject = quote("Order inquiry")
+        parts.append(
+            '<p class="cta"><a class="button" '
+            f'href="mailto:{_esc(contact)}?subject={subject}">Ask about an order</a></p>'
+        )
+    else:
+        parts.append(
+            '<p class="note">Ordering is by inquiry — use the contact page to get in touch.</p>'
+        )
+    parts.append(
+        '<p class="note">Prices are as recorded in the company profile. This is a catalogue, '
+        "not a shop: there is no cart, checkout or online payment — orders are by inquiry.</p>"
+    )
+    parts.append("</section>")
+    return parts
+
+
 # ── the page ─────────────────────────────────────────────────────────────────────────────────
 _STYLES = """/* Generated by Polsia from the company profile — self-contained, no external requests. */
 :root {
@@ -313,6 +445,24 @@ footer a { color: var(--accent); }
 .contact-list dt { font-weight: 700; }
 
 .contact-list dd { margin: 0 0 0.75rem; }
+
+/* wave 2 / F-09: the catalogue list — names + selling prices, no controls of any kind. */
+.product-list { list-style: none; margin: 0 0 1rem; padding: 0; }
+
+.product-list li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-list li:last-child { border-bottom: 0; }
+
+.product-name { font-weight: 600; }
+
+.product-price { font-variant-numeric: tabular-nums; }
 
 .note { color: var(--muted); }
 
@@ -646,6 +796,13 @@ def render_pages(
     name = fields["name"]
 
     page_title = _clean(title) or name
+    # wave 2 / F-16: ONE site name.  When the caller supplies a title, that title is the SITE's
+    # name on every page (title, H1, header brand, footer) — before this, the create form's title
+    # appeared only on index.html while about/contact and every header/footer used the company
+    # name, so one site displayed two brands.  With no title the company name is the site name,
+    # exactly as before.  The company's LEGAL name is still the contact page's "Legal name" detail
+    # — data, not branding.
+    site_name = page_title
     hero_tagline = (
         _clean(tagline)
         or _first_line(fields["value_prop"])
@@ -683,9 +840,14 @@ def render_pages(
             f"<p>{_esc(target_market)}</p>",
             "</section>",
         ]
+    # wave 2 / F-09: the catalogue the profile already knows (names + selling prices only).  An
+    # unrecognised/absent pricing_model adds NOTHING — the page is a brochure then, and it never
+    # pretends to be a shop in either case.
+    product_rows = _product_rows(getattr(company, "pricing_model", None))
+    index_main += _products_section(product_rows, contact)
     index_main.append("</main>")
 
-    about_title = f"About {name}" if name else "About"
+    about_title = f"About {site_name}" if site_name else "About"
     about_description = (
         _first_line(fields["description"]) or _first_line(fields["mission"]) or description
     )
@@ -718,8 +880,8 @@ def render_pages(
         ]
     about_main.append("</main>")
 
-    contact_title = f"Contact {name}" if name else "Contact"
-    contact_description = f"Contact details for {name}." if name else "Contact details."
+    contact_title = f"Contact {site_name}" if site_name else "Contact"
+    contact_description = f"Contact details for {site_name}." if site_name else "Contact details."
     contact_main: list[str] = ["<main>", '<section id="contact">', "<h2>Contact</h2>"]
     details: list[tuple[str, str]] = []
     if contact:
@@ -752,6 +914,20 @@ def render_pages(
         contact_main.append(
             '<p class="note">No contact details have been added to the company profile yet.</p>'
         )
+    # wave 2 / F-09: when the profile carries a catalogue, the contact page says how an order
+    # happens (an inquiry) and that there is no online checkout — the same honesty the index's
+    # catalogue section prints.  No catalogue, no ordering claim.
+    if product_rows:
+        if contact:
+            contact_main.append(
+                '<p class="note">To order, write to the address above with the product name(s) '
+                "you want — there is no cart or online checkout.</p>"
+            )
+        else:
+            contact_main.append(
+                '<p class="note">Orders are by inquiry once a contact address is added to the '
+                "company profile; there is no cart or online checkout.</p>"
+            )
     contact_main.append("</section>")
     contact_main.append("</main>")
 
@@ -761,7 +937,7 @@ def render_pages(
             page_title=page_title,
             description=description,
             og_image=seo["og_image"],
-            name=name,
+            name=site_name,
             active="index",
             main=index_main,
             website_line=website_line,
@@ -771,7 +947,7 @@ def render_pages(
             page_title=about_title,
             description=about_description,
             og_image=seo["og_image"],
-            name=name,
+            name=site_name,
             active="about",
             main=about_main,
             website_line=website_line,
@@ -781,7 +957,7 @@ def render_pages(
             page_title=contact_title,
             description=contact_description,
             og_image=seo["og_image"],
-            name=name,
+            name=site_name,
             active="contact",
             main=contact_main,
             website_line=website_line,

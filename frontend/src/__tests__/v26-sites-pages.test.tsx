@@ -188,3 +188,18 @@ describe("/sites — the custom domain", () => {
     expect(screen.queryByTestId("sites-domain-error")).not.toBeInTheDocument();
   });
 });
+
+// ── 4. what the generated site publishes (wave 2 / F-17) ───────────────────────────────────
+describe("/sites — the publishing warning", () => {
+  it("names the profile fields the public contact page will print", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<SitesPage />);
+    await screen.findByTestId("sites-empty");
+
+    const warning = screen.getByTestId("sites-publish-warning");
+    expect(warning).toHaveTextContent(
+      /contact page prints the contact email, website, legal name and mailing address/,
+    );
+    expect(warning).toHaveTextContent(/Clear a field in Settings/);
+  });
+});
