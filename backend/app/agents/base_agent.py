@@ -89,7 +89,16 @@ TRUTHY = {"1", "true", "yes", "on", "t", "y"}
 #: is still 25,800 and no other layer's ratio moved.  Truncating the capability block instead
 #: would hide half the new tools from the agent's own prompt — the failure this constant exists
 #: to prevent.
-CONTEXT_LAYER_WEIGHTS: dict[str, int] = {**DEFAULT_BUDGETS, "tool_doctrine": 3000, "memories": 6200}
+#:
+#: F2-FEED-1 — the runtime-status block (provider / model / model-key configured / sandbox /
+#: mock, see `app.agents.runtime_status`) now rides the SAME layer: it is deployment truth a run
+#: must be able to quote, not a per-task detail.  With it, `code_generation`'s doctrine measured
+#: 1,475 tokens against the 1,395 the 3,000 share allowed (re-pinned red by
+#: test_no_agent_truncates_its_capability_block).  The share moves 3000 -> 3300 and `memories`
+#: gives up exactly that 300 (6200 -> 5900): the sum is still 25,800, `identity`'s 744 is
+#: untouched, and the soft memory layer is again the one place room comes from (its overflow drops
+#: tail entries WITH a warning — never acceptable for a capability/runtime claim).
+CONTEXT_LAYER_WEIGHTS: dict[str, int] = {**DEFAULT_BUDGETS, "tool_doctrine": 3300, "memories": 5900}
 
 #: The documented keys a finished run carries so the queue can write `agent_runs` columns.
 #: `agent_runs` (app/models/task.py:AgentRun) has exactly these accounting columns:
@@ -426,6 +435,15 @@ class BasePolsiaAgent(ABC):
         # first delivery, so a fresh run calls the runtime exactly as before.
         self.prior_actions: list[dict[str, Any]] = []
         self.last_actions: list[dict[str, Any]] = []
+        # F-05 (visuals run 299): ONE logical run may dispatch several times — a retried attempt,
+        # or the repair ladder's corrective re-prompt.  Tool evidence is a fact about the RUN, so
+        # it is MERGED across dispatches here; the last dispatch's envelope alone reported
+        # `tools_used: []` for a run whose first execution made four live web calls.  The two
+        # fields keep "absent" (`_tools_offered` False) distinct from "measured zero" (True + []).
+        self._tools_offered = False
+        self._tools_used: list[str] = []
+        self._run_num_turns = 0
+        self._run_num_turns_measured = False
         # §4.13's `attempt`: the worker's execution number for this run (`tasks.attempts` after the
         # claim).  None means "the caller published none" — then `_real_call` omits the keyword
         # and a direct caller keeps the pre-F-13 invoke signature.
@@ -580,6 +598,19 @@ class BasePolsiaAgent(ABC):
             # The planner routes work by what an agent can really do, so IT — and only it —
             # additionally carries the full cross-agent map.
             capability_lines.append(render_fleet_capability_map(tools_callable=tool_less))
+        # F2-FEED-1: the run's NON-SECRET runtime facts (provider, model id, model-key
+        # configured, sandbox mode, mock mode).  Why in the prompt: task 296 "Connectivity check -
+        # model key" was answered with "no visibility into whether a model key is configured in
+        # dispatch" and was still recorded completed — the runtime knew the answer, the run's
+        # context did not.  Derived from the SAME `tool_less` predicate the doctrine above uses,
+        # so the block and the tool claim cannot disagree about which runtime will run this agent.
+        from app.agents.runtime_status import render_runtime_status_block, runtime_status
+
+        runtime_lines = [
+            render_runtime_status_block(
+                runtime_status(deepseek=tool_less, mock_mode=self.mock_mode)
+            )
+        ]
         outcome_contract = self._outcome_contract()
 
         # IN-03 (P1): the NON-NEGOTIABLE RULES and the output contract come FIRST, and the role
@@ -605,6 +636,9 @@ class BasePolsiaAgent(ABC):
             "- Every externally visible action (post, email, ad change, payment, PR) is routed "
             "through the policy firewall; a refusal is final for this cycle.",
             *capability_lines,
+            # F2-FEED-1: the runtime facts ride the SAME cacheable capability layer (they are
+            # deployment truth, not per-task data), immediately after the capability block.
+            *runtime_lines,
         ])
         company_text = "\n".join(filter(None, [
             f"NAME: {company.get('name') or 'Unknown'}",
@@ -879,13 +913,68 @@ class BasePolsiaAgent(ABC):
                     # run stores no `agent_runs.output`).
                     self._absorb_raised_run_evidence(exc, run_actions)
                     raise
+            else:
+                result = claude_cli.invoke(inv, executable=self.cli_path)
+            # F-05: this dispatch's tool evidence joins the RUN's evidence BEFORE anything can
+            # discard the dispatch (a retryable failure is retried by `run_with_retries`, and its
+            # envelope — the one that may name the real tools — is never seen again).
+            self._absorb_dispatch_evidence(result)
+            if runtime is not None:
                 run_actions.extend(_envelope_actions(result))
-                return result
-            return claude_cli.invoke(inv, executable=self.cli_path)
+            return result
 
         result, attempts = claude_cli.run_with_retries(dispatch, classify=self._retryable)
         self.last_attempts = attempts
         return self._finish_call(result, attempts, transport=transport, actions=run_actions)
+
+    # ------------------------------------------------------------------ run tool evidence (F-05)
+    def _reset_run_evidence(self) -> None:
+        """A new logical run inherits NOTHING from the previous one in this worker process.
+
+        Reset at the two entry points every run uses (`timed_run`, `collect_structured`), for the
+        same reason `RUN_TAINT` and the run's cancellation guard are run-scoped: a stale tool list
+        would attribute one run's work to another.
+        """
+        self._tools_offered = False
+        self._tools_used = []
+        self._run_num_turns = 0
+        self._run_num_turns_measured = False
+
+    def _absorb_tool_names(self, raw: Any) -> bool:
+        """Merge one envelope's `tools_used` into the run's list; True when the key was present."""
+        bounded = accounting.bounded_tools_used(raw)
+        if bounded is None:
+            return False
+        self._tools_offered = True
+        for name in bounded:
+            # A capped dispatch ends with the truncation NOTE, not a tool: never merge it as one.
+            if name.startswith("…") or name in self._tools_used:
+                continue
+            self._tools_used.append(name)
+        return True
+
+    def _absorb_dispatch_evidence(self, result: claude_cli.InvokeResult) -> None:
+        """F-05: merge ONE dispatch's tool evidence (names + provider calls) into the run's.
+
+        Silent only for an unparseable stdout, and even then it is RECORDED: a dispatch whose
+        envelope cannot be read contributes no tool claim, which is `absent`, never a fake `[]`.
+        """
+        try:
+            env = structured_output.extract_envelope(result.stdout)
+        except ValueError as exc:
+            logger.warning(
+                "code=dispatch_evidence_unreadable: this dispatch contributes no tool evidence (%s)",
+                exc,
+            )
+            return
+        self._absorb_tool_names(env.get("tools_used"))
+        turns = env.get("num_turns")
+        if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 0:
+            # Provider calls are additive across dispatches: a repaired/retried run really made
+            # all of them. (Token counts stay per-envelope — the documented L3-05 residual — so
+            # this is the call count, not a claim about the spend those calls carried.)
+            self._run_num_turns += turns
+            self._run_num_turns_measured = True
 
     def _absorb_raised_run_evidence(
         self, exc: PolsiaError, run_actions: list[dict[str, Any]]
@@ -911,6 +1000,11 @@ class BasePolsiaAgent(ABC):
         raw_usage = exc.context.get("usage") if isinstance(exc.context, dict) else None
         if isinstance(raw_usage, dict) and raw_usage:
             model = exc.context.pop("model", "")
+            # F-05: a RAISED refusal can be the only carrier of the tools a dead dispatch really
+            # called (`deepseek_runtime._loop_evidence` attaches names, A2A4-01).  Absorb them
+            # BEFORE `measured_usage_on_failure` builds the dict that rides the refusal.
+            if isinstance(exc.context, dict):
+                self._absorb_tool_names(exc.context.get("tools_used"))
             self.last_usage = accounting.usage_from_envelope({
                 "usage": raw_usage,
                 "model": model if isinstance(model, str) else "",
@@ -1210,6 +1304,9 @@ class BasePolsiaAgent(ABC):
     ) -> tuple[dict[str, Any], AssembledContext]:
         """Assemble the prompt, run the agent, return (validated payload, assembled context)."""
         self.set_run_context(task)
+        # F-05: a new logical run starts with NO tool evidence from the previous one.  This is the
+        # direct-caller entry point (`timed_run` resets as well, before `run()`).
+        self._reset_run_evidence()
         assembled = self.assemble_prompt(task, context, memories=memories, extra_context=extra_context)
         payload = self.call_claude_structured(
             assembled.volatile_suffix or self.build_prompt(task, context),
@@ -1265,6 +1362,15 @@ class BasePolsiaAgent(ABC):
                 # lower bound on the provider's charge.  Never fabricated upward.
                 meta["cost_usd"] = round(usage.token_cost_estimate_usd, 6)
             meta["cli_session_id"] = usage.session_id or self.session_id
+        # F-05: the RUN's tool evidence wins over any single dispatch's envelope.  The union across
+        # dispatches is what actually happened; the last envelope is only the last dispatch (live
+        # run 299: four web calls, recorded as none because a later, tool-less dispatch was the
+        # one that answered).  `_tools_offered` False keeps the historical ABSENT key for a run
+        # that never had tools; True + [] is the measured zero the audit surface renders "none".
+        if self._tools_offered:
+            meta["tools_used"] = accounting.bounded_tools_used(self._tools_used) or []
+        if self._run_num_turns_measured:
+            meta["num_turns"] = self._run_num_turns
         return meta
 
     def measured_usage_on_failure(self, error_code: str = "") -> dict[str, Any]:
@@ -1496,6 +1602,8 @@ class BasePolsiaAgent(ABC):
         """run() + a float `duration_secs` key. Handles sync OR async run()."""
         started = time.perf_counter()
         self.set_run_context(task or {})
+        # F-05: run-scoped tool evidence — reset before the run that will produce it.
+        self._reset_run_evidence()
         result = self.run(task or {}, context or {})
         if inspect.isawaitable(result):
             result = _run_coroutine_sync(result)

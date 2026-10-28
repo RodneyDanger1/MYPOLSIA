@@ -23,7 +23,7 @@ one import gives a caller the schemas *and* the vocabulary for why an output was
 from __future__ import annotations
 
 import logging
-from typing import Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -657,14 +657,83 @@ def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, BaseMod
         return False, [f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors()]
 
 
+#: `NoneType`, named once so the Optional test compares TYPES, never strings.
+_NONE_TYPE = type(None)
+
+
+def _bare_annotation(annotation: Any) -> Any:
+    """The annotation with any `Annotated[...]` wrapper stripped — its metadata is not its type."""
+    while get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        if not args:
+            break
+        annotation = args[0]
+    return annotation
+
+
+def annotation_allows_none(annotation: Any) -> bool:
+    """True when the annotation admits `None` BY ITS TYPING OBJECT (`get_args`/`get_origin`).
+
+    Why not `"none" in str(annotation).lower()`: that substring test reads a type's human LABEL,
+    not its type. A REQUIRED field whose type merely spells the letters — `NonEmptyStr` (a
+    `NewType` whose repr starts "NonEmpty…") is the documented example — is nulled by the
+    substring test even though the schema forbids `None`, and the resulting payload fails its own
+    validator. Symmetrically, `dict[str, float]` used to be classified by a substring of its
+    ARGUMENTS (the defect `_top_level_coercions` records at the bottom of `base_agent`). A type is
+    interrogated here, never speech-read.
+    """
+    annotation = _bare_annotation(annotation)
+    if annotation is _NONE_TYPE:
+        return True
+    return any(_bare_annotation(arg) is _NONE_TYPE for arg in get_args(annotation))
+
+
+def _empty_shape(annotation: Any) -> Any:
+    """The schema's own empty value for a REQUIRED field of this annotation.
+
+    `None` for a nullable type ("not measured" must never become a fabricated 0 — the live defect
+    this fixes: a mocked finance run persisted a $0 revenue snapshot because `int | None` was
+    zero-filled here), `[]`/`{}` for containers, `False`/`0`/`0.0` for required scalars. A
+    `Literal` takes its first declared member (the schema's own vocabulary, not invented content);
+    an unclassifiable scalar shape gets `""` and nothing else is fabricated.
+    """
+    annotation = _bare_annotation(annotation)
+    if annotation_allows_none(annotation):
+        return None
+    origin = get_origin(annotation)
+    if origin is Literal:
+        args = get_args(annotation)
+        return args[0] if args else None
+    if origin in (list, tuple, set, frozenset):
+        return []
+    if origin is dict:
+        return {}
+    if annotation is bool:
+        return False
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is str:
+        return ""
+    return ""
+
+
 def placeholder_payload(agent_type: str, summary: str, note: str) -> dict:
     """The schema's own empty shape, with an explicit note and `status='partial'`.
 
     Used ONLY by the sanctioned `CLAUDE_CLI_MOCK` path when the mock response is not
     schema-shaped (the repo's default mock response is prose — CLAUDE.md:102). It carries no
-    invented content: every list is empty, every count is zero, and `notes` says exactly why, so
-    a mocked run can never be mistaken for work that happened. Never reachable with a real CLI:
-    the real path raises `E_AGENT_BAD_OUTPUT` instead.
+    invented content: every list is empty, every required scalar is its zero/false default, and a
+    NULLABLE field stays `None` — "not measured" must never become a fabricated 0 (the live defect
+    this fixes: a mocked finance run persisted a $0 revenue snapshot because `int | None` was
+    zero-filled here). `notes` says exactly why, so a mocked run can never be mistaken for work
+    that happened. Never reachable with a real CLI: the real path raises `E_AGENT_BAD_OUTPUT`.
+
+    Required-vs-default is asked of the pydantic `FieldInfo` (`is_required()`), never inferred
+    from `get_default()`: for a REQUIRED field `get_default()` is `PydanticUndefined`, which is
+    neither `None` nor `...`, so the old `default is not None and default is not ...` test copied
+    that non-JSON-serialisable sentinel into the payload (the orchestrator's required `key_focus`).
     """
     model = schema_for(agent_type)
     payload: dict[str, Any] = {}
@@ -679,23 +748,12 @@ def placeholder_payload(agent_type: str, summary: str, note: str) -> dict:
             payload[name] = SCHEMA_VERSION
         elif name == "mode":
             payload[name] = "morning"
+        elif not fld.is_required():
+            # The schema's OWN default (None / [] / {} / False / 0 / a declared value): this
+            # function invents nothing, it copies what the contract already says.
+            payload[name] = fld.get_default(call_default_factory=True)
         else:
-            annotation = fld.annotation
-            default = fld.get_default(call_default_factory=True)
-            if default is not None and default is not ...:
-                payload[name] = default
-            elif "list" in str(annotation).lower():
-                payload[name] = []
-            elif "dict" in str(annotation).lower():
-                payload[name] = {}
-            elif "int" in str(annotation).lower():
-                payload[name] = 0
-            elif "bool" in str(annotation).lower():
-                payload[name] = False
-            elif "float" in str(annotation).lower():
-                payload[name] = 0.0
-            else:
-                payload[name] = ""
+            payload[name] = _empty_shape(fld.annotation)
     return payload
 
 
@@ -712,6 +770,7 @@ __all__ = [
     "AdsOutput",
     "AdsRecommendation",
     "AgentEnvelope",
+    "annotation_allows_none",
     "BusinessPlan",
     "CodeChange",
     "CodeGenOutput",

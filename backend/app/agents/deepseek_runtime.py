@@ -1249,6 +1249,17 @@ def _model_for(override: str | None) -> str:
     return value or DEEPSEEK_DEFAULT_MODEL
 
 
+def configured_model() -> str:
+    """The model id this runtime would send (the SAME resolver `invoke()` uses).
+
+    Public because a run's prompt carries the model id as a non-secret runtime fact
+    (`app.agents.runtime_status`): a connectivity/status task must quote the id dispatch would
+    really use, never a second guess that could drift from `_model_for`'s env/settings precedence.
+    """
+    return _model_for(None)
+
+
+
 def _reasoning_effort() -> str:
     """Canonical reasoning_effort from Settings; unknown values are a NAMED refusal, not coerced."""
     raw = str(_setting("deepseek_reasoning_effort", DEEPSEEK_DEFAULT_REASONING_EFFORT) or "").strip().lower()
@@ -1875,6 +1886,7 @@ __all__ = [
     "VISION_MAX_TOTAL_BYTES",
     "available",
     "call_key",
+    "configured_model",
     "has_session",
     "invoke",
     "plan_from_invocation",

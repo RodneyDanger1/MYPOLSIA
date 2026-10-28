@@ -39,7 +39,7 @@ from app.agents.base_agent import BasePolsiaAgent, is_mock_mode
 from app.agents.claude_cli import cli_path, safety_preflight
 from app.agents.policy_firewall import AGENT_CAPABILITIES, ActionClass, kill_grade_from_env
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, ERROR_HINTS, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_VALIDATION, ERROR_HINTS, PolsiaError
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,15 @@ def run_agent_for_task(
 
     Returns the agent's dict **plus** `duration_secs` and the usage/cost/session keys the queue
     persists into `agent_runs` (additive: the agent's own keys are untouched).
+
+    F2-FEED-1 (P1): a run whose own envelope says `status="refused"` raises HERE instead of
+    returning.  The worker derives the task's terminal status from whether this call raised
+    (`celery_app.tasks.agent_tasks`: `run_status = "failed" if error else "completed"`) and never
+    reads the payload's `status`, so without this guard a refusal was recorded as a COMPLETED task
+    — the live task-296 class ("Connectivity check - model key" reported completed while its
+    summary said it could not see whether a key was configured).  A refusal is terminal, not
+    retryable (`E_VALIDATION` is not in the worker's `RETRYABLE_CODES`): the fix is to rewrite the
+    task instruction or supply the missing input, never to re-spend on the identical prompt.
     """
     agent_class = get_agent_class(agent_type)          # ValueError("Unknown agent ...") here
     problems = dispatch_preflight(agent_type, dispatch_paused=dispatch_paused)
@@ -280,7 +289,93 @@ def run_agent_for_task(
     if not isinstance(result, dict):
         result = {"result": result}
     result.setdefault("agent_type", agent_type)
+    _record_run_verdict(agent_type, result)
     return result
+
+
+#: The result key carrying the run's own `AgentEnvelope.status` at the TOP level of the stored
+#: output, so a consumer never has to parse prose to find it (F-07).
+PAYLOAD_STATUS_KEY = "payload_status"
+
+#: The visible label a PARTIAL run's summary carries into `tasks.result_summary` (F-07).
+PARTIAL_SUMMARY_PREFIX = "[partial] "
+
+
+def refusal_reason(result: dict[str, Any]) -> str:
+    """The honest reason a REFUSED run gives: its `notes`, else its `summary` (bounded)."""
+    notes = [str(note).strip() for note in (result.get("notes") or []) if str(note).strip()]
+    if notes:
+        return "; ".join(notes)[:1000]
+    return str(result.get("summary") or "").strip()[:1000] or "no reason given"
+
+
+def _record_run_verdict(agent_type: str, result: dict[str, Any]) -> None:
+    """F-07: carry the run's own verdict where the ledger and the owner can see it.
+
+    `AgentEnvelope.status` is `ok | partial | refused`.  The worker never read it (it derives the
+    task status from whether this call raised), so 8 of the trial's 10 tasks read `COMPLETED` while
+    their own text said "partial" or that no deliverable was produced — the badge, the ledger row
+    and the dashboard card all claimed a full success.
+
+    Two honest, additive signals, no fake failure:
+      * `refused` -> the NAMED refusal below (the task is recorded FAILED, never completed);
+      * `partial` -> `payload_status="partial"` on the stored output plus the visible
+        `[partial] ` prefix on `summary`, which is what the worker copies into
+        `tasks.result_summary` — so the feed/task page CANNOT present partial work as an
+        unqualified success.  The run is still a success (the work happened); inventing a task
+        status the vocabulary does not have is not this lane's call (see the report's REQUESTS).
+    """
+    status = result.get("status")
+    if not isinstance(status, str):
+        return
+    if status == "refused":
+        _raise_refused_task(agent_type, result)
+        return
+    if status == "partial":
+        result[PAYLOAD_STATUS_KEY] = "partial"
+        summary = str(result.get("summary") or "").strip()
+        if not summary.startswith(PARTIAL_SUMMARY_PREFIX.strip()):
+            # The visible label goes on the summary the worker copies into `tasks.result_summary`.
+            # Deliberately NOT applied under the sanctioned `CLAUDE_CLI_MOCK` seam: that path's
+            # summary is the mock fixture's own text ("Mock Claude response for testing"), pinned
+            # verbatim by the queue-safety tests, and the placeholder already carries its
+            # "nothing was performed" note.  No product run is ever mock-shaped.
+            from app.agents.base_agent import is_mock_mode
+
+            if not is_mock_mode():
+                result["summary"] = (
+                    f"{PARTIAL_SUMMARY_PREFIX}{summary}" if summary else PARTIAL_SUMMARY_PREFIX.strip()
+                )
+
+
+def _raise_refused_task(agent_type: str, result: dict[str, Any]) -> None:
+    """Raise the NAMED refusal when the run's own verdict is `status="refused"` (F2-FEED-1).
+
+    `AgentEnvelope` documents `refused` as "a policy outcome, never as success", but nothing on
+    the completion path read it.  The measured usage/cost this run really incurred rides the
+    refusal's `context` (`usage`), the same carrier `base_agent.usage_from_outcome` reads for a
+    failed run, so a refused run does not vanish from the ledger's accounting.
+    """
+    from app.agents.base_agent import RUN_META_KEYS
+
+    reason = refusal_reason(result)
+    measured = {key: result[key] for key in RUN_META_KEYS if key in result}
+    raise PolsiaError(
+        E_VALIDATION,
+        f"agent {agent_type} refused its task: {reason}",
+        how_to_fix=(
+            "the run could not do this task honestly (its notes name why). Rewrite the task "
+            "instruction or supply the missing input; do not re-run the identical prompt. The "
+            "run's RUNTIME STATUS block names the deployment facts this worker knows."
+        ),
+        context={
+            "agent_type": agent_type,
+            "refused": True,
+            "summary": str(result.get("summary") or "")[:1000],
+            "notes": [str(note) for note in (result.get("notes") or [])][:20],
+            "usage": measured,
+        },
+    )
 
 
 async def resolve_dispatch_paused(db: Any) -> bool:
@@ -307,9 +402,12 @@ async def resolve_dispatch_paused(db: Any) -> bool:
 
 __all__ = [
     "AGENT_MAP",
+    "PARTIAL_SUMMARY_PREFIX",
+    "PAYLOAD_STATUS_KEY",
     "VALID_AGENT_TYPES",
     "dispatch_preflight",
     "get_agent_class",
+    "refusal_reason",
     "resolve_dispatch_paused",
     "run_agent_for_task",
 ]

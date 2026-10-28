@@ -198,7 +198,7 @@ a product mock.
 
 - **Zero product-path test doubles.** The only mock switch is `CLAUDE_CLI_MOCK`, env-gated (default
   `false`, CI-only via `docker-compose.ci.yml`), and it labels its own output
-  (`status='partial'` + a note) rather than impersonating a model (`backend/app/agents/base_agent.py:576-604`).
+  (`status='partial'` + a note) rather than impersonating a model (`backend/app/agents/base_agent.py:1208-1235`).
 - The remaining hits are anti-mock comments, HTML `placeholder=` attributes, or explicitly labelled
   fallbacks (the generated site package's contact slots).
 - **No handler-less live control and no link to a missing route** across all 19 pages (W2's action
