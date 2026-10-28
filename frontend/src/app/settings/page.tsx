@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { CapabilitiesSection } from "@/components/capabilities/CapabilitiesSection";
+import { CompanyPlanSection } from "@/components/settings/CompanyPlanSection";
 import { DeepSeekKeySection } from "@/components/settings/DeepSeekKeySection";
 import { DataSection } from "@/components/settings/DataSection";
 import { EmailsSection, type NotifyKey } from "@/components/settings/EmailsSection";
@@ -37,13 +38,14 @@ import { Button, Switch, cn } from "@/components/ui";
  * page's tests can pin the nullable contract at COMPILE time: a fixture declaring `timezone: null`
  * stops compiling the moment one side drops the null.
  *
- * The server also serves `pricing_model`, `goals`, `kpis` and `github_repo`. `kpis` is edited by
- * `KpiEditor` (V23/L2), which owns its own single-key PUT (`{"kpis": {...}}` — the same
- * `exclude_unset` route); the other three fields still have no editor. This form owns exactly the
- * `FIELD_KEYS` drafts (the original fourteen fields plus the seven V15/W1 owner-profile drafts),
- * the six booleans and the two night-task numbers — and `PUT /config` copies only the provided
- * keys onto the row (`update_config` → `model_dump(exclude_unset=True)`), so fields rendered
- * elsewhere (or nowhere) keep their stored value.
+ * The server also serves `pricing_model`, `goals`, `kpis`, `github_repo` and `confirmed_idea`.
+ * `kpis` is edited by `KpiEditor` (V23/L2) and `pricing_model`/`goals`/`github_repo` by
+ * `CompanyPlanSection` (W2/F-01) — each through the same `exclude_unset` single-key PUT, while
+ * `confirmed_idea` is shown READ-ONLY there because the Planner owns that write. This form owns
+ * exactly the `FIELD_KEYS` drafts (the original fourteen fields plus the seven V15/W1 owner-profile
+ * drafts), the six booleans and the two night-task numbers — and `PUT /config` copies only the
+ * provided keys onto the row (`update_config` → `model_dump(exclude_unset=True)`), so fields
+ * rendered elsewhere (or nowhere) keep their stored value.
  */
 export type SettingsConfig = {
   name: string;
@@ -96,6 +98,15 @@ export type SettingsConfig = {
    *  through `KpiEditor` below the form card. Optional-and-nullable so pre-V23 fixtures keep
    *  compiling and an absent key reads as "nothing measured" (blank boxes, `—` in the note). */
   kpis?: Record<string, unknown> | null;
+  /** W2/F-01: the free-form agent-context fields the trial proved agents quote. `pricing_model`
+   *  and `goals` are `dict[str, Any] | null` and `confirmed_idea` is `dict[str, Any] | null` in
+   *  `backend/app/schemas/company.py`; `github_repo` is a nullable string. Optional here so the
+   *  pre-F-01 fixtures keep compiling — an absent key reads as the server's own null ("no
+   *  value"), never a fabricated empty object. */
+  pricing_model?: Record<string, unknown> | null;
+  goals?: Record<string, unknown> | null;
+  github_repo?: string | null;
+  confirmed_idea?: Record<string, unknown> | null;
 };
 
 /** The keys this form edits as TEXT boxes — the eleven original fields plus the notification
@@ -770,6 +781,15 @@ export default function SettingsPage() {
         onSaved={(nextKpis) =>
           setConfig((current) => (current === null ? current : { ...current, kpis: nextKpis }))
         }
+      />
+      {/* W2/F-01: the fields the agents read but the screen could not reach — pricing_model,
+          goals, github_repo (editable, single-key PUTs) and confirmed_idea (read-only, written by
+          the Planner). It fires NOTHING on mount: this page's single GET /config seeds it. */}
+      <CompanyPlanSection
+        pricingModel={config.pricing_model}
+        goals={config.goals}
+        githubRepo={config.github_repo}
+        confirmedIdea={config.confirmed_idea}
       />
       {/* V11/W4: the sections that finish the owner's control panel, BELOW the form card on
           purpose — the pinned u3/u7 suites assert the tab list is exactly the four above and that

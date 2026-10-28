@@ -12,18 +12,32 @@ WHAT THIS MODULE IS
 
       1. blank            -> bounded guidance answer
       2. `task <n>` / `#<n>`                 -> task lookup by id (read-only; safe first)
-      3. money/external stems                -> REFUSED `E_POLICY_DENIED` (never queued)
-      4. create cues ("create a task to ...", "run the finance agent", ...) -> create_task
-      5. finance stem                        -> finance summary answer
-      6. runs stem                           -> runs ledger head answer
-      7. report stem                         -> latest daily report answer
-      8. dashboard stem                      -> dashboard summary answer
-      9. everything else                     -> bounded capabilities answer
+      3. money/external ACTION               -> REFUSED `E_POLICY_DENIED` (never queued)
+      4. WORK REQUESTS ("research ...", "model the unit economics ...", "draft a brief ...",
+         "I need a report on ...")           -> create_task  (F-06 wave 2: filing, not an answer)
+      5. create cues ("create a task to ...", "run the finance agent", ...) -> create_task
+      6. finance stem                        -> finance summary answer
+      7. runs stem                           -> runs ledger head answer
+      8. report stem                         -> latest daily report answer
+      9. dashboard stem                      -> dashboard summary answer
+     10. everything else                     -> bounded capabilities answer
 
   The money check runs BEFORE the create branches on purpose: "create a task to pay X" must be
-  refused by name, never silently turned into a task.  The rules are deliberately dumb (a stem
-  match, not an NLU pass): the safe direction is over-refusal with an actionable message, and
-  the refusal text names how to ask about money instead ("finance summary").
+  refused by name, never silently turned into a task.  It matches money/external ACTIONS only
+  (`pay`, `buy`, `send ... to`, `refund`, `transfer`, ...): a mere TOPIC noun is not an action —
+  the wave-2 F-06 live repro was "model the unit economics ... payment fees ..." refused as if it
+  were a payment, so no task about fees could EVER be filed.  "payment(s)" therefore refuses only
+  inside an action phrase (`make a payment`, `payment to ...`), and a question/about-money shape
+  still reaches the finance answer below.
+
+  Work requests (rule 4) exist because the answer stems used to win over an owner ASKING FOR WORK:
+  "Research the US candle market ... estimated revenue ..." matched the finance stem `revenue` and
+  was answered with the money summary, never filed (F-06 repro 1).  A work request is an
+  IMPERATIVE (or "please/could you/I need" + work noun) that asks for an artifact; a question
+  ("what is our revenue this month") and a non-work imperative ("write me a poem about cats") are
+  still answered, never filed.  The rules are deliberately dumb (stem matches, not an NLU pass):
+  the safe direction for ambiguity is an ANSWER with the bounded capability text, and the refusal
+  text names how to ask about money instead ("finance summary").
 
 * The ANSWER branches read EXISTING surfaces only, one each: the dashboard summary statement
   (`app/api/v1/dashboard.py::_summary_statement` — imported, not re-implemented, because a
@@ -171,9 +185,18 @@ _LOOKUP_RE = re.compile(r"\btask\s*(?:number|no\.?|#)?\s*(\d{1,9})\b|#(\d{1,9})\
 
 #: Money / external-shaped stems (the brief's named set + its natural kin: transfers, refunds,
 #: deposits, purchases, wires).  Matched BEFORE the create branches — never silently queued.
+#:
+#: F-06 (wave 2): these are ACTION shapes, not topic nouns.  The old `\bpay(?:s|ing|ment|ments)?\b`
+#: refused "payment" wherever the word appeared, so "model the unit economics … payment fees …" was
+#: a money refusal and no task about fees could ever be filed (live repro).  `payment(s)` is now
+#: matched only inside an action phrase; `pay`/`paid` stay verbs.  The action semantics are
+#: unchanged: "pay the contractor", "make a payment", "payment to the vendor" all still refuse.
 _MONEY_EXTERNAL_RE = re.compile(
-    r"\bpay(?:s|ing|ment|ments)?\b"
+    r"\bpay(?:s|ing)?\b"
     r"|\bpaid\b"
+    r"|\b(?:make|send|issue|submit|process|authori[sz]e|initiate|schedule|wire)\s+"
+    r"(?:a|an|the|our|their)\s+payments?\b"
+    r"|\bpayments?\s+to\b"
     r"|\bbuy(?:s|ing)?\b"
     r"|\bpurchas(?:e|es|ed|ing)\b"
     r"|\bwithdraw(?:s|al|ing)?\b"
@@ -197,10 +220,50 @@ _CREATE_TASK_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: F-06 work-request cues: an owner ASKING FOR WORK (an artifact) instead of asking a question.
+#: The live repro was "Research the US candle market … estimated revenue …" — the finance answer
+#: stem `revenue` won, so the brief was never filed.  Two shapes:
+#:
+#:   1. a WORK VERB that starts the message (after an optional politeness/request prefix):
+#:      "Research the US candle market", "model the unit economics", "draft a launch brief";
+#:   2. a request phrase anywhere — "write/draft/prepare/put together a brief|report|plan|…" or
+#:      "I/we need a brief|report|plan|…".
+#:
+#: Deliberately narrow.  A message ending in "?" is a QUESTION and never a work request
+#: ("what is our revenue this month" stays a finance answer), and an imperative that asks for no
+#: artifact in this vocabulary stays a bounded answer ("write me a poem about cats" — the pinned
+#: fallback case).  Every match only becomes a PROPOSAL: the owner still confirms before a task
+#: exists (the confirm-token path), so a misread here files nothing by itself.
+_WORK_VERBS = (
+    r"research|analy[sz]e|investigate|draft|prepare|outline|compose|design|develop|build|launch"
+    r"|estimate|model|calculate|summari[sz]e|compare|propose|compile"
+)
+_WORK_NOUNS = (
+    r"brief|report|plan|analysis|strategy|summary|draft|copy|proposal|outline|memo|deck"
+    r"|checklist|budget|campaign|calendar|email|post|blog|landing\s+page|site"
+)
+_WORK_REQUEST_RE = re.compile(
+    rf"^(?:please\s+|kindly\s+)?"
+    rf"(?:could\s+you\s+|can\s+you\s+|would\s+you\s+|i\s+need\s+you\s+to\s+|i\s+want\s+you\s+to\s+"
+    rf"|let'?s\s+)?(?:{_WORK_VERBS})\b"
+    rf"|\b(?:write|draft|prepare|put\s+together|compile)\s+(?:me\s+|us\s+)?(?:a|an|the|our)\s+"
+    rf"(?:[\w-]+\s+){{0,3}}(?:{_WORK_NOUNS})\b"
+    rf"|\b(?:i|we)\s+(?:need|want)\s+(?:a|an|the|our)\s+(?:[\w-]+\s+){{0,3}}(?:{_WORK_NOUNS})\b",
+    re.IGNORECASE,
+)
+
+
+def _is_work_request(text: str) -> bool:
+    """True for a WORK ASK, False for a QUESTION (never file on a question mark)."""
+    if "?" in text:
+        return False
+    return _WORK_REQUEST_RE.search(text) is not None
+
+
 #: Answer stems, in match order: finance -> runs -> report -> dashboard (the generic one last).
 _FINANCE_RE = re.compile(
     r"\bfinance\b|\bmoney\b|\brevenue\b|\bmrr\b|\barr\b|\bcash\b|\bbalance\b|\bexpenses?\b"
-    r"|\bprofit\b|\bburn\b|\bstripe\b|\bmargin\b",
+    r"|\bprofit\b|\bburn\b|\bstripe\b|\bmargin\b|\bfees?\b|\bunit economics\b",
     re.IGNORECASE,
 )
 _RUNS_RE = re.compile(r"\bruns?\b|\bledger\b|\busage\b|\bagentruns\b", re.IGNORECASE)
@@ -215,13 +278,19 @@ _DASHBOARD_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: Agent routing keywords.  FIXED table order decides ties ("email the research team" -> the
-#: first table entry whose keyword matches), so routing is as deterministic as the rest.
+#: Agent routing keywords.  Scoring and tie order decide equally specific matches ("email the
+#: research team" -> "research" is longer, so `competitor_research`); F-06 added the specificity
+#: rule below so `plan` (4 chars) can never beat `social` (6) / `instagram` (9) on a social brief.
 #:
 #: F-04 (wave B2): each keyword is matched as a WORD (`_keyword_pattern`), never as a substring.
 #: The old `keyword in lowered` scan routed "find new leads" to `ads_management` (`ads` inside
 #: "leads") and every message that merely contained "plan" to `business_planning`.  Outreach
 #: gained `lead`/`leads` because that is whose work a lead is; `ads` no longer matches it.
+#:
+#: F-06 (wave 2): plural forms match too (`campaign` -> "campaigns"), and the FINANCE agent gained
+#: the cost words the candle trial actually needed ("fees", "unit economics", "expenses", "margin")
+#: — before that, "model the unit economics incl. payment fees" could not reach the finance agent
+#: even once the money refusal stopped swallowing it.
 _AGENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("competitor_research", ("research", "competitor", "market analysis", "niche")),
     ("business_planning", ("plan", "planning", "strategy", "roadmap", "business model")),
@@ -229,13 +298,28 @@ _AGENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
                       "youtube", "post to")),
     ("ads_management", ("ads", "ad campaign", "advertising", "campaign", "meta ads",
                         "google ads")),
-    ("email_outreach", ("email", "outreach", "cold outreach", "prospect", "prospects",
-                        "lead", "leads")),
+    ("email_outreach", ("email", "email campaign", "outreach", "cold outreach", "prospect",
+                        "prospects", "lead", "leads")),
     ("code_generation", ("code", "bug", "repo", "github", "deploy", "website",
                          "landing page")),
     ("customer_support", ("support", "customer", "inbox", "ticket", "complaint")),
-    ("finance", ("finance", "invoice", "revenue", "budget", "bookkeeping")),
+    ("finance", ("finance", "invoice", "revenue", "budget", "bookkeeping", "unit economics",
+                 "fees", "fee", "expenses", "expense", "margin", "cogs")),
 )
+
+
+def _plural_suffix(word: str) -> str:
+    """The regex suffix that also accepts the plural of ONE keyword word (F-06).
+
+    Only the LAST word of a multi-word keyword is pluralised ("ad campaign" -> "ad campaigns"),
+    and the suffix is grammar-shaped, not a blanket `(?:s|es)?`: a blanket suffix made `plan`
+    match "planes".  `-y` -> `-ies` (strategy/strategies), a sibilant -> `-es`, else `-s`.
+    """
+    if re.search(r"(?:s|x|z|ch|sh)$", word):
+        return r"(?:es)?"
+    if re.search(r"[^aeiou]y$", word):
+        return r"(?:ies)?"
+    return r"(?:s)?"
 
 
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
@@ -243,9 +327,13 @@ def _keyword_pattern(keyword: str) -> re.Pattern[str]:
 
     `\\bads\\b` does not fire inside "leads", and a multi-word keyword keeps its inner space
     (`market analysis` -> `market\\s+analysis`), so the table's meaning is the word's meaning.
+    F-06: the final word also matches its plural ("campaign"/"campaigns"), because the live repro
+    "three Meta ad campaigns" fell through to `orchestrator` on a word-anchored singular.
     """
-    body = r"\s+".join(re.escape(part) for part in keyword.split())
-    return re.compile(rf"\b{body}\b", re.IGNORECASE)
+    parts = keyword.split()
+    body = r"\s+".join(re.escape(part) for part in parts[:-1])
+    last = re.escape(parts[-1]) + _plural_suffix(parts[-1])
+    return re.compile(rf"\b{body}\s+{last}\b" if body else rf"\b{last}\b", re.IGNORECASE)
 
 
 #: The table, compiled ONCE at import: `(agent_type, ((keyword, pattern), ...))`, in tie order.
@@ -288,6 +376,12 @@ def classify_message(message: str) -> Classification:
     if money is not None:
         return Classification(kind="refused", rule="money_external", matched=money.group(0))
 
+    # F-06: a WORK ASK is filed, not answered.  It sits AFTER the money-action guard (so "create a
+    # task to pay..." still refuses) and BEFORE the create cues + answer stems (so "Research ...
+    # revenue ..." no longer answers with the finance summary).
+    if _is_work_request(text):
+        return Classification(kind="create_task", rule="work_request")
+
     if _CREATE_TASK_RE.search(text):
         return Classification(kind="create_task", rule="create_task")
 
@@ -325,9 +419,11 @@ def route_agent_decision(message: str) -> AgentRoute:
          (money/external) or ANSWERS (status/runs/finance/report/lookup/fallback) is not a task
          request and routes nowhere — `reason` names which case.  This is what stops "explain the
          plan" (a question, no task) from being filed as a `business_planning` task.
-      2. WORD MATCH SECOND.  The first table entry whose `\\b`-anchored keyword matches wins, in
-         the fixed tie order — so "find new leads" reaches `email_outreach` (the word "leads")
-         instead of `ads_management` (the substring "ads" of "leads").
+      2. WORD MATCH SECOND, MOST SPECIFIC WORD WINS.  The matched keyword's LENGTH is its
+         specificity; a tie keeps the fixed table order.  F-06: the launch brief "the launch social
+         plan: 10 Instagram captions …" used to file for `business_planning` because the table
+         order put `plan` (4 chars) ahead of `social` (6) — now the domain word wins and the file
+         order only breaks true ties ("email the research team": `research` beats `email`).
 
     `agent_type is None` with `understood=False` is an ANSWER, not a failure: the callers serve it
     as "I did not recognise a specific agent" instead of filing to a default in silence.
@@ -340,10 +436,15 @@ def route_agent_decision(message: str) -> AgentRoute:
         return AgentRoute(None, None, False, "refused")
     if verdict.kind != "create_task" and not _CREATE_TASK_RE.search(text):
         return AgentRoute(None, None, False, "not_a_task_request")
-    for agent_type, patterns in _AGENT_KEYWORD_PATTERNS:
+    best: tuple[int, int, str, str] | None = None  # (specificity, -table_order, agent, keyword)
+    for order, (agent_type, patterns) in enumerate(_AGENT_KEYWORD_PATTERNS):
         for keyword, pattern in patterns:
             if pattern.search(text):
-                return AgentRoute(agent_type, keyword, True, "keyword")
+                candidate = (len(keyword), -order, agent_type, keyword)
+                if best is None or candidate > best:
+                    best = candidate
+    if best is not None:
+        return AgentRoute(best[2], best[3], True, "keyword")
     return AgentRoute(None, None, False, "no_agent_keyword")
 
 
