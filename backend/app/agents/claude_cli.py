@@ -128,9 +128,19 @@ _RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 #: Environment variable NAMES that carry a credential.  The whitelist above already keeps them
 #: out of the inherited environment; this list closes the explicit-override hole (`env_overrides`
 #: / `extra_env`), because "no secret in the child" must not depend on the caller remembering it.
+#:
+#: URL-STYLE CREDENTIALS (SENTINEL, 2026-10-28): a connection string carries its password in the
+#: VALUE (`postgresql://user:pw@host/db`, `redis://:pw@host/0`, `https://key@host/…`,
+#: `amqp://user:pw@host//`) while its NAME carries none of the markers above, so `DATABASE_URL`,
+#: `REDIS_URL`, `*_DSN` and `*CONNECTION_STRING*` were forwarded verbatim — measured red leg:
+#: tests/unit/test_sentinel_agent_boundary.py (4 failed, "DID NOT RAISE", before this line).
+#: The postgres password IS a live secret in this deployment and the CLI child is the one process
+#: this module promises never sees it.  Re-measured after the fix: 5/5 green.
 _CREDENTIAL_ENV_MARKERS = (
     "API_KEY", "APIKEY", "API-KEY", "ACCESS_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD",
     "PRIVATE_KEY", "CREDENTIAL",
+    # URL/connection-string shapes: the secret rides in the value, not the name.
+    "DSN", "DATABASE_URL", "REDIS_URL", "CONNECTION_STRING", "BROKER_URL",
 )
 
 
