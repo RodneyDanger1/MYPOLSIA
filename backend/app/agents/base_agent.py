@@ -38,7 +38,7 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
-from app.agents import accounting, claude_cli, deepseek_runtime, structured_output
+from app.agents import accounting, claude_cli, deepseek_runtime, pricing, structured_output
 from app.agents.context_assembler import (
     DEFAULT_BUDGETS,
     AssembledContext,
@@ -57,7 +57,14 @@ from app.agents.policy_firewall import (
     unterminated_quarantine,
 )
 from app.config import settings
-from app.core.errors import E_AGENT_BAD_OUTPUT, E_CONFIG, ERROR_HINTS, PolsiaError
+from app.core.errors import (
+    E_ACTION_REPLAY_UNAVAILABLE,
+    E_AGENT_BAD_OUTPUT,
+    E_CONFIG,
+    E_VALIDATION,
+    ERROR_HINTS,
+    PolsiaError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -783,6 +790,49 @@ class BasePolsiaAgent(ABC):
     def _e_code_for(self, failure: structured_output.FailureCode) -> str:
         return structured_output.e_code_for(failure)
 
+    def _require_repair_input(self) -> None:
+        """F-23: refuse a repair re-prompt that would arrive with NOTHING to repair, by name.
+
+        The ladder's R1/R2 messages are corrective (`validator_error: … / schema: …`): they name the
+        defect, not the task. The runtime serves them by REPLAYING the run's stored exchange, which
+        is what puts the original task and the rejected answer back in front of the model. On a
+        resume MISS — no session id at all, or an id this process no longer holds (worker restart,
+        byte-budget eviction, a session minted by another provider) — the provider receives the
+        corrective text as the WHOLE task. Measured at HEAD: 2 messages, the original task absent;
+        the model can only answer with the nulls it was never asked to avoid.
+
+        So the miss is refused HERE, before the call, with the run's own final code
+        (`E_AGENT_BAD_OUTPUT`: the output is bad and cannot be repaired in place) and the reason in
+        the context. The CLI transport keeps its previous behaviour: it resumes from its own on-disk
+        sessions, so only a runtime that replays in-process can be asked this question.
+        """
+        if not self.session_id:
+            raise PolsiaError(
+                E_AGENT_BAD_OUTPUT,
+                (
+                    f"agent {self.agent_type}: the previous answer cannot be repaired — the run "
+                    "recorded no session, so a corrective re-prompt would arrive with no original "
+                    "task and no rejected answer to correct"
+                ),
+                how_to_fix=ERROR_HINTS[E_AGENT_BAD_OUTPUT],
+                context={"agent_type": self.agent_type, "repair_refused": "no_session"},
+            )
+        if deepseek_runtime.available() and not deepseek_runtime.has_session(self.session_id):
+            raise PolsiaError(
+                E_AGENT_BAD_OUTPUT,
+                (
+                    f"agent {self.agent_type}: the previous answer cannot be repaired — session "
+                    f"{self.session_id!r} is not replayable in this process (restart, eviction or "
+                    "foreign provider), so the corrective re-prompt would carry no original task"
+                ),
+                how_to_fix=ERROR_HINTS[E_AGENT_BAD_OUTPUT],
+                context={
+                    "agent_type": self.agent_type,
+                    "repair_refused": "resume_miss",
+                    "session_id": self.session_id,
+                },
+            )
+
     def _finish_call(
         self,
         result: claude_cli.InvokeResult,
@@ -813,6 +863,15 @@ class BasePolsiaAgent(ABC):
             )
         if failure is not None:
             e_code = self._e_code_for(failure)
+            # F-20: a FAILED run spent real tokens. `last_usage` was measured off the envelope two
+            # blocks above, and until this key existed the refusal was the ONLY carrier a failed run
+            # had — so 900 prompt / 120 completion tokens were recorded as nothing and the spend was
+            # invisible in `agent_runs`. The dict is `usage_metadata()`'s own (the same measured-or-
+            # absent rule: an unpriced finish says UNKNOWN, never 0), marked `is_error` with the
+            # refusal's code. It is ABSENT when nothing was measured, so a blind failure grows no
+            # fabricated accounting keys; `usage_from_outcome` is the reader a worker uses to hand it
+            # to the same persist path a success takes.
+            measured = self.measured_usage_on_failure(e_code)
             raise PolsiaError(
                 e_code,
                 f"agent {self.agent_type}: {failure.value} {detail}".strip(),
@@ -824,6 +883,8 @@ class BasePolsiaAgent(ABC):
                     "stderr": result.stderr.strip()[:500],
                     "stdout_head": result.stdout[:500],
                     "attempts": attempts,
+                    # F-20: what this failed run really spent (absent when unmeasured).
+                    **({"usage": measured} if measured else {}),
                     # F-13: the known effects ride the refusal.  A FAILED run stores no
                     # `agent_runs.output`, so this context is the ONLY carrier the worker can
                     # persist — and the next delivery replays it instead of repeating the run.
@@ -912,6 +973,10 @@ class BasePolsiaAgent(ABC):
             # A transport failure inside the ladder is terminal: it re-raises so the ORIGINAL
             # named code (E_CLI_MISSING / E_CLI_TIMEOUT / E_BUDGET_EXCEEDED) survives instead of
             # being flattened into a generic schema error.
+            if override is not None:
+                # F-23: a repair re-prompt is a CORRECTION of the previous answer, so it is only
+                # worth a provider call when the previous answer is still there to correct.
+                self._require_repair_input()
             raw = self._real_call(
                 override or prompt,
                 json_schema=json_schema,
@@ -1007,6 +1072,178 @@ class BasePolsiaAgent(ABC):
             meta["cli_session_id"] = usage.session_id or self.session_id
         return meta
 
+    def measured_usage_on_failure(self, error_code: str = "") -> dict[str, Any]:
+        """F-20: the accounting dict a FAILED run carries on its refusal (`{}` when unmeasured).
+
+        Same keys as a completed run's `usage_metadata()`, so the worker persists a failure through
+        the SAME `_apply_run_usage` path — `tokens_input`/`tokens_output`/`tokens_used`/`cost_usd`,
+        the `usage_json` audit copy, `num_turns`, `model` — with `is_error=True` and the refusal's
+        own `error_code`.
+
+        Pricing: a failure envelope carries the tokens it MEASURED but usually no cost key, so the
+        measured counts are priced here through the pinned table (`pricing.estimate_cost_usd`) and
+        stamped `cost_source="token_estimate"` + the pricing pin, exactly as a completed run's cost
+        is. When the table cannot price the model, or a count is missing, the cost stays UNKNOWN —
+        `cost_estimate_usd` is None and `cost_usd` is absent, never `0.0`: "unknown" and "free" are
+        different facts and a zero here would forge the cheaper one.
+        """
+        measured = self.last_usage
+        if measured is None:
+            return {}
+        if measured.input_tokens is None and measured.output_tokens is None:
+            # The envelope existed but carried NO measurement: there is nothing to persist, and a
+            # dict full of Nones would only add noise to a ledger row that must stay NULL.
+            return {}
+        meta = self.usage_metadata()
+        meta["is_error"] = True
+        meta["error_code"] = error_code
+        if "cost_usd" not in meta and measured.output_tokens is not None:
+            model = next(iter(measured.models), "")
+            hit = measured.cache_read_tokens
+            prompt = measured.input_tokens
+            if prompt is None:
+                miss = None
+            elif hit is None:
+                # Conservative completion (the same rule as the success path): an unreported hit
+                # side is billed at the MISS rate, which is always the more expensive side.
+                hit, miss = 0, prompt
+            else:
+                derived = prompt - hit
+                miss = derived if derived >= 0 else None
+            estimate = pricing.estimate_cost_usd(
+                model,
+                cache_hit_tokens=hit,
+                cache_miss_tokens=miss,
+                output_tokens=measured.output_tokens,
+            )
+            if estimate is not None:
+                meta["cost_usd"] = round(estimate, 6)
+                audit = dict(meta.get("usage_json") or {})
+                audit["cost_source"] = "token_estimate"
+                audit["pricing_version"] = pricing.PRICING_VERSION
+                meta["usage_json"] = audit
+        return meta
+
+    # ------------------------------------------------------------------ approved payload (B2-C2-R2)
+    def consume_approved_payload(
+        self,
+        task: dict[str, Any] | None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Perform the owner-APPROVED records the worker handed to this run (B2-C2-R2).
+
+        The worker already snapshots them onto the task under `APPROVED_PAYLOAD_KEY`
+        (`celery_app/tasks/agent_tasks.py`: `task_dict["approved_payload"] = replay`) and — until
+        this method existed — nothing on the AGENT side ever read that key: every resume performed
+        from the worker, so a performer whose send path lives in the agent could only ever be
+        replayed by a second copy of its own logic.
+
+        This is that consumer, at the seam every performer shares. Each record goes through the SAME
+        gate the live run uses (`request_side_effect`, which re-verifies the operator's token against
+        the STORED bytes and reads the run's published approval), and the measured channel counts
+        ride along so a cap is enforced against reality rather than a guess.
+
+        It returns the gate's ANSWERS — `gate_receipts` (one audit line per record) and
+        `approval_gate` (per fingerprint: decision, allowed, e_code, reason) — and sends nothing
+        itself: the provider call belongs to the performer, which merges these into its own result
+        and writes its own artifact. A non-resume run returns `{}`, byte-identical to before.
+
+        LIMIT, stated rather than implied (B2-C2-R2): no shipped performer CALLS this seam yet —
+        the call sites are `REQUESTS.md` lines against agent files this seat may not edit, and until
+        they land the worker's `_replay_approved_actions` remains the only resume performer. The
+        seam itself is real: real records, real token verification, real gate, real refusals.
+
+        Refusals are BY NAME and before any gate call for a record this agent may not perform:
+        a malformed record is `E_VALIDATION`; a record whose action class or channel is outside THIS
+        agent's capability is `E_ACTION_REPLAY_UNAVAILABLE` (fail closed — an approved payload for
+        another performer must never be performed by this one). An empty/absent payload returns `{}`
+        so a normal (non-resume) run is byte-identical to before.
+        """
+        records = approved_payload_records(task)
+        if not records:
+            return {}
+        from app.agents.policy_firewall import ActionClass
+        from app.agents.side_effects import request_side_effect
+
+        capability = self.capability
+        channels = set(capability.channels)
+        permitted_classes = set(capability.action_classes)
+        counts_by_channel = (context or {}).get("channel_sends") or {}
+        receipts: list[dict[str, Any]] = []
+        outcomes: dict[str, dict[str, Any]] = {}
+        for fingerprint, record in records.items():
+            raw_class = str(record.get("class") or "")
+            channel = str(record.get("channel") or "")
+            action = str(record.get("action") or "")
+            payload = record.get("payload")
+            try:
+                action_class = ActionClass(raw_class)
+            except ValueError:
+                raise PolsiaError(
+                    E_VALIDATION,
+                    f"agent {self.agent_type}: approved record {fingerprint} names action class "
+                    f"{raw_class!r}, which is not an action class",
+                    how_to_fix="re-park the task so the gate records the class again; nothing was performed",
+                    context={"fingerprint": fingerprint, "action_class": raw_class},
+                ) from None
+            if action_class not in permitted_classes or channel not in channels:
+                raise PolsiaError(
+                    E_ACTION_REPLAY_UNAVAILABLE,
+                    f"agent {self.agent_type}: approved record {fingerprint} is "
+                    f"{raw_class}/{channel!r}, outside this agent's capability — it cannot perform it",
+                    how_to_fix=(
+                        "resume the task with the agent that parked the action, or clear the "
+                        "approval and let the owning agent re-draft it; nothing was performed"
+                    ),
+                    context={
+                        "fingerprint": fingerprint,
+                        "action_class": raw_class,
+                        "channel": channel,
+                        "agent_type": self.agent_type,
+                    },
+                )
+            if not isinstance(payload, dict):
+                raise PolsiaError(
+                    E_VALIDATION,
+                    f"agent {self.agent_type}: approved record {fingerprint} carries no payload object",
+                    how_to_fix="re-park the task so the approved body is stored; nothing was performed",
+                    context={"fingerprint": fingerprint},
+                )
+            counts = counts_by_channel.get(channel) if isinstance(counts_by_channel, dict) else None
+            counts = counts if isinstance(counts, dict) else {}
+            outcome = request_side_effect(
+                self.agent_type,
+                action_class,
+                channel,
+                action=action,
+                value_usd=float(record.get("value_usd") or 0.0),
+                payload=dict(payload),
+                # Measured or None — the firewall refuses a configured cap it cannot verify.
+                sends_today=counts.get("today"),
+                sends_this_hour=counts.get("hour"),
+            )
+            receipts.append(
+                {
+                    "action": action,
+                    "ref": str(record.get("ref") or ""),
+                    "fingerprint": fingerprint,
+                    "channel": channel,
+                    # The GATE's answer, not a claim that anything left the building: this seam
+                    # authorises, the performer performs and records its own send.
+                    "gate_allowed": bool(outcome.allowed),
+                    **outcome.as_audit_record(),
+                }
+            )
+            outcomes[fingerprint] = {
+                "decision": str(outcome.decision.decision) if outcome.decision is not None else "",
+                "allowed": bool(outcome.allowed),
+                "requires_approval": bool(outcome.requires_approval),
+                "e_code": outcome.e_code,
+                "reason": outcome.reason,
+                "agent": self.agent_type,
+            }
+        return {"gate_receipts": receipts, "approval_gate": outcomes}
+
     def attach_run_meta(self, result: dict[str, Any], *, assembled: AssembledContext | None = None) -> dict[str, Any]:
         """Attach the captured usage/cost/session under the documented keys (additive: the agent's
         own payload keys are untouched)."""
@@ -1047,6 +1284,62 @@ class BasePolsiaAgent(ABC):
 # ---------------------------------------------------------------------------
 # module-level helpers used by the layers
 # ---------------------------------------------------------------------------
+
+#: B2-C2-R2: the frozen hand-off key the worker writes onto a resumed run's task
+#: (`celery_app/tasks/agent_tasks.py`: `task_dict["approved_payload"] = replay`). It carries
+#: `{fingerprint: record}` — the SAME records the task's metadata stores under
+#: `approved_payloads` — so the agent seam can perform what the owner approved without forking
+#: the metadata column. `consume_approved_payload` is its one reader.
+APPROVED_PAYLOAD_KEY = "approved_payload"
+
+
+def approved_payload_records(task: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The approved records on `task[APPROVED_PAYLOAD_KEY]`, validated; `{}` when absent.
+
+    Strict on purpose: a payload that is not a fingerprint -> record mapping is `E_VALIDATION`,
+    never silently dropped — an approval the run cannot read is an action the owner thinks was
+    performed. The empty/absent case is the ordinary (non-resume) run and returns `{}`.
+    """
+    raw = (task or {}).get(APPROVED_PAYLOAD_KEY)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"approved payload must be a fingerprint -> record mapping, got {type(raw).__name__}",
+            how_to_fix="re-park the task so the worker stores the approved records again",
+            context={"key": APPROVED_PAYLOAD_KEY},
+        )
+    records: dict[str, dict[str, Any]] = {}
+    for fingerprint, record in raw.items():
+        if not isinstance(record, dict):
+            raise PolsiaError(
+                E_VALIDATION,
+                f"approved record {fingerprint!r} is {type(record).__name__}, expected an object",
+                how_to_fix="re-park the task so the worker stores the approved records again",
+                context={"key": APPROVED_PAYLOAD_KEY, "fingerprint": str(fingerprint)},
+            )
+        records[str(fingerprint)] = record
+    return records
+
+
+def usage_from_outcome(
+    result: dict[str, Any] | None, failure: BaseException | None
+) -> dict[str, Any]:
+    """F-20: the accounting dict to persist for `(result, failure)` — `{}` when nothing measured.
+
+    A COMPLETED run carries its own keys on `result`, so it wins. A FAILED run has no result at all
+    (`finish_agent_run(output=None)`), and its measured usage rides the refusal's context; this is
+    the ONE reader for that, mirroring `actions_from_outcome`. Hand the return value to
+    `_apply_run_usage` and a failed run's tokens — and, when the provider reported enough to price
+    them, its cost — stop disappearing from the ledger.
+    """
+    if isinstance(result, dict) and result:
+        return result
+    context = getattr(failure, "context", None)
+    usage = context.get("usage") if isinstance(context, dict) else None
+    return usage if isinstance(usage, dict) else {}
+
 
 def business_state_lines(kpis: dict, goals: Any) -> str:
     lines = ["KPIs:"]

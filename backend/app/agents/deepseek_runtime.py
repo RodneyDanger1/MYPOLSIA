@@ -239,11 +239,21 @@ def available() -> bool:
 
 # ── tool calling (V12 W-A: the loop against the frozen tool-registry seam) ───────────────────
 
-#: The loop's bound: how many provider calls ONE logical run may make. The model gets its tool
-#: turns here; a reply that STILL asks for tools at the bound refuses the run BY NAME
+#: The loop's DEFAULT bound: how many provider calls ONE logical run may make. The model gets its
+#: tool turns here; a reply that STILL asks for tools at the bound refuses the run BY NAME
 #: (`E_TOOL_LOOP`) instead of looping forever or letting a half-finished conversation pass as an
 #: answer.
+#:
+#: F-05: the bound is a SETTING (`deepseek_tool_loop_max_iterations`), not a constant — a run that
+#: honestly needs five tool turns was truncated by a number nobody could raise. This value stays the
+#: default AND the value used when the setting is absent (a deployment that has not configured one
+#: keeps today's behaviour byte for byte). Every read goes through `_tool_loop_bound()`, which clamps
+#: to the documented range below: one provider call is the floor (a bound of 0 would mean "refuse
+#: every run that needs a tool"), and `TOOL_LOOP_MAX_ITERATIONS_CAP` is the ceiling — each extra
+#: call is another round trip, and an unbounded loop is the hang this bound exists to prevent.
 TOOL_LOOP_MAX_ITERATIONS = 4
+TOOL_LOOP_MIN_ITERATIONS = 1
+TOOL_LOOP_MAX_ITERATIONS_CAP = 12
 #: The run record carries tool NAMES only — never arguments and never result bodies, which carry
 #: untrusted (fetched) content. Truncated per name and capped per run so a provider cannot
 #: inflate the envelope or a log line with one absurd name.
@@ -251,6 +261,28 @@ TOOL_NAME_MAX_CHARS = 80
 TOOL_NAMES_MAX = 32
 #: Bound on the runtime's OWN refusal payloads; a registry payload passes through as it is.
 TOOL_RESULT_TEXT_LIMIT = 1000
+
+
+def _tool_loop_bound() -> int:
+    """F-05: the tool loop's provider-call bound, from configuration, clamped.
+
+    `deepseek_tool_loop_max_iterations` is the setting; absent (or a value that is not an int) falls
+    back to `TOOL_LOOP_MAX_ITERATIONS`, the shipped default. The result is clamped to
+    [`TOOL_LOOP_MIN_ITERATIONS`, `TOOL_LOOP_MAX_ITERATIONS_CAP`]: a configured 0 would refuse every
+    run that needs a tool at all, and a configured 10_000 is an unbounded loop wearing a number.
+    A clamp is NEVER silent about being one — the caller logs the effective value on the refusal
+    path, and `_tool_loop_bound` is the single reader, so the pin in the tests is the whole story.
+    """
+    raw = _setting("deepseek_tool_loop_max_iterations", TOOL_LOOP_MAX_ITERATIONS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "deepseek runtime: deepseek_tool_loop_max_iterations=%r is not an integer; using the "
+            "default %d", raw, TOOL_LOOP_MAX_ITERATIONS,
+        )
+        value = TOOL_LOOP_MAX_ITERATIONS
+    return max(TOOL_LOOP_MIN_ITERATIONS, min(TOOL_LOOP_MAX_ITERATIONS_CAP, value))
 
 
 # ── vision input (V25/L1) ────────────────────────────────────────────────────────────────────
@@ -1131,6 +1163,22 @@ def plan_from_invocation(inv: claude_cli.Invocation) -> InvocationPlan:
 
 # ── session replay (bounded, in-process) ─────────────────────────────────────────────────────
 
+def has_session(session_id: str | None) -> bool:
+    """F-23: is `session_id` replayable in THIS process right now?
+
+    The repair ladder's R1 re-prompt is a correction of the previous answer; the runtime serves it
+    by replaying the stored exchange. When the id is unknown (worker restart, eviction under the
+    byte budget, a session minted by another provider) `_session_messages` logs and runs FRESH — so
+    the provider would receive the corrective text as the WHOLE task and answer from nothing. This
+    predicate is how a caller asks BEFORE paying for that call. It never mutates the store or the
+    LRU ordering: a question must not change the answer.
+    """
+    if not session_id:
+        return False
+    with _SESSION_LOCK:
+        return session_id in _SESSIONS
+
+
 def _session_messages(session_id: str | None) -> list[dict[str, Any]] | None:
     """The stored exchange for `session_id`, or None (unknown -> honest fresh call, logged)."""
     if not session_id:
@@ -1328,9 +1376,29 @@ def _messages_for(
     return messages
 
 
-def _build_body(plan: InvocationPlan, *, model: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_body(
+    plan: InvocationPlan,
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict] | None = None,
+) -> dict[str, Any]:
     """The exact request body; `messages` is resolved ONCE by the caller (replay included), so
-    the exchange stored after success is byte-identical to the one actually sent."""
+    the exchange stored after success is byte-identical to the one actually sent.
+
+    F-22 — the body is a function of the CHANNEL. `response_format={"type":"json_object"}` and a
+    `tools` array are mutually exclusive BY CONSTRUCTION: a tool-enabled request never carries
+    `response_format`, and a structured request never carries `tools`. Sourcing, stated honestly:
+    the vendor page (https://api-docs.deepseek.com/api/create-chat-completion, fetched 2026-10-25)
+    documents the two fields INDEPENDENTLY and does NOT state that they compose — an explicit
+    rejection statement for the pair is UNVERIFIED, so this code does not rely on one. What the
+    page DOES require is that JSON output also be instructed in a system/user message; that is why
+    the instruction (below) must survive the omission, and it does.
+
+    The JSON contract is not lost on a tool run: `_messages_for` puts the schema instruction in the
+    system turn whenever `plan.json_schema` is set, which is the instruction the provider's own docs
+    require in every JSON request. `response_format` is the belt, not the braces.
+    """
     effort = _reasoning_effort()
     body: dict[str, Any] = {
         "model": model,
@@ -1347,7 +1415,9 @@ def _build_body(plan: InvocationPlan, *, model: str, messages: list[dict[str, An
     else:
         body["thinking"] = {"type": "enabled"}
         body["reasoning_effort"] = effort
-    if plan.json_schema is not None:
+    if tools:
+        body["tools"] = list(tools)
+    elif plan.json_schema is not None:
         body["response_format"] = {"type": "json_object"}
     return body
 
@@ -1508,9 +1578,7 @@ def invoke(
         replay=_session_messages(plan.resume_session_id),
         image_parts=_image_parts(images),
     )
-    body = _build_body(plan, model=model_id, messages=messages)
-    if tool_specs:
-        body["tools"] = tool_specs
+    body = _build_body(plan, model=model_id, messages=messages, tools=tool_specs or None)
     headers = _request_headers(key)
     timeout = httpx.Timeout(timeout_s)
 
@@ -1526,6 +1594,9 @@ def invoke(
     journal: list[dict[str, Any]] = []
     stored_actions = replay_index(replay)
     provider_calls = 0
+    # F-05: the bound is read ONCE per run (a setting that changes mid-run must not move the
+    # finish line under the loop), clamped by `_tool_loop_bound`.
+    loop_bound = _tool_loop_bound()
     # F-33 (S2-R2): the per-run tool budget had NO producer — `begin_run_tool_budget()` existed and
     # was called ONLY by tests, so every real run read `None`: nothing was metered, and this run's
     # own tool-path sends were never charged against a channel cap.  ONE budget is opened for this
@@ -1583,7 +1654,7 @@ def invoke(
                         how_to_fix="check for a proxy/portal in front of api.deepseek.com; retry once, then report",
                         context={"url": url, "runtime": "deepseek"},
                     )
-                if provider_calls >= TOOL_LOOP_MAX_ITERATIONS:
+                if provider_calls >= loop_bound:
                     # The bound is reached WITH another tool request pending: refuse by name. The
                     # capped turn's calls are NOT executed — nothing ran for them, so nothing may
                     # be reported as if it had.
@@ -1591,14 +1662,14 @@ def invoke(
                     logger.warning(
                         "deepseek runtime: tool loop bound (%d provider calls) reached; refusing "
                         "by name, tools requested in the last turn: %s",
-                        TOOL_LOOP_MAX_ITERATIONS,
+                        loop_bound,
                         ", ".join(requested) or "none named",
                     )
                     return _failure_result(
                         subtype="error_tool_loop",
                         detail=(
                             f"E_TOOL_LOOP: the model was still requesting tools after "
-                            f"{provider_calls} provider calls (bound {TOOL_LOOP_MAX_ITERATIONS}); "
+                            f"{provider_calls} provider calls (bound {loop_bound}); "
                             f"the last turn asked for "
                             f"{', '.join(requested) if requested else 'an unnamed tool'}. The run "
                             "is refused by name — no final answer exists, and none may be "
@@ -1774,11 +1845,14 @@ __all__ = [
     "SESSION_STORE_LIMIT",
     "SESSION_STORE_MAX_BYTES",
     "TOOL_LOOP_MAX_ITERATIONS",
+    "TOOL_LOOP_MAX_ITERATIONS_CAP",
+    "TOOL_LOOP_MIN_ITERATIONS",
     "VISION_ALLOWED_MIME",
     "VISION_MAX_IMAGE_BYTES",
     "VISION_MAX_TOTAL_BYTES",
     "available",
     "call_key",
+    "has_session",
     "invoke",
     "plan_from_invocation",
     "replay_index",

@@ -32,8 +32,9 @@ Your job this run: find what the named competitors (or the closest players in th
 doing, and report it with enough provenance that a human could re-check it in one click.
 
 Research rules:
-- Use WebSearch to find candidates and WebFetch to read the pages that matter (pricing pages,
-  positioning pages, launch posts, funding notes). Record every URL you actually used.
+- Use your web search tool to find candidates and your page-fetch tool to read the pages that
+  matter (pricing pages, positioning pages, launch posts, funding notes). Record every URL you
+  actually used.
 - Structure what you found: `positioning` (how they describe themselves, in their words),
   `strengths`, `weaknesses`, `pricing_info` (a JSON object with the tiers and prices you saw, or {}
   when the page does not say).
@@ -64,8 +65,8 @@ RESEARCH_FETCH_BUDGET = 4
 #: The prompt the agent actually runs with: the rules above plus the budget line (V8/C5).
 ROLE = _ROLE + f"""
 
-Research budget: use at most {RESEARCH_FETCH_BUDGET} research fetches per task (a WebSearch or a
-WebFetch each counts as one), and list every search you actually ran in `search_queries` — the
+Research budget: use at most {RESEARCH_FETCH_BUDGET} research fetches per task (a search or a
+fetch each counts as one), and list every search you actually ran in `search_queries` — the
 fetches recorded on this run are checked against this budget after the run."""
 
 

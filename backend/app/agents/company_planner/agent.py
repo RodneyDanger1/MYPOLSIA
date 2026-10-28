@@ -63,7 +63,7 @@ Return between 3 and 5 candidates, best-first, and list open questions in `notes
 #: honors the SAME V8/C5 budget constant, quoted from the same import.
 ROLE = _ROLE + f"""
 
-Research budget: your research was fetched for you under the fleet's research budget — at most {RESEARCH_FETCH_BUDGET} research fetches (a WebSearch or a WebFetch each counts as one). Cite from the research block's recorded fetches only; never ask for or attempt fetches of your own."""
+Research budget: your research was fetched for you under the fleet's research budget — at most {RESEARCH_FETCH_BUDGET} research fetches (a search or a fetch each counts as one). Cite from the research block's recorded fetches only; never ask for or attempt fetches of your own."""
 
 
 class CompanyPlannerAgent(BasePolsiaAgent):
