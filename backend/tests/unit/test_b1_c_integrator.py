@@ -300,7 +300,7 @@ def test_the_only_provider_call_in_notification_service_sits_behind_the_gate():
         for child in ast.iter_child_nodes(node):
             parent[child] = node
     owner = parent[sends[0]]
-    while owner is not None and not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    while owner is not None and not isinstance(owner, ast.FunctionDef | ast.AsyncFunctionDef):
         owner = parent.get(owner)
     assert isinstance(owner, ast.AsyncFunctionDef) and owner.name == "_gated_send", (
         "the provider call must live in `_gated_send`, the module's single gated send"

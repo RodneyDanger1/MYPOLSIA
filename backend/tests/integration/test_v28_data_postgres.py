@@ -23,8 +23,10 @@ from alembic import command
 from alembic import config as alembic_config
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
-HEAD = "0017"
-EXPECTED_TABLE_COUNT = 25
+# W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`), table count
+# 25 -> 26 (the single-use approval-token ledger).  PG-ONLY: not executed on this host.
+HEAD = "0018"
+EXPECTED_TABLE_COUNT = 26
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -97,13 +99,14 @@ async def _tables(url: str) -> tuple[str, set[str]]:
         await engine.dispose()
 
 
-async def test_the_pg_chain_from_zero_reaches_0017_with_25_tables(pg_url) -> None:
+async def test_the_pg_chain_from_zero_reaches_the_head_with_26_tables(pg_url) -> None:
     version, tables = await _tables(pg_url)
     assert version == HEAD
-    assert len(tables) == EXPECTED_TABLE_COUNT, f"expected 25 tables, found {sorted(tables)}"
+    assert len(tables) == EXPECTED_TABLE_COUNT, (
+        f"expected {EXPECTED_TABLE_COUNT} tables, found {sorted(tables)}")
     assert {"task_attachments", "vision_descriptions", "agent_runs", "email_logs",
-            "invoice_dunning_claim_results"} <= tables, (
-        "0017 (DT-05): the append-only dunning finalization table is part of the chain")
+            "invoice_dunning_claim_results", "consumed_approvals"} <= tables, (
+        "0017 (DT-05) and 0018 (the single-use approval ledger) are part of the chain")
 
 
 async def test_the_pg_cascades_match_the_sqlite_chain(pg_url) -> None:

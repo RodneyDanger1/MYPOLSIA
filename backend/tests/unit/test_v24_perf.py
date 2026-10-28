@@ -1,3 +1,6 @@
+# ruff: noqa: I001 -- TWO-PIN CONFLICT (documented, scoped): ruff 0.8.4 (CI pin) and 0.17.0
+# (venv pin) classify alembic imports into different isort sections, so no single order
+# satisfies both. Reconcile via the F-54 pin decision; this is the only I001 suppression.
 """V24/L6 — backend hardening pins (RED-first lane).
 
 Every test here is built on a REAL defect reproduced in this lane's receipt
@@ -15,11 +18,11 @@ import pathlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-import alembic.config as alembic_config
 import pytest
 from sqlalchemy import event, select, text
 
 from alembic import command
+from alembic import config as alembic_config
 from app.models.report import ActivityLog, DailyReport
 from app.models.support import SupportInboxItem
 from app.models.task import Task
@@ -406,8 +409,9 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
     # V25: the head moved 0012 -> 0014; V26/L6: 0014 -> 0015; V27/L4: 0015 -> 0016.
     # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
     # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05).
+    # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`).
     # V24's 0012 -> 0011 leg is unchanged and still asserted below.
-    assert heads == ["0017"], f"expected a single head (0017), found {heads}"
+    assert heads == ["0018"], f"expected a single head (0018), found {heads}"
     assert graph["0012"] == "0011"
     assert (
         graph["0013"] == "0012"
@@ -415,4 +419,5 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         and graph["0015"] == "0014"
         and graph["0016"] == "0015"
         and graph["0017"] == "0016"
+        and graph["0018"] == "0017"
     )

@@ -1,3 +1,6 @@
+# ruff: noqa: I001 -- TWO-PIN CONFLICT (documented, scoped): ruff 0.8.4 (CI pin) and 0.17.0
+# (venv pin) classify alembic imports into different isort sections, so no single order
+# satisfies both. Reconcile via the F-54 pin decision; this is the only I001 suppression.
 """V25 / L1 — vision input: task image attachments, storage, HTTP surface, and the model request.
 
 RED-first at base 7faa6dd: `app.services.task_attachment_service`, the `task_attachments` table,
@@ -203,7 +206,8 @@ def test_migration_0013_creates_the_table_cascade_and_index_then_round_trips(mon
         # V26/L6: head 0014 -> 0015; V27/L4: 0015 -> 0016 (`0016_vision_descriptions.py`).
         # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
         # (`0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05). Old: "0016".
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0017"
+        # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`).
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='task_attachments'"
         ).fetchone() is not None

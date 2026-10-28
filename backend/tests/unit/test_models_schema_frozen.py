@@ -192,6 +192,19 @@ is a new row and the claim activity row stays `pending` forever.  No other row c
 canonical sha256 `0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39` ->
 `e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09` (measured by this file's own
 `test_create_all_ddl_sha256_is_frozen`).
+
+RE-PINNED DELIBERATELY (W2 SENTINEL+TRUTHSEEKER, 2026-10-28; migration `0018`): ONE new table,
+`consumed_approvals` (25 tables -> 26) — the single-use approval-token ledger sentinel's
+enforcement writes.  `token_id` VARCHAR(64) NOT NULL UNIQUE (`uq_consumed_approvals_token_id`,
+sha256 hex of the token's signature body — the raw token is never stored), `jti` VARCHAR(32) NULL
+UNIQUE (`uq_consumed_approvals_jti`; one nonce identifies one mint, NULL only for a legacy
+nonce-less token and NULLs do not collide), `action_fingerprint` VARCHAR(64) NOT NULL
+(`ix_consumed_approvals_fingerprint`), `consumed_at` DATETIME NOT NULL server default
+now() (`ix_consumed_approvals_consumed_at`), `consumed_by` VARCHAR(120) NOT NULL python default
+`''`.  No pre-existing table or row moved.  Old canonical sha256
+`e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09` ->
+`2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035` (measured by this file's own
+`test_create_all_ddl_sha256_is_frozen`; the value is re-pinned from that measurement, not guessed).
 """
 from __future__ import annotations
 
@@ -214,7 +227,11 @@ MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 # 0fda7a89aa809db76a6cec38025986dc3dd68ff958ec2df72259940184b8af39 ->
 # e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09 (the seven
 # revenue_snapshots DEFAULT 0s gone + the new append-only invoice_dunning_claim_results table).
-DDL_SHA256 = "e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09"
+# W2 DELIBERATE RE-PIN (2026-10-28; migration 0018): old
+# e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09 ->
+# 2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035 (the new single-use
+# consumed_approvals ledger: token_id UNIQUE, jti UNIQUE, three indexes).
+DDL_SHA256 = "2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -226,6 +243,8 @@ FROZEN_TABLE_NAMES = (
     'chat_messages',
     'company_config',
     'competitors',
+    # W2 (0018): the single-use approval-token ledger (table 26) — kept by the data wipe.
+    'consumed_approvals',
     'daily_reports',
     'email_campaigns',
     'email_logs',
@@ -394,6 +413,17 @@ FROZEN_COLUMNS = {
         ('weaknesses', 'JSON', True, '', '', '', False),
         ('last_researched', 'DATETIME', True, '', '', '', False),
         ('created_at', 'DATETIME', True, '', 'now()', '', False),
+    ),
+    # W2 (0018): the single-use approval-token ledger. `token_id` is the UNIQUE identity (sha256
+    # of the token's signature body — the raw bearer token is never stored); `jti` is the nonce,
+    # UNIQUE as well (one nonce = one mint) and NULL only for a legacy nonce-less token.
+    'consumed_approvals': (
+        ('id', 'INTEGER', False, '', '', '', False),
+        ('token_id', 'VARCHAR(64)', False, '', '', '', True),
+        ('jti', 'VARCHAR(32)', True, '', '', 'uq_consumed_approvals_jti', True),
+        ('action_fingerprint', 'VARCHAR(64)', False, '', '', 'ix_consumed_approvals_fingerprint', False),
+        ('consumed_at', 'DATETIME', False, '', 'now()', 'ix_consumed_approvals_consumed_at', False),
+        ('consumed_by', 'VARCHAR(120)', False, "''", '', '', False),
     ),
     'daily_reports': (
         ('id', 'INTEGER', False, '', '', '', False),
@@ -626,6 +656,8 @@ FROZEN_COLUMNS = {
 }
 
 FROZEN_UNIQUE_CONSTRAINTS = {
+    # W2 (0018): the approval token's ledger identity — a second spend of ONE token is refused.
+    'consumed_approvals.token_id',
     'daily_reports.report_date',
     # W4/DT-05 (0017): an append-only ledger that finalized one claim twice would be an
     # ambiguous fact — the unique is the "at most once" law at the DDL level.
@@ -642,6 +674,11 @@ FROZEN_UNIQUE_CONSTRAINTS = {
 
 # (name, columns, unique)
 FROZEN_INDEXES = {
+    # W2 (0018): the approval ledger's three reads — the nonce identity (UNIQUE), the per-action
+    # audit read and the retention read.
+    ('uq_consumed_approvals_jti', ('jti',), True),
+    ('ix_consumed_approvals_fingerprint', ('action_fingerprint',), False),
+    ('ix_consumed_approvals_consumed_at', ('consumed_at',), False),
     ('ix_agent_runs_agent_type', ('agent_type',), False),
     ('ix_agent_runs_started_at', ('started_at',), False),
     ('ix_agent_runs_task_id', ('task_id',), False),

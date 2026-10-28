@@ -1,3 +1,6 @@
+# ruff: noqa: I001 -- TWO-PIN CONFLICT (documented, scoped): ruff 0.8.4 (CI pin) and 0.17.0
+# (venv pin) classify alembic imports into different isort sections, so no single order
+# satisfies both. Reconcile via the F-54 pin decision; this is the only I001 suppression.
 """V27 / L4 — vision memory: migration 0016, the sha256 cache and the history route.
 
 RED-first at base `d6bd944`: `backend/app/models/vision.py` does not exist (this module fails at
@@ -270,14 +273,17 @@ def _revision_graph() -> dict[str, str | None]:
     return graph
 
 
-def test_migration_0016_chains_after_0015_and_the_single_head_is_0017():
+def test_migration_0016_chains_after_0015_and_the_single_head_is_0018():
     graph = _revision_graph()
     heads = sorted(r for r in graph if r not in set(graph.values()))
     # W4/F3 DELIBERATE RE-PIN (2026-10-28): the chain head moved 0016 -> 0017
     # (`0017_truth_defaults_and_dunning_results.py`, W4 DT-01 + DT-05).  Old assertion:
     # heads == ["0016"].  0016's own V27 assertion — it chains directly after 0015 — is
     # unchanged and still asserted (plus 0017 now chains directly after 0016).
-    assert heads == ["0017"], f"expected a single head (0017), found {heads}"
+    # W2 DELIBERATE RE-PIN (2026-10-28): the chain head moved 0017 -> 0018
+    # (`0018_consumed_approvals.py`, the single-use approval ledger).
+    assert heads == ["0018"], f"expected a single head (0018), found {heads}"
+    assert graph["0018"] == "0017", "W2's approval-ledger revision must chain directly after 0017"
     assert graph["0017"] == "0016", "W4's DT-01/DT-05 revision must chain directly after 0016"
     assert graph["0016"] == "0015", "V27/L4's migration must chain directly after 0015"
 
@@ -393,7 +399,9 @@ def test_migration_0016_round_trips_creates_both_cascades_and_both_indexes(monke
         # W4/F3 DELIBERATE RE-PIN (2026-10-28): `upgrade head` now lands at 0017 (W4's DT-01 +
         # DT-05 revision chains directly after 0016).  Old assertion: "0016".  The 0016 table
         # itself is still asserted present below — 0017 is additive for this table.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0017"
+        # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`,
+        # additive: the approval ledger does not touch this table).
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='vision_descriptions'"
         ).fetchone() is not None

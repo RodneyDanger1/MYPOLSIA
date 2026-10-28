@@ -240,7 +240,10 @@ def test_migration_0017_round_trips_and_preserves_rows_on_sqlite(monkeypatch, tm
     assert _money_default_count(str(db_path)) == 0
     con = sqlite3.connect(str(db_path))
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0017"
+        # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`,
+        # additive).  This test still proves 0017's own effects below, and now also proves the
+        # 0018 upgrade applies cleanly on top of a database that already carries rows.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
         assert con.execute(
             "SELECT mrr_cents, arr_cents, stripe_balance_cents FROM revenue_snapshots "
             "WHERE snapshot_date = '2026-10-22'"
@@ -253,6 +256,10 @@ def test_migration_0017_round_trips_and_preserves_rows_on_sqlite(monkeypatch, tm
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
             "AND name='invoice_dunning_claim_results'"
         ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='consumed_approvals'"
+        ).fetchone()[0] == 1, "0018's approval ledger must be created by upgrade head"
     finally:
         con.close()
 
@@ -268,6 +275,10 @@ def test_migration_0017_round_trips_and_preserves_rows_on_sqlite(monkeypatch, tm
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
             "AND name='invoice_dunning_claim_results'"
         ).fetchone()[0] == 0, "downgrade must drop the DT-05 table"
+        assert con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='consumed_approvals'"
+        ).fetchone()[0] == 0, "downgrade must drop the W2 approval ledger"
     finally:
         con.close()
 
@@ -275,11 +286,13 @@ def test_migration_0017_round_trips_and_preserves_rows_on_sqlite(monkeypatch, tm
     assert _money_default_count(str(db_path)) == 0
 
 
-def test_the_chain_has_a_single_head_at_0017():
-    """R5: W4 owns the `0017` slot and nothing forks the chain."""
+def test_the_chain_has_a_single_head_at_0018():
+    """R5: 0017 owns the W4 slots and 0018 the W2 approval ledger; nothing forks the chain."""
     from alembic.config import Config as AlembicConfig
     from alembic.script import ScriptDirectory
 
     cfg = AlembicConfig()
     cfg.set_main_option("script_location", "alembic")
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["0017"]
+    # W2 DELIBERATE RE-PIN (2026-10-28): old assertion `heads == ["0017"]`; head moved to 0018
+    # (`0018_consumed_approvals.py`, additive).  The single-head LAW is unchanged.
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["0018"]

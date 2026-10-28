@@ -128,7 +128,7 @@ def _module_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
     for node in tree.body:
         targets: list[ast.expr] = []

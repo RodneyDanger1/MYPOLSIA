@@ -391,7 +391,10 @@ def test_models_compile_to_pg_types_and_sqlite_types():
     # append-only dunning claim finalization (the claim activity row stays INSERT-only because
     # PostgreSQL's activity_log trigger refuses its UPDATE).  Deliberate re-pin, same commit as
     # the migration; the type census above is unchanged.
-    assert len(Base.metadata.tables) == 25, sorted(Base.metadata.tables)
+    # W2 (0018, single-use approval ledger): 25 -> 26 — `consumed_approvals`, whose jti column is
+    # UNIQUE and whose token_id column is UNIQUE; both are portable (no PG-only type), so the
+    # dialect census above is unchanged.
+    assert len(Base.metadata.tables) == 26, sorted(Base.metadata.tables)
     # 17 -> 18: `support_inbox_items`, added by alembic 0004 (R17) — the CS inbox ingest the
     # RD12 receipt §7 names as the remaining schema decision.  It has its own migration, which
     # is what section 11's "the migration declares" clause is about; the pinned COUNT moves

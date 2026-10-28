@@ -1,4 +1,7 @@
-"""V28/L5 — the migration chain from ZERO: fresh SQLite file → `0017` with all 25 tables.
+# ruff: noqa: I001 -- TWO-PIN CONFLICT (documented, scoped): ruff 0.8.4 (CI pin) and 0.17.0
+# (venv pin) classify alembic imports into different isort sections, so no single order
+# satisfies both. Reconcile via the F-54 pin decision; this is the only I001 suppression.
+"""V28/L5 — the migration chain from ZERO: fresh SQLite file → `0018` with all 26 tables.
 
 Why this file exists
 --------------------
@@ -10,9 +13,9 @@ the API expect.  A chain that only works when a previous database exists is not 
 
 What is pinned
 --------------
-1. from an empty file the chain reaches the single head `0017` and creates exactly the 25 ORM
+1. from an empty file the chain reaches the single head `0018` and creates exactly the 26 ORM
    tables (no extra table, no missing table), with `PRAGMA foreign_key_check` empty;
-2. the revision graph is one line of 17 revisions ending at `0017` — no branch, no orphan;
+2. the revision graph is one line of 18 revisions ending at `0018` — no branch, no orphan;
 3. a second `upgrade head` on the already-migrated database is a NO-OP (schema bytes unchanged);
 4. the ads money columns the chain ships carry NO server default, which is what makes "absent"
    representable at rest (the 0014/0015 law).
@@ -21,6 +24,10 @@ W4/F3 DELIBERATE RE-PIN (2026-10-28; DT-01 + DT-05, migration 0017): old head `0
 old revision count 16 → 17, old table count 24 → 25 (`invoice_dunning_claim_results`, the
 append-only dunning claim ledger).  The four laws above are unchanged; the 0017 revision is
 additive except for DT-01's deliberate drop of the seven fabricated server defaults.
+
+W2 DELIBERATE RE-PIN (2026-10-28; migration 0018): old head `0017` → `0018`, old revision count
+17 → 18, old table count 25 → 26 (`consumed_approvals`, the single-use approval-token ledger).
+The four laws above are unchanged; 0018 is purely additive (one new table + its three indexes).
 """
 from __future__ import annotations
 
@@ -36,11 +43,13 @@ from alembic import config as alembic_config
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017 (migration
 # `0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05), 16 -> 17 revisions.
-HEAD = "0017"
-REVISION_COUNT = 17
+# W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`),
+# 17 -> 18 revisions.
+HEAD = "0018"
+REVISION_COUNT = 18
 
-#: The schema's 25 product tables (24 at `f0ce8a2` + 0017's append-only dunning result table,
-#: measured from `Base.metadata` by F3 on 2026-10-28).  Spelled out (not
+#: The schema's 26 product tables (25 at `0017` + 0018's single-use approval ledger, measured from
+#: `Base.metadata`).  Spelled out (not
 #: derived) so a migration that silently drops a table cannot also silently drop the assertion.
 EXPECTED_TABLES = {
     "activity_log",
@@ -51,6 +60,8 @@ EXPECTED_TABLES = {
     "chat_messages",
     "company_config",
     "competitors",
+    # W2 (0018): the single-use approval-token ledger.
+    "consumed_approvals",
     "daily_reports",
     "email_campaigns",
     "email_logs",
@@ -112,7 +123,7 @@ def _schema_dump(con: sqlite3.Connection) -> list[tuple[str, str, str]]:
     )
 
 
-def test_the_chain_from_zero_reaches_0017_with_exactly_the_25_model_tables(fresh_db) -> None:
+def test_the_chain_from_zero_reaches_the_head_with_exactly_the_26_model_tables(fresh_db) -> None:
     """THE brief's first case: empty file → head → the schema the app believes it has."""
     import app.models  # noqa: F401 — registers every table on Base.metadata
     from app.core.database import Base
@@ -124,10 +135,10 @@ def test_the_chain_from_zero_reaches_0017_with_exactly_the_25_model_tables(fresh
     try:
         assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD
         tables = _product_tables(con)
-        # W4/F3 DELIBERATE RE-PIN (2026-10-28): old 24 -> new 25 product tables; the addition is
-        # 0017's `invoice_dunning_claim_results` (DT-05).  The equality to both the spelled-out
-        # set and the ORM is unchanged.
-        assert len(tables) == 25, f"expected 25 product tables, found {len(tables)}: {sorted(tables)}"
+        # W4/F3 DELIBERATE RE-PIN: 24 -> 25 product tables (0017's `invoice_dunning_claim_results`).
+        # W2 DELIBERATE RE-PIN: 25 -> 26 (0018's `consumed_approvals`).  The equality to both the
+        # spelled-out set and the ORM is unchanged.
+        assert len(tables) == 26, f"expected 26 product tables, found {len(tables)}: {sorted(tables)}"
         assert tables == EXPECTED_TABLES, {
             "missing": sorted(EXPECTED_TABLES - tables),
             "unexpected": sorted(tables - EXPECTED_TABLES),
@@ -144,13 +155,13 @@ def test_the_chain_from_zero_reaches_0017_with_exactly_the_25_model_tables(fresh
         con.close()
 
 
-def test_the_revision_graph_is_one_line_of_seventeen_revisions_ending_at_0017(fresh_db) -> None:
+def test_the_revision_graph_is_one_line_of_eighteen_revisions_ending_at_0018(fresh_db) -> None:
     """No branch, no orphan: every revision is reachable from the single head by `down_revision`."""
     cfg, _db_path = fresh_db
     script = ScriptDirectory.from_config(cfg)
 
-    # W4/F3 DELIBERATE RE-PIN (2026-10-28): head ["0016"] -> ["0017"]; 16 -> 17 chain links
-    # (`0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05).  Linearity itself unchanged.
+    # W4/F3 DELIBERATE RE-PIN: head ["0016"] -> ["0017"]; 16 -> 17 chain links.
+    # W2 DELIBERATE RE-PIN: head ["0017"] -> ["0018"]; 17 -> 18 chain links.  Linearity unchanged.
     assert script.get_heads() == [HEAD], script.get_heads()
     chain: list[str] = []
     revision = script.get_revision(HEAD)

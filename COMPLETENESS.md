@@ -70,7 +70,7 @@ receipt at this write)** — never presented as done.
 ## 1. What MYPOLSIA is
 
 A self-hosted business-operations platform: **FastAPI + Celery** backend, **Next.js 14** frontend,
-**nginx** in front, **PostgreSQL 16** (25 tables), **Redis** (broker), **ChromaDB** (vector memory).
+**nginx** in front, **PostgreSQL 16** (26 tables), **Redis** (broker), **ChromaDB** (vector memory).
 An orchestrator plus eight specialist agents run on a **DeepSeek-first runtime** with the Claude Code
 CLI as fallback; every external action passes a policy firewall (sandbox labelling, send caps, cost
 budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `docker-compose.yml`,
@@ -80,10 +80,10 @@ budgets, approvals, kill switch). Sources: `README.md:9-21`, `USAGE.md:10-26`, `
 
 `frontend/src/app/` holds **22 `page.tsx`** files: **19 top-level routes** in the navigation
 (`frontend/src/components/layout/nav-items.ts`) plus the root redirect and two detail routes
-(`/tasks/[id]`, `/runs/[id]`). The backend exposes **110 method+path operations** across **35 modules** in
+(`/tasks/[id]`, `/runs/[id]`). The backend exposes **114 method+path operations** across **36 modules** in
 `backend/app/api/v1/` (measured from the app's own OpenAPI schema; V29 measured 106, wave
 A3's `GET /config/phone` was the 107th, wave B2 added `GET /ready` and `POST /ws/ticket` as the 108th and
-109th, and feature W5 added `POST /support/inbox/inbound` as the 110th; the V23 write counted 77 across
+109th, and feature W5 added `POST /support/inbox/inbound` as the 110th, and wave 2's four artifact read routes were the 111th-114th; the V23 write counted 77 across
 26). The V22 live `/openapi.json` capture banked at `wave-v22/w1-wiring/raw/openapi.tsv` recorded
 `TOTAL 76`; it predates the V23–V27 surface.
 
