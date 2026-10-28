@@ -682,10 +682,25 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
     `skipped_invalid` — never silently dropped, never fake-written.
 
     Returns `{"ok": True, "snapshot_written": bool, "expenses_written": int,
-    "skipped_invalid": int}` — `snapshot_written` is True only when the upsert really
-    returned a row, which is the fact the worker reports as the run's `snapshot_written`.
+    "skipped_invalid": int, "snapshot_skipped": str | None}` — `snapshot_written` is True only when
+    the upsert really returned a row, which is the fact the worker reports as the run's
+    `snapshot_written`.
+
+    LIVE-3 — a snapshot row is a PROVENANCE claim, so a snapshot that measured nothing writes
+    nothing.  Before this guard, a payload naming a date with no measured column
+    (`{"snapshot": {"snapshot_date": …}}`) created a `revenue_snapshots` row whose seven columns
+    are all NULL and reported `snapshot_written: True`.  Nothing numeric was invented, but ROW
+    EXISTENCE is the provenance signal the read paths trust: `get_finance_summary` serves
+    `last_snapshot_date` from the newest row, `build_cash_block`'s "no revenue snapshot has been
+    recorded yet" reason stops firing, and the finance page leaves its "not started" idle state —
+    i.e. a run that measured nothing presented itself as a measured day.  The skip is NAMED in
+    `snapshot_skipped: "unmeasured"` (reported, never silent) and it is a SKIP, not an error: the
+    run succeeded and genuinely measured nothing.  A supplied `0` is still a measured zero and
+    still writes (see the measured-zero test), and a measurement-less same-day retry therefore
+    cannot erase an earlier same-day reading.
     """
     snapshot_written = False
+    snapshot_skipped: str | None = None
     expenses_written = 0
     skipped_invalid = 0
     try:
@@ -716,8 +731,15 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
                 values = {
                     key: snapshot[key] for key in _SNAPSHOT_COLUMNS if snapshot.get(key) is not None
                 }
-                row = await upsert_revenue_snapshot(db, snapshot_date=snapshot_date, **values)
-                snapshot_written = row is not None
+                # LIVE-3: no measured column == no measurement.  `values` keeps a supplied 0 (the
+                # `is not None` test), so only a snapshot that supplied NOTHING reaches this skip.
+                # The row is NOT written: an all-NULL row is not a measurement, it is a provenance
+                # claim that the summary/cash block/idle-state all read as "a day was measured".
+                if not values:
+                    snapshot_skipped = "unmeasured"
+                else:
+                    row = await upsert_revenue_snapshot(db, snapshot_date=snapshot_date, **values)
+                    snapshot_written = row is not None
             for expense in result.get("expenses") or []:
                 try:
                     await record_expense(db, **_expense_kwargs(expense))
@@ -733,6 +755,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
             return {
                 "ok": True,
                 "snapshot_written": snapshot_written,
+                "snapshot_skipped": snapshot_skipped,
                 "expenses_written": expenses_written,
                 "skipped_invalid": skipped_invalid,
             }
@@ -753,6 +776,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
         return {
             "ok": False,
             "snapshot_written": False,  # F22: the savepoint rolled THIS persist's writes back
+            "snapshot_skipped": None,
             "expenses_written": 0,
             "skipped_invalid": skipped_invalid,
             "rolled_back": True,
