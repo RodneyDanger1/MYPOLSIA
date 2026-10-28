@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_KEY, api, type ActivityEvent } from "@/lib/api";
+import { api, type ActivityEvent } from "@/lib/api";
 
 /**
  * The feed's transport state as ONE honest value (audit Q-07/Q-30):
@@ -62,15 +62,25 @@ function wsBase(): string {
   );
 }
 
-function socketUrl(): string {
-  // Auth parity with every REST call (audit L1-01/L3-08): browsers cannot set WebSocket handshake
-  // headers, so the key rides the query string — the same NEXT_PUBLIC_API_KEY the REST client
-  // already ships to the browser (no new exposure).
-  return `${wsBase()}/ws/activity?key=${encodeURIComponent(API_KEY)}`;
+/** F-46: the key never rides the URL. Mint a short-lived ticket over the authenticated REST
+ *  surface (`POST /api/v1/ws/ticket`, key in the header) and hand THAT to the handshake, which
+ *  accepts `?ticket=`. A ticket is not a credential: it expires in seconds and reveals nothing
+ *  about the key (HMAC). Returns the ticket string or throws with the server's named refusal. */
+export async function mintSocketTicket(): Promise<string> {
+  const res = await api.post<{ ticket?: unknown }>("/ws/ticket", {});
+  const ticket = res?.ticket;
+  if (typeof ticket !== "string" || ticket === "") {
+    throw new Error("the ticket endpoint answered without a ticket");
+  }
+  return ticket;
 }
 
-/** The URL used in user-visible error strings. Deliberately WITHOUT the `?key=` query parameter:
- *  the key is a credential and must not surface in a message (or a screenshot of one). */
+function socketUrl(ticket: string): string {
+  return `${wsBase()}/ws/activity?ticket=${encodeURIComponent(ticket)}`;
+}
+
+/** The URL used in user-visible error strings. Deliberately WITHOUT any credential parameter:
+ *  a ticket or a key must not surface in a message (or a screenshot of one). */
 function displaySocketUrl(): string {
   return `${wsBase()}/ws/activity`;
 }
@@ -152,6 +162,12 @@ function closeText(event: CloseEvent | undefined): string {
   if (reason) return `connection closed (${code ?? "?"}: ${reason})`;
   if (code) return `connection closed (code ${code})`;
   return "connection closed";
+}
+
+/** F-41: is this tab hidden right now? False outside a browser (a non-DOM caller is never hidden
+ *  by definition, so it keeps the old always-retry behaviour). */
+function tabHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
 export type UseActivityFeedOptions = {
@@ -243,6 +259,9 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
     let snapshotInFlight = false;
     let snapshotQueued = false;
     let lastSnapshotAt = 0;
+    /** F-41: true from the moment a retry was suppressed because the tab was hidden until the tab
+     *  is shown again. Distinct from "no socket": the tab may still hold an OPEN socket. */
+    let pausedForHidden = false;
 
     const clearTimer = (t: { current: ReturnType<typeof setTimeout> | null }) => {
       if (t.current) {
@@ -308,13 +327,20 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       setError(why);
       setStatus(consecutiveFailures >= OFFLINE_AFTER_FAILURES ? "offline" : "reconnecting");
       clearTimer(reconnectTimer); // never two pending retries
+      // F-41: a hidden tab has nobody to notify and browsers throttle its timers, so the old loop
+      // kept a dead socket retrying forever behind a background page. While hidden NOTHING is
+      // scheduled; `onVisibilityChange` resumes the engine (with a reset backoff) on the way back.
+      if (tabHidden()) {
+        pausedForHidden = true;
+        return;
+      }
       reconnectTimer.current = setTimeout(() => {
         reconnectTimer.current = null;
         connect();
       }, backoffDelay(backoffAttempt - 1));
     }
 
-    function connect(): void {
+    function connect(ticket?: string): void {
       if (!mounted.current || closedByUs.current) return;
       if (
         currentSocket &&
@@ -325,7 +351,25 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       }
 
       const myGeneration = ++generation;
-      const url = socketUrl();
+
+      // F-46: mint first, connect second. The key goes to the ticket endpoint in a header; the
+      // socket URL carries only the short-lived ticket. A mint failure is a named, retried failure
+      // like any other — never a silent fallback to `?key=`, which the server now refuses.
+      if (ticket === undefined) {
+        void mintSocketTicket()
+          .then((fresh) => {
+            if (myGeneration !== generation) return;
+            if (!mounted.current || closedByUs.current) return;
+            connect(fresh);
+          })
+          .catch((e: unknown) => {
+            if (myGeneration !== generation) return;
+            reportFailure(`could not mint a socket ticket: ${message(e)}`);
+          });
+        return;
+      }
+
+      const url = socketUrl(ticket);
 
       let socket: WebSocket;
       try {
@@ -421,12 +465,40 @@ export function useActivityFeed(maxEvents = 100, options: UseActivityFeedOptions
       };
     }
 
+    /**
+     * F-41 — the tab's own visibility is part of the transport's state.
+     *  - HIDDEN: cancel any pending retry. A background tab must not retry forever at all.
+     *  - VISIBLE: resume at once, with the backoff counter RESET — the pause was not the server's
+     *    fault, so a returning tab must not inherit the attempt count of a storm it slept through.
+     */
+    function onVisibilityChange(): void {
+      if (!mounted.current || closedByUs.current) return;
+      if (tabHidden()) {
+        if (reconnectTimer.current) {
+          clearTimer(reconnectTimer);
+          pausedForHidden = true;
+        }
+        return;
+      }
+      const idle = currentSocket === null || currentSocket.readyState === WebSocket.CLOSED;
+      if (!pausedForHidden && !idle) return;
+      pausedForHidden = false;
+      backoffAttempt = 0;
+      connect();
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+
     connect();
 
     return () => {
       closedByUs.current = true;
       mounted.current = false;
       generation += 1; // everything in flight from this engine is now stale
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
       clearTimer(connectTimer);
       clearTimer(reconnectTimer);
       clearTimer(stableTimer);

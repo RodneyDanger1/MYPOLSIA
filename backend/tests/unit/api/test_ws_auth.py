@@ -4,7 +4,7 @@
 blank value counts as "no credential"); otherwise a constant-time compare. The socket refuses
 BEFORE accept, so a denied handshake raises `WebSocketDisconnect` with code 1008 and no stream
 is ever established; an accepted client enters fine and the server then closes on its own
-bounded redis path (code 1000 — honest and bounded, not a hang).
+bounded redis path (code 1011 since F-52 — a backend fault must never look like a clean 1000).
 
 RED leg (observed): neutralize the guard in `activity_socket` (`if False:`) -> the refused
 handshakes enter successfully and the first two tests fail; restore -> green.
@@ -58,10 +58,22 @@ def test_ws_refused_with_1008_when_key_configured_and_missing_or_wrong(ws_client
         _set_api_key(old)
 
 
-def test_ws_accepted_with_the_right_key_in_the_query(ws_client):
+def test_ws_refuses_the_key_in_the_query_string_and_accepts_the_header_form(ws_client):
+    """F-46 (wave B2): the URL is not a credential channel.
+
+    OLD pin: `test_ws_accepted_with_the_right_key_in_the_query` asserted
+    `_handshake(ws_client, "/ws/activity?key=secret-key")` was ACCEPTED — the defect, pinned as a
+    contract.  uvicorn logs `get_path_with_query_string(scope)` for every handshake, so that accept
+    wrote the owner key into the access log on every reconnect.  NEW pin: the same URL is REFUSED
+    with 1008 (browsers use `POST /api/v1/ws/ticket` + `?ticket=`, covered by test_b2_api.py), and
+    the header form is what a programmatic client uses.
+    """
     old = _set_api_key("secret-key")
     try:
-        accepted, _ = _handshake(ws_client, "/ws/activity?key=secret-key")
+        accepted, code = _handshake(ws_client, "/ws/activity?key=secret-key")
+        assert not accepted, "a key in the query string must not authenticate the socket"
+        assert code == 1008
+        accepted, _ = _handshake(ws_client, "/ws/activity", headers={"x-api-key": "secret-key"})
         assert accepted
     finally:
         _set_api_key(old)

@@ -28,7 +28,8 @@ jest.mock("@/lib/api", () => {
     ...actual,
     api: {
       get: jest.fn(),
-      post: jest.fn(),
+      // F-46: the activity hook mints its socket ticket through api.post.
+      post: jest.fn(async () => ({ ticket: "test-ticket", expires_in: 30 })),
       put: jest.fn(),
       patch: jest.fn(),
       delete: jest.fn(),
@@ -85,6 +86,9 @@ const mockPost = api.post as jest.Mock;
 beforeEach(() => {
   mockGet.mockReset();
   mockPost.mockReset();
+  // F-46: the activity hook mints its ticket through ai.post; a bare reset leaves no
+  // implementation, which surfaced as "the ticket endpoint answered without a ticket".
+  mockPost.mockResolvedValue({ ticket: "test-ticket", expires_in: 30 });
 });
 
 /** Exact-path reads; an unlisted path fails LOUDLY so a new read cannot pass silently. */

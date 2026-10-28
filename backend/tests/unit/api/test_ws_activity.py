@@ -59,14 +59,20 @@ class FakeRedis:
 
 
 class FakeWebSocket:
-    """The members the handler touches: accept/send_text/close + the auth surface it reads."""
+    """The members the handler touches: accept/send_text/receive_text/close + the auth surface.
+
+    F-52 (wave B2) added two members the old fake did not model: `receive_text` (the handler holds
+    the receive side open so a disconnect is noticed immediately) and `close(code=...)` (a backend
+    fault must close with 1011, not the clean 1000).  Both are recorded, so the codes are asserted.
+    """
 
     def __init__(self) -> None:
         self.accepted = False
         self.sent: list[str] = []
         self.closed = False
         self.close_calls = 0
-        # D1: the handler now reads the handshake's key before accept. Empty maps = no credential
+        self.close_codes: list[int | None] = []
+        # D1: the handler reads the handshake's key before accept. Empty maps = no credential
         # (the autouse fixture below pins open-backend mode, so that is ACCEPTED here).
         self.query_params: dict[str, str] = {}
         self.headers: dict[str, str] = {}
@@ -77,9 +83,17 @@ class FakeWebSocket:
     async def send_text(self, text: str) -> None:
         self.sent.append(text)
 
-    async def close(self) -> None:
+    async def receive_text(self) -> str:
+        """A quiet client: the receive side parks here until the handler is torn down."""
+        import asyncio
+
+        await asyncio.Event().wait()
+        return ""  # pragma: no cover - unreachable
+
+    async def close(self, code: int | None = None) -> None:
         self.closed = True
         self.close_calls += 1
+        self.close_codes.append(code)
 
 
 @pytest.fixture
@@ -166,3 +180,6 @@ async def test_an_unexpected_error_is_contained_and_still_tears_down(monkeypatch
     assert pubsub.closed is True
     assert ws.closed is True
     assert ws.close_calls == 1, "the socket must be closed exactly once"
+    # F-52 (wave B2): a backend fault is NOT a clean session end. The old handler closed with no
+    # code (1000), which told the client everything was fine.
+    assert ws.close_codes == [1011], f"a backend fault must close with 1011, got {ws.close_codes}"

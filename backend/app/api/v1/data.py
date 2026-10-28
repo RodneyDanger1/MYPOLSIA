@@ -296,10 +296,13 @@ async def _write_member(
     return written
 
 
-async def _build_export(db: AsyncSession) -> tuple[Path, int]:
+async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
     """Count every member, write MANIFEST.json + the members to a TEMP-FILE zip.
 
-    Returns `(temp file path, total rows)`.  F-48 changed HOW, not WHAT: the counts are declared
+    Returns `(temp file path, total rows, the UTC stamp that is now in MANIFEST.json)`.  The stamp
+    is RETURNED rather than re-read by the caller (F-49): the filename and the manifest must be the
+    same instant, and two `now()` calls a few milliseconds apart straddle midnight.  F-48 changed
+    HOW, not WHAT: the counts are declared
     FIRST (one `COUNT(*)` per member through the house honesty helper, `declared_total`), each member
     is then STREAMED into the archive, and the number actually written is compared to the declared
     one — a ledger that moved mid-export refuses `E_DB` and removes the temp file, so the manifest
@@ -323,10 +326,13 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int]:
         )
 
     total_rows = sum(declared.values())
+    # ONE clock for the manifest AND the filename (F-49).  Both read this value; neither reads
+    # `datetime.now()` or the local `date` again.
+    exported_at = _export_stamp()
     manifest = {
         "product": "polsia",
         "export_version": 1,
-        "exported_at": iso_utc(datetime.now(UTC)),
+        "exported_at": iso_utc(exported_at),
         "members": manifest_members,
         "total_rows": total_rows,
         "not_included": [
@@ -376,7 +382,23 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int]:
         # goes away.
         _remove_export_tempfile(path)
         raise
-    return path, total_rows
+    return path, total_rows, exported_at
+
+
+def _export_stamp() -> datetime:
+    """The export's single clock.  A test seam AND the seam that makes the boundary case provable."""
+    return datetime.now(UTC)
+
+
+def _export_filename(exported_at: datetime) -> str:
+    """The download name: the SAME UTC stamp that MANIFEST.json carries.
+
+    F-49: this used `date.today()` — the LOCAL date — while the manifest was UTC, so an export
+    between 00:00Z and the local offset was filed under the wrong day (on a UTC-5 host, an export
+    at 02:00Z on the 2nd was named `...-01.zip` and its manifest said the 2nd).  One clock, always
+    UTC, whatever the host's zone.
+    """
+    return f"polsia-data-export-{exported_at.astimezone(UTC).strftime('%Y-%m-%d')}.zip"
 
 
 def _remove_export_tempfile(path: Path) -> None:
@@ -418,8 +440,8 @@ async def export_data_route(db: AsyncSession = Depends(get_db)) -> ExportFileRes
     response has been sent (U2-10) — including when the send itself fails (subclass above).
     """
     with refusal_guard():
-        path, total_rows = await _build_export(db)
-    filename = f"polsia-data-export-{date.today().isoformat()}.zip"
+        path, total_rows, exported_at = await _build_export(db)
+    filename = _export_filename(exported_at)
     return ExportFileResponse(
         path,
         media_type="application/zip",

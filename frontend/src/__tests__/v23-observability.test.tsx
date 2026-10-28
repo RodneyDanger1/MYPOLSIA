@@ -38,9 +38,22 @@ function wireResponse({ status = 200, body, headers = {} }: WireResponse) {
 }
 
 function installFetch(route: (url: string) => WireResponse): jest.Mock {
-  const mock = jest.fn(async (url: string) => wireResponse(route(String(url))));
+  const mock = jest.fn(async (url: string) => {
+    // F-46: the activity hook mints its socket ticket before connecting.
+    if (String(url).includes("/ws/ticket")) {
+      return wireResponse({ body: { ticket: "test-ticket", expires_in: 30 } });
+    }
+    return wireResponse(route(String(url)));
+  });
   (globalThis as { fetch?: unknown }).fetch = mock;
   return mock;
+}
+
+async function flushMint(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 /** The four reads the Usage page issues, with the worker read supplied per test. */
@@ -213,6 +226,7 @@ describe("Activity feed — the declared total", () => {
     installFetch(() => ({ body: [EVENT], headers: { "X-Polsia-Total": "137" } }));
 
     render(<ActivityFeed />);
+    await flushMint();
     act(() => lastSocket().serverOpen());
 
     const count = await screen.findByTestId("activity-feed-total");
@@ -223,6 +237,7 @@ describe("Activity feed — the declared total", () => {
     installFetch(() => ({ body: [EVENT] }));
 
     render(<ActivityFeed />);
+    await flushMint();
     act(() => lastSocket().serverOpen());
 
     // The snapshot landed (the row renders)…
@@ -235,12 +250,14 @@ describe("Activity feed — the declared total", () => {
     installFetch(() => ({ body: [EVENT], headers: { "X-Polsia-Total": "42" } }));
 
     const present = renderHook(() => useActivityFeed(10));
+    await flushMint();
     act(() => lastSocket().serverOpen());
     await waitFor(() => expect(present.result.current.total).toBe(42));
     present.unmount();
 
     installFetch(() => ({ body: [EVENT] }));
     const absent = renderHook(() => useActivityFeed(10));
+    await flushMint();
     act(() => lastSocket().serverOpen());
     await waitFor(() => expect(absent.result.current.events).toHaveLength(1));
     expect(absent.result.current.total).toBeNull();

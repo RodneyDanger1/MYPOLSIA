@@ -25,26 +25,35 @@ const MockWebSocket = jest.fn().mockImplementation(() => {
 
 (global as any).WebSocket = MockWebSocket;
 
+async function flushMint(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function mountFeed(): Promise<void> {
+  render(<ActivityFeed />);
+  await flushMint();
+}
+
 describe("ActivityFeed", () => {
   beforeEach(() => {
     MockWebSocket.mockClear();
     // The hook pulls a REST snapshot when the socket opens; jsdom has no network. Stub it so these
     // tests exercise the intended path (the snapshot-FAILURE surface has its own test in
     // u1-realtime.test.tsx, where the hook's error states live).
-    (global as any).fetch = jest.fn(async () => ({
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      headers: { get: () => null },
-      json: async () => [],
-      text: async () => "[]",
-    }));
+    (global as any).fetch = jest.fn(async (url: string): Promise<any> =>
+      String(url).includes("/ws/ticket")
+        ? { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ticket: "test-ticket", expires_in: 30 }) }
+        : { ok: true, status: 200, headers: { get: () => null }, json: async () => [], text: async () => "[]" },
+    );
   });
 
   // UPDATED for the honest-state change (Q-07): the "No activity yet" copy is a claim that now
   // requires a LIVE socket. Old behavior pinned: empty copy rendered before any connection.
-  it("claims the empty-but-fine copy only once live; CONNECTING before that", () => {
-    render(<ActivityFeed />);
+  it("claims the empty-but-fine copy only once live; CONNECTING before that", async () => {
+    await mountFeed();
     expect(screen.getByText(/CONNECTING/)).toBeInTheDocument();
     expect(screen.queryByText(/No activity yet/i)).toBeNull();
 
@@ -52,14 +61,14 @@ describe("ActivityFeed", () => {
     expect(screen.getByText(/No activity yet/i)).toBeInTheDocument();
   });
 
-  it("shows 'LIVE' status when connected", () => {
-    render(<ActivityFeed />);
+  it("shows 'LIVE' status when connected", async () => {
+    await mountFeed();
     act(() => { mockWsInstance.onopen?.(); });
     expect(screen.getByText("LIVE")).toBeInTheDocument();
   });
 
   it("renders events received via WebSocket", async () => {
-    render(<ActivityFeed />);
+    await mountFeed();
     act(() => { mockWsInstance.onopen?.(); });
 
     const event = {
@@ -79,14 +88,14 @@ describe("ActivityFeed", () => {
     expect(screen.getByText("Posted a tweet about our launch")).toBeInTheDocument();
   });
 
-  it("shows reconnecting state when disconnected", () => {
-    render(<ActivityFeed />);
+  it("shows reconnecting state when disconnected", async () => {
+    await mountFeed();
     act(() => { mockWsInstance.onclose?.(); });
     expect(screen.getByText(/Reconnecting/i)).toBeInTheDocument();
   });
 
   it("renders the placeholder for an event whose created_at is null on the wire", async () => {
-    render(<ActivityFeed />);
+    await mountFeed();
     act(() => { mockWsInstance.onopen?.(); });
 
     // `ActivityEventResponse.created_at` is `datetime | None` (`app/schemas/report.py`) — the column
@@ -111,6 +120,7 @@ describe("ActivityFeed", () => {
 
   it("renders a level this build does not know instead of dropping the event", async () => {
     const { container } = render(<ActivityFeed />);
+    await flushMint();
     act(() => { mockWsInstance.onopen?.(); });
 
     // `level` is a plain `str` server-side (`app/schemas/report.py` only normalises NULL -> "info"),

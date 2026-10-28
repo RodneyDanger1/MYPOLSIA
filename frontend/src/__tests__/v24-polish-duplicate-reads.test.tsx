@@ -49,12 +49,11 @@ const realFetch = (globalThis as { fetch?: unknown }).fetch;
 beforeEach(() => {
   FakeWebSocket.instances = [];
   (globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket;
-  (globalThis as { fetch: unknown }).fetch = jest.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    headers: { get: () => null },
-    json: async () => [],
-  });
+  (globalThis as { fetch: unknown }).fetch = jest.fn(async (url: string) =>
+    String(url).includes("/ws/ticket")
+      ? { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ticket: "test-ticket", expires_in: 30 }) }
+      : { ok: true, status: 200, headers: { get: () => null }, json: async () => [] },
+  );
   mockApiGet.mockReset();
   mockApiGet.mockResolvedValue([]);
 });
@@ -63,6 +62,13 @@ afterEach(() => {
   (globalThis as { WebSocket?: unknown }).WebSocket = realWebSocket;
   (globalThis as { fetch?: unknown }).fetch = realFetch;
 });
+
+async function flushMint(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 function FeedView({ label }: { label: string }) {
   const { events } = useActivityFeed();
@@ -77,6 +83,7 @@ describe("activity snapshot — two mounted consumers share one read", () => {
         <FeedView label="feed" />
       </>,
     );
+    await flushMint();
 
     // Both sockets are open in the same commit; each used to fire its own snapshot GET.
     act(() => {
@@ -104,6 +111,7 @@ describe("activity snapshot — two mounted consumers share one read", () => {
         <ActivityFeed />
       </>,
     );
+    await flushMint();
     act(() => {
       for (const socket of FakeWebSocket.instances) socket.serverOpen();
     });
@@ -121,6 +129,7 @@ describe("activity snapshot — two mounted consumers share one read", () => {
 
   it("a later consumer still performs its own read once the first request settled", async () => {
     const first = render(<FeedView label="first" />);
+    await flushMint();
     act(() => {
       for (const socket of FakeWebSocket.instances) socket.serverOpen();
     });
@@ -131,6 +140,7 @@ describe("activity snapshot — two mounted consumers share one read", () => {
     first.unmount();
 
     render(<FeedView label="second" />);
+    await flushMint();
     act(() => {
       const latest = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
       latest.serverOpen();

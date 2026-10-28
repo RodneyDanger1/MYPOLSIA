@@ -13,7 +13,7 @@
  *  - Q-03  a consumer abort reports "cancelled", never "timed out"; a real timeout still says so.
  *  - Q-04  the read retry chain is bounded by the total budget (the ≈46 s burn is gone).
  */
-import { StrictMode, type ReactNode } from "react";
+import { StrictMode, type ReactElement, type ReactNode } from "react";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import {
@@ -82,6 +82,30 @@ function lastSocket(): FakeWebSocket {
   return s;
 }
 
+async function flushMint(): Promise<void> {
+  // The ticket mint is awaited by the hook, so the socket is constructed on a microtask. Flush it
+  // inside act() so a test can assert on the socket the hook really opened.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function mountFeedHook(wrapper?: {
+  wrapper: ({ children }: { children?: ReactNode }) => ReactElement;
+}) {
+  const rendered = wrapper
+    ? renderHook(() => useActivityFeed(), wrapper)
+    : renderHook(() => useActivityFeed());
+  await flushMint();
+  return rendered;
+}
+
+async function mountFeed(): Promise<void> {
+  render(<ActivityFeed />);
+  await flushMint();
+}
+
 function installFakeWebSocket(): void {
   (globalThis as { WebSocket?: unknown }).WebSocket =
     FakeWebSocket as unknown as typeof WebSocket;
@@ -101,7 +125,14 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function okFetch(body: unknown = []): jest.Mock {
-  return jest.fn(async () => jsonResponse(body));
+  return jest.fn(async (url: string) => {
+    // F-46: the hook mints POST /ws/ticket BEFORE it constructs the socket; a plain okFetch made
+    // the mint answer the activity body, so no ticket existed and no socket was ever constructed.
+    if (String(url).includes("/ws/ticket")) {
+      return jsonResponse({ ticket: "test-ticket", expires_in: 30 });
+    }
+    return jsonResponse(body);
+  });
 }
 
 /** A 500 that arrives after `ms`, abortable like a real fetch. */
@@ -179,26 +210,27 @@ describe("Q-02 — the socket URL is absolute and honest", () => {
     expect(resolveWsBase(undefined, null)).toBe("");
   });
 
-  it("the hook constructs an ABSOLUTE ws:// URL (never a bare relative path)", () => {
-    const { unmount } = renderHook(() => useActivityFeed());
+  it("the hook constructs an ABSOLUTE ws:// URL and mints a ticket first (never ?key=)", async () => {
+    const { unmount } = await mountFeedHook();
     const url = lastSocket().url;
     expect(url).toMatch(/^wss?:\/\//);
-    expect(url).toContain("/ws/activity?key=");
+    expect(url).toContain(`/ws/activity?ticket=${encodeURIComponent("test-ticket")}`);
+    expect(url).not.toContain("key=");
     unmount();
   });
 
-  it("a constructor failure becomes honest error state — not a crash (Q-02 regression)", () => {
+  it("a constructor failure becomes honest error state — not a crash (Q-02 regression)", async () => {
     FakeWebSocket.throwOnConstruct = true;
-    const { result } = renderHook(() => useActivityFeed());
+    const { result } = await mountFeedHook();
     expect(result.current.status).toBe("reconnecting");
     expect(result.current.error).toMatch(/could not open a WebSocket/);
     // The credential must never surface in a user-visible message.
     expect(result.current.error).not.toContain("key=");
   });
 
-  it("the feed renders the constructor failure instead of claiming an empty-but-fine feed", () => {
+  it("the feed renders the constructor failure instead of claiming an empty-but-fine feed", async () => {
     FakeWebSocket.throwOnConstruct = true;
-    render(<ActivityFeed />);
+    await mountFeed();
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent(/could not open a WebSocket/);
     expect(screen.queryByText(/No activity yet/i)).toBeNull();
@@ -212,7 +244,7 @@ describe("healthy socket — states are TRUE", () => {
     const fetchMock = okFetch([]);
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
 
-    const { result, unmount } = renderHook(() => useActivityFeed());
+    const { result, unmount } = await mountFeedHook();
     expect(result.current.status).toBe("connecting");
     expect(result.current.connected).toBe(false);
 
@@ -239,8 +271,8 @@ describe("healthy socket — states are TRUE", () => {
     unmount();
   });
 
-  it("recovery: a later open returns to live and clears the error", () => {
-    const { result, unmount } = renderHook(() => useActivityFeed());
+  it("recovery: a later open returns to live and clears the error", async () => {
+    const { result, unmount } = await mountFeedHook();
     act(() => lastSocket().serverClose(1006));
     expect(result.current.status).toBe("reconnecting");
     expect(result.current.error).not.toBeNull();
@@ -257,7 +289,7 @@ describe("healthy socket — states are TRUE", () => {
 describe("Q-30 — the CONNECTING phase is bounded", () => {
   it("closes a handshake that never opens, reports the real reason, and retries", async () => {
     jest.useFakeTimers();
-    const { result } = renderHook(() => useActivityFeed());
+    const { result } = await mountFeedHook();
     const stuck = lastSocket();
     expect(stuck.readyState).toBe(FakeWebSocket.CONNECTING);
 
@@ -287,7 +319,7 @@ describe("flapping socket — duplicate open/close cycles cannot pile up snapsho
     const fetchMock = okFetch([]);
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
 
-    const { result } = renderHook(() => useActivityFeed());
+    const { result } = await mountFeedHook();
 
     // The observed live defect: every open refetched the snapshot and the backoff reset on open, so
     // a flapping server produced ~4 fetches in ~8s at near-minimal retry delay.
@@ -325,13 +357,14 @@ describe("flapping socket — duplicate open/close cycles cannot pile up snapsho
 
 /* ============================================================================================= */
 describe("Q-10 — StrictMode cannot drop events", () => {
-  it("an event survives the double-invoked updater (dedupe lives outside setState)", () => {
+  it("an event survives the double-invoked updater (dedupe lives outside setState)", async () => {
     const wrapper = ({ children }: { children?: ReactNode }) => <StrictMode>{children}</StrictMode>;
-    const { result } = renderHook(() => useActivityFeed(), { wrapper });
+    const { result } = await mountFeedHook({ wrapper });
 
-    // StrictMode double-mounts: the first engine's socket is closed by its cleanup and a second
-    // socket takes over — this also proves the remount cycle does not confuse the engine.
-    expect(FakeWebSocket.instances.length).toBe(2);
+    // StrictMode double-mounts. Since the ticket mint is awaited, the first mount may be cleaned up
+    // before it ever constructs a socket; what matters is that a socket exists and events survive
+    // the double-invoked updater.
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(1);
 
     act(() => lastSocket().serverOpen());
     const evt = activityEvent({ summary: "must not vanish" });
@@ -348,9 +381,8 @@ describe("feed UI — honest badge + live grammar", () => {
     const fetchMock = okFetch(fetchBody);
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
     render(<ActivityFeed />);
-    await act(async () => {
-      lastSocket().serverOpen();
-    });
+    await flushMint();
+    act(() => lastSocket().serverOpen());
     return fetchMock;
   }
 
@@ -379,7 +411,7 @@ describe("feed UI — honest badge + live grammar", () => {
 
   it("goes OFFLINE (with the real close reason) after repeated failures", async () => {
     jest.useFakeTimers();
-    render(<ActivityFeed />);
+    await mountFeed();
     for (let i = 0; i < 5; i += 1) {
       act(() => lastSocket().serverClose(1008, "bad key"));
       if (i < 4) {
@@ -394,14 +426,15 @@ describe("feed UI — honest badge + live grammar", () => {
   });
 
   it("surfaces a failed REST snapshot even while the socket is live (Q-07)", async () => {
-    const fetchMock = jest.fn(async () => {
+    const fetchMock = jest.fn(async (url: string) => {
+      if (String(url).includes("/ws/ticket")) {
+        return jsonResponse({ ticket: "test-ticket", expires_in: 30 });
+      }
       throw new Error("boom");
     });
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
-    render(<ActivityFeed />);
-    await act(async () => {
-      lastSocket().serverOpen();
-    });
+    await mountFeed();
+    act(() => lastSocket().serverOpen());
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/activity snapshot failed/));
     expect(screen.getByText("LIVE")).toBeInTheDocument();
   });
@@ -416,10 +449,8 @@ describe("feed UI — honest badge + live grammar", () => {
       "polsia.dashboard.feed.lastSeenAt",
       String(midnight.getTime() - 1_000),
     );
-    render(<ActivityFeed />);
-    await act(async () => {
-      lastSocket().serverOpen();
-    });
+    await mountFeed();
+    act(() => lastSocket().serverOpen());
 
     const todayAt = new Date();
     todayAt.setHours(14, 36, 0, 0);
@@ -457,10 +488,8 @@ describe("feed UI — honest badge + live grammar", () => {
   });
 
   it("shows no NEW markers on a first visit (nothing is fabricated)", async () => {
-    render(<ActivityFeed />);
-    await act(async () => {
-      lastSocket().serverOpen();
-    });
+    await mountFeed();
+    act(() => lastSocket().serverOpen());
     act(() => {
       lastSocket().serverMessage(activityEvent({ summary: "First visit event" }));
     });
