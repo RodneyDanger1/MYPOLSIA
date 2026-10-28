@@ -181,7 +181,10 @@ async def test_a_second_attach_is_a_noop_no_item_is_double_attached(async_db_ses
 
 async def test_attach_is_oldest_first_by_received_at_not_by_insertion_order(async_db_session):
     """`coalesce(received_at, created_at)` decides — the arrive-earlier message goes first."""
-    later = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    # Relative to NOW, never an absolute calendar date: attach_pending applies a 14-day answer
+    # window (support_inbox_service.py:288), so the old 2026-10-13 seed rotted out of window on
+    # 2026-10-27 and this pin went red (measured 2026-10-28: attached == []).
+    later = datetime.now(UTC) - timedelta(hours=1)
     earlier = later - timedelta(hours=5)
     await submit_item(
         async_db_session, **{**BASE_ITEM, "provider_message_id": "msg-late", "received_at": later}

@@ -19,6 +19,7 @@ anything, or starts/stops a service.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -124,6 +125,79 @@ def _make_executable(path: Path, body: str) -> None:
     os.chmod(path, 0o755)
 
 
+class _Proc:
+    """The slice of CompletedProcess this suite reads (returncode/stdout/stderr)."""
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_capture(
+    argv: list[str],
+    *,
+    timeout: float,
+    env: dict[str, str] | None = None,
+    path_prefix: str | None = None,
+) -> _Proc:
+    """Run `sh <argv>` capturing to TEMP FILES, killing the tree on timeout (QA-02).
+
+    `subprocess.run(capture_output=True, timeout=)` is unbounded on Windows: the timeout kills the
+    DIRECT child while the shell's grandchildren keep the pipes open, so Python blocks reading EOF
+    (measured: the 2026-10-28 gate deadlock, 29 minutes, no XML).  Temp files cannot be held open
+    that way, and on timeout the GROUP is killed with the repo's shipped `_kill_process_tree`.
+
+    `path_prefix` (a directory) is prepended INSIDE the shell: this Git-bash wrapper puts
+    /mingw64/bin:/usr/bin ahead of the Windows PATH, so an outside-only PATH shim is shadowed by
+    the real curl (measured: `command -v curl` -> /mingw64/bin/curl).  Prepending after the shell
+    starts is what makes the curl shim the command the script actually runs.
+    """
+    import tempfile
+
+    from app.agents.claude_cli import _kill_process_tree
+
+    if path_prefix is None:
+        launch = [_sh(), *argv]
+    else:
+        launch = [
+            _sh(),
+            "-c",
+            'PATH="$1:$PATH"; export PATH; shift; exec "$@"',
+            "polsia-shim",
+            path_prefix,
+            *argv,
+        ]
+
+    with tempfile.TemporaryDirectory(prefix="polsia-test-proc-") as tmp:
+        out_path = Path(tmp) / "stdout.txt"
+        err_path = Path(tmp) / "stderr.txt"
+        with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+            proc = subprocess.Popen(
+                launch,
+                stdin=subprocess.DEVNULL,
+                stdout=out_f,
+                stderr=err_f,
+                env=env,
+                start_new_session=(os.name != "nt"),
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                ),
+            )
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=15)
+                raise
+        return _Proc(
+            proc.returncode,
+            out_path.read_text(encoding="utf-8", errors="replace"),
+            err_path.read_text(encoding="utf-8", errors="replace"),
+        )
+
+
 def _run(
     tmp_path: Path,
     *args: str,
@@ -150,12 +224,9 @@ def _run(
         "PHONE_SEND_BRIDGE_TOKEN": "",
         **(env_extra or {}),
     }
-    proc = subprocess.run(
-        [_sh(), SCRIPT.as_posix(), *args],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=env,
+    proc = _run_capture(
+        [SCRIPT.as_posix(), *args], timeout=120, env=env,
+        path_prefix=str(shim) if with_shim else None,
     )
     return proc, call_log
 
@@ -174,7 +245,7 @@ def _root_with_env(tmp_path: Path, sandbox_mode: str) -> Path:
 
 def test_script_exists_and_parses_under_posix_sh() -> None:
     assert SCRIPT.is_file(), f"missing {SCRIPT}"
-    proc = subprocess.run([_sh(), "-n", SCRIPT.as_posix()], capture_output=True, text=True, timeout=60)
+    proc = _run_capture(["-n", SCRIPT.as_posix()], timeout=60)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -317,12 +388,11 @@ def test_a_failing_check_is_named_and_a_raw_500_is_never_green(tmp_path: Path) -
         "CURL_CALL_LOG": (tmp_path / "curl-calls.log").as_posix(),
         "API_KEY": "a-real-key-value",
     }
-    proc = subprocess.run(
-        [_sh(), SCRIPT.as_posix(), "--base", "http://127.0.0.1:80", "--root", root.as_posix()],
-        capture_output=True,
-        text=True,
+    proc = _run_capture(
+        [SCRIPT.as_posix(), "--base", "http://127.0.0.1:80", "--root", root.as_posix()],
         timeout=120,
         env=env,
+        path_prefix=str(shim),
     )
 
     out = proc.stdout
@@ -373,10 +443,8 @@ def test_live_run_reports_named_checks_when_the_stack_is_up() -> None:
     if not key:
         pytest.skip("API_KEY is not exported — the live run cannot exercise the protected checks")
 
-    proc = subprocess.run(
-        [_sh(), SCRIPT.as_posix(), "--base", base],
-        capture_output=True,
-        text=True,
+    proc = _run_capture(
+        [SCRIPT.as_posix(), "--base", base],
         timeout=180,
         env={**os.environ, "API_KEY": key},
     )

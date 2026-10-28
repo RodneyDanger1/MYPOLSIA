@@ -30,13 +30,33 @@ def reset_publish_breaker_state():
     agent_tasks -> log_activity -> publish_activity -> connection refused) opens the breaker for
     its cooldown window, and every later publish in the same pytest process is SKIPPED — an
     order-dependent failure measured when the R33 e2e's real-worker tests made the redteam spec
-    invariant see 0 publishes instead of 1. Reset around every test so no test can poison another
-    (the same leak class fixed for run-taint in RD11)."""
+    invariant see 0 publishes instead of 1. Reset around every test so no test can poison another.
+    """
     from app.core import events
 
     events.reset_publish_breaker()
     yield
     events.reset_publish_breaker()
+
+
+# ─── Run-scoped contextvar reset (autouse) ────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def reset_run_scoped_contextvars():
+    """RUN_TAINT / RUN_APPROVAL / RUN_CHANNEL_SENDS are process-global contextvars set during a
+    run. A sync caller that assembles a prompt sets them in the pytest main context, and a later
+    test in the same process can then see a taint/approval snapshot it never produced — measured
+    as the 11 order-dependent B2-A gate failures. Reset around every test so no test can poison
+    another (QA-13)."""
+    from app.agents import policy_firewall as firewall
+
+    firewall.reset_run_taint()
+    firewall.reset_run_approval()
+    firewall.reset_run_channel_sends()
+    yield
+    firewall.reset_run_taint()
+    firewall.reset_run_approval()
+    firewall.reset_run_channel_sends()
 
 
 # ─── In-memory SQLite database ────────────────────────────────────────────────

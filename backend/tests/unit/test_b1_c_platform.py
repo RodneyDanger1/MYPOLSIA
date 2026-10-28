@@ -328,7 +328,7 @@ def test_make_lint_runs_exactly_the_ci_mypy_scope() -> None:
     )
 
 
-# ── 3. D6-R4: the 107-operation surface is wave A3's, not V29's ─────────────────────────────
+# ── 3. the 109-operation surface is wave A3's, not V29's ─────────────────────────────
 
 
 _README_COUNT = re.compile(r"The `/api/v1` surface is (\d+)\s+(?:routes|method\+path operations)")
@@ -337,46 +337,46 @@ _COMPLETENESS_COUNT = re.compile(
 )
 
 
-def test_readme_keeps_the_107_count_and_attributes_it_to_wave_a3() -> None:
-    """D6-R4: V29 measured 106; the 107th operation is wave A3's `GET /config/phone`."""
+def test_readme_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None:
+    """V29 measured 106; A3's `GET /config/phone` was the 107th; B2 added /ready and /ws/ticket."""
     readme = _read(README)
     match = _README_COUNT.search(readme)
     assert match, "README no longer states the /api/v1 route count — update this pin"
-    assert int(match.group(1)) == 107, (
+    assert int(match.group(1)) == 109, (
         f"README claims {match.group(1)} /api/v1 operations; `create_app().openapi()` serves "
-        "107. The count is pinned by test_v28_adversarial.py against the live schema — an "
-        "attribution fix must not move it."
+        "109 (measured 2026-10-28: 106 V29 + A3 phone + B2 /ready + B2 /ws/ticket)."
     )
     sentence = readme[match.start() : readme.index(")", match.start()) + 1]
     assert "A3" in sentence, (
-        "README's 107-operation count still credits no wave A3: the measured source of the "
+        "README's 109-operation count still credits no wave A3: the measured source of the "
         f"107th route (`GET /api/v1/config/phone`) is wave A3. Sentence: {sentence!r}"
     )
     assert "V29 measurement" not in sentence, (
-        "README still calls 107 a 'V29 measurement' — V29's own settlement note (COMPLETENESS "
+        "README still calls the count a 'V29 measurement' — V29's own settlement note (COMPLETENESS "
         "header) records 106 operations, so the attribution is a false receipt. "
         f"Sentence: {sentence!r}"
     )
 
 
-def test_completeness_keeps_the_107_count_and_attributes_it_to_wave_a3() -> None:
-    """The same correction in COMPLETENESS §2, with its two numbers both still 107 / 35."""
+def test_completeness_keeps_the_109_count_and_attributes_it_to_wave_a3() -> None:
+    """The same correction in COMPLETENESS §2: 109 operations, 35 modules."""
     text = _read(COMPLETENESS)
     match = _COMPLETENESS_COUNT.search(text)
     assert match, "COMPLETENESS §2 count sentence changed shape — update this pin"
-    assert int(match.group(1)) == 107, (
-        f"COMPLETENESS claims {match.group(1)} method+path operations; the app serves 107"
+    assert int(match.group(1)) == 109, (
+        f"COMPLETENESS claims {match.group(1)} method+path operations; the app serves 109"
+        " (measured 2026-10-28 from create_app().openapi())"
     )
     assert int(match.group(2)) == 35, (
         f"COMPLETENESS claims {match.group(2)} route modules; this correction touches none"
     )
     sentence = text[match.start() : text.index(".", match.end()) + 1]
     assert "A3" in sentence, (
-        "COMPLETENESS still credits the 107-operation surface without wave A3 — A3 added "
+        "COMPLETENESS still credits the 109-operation surface without wave A3 — A3 added "
         f"`GET /api/v1/config/phone`, the 107th operation. Sentence: {sentence!r}"
     )
     assert "V29 measurement" not in sentence, (
-        "COMPLETENESS still calls 107 a 'V29 measurement'; V29 measured 106 (its own settlement "
+        "COMPLETENESS still calls the count a 'V29 measurement'; V29 measured 106 (its own settlement "
         f"note says so). Sentence: {sentence!r}"
     )
 

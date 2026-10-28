@@ -610,7 +610,7 @@ async def test_a_three_thousand_row_member_streams_into_the_archive(async_db_ses
     await _seed_runs(async_db_session, seeded)
 
     sizes = _archive_bytes(monkeypatch)
-    path, total_rows = await data_module._build_export(async_db_session)
+    path, total_rows, exported_at = await data_module._build_export(async_db_session)
     try:
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("MANIFEST.json"))
@@ -651,7 +651,7 @@ async def test_the_declared_total_matches_the_rows_written_for_every_member(asyn
     async_db_session.add_all([ChatMessage(role="owner", content=f"note {i}") for i in range(3)])
     await async_db_session.flush()
 
-    path, total_rows = await data_module._build_export(async_db_session)
+    path, total_rows, exported_at = await data_module._build_export(async_db_session)
     try:
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("MANIFEST.json"))

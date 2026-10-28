@@ -437,7 +437,7 @@ async def test_the_data_export_streams_members_instead_of_holding_them(
     await async_db_session.flush()
 
     sizes = _instrument_zip(monkeypatch)
-    path, total_rows = await data_module._build_export(async_db_session)
+    path, total_rows, exported_at = await data_module._build_export(async_db_session)
     try:
         assert path.exists()
         with zipfile.ZipFile(path) as archive:

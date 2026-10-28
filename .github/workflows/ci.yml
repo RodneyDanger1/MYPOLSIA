@@ -16,6 +16,7 @@ on:
 jobs:
   backend-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -39,6 +40,7 @@ jobs:
 
   backend-unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: backend
@@ -56,9 +58,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: Unit tests
-        run: python -m pytest tests/unit -q
+        run: python -m pytest tests/unit --junitxml=junit-unit.xml
       - name: Unit tests with coverage report
-        run: python -m pytest tests/unit -q --cov=app --cov-report=term-missing
+        run: python -m pytest tests/unit --cov=app --cov-report=term-missing
       # F-44: two thirds of the test entry points ran nowhere.  `tests/parity` (the route /
       # settings / refusal contract) and `tests/redteam` (the adversarial suite) were green on
       # every local run and executed by no workflow, so 206 tests (measured 2026-10-25 on
@@ -67,12 +69,22 @@ jobs:
       # Their own steps — not one combined `run:` — so a failure names the suite in the UI, and
       # neither carries `continue-on-error`: a red suite has to red the job.
       - name: Parity tests (tests/parity)
-        run: python -m pytest tests/parity -q
+        run: python -m pytest tests/parity --junitxml=junit-parity.xml
       - name: Red-team tests (tests/redteam)
-        run: python -m pytest tests/redteam -q
+        run: python -m pytest tests/redteam --junitxml=junit-redteam.xml
+      # QA-01: a gate with no partial receipt cannot certify a tree — the 2026-10-28 local
+      # run deadlocked and produced NO XML at all. Always upload the receipts, even on failure.
+      - name: Upload JUnit receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-junit
+          path: backend/junit-*.xml
+          if-no-files-found: warn
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: frontend

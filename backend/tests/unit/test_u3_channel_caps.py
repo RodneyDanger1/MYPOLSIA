@@ -169,13 +169,22 @@ async def test_unknown_channels_serve_null_never_zero(api_client, auth_headers, 
     body = (await api_client.get(CAPS_PATH, headers=auth_headers)).json()
     caps = RateCaps()
 
-    for channel in ("github", "google_ads", "meta_ads", "stripe", "render"):
+    # B2-C4-R1: github and stripe gained real counted sources (activity_log / stripe_events), so
+    # they serve a MEASURED 0 now; only channels with no local source stay null.
+    for channel in ("google_ads", "meta_ads", "render"):
         item = _entry(body, channel)
         assert item["sent_today"] is None, (
             f"{channel} has no local send table; the count is UNKNOWN and must be null, "
             f"never a fabricated 0 (got {item['sent_today']!r})"
         )
         assert item["remaining"] is None, f"{channel}: remaining cannot be computed from an unknown count"
+        assert item["cap"] == caps.per_channel_day[channel], "the cap is policy and IS known"
+
+    for channel in ("github", "stripe"):
+        item = _entry(body, channel)
+        assert item["sent_today"] == 0, (
+            f"{channel} now reads a local source; an empty source is a measured 0, not unknown"
+        )
         assert item["cap"] == caps.per_channel_day[channel], "the cap is policy and IS known"
 
     # ...while a channel whose table WAS read and held no rows is a measured zero, not unknown:

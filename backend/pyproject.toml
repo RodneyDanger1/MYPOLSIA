@@ -33,6 +33,10 @@ explicit_package_bases = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--tb=short -q"
+# QA-01: per-test wall bound (CI installs pytest-timeout; the local venv is left untouched, so
+# this is an unknown-ini warning there and the config is enforced in CI).
+timeout = 600
+timeout_method = "thread"
 markers = [
     "integration: marks tests that require real DB/Redis (deselect with '-m not integration')"
 ]

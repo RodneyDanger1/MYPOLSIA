@@ -70,6 +70,9 @@ async def test_every_protected_read_refuses_a_missing_key_with_envelope_and_head
 
     public = {
         "/api/v1/health",
+        # F-50: the readiness probe is PUBLIC by design — a probe carries no key, and its
+        # body leaks only one status word per dependency (no DSN/host/credential).
+        "/api/v1/ready",
         "/api/v1/outreach/unsubscribe",
         "/api/v1/finance/stripe/webhook",
         "/",

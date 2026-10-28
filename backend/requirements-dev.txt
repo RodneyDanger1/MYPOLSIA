@@ -19,3 +19,5 @@ testcontainers[postgres,redis]==4.8.2
 ruff==0.17.0
 mypy==1.13.0
 types-redis==4.6.0.20241004
+# QA-01: a per-test wall bound — one blocked test must not make the gate un-failable.
+pytest-timeout==2.4.0

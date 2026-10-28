@@ -114,9 +114,13 @@ async def test_channel_snapshot_counts_are_per_channel_and_windowed(async_db_ses
 
 
 async def test_an_unknown_channel_stays_null_not_zero(async_db_session):
-    """UNKNOWN (no local send table) must stay distinguishable from a measured zero."""
-    snapshot = await channel_sends_snapshot(async_db_session, ["github"], now=datetime.now(UTC))
-    assert snapshot["github"] == {"today": None, "hour": None}
+    """UNKNOWN (no local send table) must stay distinguishable from a measured zero.
+
+    B2-C4-R1 made `github` a measured 0 (activity_log rows), so the still-unmeasured channel
+    in this pin is `google_ads`.
+    """
+    snapshot = await channel_sends_snapshot(async_db_session, ["google_ads"], now=datetime.now(UTC))
+    assert snapshot["google_ads"] == {"today": None, "hour": None}
 
 
 # ── RED 2: support attach did one dedupe SELECT per item + one id SELECT per hit ─────────────

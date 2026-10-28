@@ -233,6 +233,10 @@ DOCUMENTED_ROUTES: list[tuple[str, str]] = [
     # single-use-token wipe). The count comment chain continues: Count 51 -> 60 -> 62.
     ("GET", "/api/v1/data/export"),
     ("DELETE", "/api/v1/data"),
+    # wave B2-A (C1): F-50 readiness (public probe, fails closed E_DB) and F-46's short-lived
+    # WS ticket (POST, owner-authenticated) — NEW surfaces added deliberately WITH their tests.
+    ("GET", "/api/v1/ready"),
+    ("POST", "/api/v1/ws/ticket"),
 ]
 
 DOCUMENTED_AGENTS = {

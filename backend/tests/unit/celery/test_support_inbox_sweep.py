@@ -128,18 +128,12 @@ def test_a_pending_item_becomes_a_per_item_task_carrying_the_rd12_metadata(queue
 
 
 def test_several_items_each_get_their_own_task_oldest_first(queue_db, monkeypatch):
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
-    _submit(
-        queue_db,
-        provider_message_id="msg-late",
-        received_at=datetime(2026, 10, 13, 12, 0, tzinfo=UTC),
-    )
-    _submit(
-        queue_db,
-        provider_message_id="msg-early",
-        received_at=datetime(2026, 10, 13, 7, 0, tzinfo=UTC),
-    )
+    # Relative to NOW: the sweep applies a 14-day answer window, so an absolute date rots.
+    now = datetime.now(UTC)
+    _submit(queue_db, provider_message_id="msg-late", received_at=now - timedelta(hours=1))
+    _submit(queue_db, provider_message_id="msg-early", received_at=now - timedelta(hours=6))
 
     result, enqueued = _run_sweep(queue_db, monkeypatch)
 
