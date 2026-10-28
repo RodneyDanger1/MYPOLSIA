@@ -68,7 +68,11 @@ own, and the next day's window claims anew.
 F-02 (wave A3).  The plan's `depends_on` is no longer discarded at materialisation: every planned
 row carries its edges (`metadata.depends_on_titles`, resolved to `depends_on_ids` in a second pass
 inside the SAME transaction) and only the DAG's ROOTS are handed to the broker.  A dependent is
-released by `task_service.release_ready_dependents` when its whole set has completed.  A title this
+released by `task_service.release_ready_dependents` when its whole set has completed — OR-01: the
+producer of that release is the WORKER's terminal-completion hook
+(`agent_tasks._release_dag_dependents`, after the outcome commit), which also fails a dependent BY
+NAME when its upstream ends without completing.  (Before OR-01 this docstring promised a release
+that no production code ever called, so every dependent stranded `pending`.)  A title this
 cycle did not create, and a model-authored dependency cycle, are RECORDED on the row and released
 as roots — the plan can shorten the day but it can never make work vanish.
 """
@@ -994,7 +998,9 @@ async def _morning_cycle() -> dict[str, Any]:
                 )
 
         # Roots only: the fixed work and the plan's dependency-free entries.  Every dependent is
-        # released by `task_service.release_ready_dependents` when its whole set has completed.
+        # released by `task_service.release_ready_dependents` when its whole set has completed —
+        # called by the WORKER's completion hook (`agent_tasks._release_dag_dependents`, OR-01),
+        # which is the producer that was missing when this comment first claimed it.
         roots = [
             int(row.id)
             for row in planned_rows
@@ -1130,12 +1136,65 @@ async def _morning_cycle() -> dict[str, Any]:
     }
 
 
+#: (OR-09) The outcome statuses the evening digest counts — the same set `build_day_digest` reads.
+_DAY_OUTCOME_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled")
+
+
+async def _exact_day_outcome_counts(db, day: date) -> dict[str, Any]:
+    """The day's outcome counts, EXACT — the digest's own lists are BOUNDED (OR-09).
+
+    `report_service.build_day_digest` reads at most `DAY_DIGEST_MAX_ROWS` outcome rows and derives
+    its counts from that page (`len(digest.completed)`), so a 35-outcome day is reported as
+    "25 completed" with `status="measured"` and no hint that 10 rows were clipped — the report
+    presents a page as the day (F-43's own contract: a report that cannot see its data says so).
+
+    This reads the SAME company-local window (`timeutil.day_window`, the digest's own window
+    function, same default timezone) with a GROUP BY.  It returns measured counts, or a NAMED
+    unknown (`status="unavailable"`, the `E_DB` code in `reason`) — never zeros for a failed read.
+    The digest dataclass itself (and its `headline()`) belongs to `report_service`; this is the
+    report WRITER's own measurement, and its result is additive to the stored digest.
+    """
+    from sqlalchemy import func, select
+
+    from app.core.errors import PolsiaError
+    from app.core.timeutil import day_window
+    from app.models.task import Task
+    from app.services.query_helpers import fetch_rows
+
+    start, end = day_window(db, day=day)
+    window = {"start": start.isoformat(), "end": end.isoformat()}
+    try:
+        rows = await fetch_rows(
+            db,
+            select(Task.status, func.count())
+            .where(
+                Task.updated_at >= start,
+                Task.updated_at < end,
+                Task.status.in_(_DAY_OUTCOME_STATUSES),
+            )
+            .group_by(Task.status),
+            what=f"exact day outcome counts {day.isoformat()}",
+        )
+    except PolsiaError as exc:
+        return {"status": "unavailable", "reason": exc.code, "by_status": {},
+                "counted": None, "window": window}
+    by_status = {str(status): int(count) for status, count in rows}
+    return {
+        "status": "measured",
+        "reason": None,
+        "by_status": by_status,
+        "counted": sum(by_status.values()),
+        "window": window,
+    }
+
+
 async def _evening_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
     from app.services.activity_service import log_activity
     from app.services.company_service import get_full_context
     from app.services.report_service import (
+        DAY_DIGEST_MAX_ROWS,
         build_day_digest,
         get_evening_summary_for,
         save_evening_summary,
@@ -1192,13 +1251,63 @@ async def _evening_cycle() -> dict[str, Any]:
         # and answers `unavailable` (with the code) when it cannot read — a report that cannot see
         # its data says so instead of printing zeros.
         digest = await build_day_digest(db, day)
+        # OR-09: the digest's lists are a bounded PAGE; measure the day itself in the same session
+        # and same window, so the report can never present a clipped list as the whole day.
+        exact_outcomes = await _exact_day_outcome_counts(db, day)
 
     context["yesterday_summary"] = yesterday_summary
     context["yesterday_report_date"] = yesterday.isoformat() if yesterday_summary else None
 
     counts = digest.counts_created
-    completed = len(digest.completed)
-    failed = len(digest.failed)
+    shown_completed = len(digest.completed)
+    shown_failed = len(digest.failed)
+    shown_total = shown_completed + shown_failed + digest.cancelled
+    digest_usable = digest.status in ("measured", "empty")
+    if exact_outcomes["status"] == "measured" and digest_usable:
+        by_status = exact_outcomes["by_status"]
+        completed = by_status.get("completed", 0)
+        failed = by_status.get("failed", 0)
+        cancelled = by_status.get("cancelled", 0)
+        counted = exact_outcomes["counted"]
+        truncated: bool | None = counted > shown_total
+        truncation: dict[str, Any] = {
+            "truncated": truncated,
+            "counted": counted,
+            "shown": shown_total,
+            "by_status": by_status,
+            "bound": DAY_DIGEST_MAX_ROWS,
+            "window": exact_outcomes["window"],
+            "reason": None,
+        }
+    else:
+        # Either the day could not be measured (exact read failed) or the digest itself could not
+        # be read.  The counts fall back to the page the digest carries and the report says the
+        # completeness is UNKNOWN (`truncated: None`) — never "complete" and never a fake total.
+        by_status = {}
+        completed = shown_completed
+        failed = shown_failed
+        cancelled = digest.cancelled
+        counted = exact_outcomes["counted"] if exact_outcomes["status"] == "measured" else None
+        truncated = None
+        truncation = {
+            "truncated": None,
+            "counted": counted,
+            "shown": shown_total,
+            "by_status": None,
+            "bound": DAY_DIGEST_MAX_ROWS,
+            "window": exact_outcomes["window"],
+            "reason": digest.reason or exact_outcomes.get("reason") or "digest_unavailable",
+        }
+    completeness_note: str | None = None
+    if truncated:
+        # The model reads the clipped list; the brief must state what the list is (a page), or the
+        # summary it writes will describe 25 outcomes as the day.
+        completeness_note = (
+            f"DIGEST COMPLETENESS: the outcome lists above show {shown_total} of {counted} "
+            f"rows for {day.isoformat()} (the digest bound is {DAY_DIGEST_MAX_ROWS}); the counts "
+            "in this brief are the exact aggregate. Do not describe the shown rows as the whole "
+            "day."
+        )
 
     # H-03: the evening cycle's own model call is gated and recorded too (the second call site).
     try:
@@ -1208,8 +1317,11 @@ async def _evening_cycle() -> dict[str, Any]:
                 "title": "Evening reporting cycle",
                 # F-26 + F-43: the reporting agent READS what the other agents produced today —
                 # the day digest is part of its brief, not a similarity-memory guess.
+                # OR-09: a clipped digest carries its own completeness statement INTO the brief,
+                # so the agent never writes "25 things happened" for a 35-outcome day.
                 "description": (
                     f"Generate evening summary for {day.isoformat()}\n\n{digest.prompt_block()}"
+                    + (f"\n\n{completeness_note}" if completeness_note else "")
                 ),
                 # L3-06: the caller declares the cycle; the agent reads this FIRST.
                 "metadata": {"cycle": "evening"},
@@ -1225,6 +1337,16 @@ async def _evening_cycle() -> dict[str, Any]:
     model_summary = result.get("summary")
     if isinstance(model_summary, str) and model_summary.strip():
         summary_text = model_summary.strip()
+    elif truncated:
+        # F2/OR-09: `digest.headline()` is built from the BOUNDED page, so reusing it here would put
+        # "25 completed" into `daily_reports.evening_summary` for a 30-outcome day — the exact
+        # sentence OR-09 exists to stop.  The fallback carries the EXACT aggregate and states the
+        # clip; the page never stands in for the day.
+        summary_text = (
+            f"{completed} completed, {failed} failed, {cancelled} cancelled today; the outcome "
+            f"list is clipped to {shown_total} of {counted} rows (bound {DAY_DIGEST_MAX_ROWS}). "
+            "The reporting agent returned no summary for this run."
+        )
     else:
         # F-43: never the fabricated "Evening summary generated".  When the model returned no
         # summary the report states the records' own answer and says the model gave nothing.
@@ -1233,6 +1355,16 @@ async def _evening_cycle() -> dict[str, Any]:
         )
     raw_insights = result.get("insights")
     insights = [str(item) for item in raw_insights] if isinstance(raw_insights, list) else []
+    if truncated:
+        # OR-09: the persisted report itself states the clip (the model's `insights` are not the
+        # only place a reader looks); the counts on the row above are the exact aggregate.
+        insights.append(
+            f"day digest clipped: {shown_total} of {counted} outcome rows shown "
+            f"(the digest bound is {DAY_DIGEST_MAX_ROWS}); the task counts are exact"
+        )
+    day_digest_metrics = dict(digest.as_metrics())
+    # OR-09: additive — the completeness measurement rides the digest the report already stores.
+    day_digest_metrics["truncation"] = truncation
 
     async with session_factory() as db:
         await save_evening_summary(
@@ -1246,7 +1378,7 @@ async def _evening_cycle() -> dict[str, Any]:
             # not answer "what did the agents actually do today?".
             metrics_snapshot={
                 **dict(context.get("kpis") or {}),
-                "day_digest": digest.as_metrics(),
+                "day_digest": day_digest_metrics,
             },
         )
         # T13/D20: the evening cycle produces exactly ONE event and no per-item records (its
@@ -1268,7 +1400,11 @@ async def _evening_cycle() -> dict[str, Any]:
                 # F-43: the report says what it could and could not see.
                 "day_digest_status": digest.status,
                 "day_digest_reason": digest.reason,
-                "tasks_cancelled": digest.cancelled,
+                # OR-09: the measured completeness of the outcome lists (None = could not measure).
+                "day_digest_truncated": truncated,
+                "day_digest_counted": counted,
+                "day_digest_shown": shown_total,
+                "tasks_cancelled": cancelled,
                 "requeued": digest.requeued,
                 "reaped_approvals": digest.reaped_approvals,
                 "yesterday_report_date": context.get("yesterday_report_date"),
@@ -1285,9 +1421,13 @@ async def _evening_cycle() -> dict[str, Any]:
         "day": day.isoformat(),
         "tasks_completed": completed,
         "tasks_failed": failed,
+        "tasks_cancelled": cancelled,
         "counts": counts,
         "summary": summary_text,
-        "day_digest": digest.as_metrics(),
+        "day_digest": day_digest_metrics,
+        # OR-09: `{"truncated": bool|None, "counted": int|None, "shown": int, "by_status": {...},
+        # "bound": 25, "window": {...}, "reason": ...}` — the clipped-list disclosure.
+        "day_digest_truncation": truncation,
         "reaped_approvals": digest.reaped_approvals,
         "window": window,  # L4-11: which company-local hour this tick matched (audit parity with the morning cycle)
     }

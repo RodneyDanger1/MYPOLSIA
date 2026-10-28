@@ -409,7 +409,12 @@ async def _with_run_memories(
 
 
 async def _persist_run_artifacts(
-    db: Any, agent_type: str, result: dict[str, Any], *, task: dict[str, Any] | None = None
+    db: Any,
+    agent_type: str,
+    result: dict[str, Any],
+    *,
+    task: dict[str, Any] | None = None,
+    include_memory: bool = True,
 ) -> dict[str, Any]:
     """Persist what a finished run ACTUALLY performed, and report what happened.
 
@@ -482,7 +487,15 @@ async def _persist_run_artifacts(
         # stored under); a run without one is SKIPPED BY NAME (`E_VALIDATION` — a memory is
         # never invented).  The memory report rides the same shape as the artifact branches,
         # so the caller's fold-in reads it unchanged.
-        memory = await remember_run(db, agent_type=agent_type, task=task, result=result)
+        #
+        # OR-02: `include_memory=False` is used when a FAILED replay's performed sends are
+        # persisted (A2-01): the artifacts are real, but a failed run's summary is not a memory
+        # the next run should retrieve — the send-once ledger and `email_logs` carry that truth.
+        memory = (
+            await remember_run(db, agent_type=agent_type, task=task, result=result)
+            if include_memory
+            else {}
+        )
         if memory.get("ok"):
             # A stored memory IS a written artifact: it makes the report (and for an agent with
             # no artifact branch it is the whole report — `ok` included).
@@ -611,6 +624,11 @@ APPROVED_PAYLOAD_KEY = "approved_payload"
 #: is unknown is never re-sent automatically (a retry doubles the message): a marker with no
 #: outcome refuses the next resume BY NAME, and only an operator clear authorises a fresh attempt.
 APPROVAL_REPLAY_KEY = "approval_replay"
+
+#: The `tasks.metadata` key naming the fingerprints whose approval ENDED with a terminal failed
+#: replay (OR-02): the parked set was cleared by R3, the token was dropped, and this record is the
+#: audit of what the owner had approved but the build could not perform.
+APPROVAL_REPLAY_ENDED_KEY = "approval_replay_ended"
 
 #: The agent types whose parked action this worker can replay, and the provider seam each one uses.
 #: An agent outside this set cannot be replayed here: its resume refuses by name rather than
@@ -1051,6 +1069,15 @@ async def _replay_approved_actions(
     A gate refusal is RECORDED (the fingerprint stays parked and comes back in `approval_required`);
     a performed send is shaped into the agent's own output key so `_persist_run_artifacts` writes
     the same artifact row a live run would (`email_logs`, `social_posts`).
+
+    RETURNS its outcome — it never raises for a failed item (OR-02).  The result carries
+    `approval_replay` (one outcome per fingerprint), `approval_replay_still_parked` (what a later
+    delivery replays), `side_effects` (the receipts), the performed items under their agent output
+    keys, `approval_replay_blocked` (the named reasons) and — as a private key the caller pops
+    before persisting — `_replay_failure`, the failure object the RUN must be written with.  WHY:
+    raising after an irreversible send discarded the performed-item list and the outcome ledger
+    with the raising frame, so the failure write cleared the parked approval and the retry re-ran
+    the agent (duplicate-send risk).  Persist-first, fail-after is the whole contract.
     """
     from app.agents.policy_firewall import (
         ActionClass,
@@ -1136,11 +1163,46 @@ async def _replay_approved_actions(
         except PolsiaError as exc:
             # A pre-send refusal from the guarded sender (unconfigured identity, opt-out, missing
             # credentials): nothing reached the provider, so the marker must NOT claim a send.
+            # OR-02: the item was NOT performed — it stays parked (nothing was sent, so a later
+            # delivery may perform it once the refusal is fixed), and the run FAILS by name at the
+            # end.  Before this, the refusal was recorded and the run reported `completed`, i.e.
+            # the owner's approved send was silently skipped.
+            receipt["performed"] = False
             receipt["e_code"] = exc.code
             receipt["reason"] = exc.message
             receipts.append(receipt)
             outcomes[fp] = {"outcome": "gate_refused", "code": exc.code,
                             "at": now_utc().isoformat()}
+            blocked.append(exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 — classified HERE; never loses the items already sent
+            # OR-02: an UNEXPECTED provider/worker failure mid-batch.  Before this handler the
+            # exception escaped the loop, so item 1's performed send — its receipt, its send-once
+            # marker and its `email_logs` row — died with the raising frame; the failure write then
+            # cleared the parked set, and the retry re-ran the AGENT with the old token attached.
+            # The outcome is recorded as `provider_refused`: the send may have reached the
+            # provider, so the marker BLOCKS a blind re-send (never a duplicate), and the run
+            # still fails loudly.
+            receipt["performed"] = False
+            receipt["e_code"] = E_INTEGRATION
+            receipt["reason"] = f"{type(exc).__name__}: {exc}"
+            receipts.append(receipt)
+            outcomes[fp] = {
+                "outcome": "provider_refused",
+                "code": E_INTEGRATION,
+                "error": f"{type(exc).__name__}: {exc}",
+                "at": now_utc().isoformat(),
+            }
+            blocked.append(PolsiaError(
+                E_INTEGRATION,
+                f"{agent_type}: the approved action raised {type(exc).__name__}: {exc}",
+                how_to_fix=(
+                    "read the provider's failure in this run's activity; the send-once marker "
+                    "records that the outcome is unknown, so a retry refuses to re-send it — "
+                    "confirm at the provider before clearing that fingerprint's marker"
+                ),
+                context={"task_id": task_id, "fingerprint": fp},
+            ))
             continue
         receipt["integration"] = provider
         receipts.append(receipt)
@@ -1166,11 +1228,6 @@ async def _replay_approved_actions(
                 context={"task_id": task_id, "fingerprint": fp, "provider": provider_error},
             ))
 
-    if blocked:
-        # An approved action that could NOT be performed is this run's failure.  Reporting the task
-        # `completed` would claim the owner's send happened when it did not.
-        raise blocked[0]
-
     sent = [fp for fp, record in outcomes.items() if record.get("outcome") == "sent"]
     still_parked = [fp for fp, record in outcomes.items()
                     if record.get("outcome") in ("gate_refused", "provider_refused")]
@@ -1180,15 +1237,35 @@ async def _replay_approved_actions(
     )
     if still_parked:
         summary += f"; {len(still_parked)} action(s) remain parked"
+    if blocked:
+        summary += (
+            f"; {len(blocked)} approved action(s) could NOT be performed — this run failed "
+            f"({blocked[0].code})"
+        )
     result: dict[str, Any] = {
         "summary": summary,
         "agent_type": agent_type,
         "side_effects": receipts,
         "approval_replay": outcomes,
+        # OR-02: the fingerprints this attempt did NOT perform.  They stay parked (see
+        # `_settle_parked_after_failed_replay`), so a later delivery replays exactly these; the
+        # performed ones are closed by their `sent` marker and are no longer in the parked set.
+        "approval_replay_still_parked": still_parked,
+        # OR-02: WHY the run fails, named — the caller writes the run `failed`, it never receives
+        # a raise from this function (a raise here used to discard every outcome in the frame).
+        "approval_replay_blocked": [
+            {"code": exc.code, "message": exc.message, "how_to_fix": exc.how_to_fix,
+             "fingerprint": str((exc.context or {}).get("fingerprint") or "")}
+            for exc in blocked
+        ],
         APPROVED_PAYLOAD_KEY: approved,
     }
     for key, rows in performed_keys.items():
         result[key] = rows
+    if blocked:
+        # POPPED by `_execute_agent_task` before anything is persisted or JSON-encoded: the
+        # failure object is the run's outcome, never part of its stored output.
+        result["_replay_failure"] = blocked[0]
     return result
 
 
@@ -1236,6 +1313,358 @@ def run_agent_task(self, task_id: int) -> dict[str, Any]:
         # already carry the detail).
         raise failure
     return outcome
+
+
+# ── the DAG's edge release: the completion hook F-02 never had (OR-01) ───────────────────────
+#: How many candidate rows ONE block pass may read (the same bounded-sweep rule as every other
+#: per-tick query: `DAG_RELEASE_BATCH`, `STALE_CLAIM_BATCH`, `PENDING_RECONCILE_BATCH`).
+_DAG_BLOCK_BATCH = 200
+#: How many candidate PAGES one block pass may scan (a single 200-row window could be consumed by
+#: unrelated backlog, hiding this upstream's own dependent — F2 starvation finding, pinned by
+#: `test_a_terminal_failure_blocks_a_dependent_beyond_the_global_batch`).  Hitting the bound is
+#: LOGGED, never silently truncated.
+_DAG_BLOCK_PAGES = 50
+#: How many transitive expansions a block may take (a plan DAG can be a chain).  The bound is a
+#: failsafe; reaching it is LOGGED, never silently truncated.
+_DAG_BLOCK_PASSES = 32
+#: The `tasks.metadata` key naming why a dependent can never run (its dependency ended without
+#: completing).  The row ALSO carries the same text in `error_message` — the wire's own field.
+DEPENDENCY_BLOCKED_KEY = "dependency_blocked"
+
+
+async def _release_dag_dependents(task_id: int, *, agent_type: str) -> dict[str, Any]:
+    """Release + dispatch the rows this COMPLETED task makes runnable — exactly once (OR-01).
+
+    The missing producer half of F-02: `task_service.release_ready_dependents` existed and had
+    ZERO production callers, so a morning plan's dependent task stayed `pending` forever and the
+    F-26 upstream channel never materialised.  This is the one hook, in the worker's terminal
+    path, where a task really became `completed`.
+
+    Ordering — the service's own contract (`release_ready_dependents`' docstring: "commit, THEN
+    hand off"): the release and its `metadata.dag_released_at` marker commit in ONE transaction,
+    and the broker hand-off happens AFTER that commit.  A dependent can therefore never reach a
+    worker before the row that makes it runnable is visible, and a second completion of the same
+    parent releases nothing (the marker skips it) — so a dependent is dispatched at most once by
+    this hook.
+
+    A refused hand-off is the SHIPPED re-arm pattern, not a failure of the parent's run:
+    `enqueue_created` has already stamped `metadata.rearmed_at` on every released row in its own
+    committed transaction (the same compensation `daily_cycle._morning_cycle` relies on, F-21), so
+    the rows stay `pending` and the stranded-row reconciler finishes the delivery within one
+    window.  The refusal is RECORDED here too (an activity row and this run's returned
+    `dag_dependents`), never swallowed; any code other than `E_REDIS` propagates — "the broker
+    would not take it" is the only refusal that has a retry owner.
+    """
+    from app.core.database import get_session_factory
+
+    # A MODULE import, not `from app.services.task_service import release_ready_dependents`:
+    # `tests/unit/celery/test_service_contract.py::test_caller_imports_exactly_the_service_names_it_uses`
+    # pins the caller's from-import set EXACTLY, and that file is outside this seat's write
+    # territory.  The pin's intended growth (adding this name) is a REQUESTS item in the W3
+    # report; the module import keeps both sides agreeing on the call shape meanwhile.
+    from app.services import task_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        ready = await task_service.release_ready_dependents(db, completed_id=task_id)
+        await db.commit()
+    outcome: dict[str, Any] = {"released": ready, "dispatched": False}
+    if not ready:
+        return outcome
+    try:
+        await enqueue_created(ready, label=f"dag dependents of {task_id}")
+    except PolsiaError as exc:
+        if exc.code != E_REDIS:
+            raise
+        outcome.update(
+            {"dispatch": "deferred", "code": exc.code, "how_to_fix": exc.how_to_fix}
+        )
+        logger.warning(
+            "task %s: released dependent task(s) %s but the broker refused the hand-off (%s); "
+            "they stay pending + re-armed for the stranded-row reconciler",
+            task_id,
+            ready,
+            exc.code,
+        )
+        from app.services.activity_service import log_activity
+
+        async with session_factory() as db:
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action="dag_dependents_dispatch_deferred",
+                summary=(
+                    f"task {task_id}: {len(ready)} dependent task(s) were released but the broker "
+                    f"refused the hand-off ({exc.code}); they stay queued and the stranded-row "
+                    "reconciler re-dispatches them"
+                ),
+                level="warning",
+                detail={"task_id": task_id, "task_ids": ready, "code": exc.code},
+            )
+            await db.commit()
+        return outcome
+    outcome["dispatched"] = True
+    return outcome
+
+
+async def _block_dag_dependents(
+    upstream_id: int,
+    *,
+    agent_type: str,
+    upstream_status: str,
+    upstream_error: str | None,
+) -> dict[str, Any]:
+    """Fail — BY NAME — every pending row whose dependency ended WITHOUT completing (OR-01).
+
+    A dependency that ends `failed`/`rejected`/`cancelled` can never be satisfied, so its
+    dependents are not "waiting": they are work that would sit `pending` for ever, invisible to
+    every reconciler and advertised as "planned" on the board.  Each row is written `failed` with
+    the reason in `error_message` AND in `metadata.dependency_blocked` (the direct upstream's id,
+    its terminal status, that upstream's own error, when), plus one activity row per task — never
+    silent, never `pending`.
+
+    Transitive: a blocked row is itself a dead dependency, so the next pass ends the rows waiting
+    on IT.  Each pass PAGES through candidates (`_DAG_BLOCK_BATCH` per page, `_DAG_BLOCK_PAGES`
+    pages), so a backlog of unrelated pending rows cannot hide this upstream's own dependents;
+    hitting either bound says so in the log (the same "bounded, and the bound is stated" rule the
+    sweeps follow).
+    """
+    from sqlalchemy import String, cast, select
+
+    from app.core.database import get_session_factory, utcnow
+    from app.models.task import Task, TaskStatus
+    from app.services.activity_service import log_activities
+
+    def _cause_text(direct_id: int, cause: str) -> str:
+        return f"dependency_blocked: upstream task #{direct_id} {cause}; this task was never run"
+
+    if upstream_error:
+        terminal_cause = f"ended {upstream_status!r} ({str(upstream_error)[:300]})"
+    else:
+        terminal_cause = f"ended {upstream_status!r}"
+    causes: dict[int, str] = {int(upstream_id): terminal_cause}
+    blocked: list[int] = []
+    session_factory = get_session_factory()
+    for _pass in range(_DAG_BLOCK_PASSES):
+        async with session_factory() as db:
+            blocked_now: list[int] = []
+            next_causes: dict[int, str] = {}
+            events: list[dict[str, Any]] = []
+            stamp = utcnow().isoformat()
+            cursor = 0
+            for _page in range(_DAG_BLOCK_PAGES):
+                rows = (
+                    await db.execute(
+                        select(Task)
+                        .where(
+                            Task.status == "pending",
+                            cast(Task.metadata_json, String).like("%depends_on_ids%"),
+                            Task.id > cursor,
+                        )
+                        .order_by(Task.id)
+                        .limit(_DAG_BLOCK_BATCH)
+                    )
+                ).scalars().all()
+                if not rows:
+                    break
+                cursor = int(rows[-1].id)
+                for row in rows:
+                    meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+                    if meta.get(DEPENDENCY_BLOCKED_KEY):
+                        continue          # an owner re-arm of a row this hook already settled
+                    dep_ids = [
+                        dep for dep in (meta.get("depends_on_ids") or [])
+                        if isinstance(dep, int) and not isinstance(dep, bool)
+                    ]
+                    hit = [dep for dep in dep_ids if dep in causes]
+                    if not hit:
+                        continue
+                    direct = hit[0]
+                    reason = _cause_text(direct, causes[direct])
+                    blocked_id = int(row.id)
+                    row.status = TaskStatus.FAILED
+                    row.error_message = reason
+                    row.claimed_by = None
+                    row.claimed_at = None
+                    row.heartbeat_at = None
+                    row.updated_at = utcnow()
+                    merged = dict(meta)
+                    merged[DEPENDENCY_BLOCKED_KEY] = {
+                        "upstream_id": direct,
+                        "upstream_status": upstream_status,
+                        "at": stamp,
+                        "reason": reason,
+                    }
+                    row.metadata_json = merged
+                    blocked_now.append(blocked_id)
+                    next_causes[blocked_id] = f"ended 'failed' (it was blocked by task #{direct})"
+                    events.append(
+                        {
+                            "agent_type": str(row.agent_type or agent_type),
+                            "action": "task_dependency_blocked",
+                            "summary": reason,
+                            "level": "warning",
+                            "detail": {
+                                "task_id": blocked_id,
+                                "upstream_id": direct,
+                                "upstream_status": upstream_status,
+                                "marker": DEPENDENCY_BLOCKED_KEY,
+                            },
+                        }
+                    )
+                if len(rows) < _DAG_BLOCK_BATCH:
+                    break
+            else:
+                logger.warning(
+                    "dag block: the %s-page scan bound was reached while settling the dependents "
+                    "of task %s; a later terminal outcome or pass continues",
+                    _DAG_BLOCK_PAGES,
+                    upstream_id,
+                )
+            if blocked_now:
+                await db.flush()
+                await log_activities(db, events)
+                await db.commit()
+            else:
+                await db.rollback()
+        if not blocked_now:
+            break
+        blocked.extend(blocked_now)
+        causes.update(next_causes)
+    else:
+        logger.warning(
+            "dag block: stopped after %s transitive pass(es) while settling the dependents of "
+            "task %s; remaining candidates are ended by a later terminal outcome",
+            _DAG_BLOCK_PASSES,
+            upstream_id,
+        )
+    return {"blocked": blocked}
+
+
+def _parked_records(metadata: Any) -> dict[str, dict[str, Any]]:
+    """The parked approval records keyed by fingerprint, as committed when the row was claimed.
+
+    The records are what the parking branch wrote (`action`, `ref`, `channel`, `fingerprint`,
+    `reason`) — the same shape the wire serves — so a restore after a failed replay hands the
+    owner back exactly the approval they had, never a reconstruction.
+    """
+    records: dict[str, dict[str, Any]] = {}
+    if isinstance(metadata, dict):
+        raw = metadata.get(APPROVAL_REQUIRED_KEY)
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                fingerprint = str(item.get("fingerprint") or "").strip()
+                if fingerprint:
+                    records[fingerprint] = dict(item)
+    return records
+
+
+def _settle_parked_after_failed_replay(
+    task_row: Any,
+    *,
+    result: dict[str, Any],
+    parked_before: dict[str, dict[str, Any]],
+    requeued: bool,
+    approval_token: str,
+) -> dict[str, Any] | None:
+    """Settle the parked approval set after a replay that could not perform every item (OR-02).
+
+    The `failed` write is `task_service.update_task_status`, whose R3 rule CLEARS
+    `metadata.approval_required` for every terminal status.  For a partially-performed replay that
+    rule is wrong in exactly one case — the row is REQUEUED, so the approvals it still owes are
+    live work the retry replays.  They are restored from the records committed at claim, in the
+    SAME transaction as the failed status (the clear never becomes visible without the restore),
+    and R3's now-false `approval_cleared` record is removed.  The TOKEN survives only while it
+    still covers one of the owed fingerprints (it dies with the set it was minted for).
+
+    A terminal failure (not requeued) is the END of the approval: R3's clear stands, the token is
+    dropped so a stale bearer credential cannot ride a later re-arm, and
+    `metadata.approval_replay_ended` records which fingerprints ended with the failure.
+
+    Returns the settlement record (for the activity row + the run's outcome), or None when this
+    was not a replay that left anything owed.
+    """
+    outcomes = result.get("approval_replay")
+    if not isinstance(outcomes, dict):
+        return None
+    owed = [
+        fingerprint
+        for fingerprint, outcome in outcomes.items()
+        if isinstance(fingerprint, str)
+        and isinstance(outcome, dict)
+        and outcome.get("outcome") in ("gate_refused", "provider_refused")
+    ]
+    sent_count = sum(
+        1
+        for outcome in outcomes.values()
+        if isinstance(outcome, dict) and outcome.get("outcome") == "sent"
+    )
+    if not owed:
+        return None
+    bag = dict(task_row.metadata_json or {})
+    if not requeued:
+        # R3's `_clear_parked_approval` already dropped the token in this transaction (OR-02's
+        # task_service half) — the pop is defence in depth for a writer that predates it.
+        token_cleared = bag.pop(APPROVAL_TOKEN_KEY, None) is not None or (
+            APPROVAL_TOKEN_KEY not in bag
+        )
+        bag[APPROVAL_REPLAY_ENDED_KEY] = {
+            "status": "failed",
+            "fingerprints": owed,
+            "token_cleared": token_cleared,
+        }
+        task_row.metadata_json = bag
+        return {
+            "kept_parked": [],
+            "ended": owed,
+            "sent": sent_count,
+            "token_cleared": token_cleared,
+        }
+    approved = result.get(APPROVED_PAYLOAD_KEY)
+    plan_records = approved if isinstance(approved, dict) else {}
+    restored: list[dict[str, Any]] = []
+    for fingerprint in owed:
+        record = parked_before.get(fingerprint)
+        if record is None:
+            # Not in the claim-time snapshot (a writer changed the set mid-run): rebuild the
+            # identifying fields from the replay plan, which came from the same stored payload.
+            planned = plan_records.get(fingerprint) if isinstance(plan_records, dict) else None
+            planned = planned if isinstance(planned, dict) else {}
+            record = {
+                "action": str(planned.get("action") or ""),
+                "ref": str(planned.get("ref") or ""),
+                "channel": str(planned.get("channel") or ""),
+                "fingerprint": fingerprint,
+                "reason": "the replay did not perform this approved action",
+            }
+        restored.append(record)
+    bag[APPROVAL_REQUIRED_KEY] = [dict(record) for record in restored]
+    # R3 wrote "the approval was cleared" — it was not: the retry replays these.
+    bag.pop("approval_cleared", None)
+    token_kept = False
+    if approval_token:
+        from app.agents.policy_firewall import configured_approval_secret, verify_approval
+
+        secret = configured_approval_secret()
+        token_kept = bool(secret) and any(
+            verify_approval(secret, approval_token, action_fingerprint=fingerprint)
+            for fingerprint in owed
+        )
+    if token_kept:
+        # R3's clear dropped the token with the set; the retry needs it to replay the owed items,
+        # so it is restored from the worker's own claim-time value (never re-minted here).
+        bag[APPROVAL_TOKEN_KEY] = approval_token
+    else:
+        bag.pop(APPROVAL_TOKEN_KEY, None)
+    task_row.metadata_json = bag
+    return {
+        "kept_parked": [str(record.get("fingerprint")) for record in restored],
+        "ended": [],
+        "sent": sent_count,
+        "token_kept": token_kept,
+    }
 
 
 async def _execute_agent_task(task_id: int) -> dict[str, Any]:
@@ -1439,6 +1868,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
 
                 await close_live_sessions(db, reason=STOP_REASON_DAY_CAP)
                 await db.commit()
+            # OR-01: this row is TERMINAL (`rejected`) — its dependents can never run, so they are
+            # failed BY NAME here instead of waiting on a dependency that will never complete.
+            blocked = await _block_dag_dependents(
+                task_id,
+                agent_type=agent_type,
+                upstream_status="rejected",
+                upstream_error=f"budget: {exc.reason}",
+            )
             return {
                 "status": "skipped",
                 "task_id": task_id,
@@ -1446,6 +1883,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 "task_status": "rejected",
                 "manual_override": False,
                 "reason": f"budget: {exc.reason}",
+                "dag_dependents": blocked,
             }
         manual_override = {
             "manual_override": True,
@@ -1478,7 +1916,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # pre-F-14 contract (`_approval_replay_plan` returns {}), so the shipped
     # supply-a-credential path is byte-identical.
     replay: dict[str, dict[str, Any]] = {}
-    if approval_token:
+    # OR-02: a PARKED set is decided by the parked set, not only by the token.  Gating this on the
+    # token alone meant a row that lost its token (a settled partial replay whose token covered
+    # only the performed item) fell straight through to the agent — a regenerated body under an
+    # old approval.  With a parked set present the resume is ALWAYS the replay path: no token means
+    # every item is `gate_refused` (nothing sent) and the row re-parks, which is the fail-closed
+    # answer.  A row that was never parked is untouched (`_approval_replay_plan` returns {}).
+    parked_at_claim = parked_approval_fingerprints(task_dict.get("metadata"))
+    if approval_token or parked_at_claim:
         try:
             replay = _approval_replay_plan(task_id=task_id, metadata=task_dict.get("metadata"))
         except PolsiaError as exc:
@@ -1509,6 +1954,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     detail={"task_id": task_id, **dict(exc.context or {})},
                 )
                 await db.commit()
+            # OR-01: the row landed TERMINAL (`rejected`) before execution — its dependents can
+            # never run, so they are failed BY NAME instead of waiting for ever.
+            blocked = await _block_dag_dependents(
+                task_id,
+                agent_type=agent_type,
+                upstream_status="rejected",
+                upstream_error=f"{exc.code}: {exc.message}",
+            )
             return {
                 "status": "skipped",
                 "task_id": task_id,
@@ -1517,6 +1970,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 "reason": exc.code,
                 "error": exc.message,
                 "how_to_fix": exc.how_to_fix,
+                "dag_dependents": blocked,
             }
 
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
@@ -1657,6 +2111,12 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 context=context,
                 approval_token=approval_token,
             )
+            # OR-02: the replay returns its failure instead of raising with the performed work in
+            # hand.  The object is the RUN's outcome (popped here, so it is never persisted or
+            # JSON-encoded); the items/markers/artifacts it describes are written below.
+            replay_failure = result.pop("_replay_failure", None)
+            if replay_failure is not None:
+                failure = replay_failure
         else:
             result = await asyncio.to_thread(run_agent_for_task, agent_type, task_dict, context)
     except Exception as exc:  # noqa: BLE001 — classified, persisted and (maybe) retried
@@ -1702,13 +2162,37 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             f"awaiting approval: {len(approval_reqs)} gated action(s) need a token; request one "
             "for fingerprint(s) " + ", ".join(item["fingerprint"] for item in approval_reqs)
         )
+    # OR-02: the parked set AS COMMITTED AT CLAIM — the records a partially-failed replay restores
+    # when the row is requeued (the `failed` write's R3 rule empties `approval_required`, and a
+    # retry that must replay the owed items cannot do it from an empty set).
+    parked_before = _parked_records(task_dict.get("metadata"))
+    # A replay that really performed at least one approved action has artifacts to persist even
+    # when the attempt FAILED (A2-01: a real send is persisted even when the run fails).
+    replay_sent = bool(
+        isinstance(result, dict)
+        and isinstance(result.get("approval_replay"), dict)
+        and any(
+            isinstance(record, dict) and record.get("outcome") == "sent"
+            for record in result["approval_replay"].values()
+        )
+    )
+    replay_settlement: dict[str, Any] | None = None
     async with session_factory() as db:
         # T5/T6 persistence hook: a completed run's side effects (published posts, sent emails, the
         # finance snapshot) are written HERE, on this transaction, BEFORE the run row is finished —
         # so `agent_runs.output` carries the report of what was really persisted. A failure is
         # folded into the output + an activity row, never into the run's status: the run succeeded.
-        if run_status == "completed" and isinstance(result, dict):
-            report = await _persist_run_artifacts(db, agent_type, result, task=task_dict)
+        # OR-02 extends the gate: a FAILED replay that performed sends persists THOSE artifacts on
+        # this same transaction (the performed item is real even though the attempt failed), while
+        # the memory leg stays completed-run-only (`include_memory=False`).
+        if isinstance(result, dict) and (run_status == "completed" or replay_sent):
+            report = await _persist_run_artifacts(
+                db,
+                agent_type,
+                result,
+                task=task_dict,
+                include_memory=run_status == "completed",
+            )
             if report:
                 result["persistence"] = report
                 if agent_type == "finance" and report.get("ok"):
@@ -1861,6 +2345,24 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         # retryable, or the ladder exhausted) still ends `failed`.
                         task_row.status = TaskStatus.PENDING
                         requeued = True
+
+                if replay and isinstance(result, dict) and run_status == "failed":
+                    # OR-02: settle the parked approval set NOW that the retry decision is final.
+                    # The `failed` write above ran R3's rule and emptied `approval_required`; a
+                    # requeued row still OWES the unperformed fingerprints (the retry replays
+                    # exactly those), so they are restored here — in the SAME transaction, so the
+                    # failed status is never observable with the parked set already lost.  A
+                    # terminal failure ends the approval instead (the clear stands, the token is
+                    # dropped) — see the helper's docstring.
+                    replay_settlement = _settle_parked_after_failed_replay(
+                        task_row,
+                        result=result,
+                        parked_before=parked_before,
+                        requeued=requeued,
+                        approval_token=approval_token,
+                    )
+                    if replay_settlement is not None:
+                        result["approval_replay_settlement"] = replay_settlement
             if task_status == "awaiting_approval":
                 # ONE activity row for the parked outcome — the run did not "complete" the task;
                 # it recorded drafts and stopped for the owner's green light.
@@ -1886,6 +2388,31 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     detail={"task_id": task_id, "duration_secs": duration, "requeued": requeued,
                             "manual_override": bool(manual_override)},
                 )
+            if replay_settlement is not None:
+                # OR-02: the partial replay's own record — what was NOT performed and where it
+                # went.  A warning-level row (the run failed), one per attempt, so the owner can
+                # answer "which approved action did not happen?" from the activity feed alone.
+                kept = replay_settlement.get("kept_parked") or []
+                ended = replay_settlement.get("ended") or []
+                await log_activity(
+                    db,
+                    agent_type=agent_type,
+                    action="approval_replay_incomplete",
+                    summary=(
+                        f"task {task_id}: the approved replay did not perform every approved "
+                        f"action; "
+                        + (
+                            f"{len(kept)} fingerprint(s) stay parked for the retry "
+                            f"(sent={replay_settlement.get('sent')})"
+                            if requeued
+                            else f"{len(ended)} fingerprint(s) ended with the failure "
+                                 f"(sent={replay_settlement.get('sent')})"
+                        )
+                    ),
+                    level="warning",
+                    detail={"task_id": task_id, "requeued": requeued,
+                            **dict(replay_settlement)},
+                )
 
             # wave U5 (P2/B22): the active window's task counter — ONE UPDATE folded into this
             # same transaction (the same commit as the activity row above, no extra round trip).
@@ -1896,6 +2423,30 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
 
             await increment_tasks_run(db)
         await db.commit()
+
+    # ── 4b. F-02 / OR-01: the terminal outcome settles the rows waiting on this task ──────────
+    # BEFORE the notification (the dependents are work, the notification is a courtesy) and AFTER
+    # the outcome commit — `release_ready_dependents` requires the completed row to be visible, and
+    # the released rows must be committed before any of them is handed to a worker.
+    #
+    #   * completed        -> release the rows whose whole dependency set is now completed, then
+    #                         hand them off (a second completion releases nothing: the released
+    #                         marker is committed with the release);
+    #   * failed, terminal -> its dependents can never run: fail them BY NAME (never `pending`);
+    #   * failed, requeued -> the retry is coming; nothing is settled yet;
+    #   * awaiting_approval -> the row is not done; its dependents keep waiting;
+    #   * lease lost       -> this worker wrote no outcome; the row belongs to another worker.
+    dag_dependents: dict[str, Any] | None = None
+    if not lease_lost.is_set():
+        if task_status == "completed":
+            dag_dependents = await _release_dag_dependents(task_id, agent_type=agent_type)
+        elif task_status == "failed" and not requeued:
+            dag_dependents = await _block_dag_dependents(
+                task_id,
+                agent_type=agent_type,
+                upstream_status="failed",
+                upstream_error=error,
+            )
 
     # wave U5 (P2+P5): the owner's terminal-outcome notification — the FROZEN lazy-imported call
     # (`notify_owner_for_terminal_outcome(db, task_id, outcome)`, P5's module), made AFTER the
@@ -1939,6 +2490,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         **(manual_override or {"manual_override": False}),
         # T02: the fingerprints this run left awaiting the owner's token (empty = none).
         APPROVAL_REQUIRED_KEY: approval_reqs,
+        # OR-01: what this terminal outcome did to the plan DAG — `{"released": [...],
+        # "dispatched": bool}` on a completion, `{"blocked": [...]}` on a terminal failure, None
+        # when nothing waited on this row / the row is not terminal yet.
+        "dag_dependents": dag_dependents,
+        # OR-02: what a partially-performed replay did with the approvals it still owed —
+        # `{"kept_parked": [...], "ended": [...], "sent": n, "token_kept"/"token_cleared": bool}`,
+        # or None when the attempt owned no residual approval.
+        "approval_replay_settlement": replay_settlement,
         "_exception": failure,  # popped by the sync wrapper; never returned to Celery
     }
 

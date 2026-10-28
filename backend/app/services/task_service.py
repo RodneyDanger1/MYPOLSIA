@@ -425,6 +425,14 @@ def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
         "at": utcnow().isoformat(),
         "fingerprints": [str(item) for item in parked] if isinstance(parked, list) else [],
     }
+    # OR-02: the token dies WITH the parked set it was minted for.  `attach_approval_token` writes
+    # `metadata.approval_token`, and a terminal write used to empty `approval_required` while
+    # leaving that bearer credential on the row — so a later re-arm of the same task handed the
+    # worker a token that no longer names anything parked (the resume path reads it, the parked
+    # set is gone, and the agent re-runs under a stale approval).  Dropping it here keeps the
+    # rule in ONE place: "no parked set ⇒ no token".  `approval_cleared` records the fingerprints
+    # that ended, so the audit keeps what the token was for.
+    merged.pop(APPROVAL_TOKEN_METADATA_KEY, None)
     task.metadata_json = merged
     return True
 
@@ -583,6 +591,28 @@ async def transition_task_status(
         f"task #{task_id} status {current} -> {target.value} (accepted, by {actor})",
         detail={"task_id": task_id, "from": current, "to": target.value, "actor": actor},
     )
+
+    # ── F2/OR-01: a terminal status written HERE still settles the plan DAG ──────────────────
+    # The worker's completion hook only sees the worker's own terminal write.  This service is
+    # the owner/API terminal writer (`PATCH /tasks/{id}/status`), so without this leg an owner
+    # who cancelled a plan step (or an operator who completed/failed a queued row) left every
+    # dependent `pending` for ever — the same OR-01 stranding through a second writer.
+    #   * completed  -> the DAG edge is released in THIS transaction (`dag_released_at` + the
+    #                   `rearmed_at` delivery-debt marker).  The service has no broker: the
+    #                   shipped stranded-row reconciler owns the hand-off (5-min tick; a re-armed
+    #                   row is dispatched once its 30-min window passes), exactly as it does for
+    #                   every other service-written `rearmed_at` row.
+    #   * failed/cancelled/rejected -> the dependents can never run; they are failed BY NAME here
+    #                   (direct and transitive), never left `pending`.
+    if target is TaskStatus.COMPLETED:
+        await release_ready_dependents(db, completed_id=task_id)
+    elif target in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.REJECTED):
+        await _fail_dependents_of_terminal(
+            db,
+            upstream_id=task_id,
+            upstream_status=target.value,
+            upstream_error=error_message,
+        )
     return task
 
 
@@ -1340,8 +1370,24 @@ async def materialize_upstream_results(db: AsyncSession, task: Task) -> list[Any
     return results
 
 
-#: One release pass' bound (the same order as the sibling ticks; the next completion continues).
+#: One release pass' page size (the same order as the sibling ticks).
 DAG_RELEASE_BATCH = 200
+#: How many candidate PAGES one release pass may scan.  A single window was not enough: a backlog
+#: of unrelated pending dependent rows ahead of this plan's rows consumed the 200-row limit, so the
+#: completed parent's OWN dependent was never examined and stranded `pending` with no marker and no
+#: reconciler to see it (F2 finding, pinned by
+#: `test_w3_dag_release.py::test_a_completed_parent_releases_a_dependent_beyond_the_global_batch`).
+#: The scan is targeted at `completed_id` and paged by id; reaching the page bound is LOGGED.
+DAG_RELEASE_PAGES = 50
+
+#: The `tasks.metadata` key that records a DAG release (F-02 / OR-01).  A dependent is released
+#: ONCE: this marker is written in the SAME transaction as the release, so a second completion
+#: hook (a redelivered parent, another parent of the same node finishing) can never hand the same
+#: row to a worker twice.  A released row whose delivery was refused is re-armed with
+#: `metadata.rearmed_at` (see `release_ready_dependents`) and retried by the stranded-row
+#: reconciler — a DIFFERENT mechanism on purpose: a release is a state change, a re-arm is a
+#: delivery debt, and conflating them is how a completion hook double-dispatches.
+DAG_RELEASED_KEY = "dag_released_at"
 
 
 async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> list[int]:
@@ -1349,38 +1395,84 @@ async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> li
 
     `daily_cycle._morning_cycle` persists the plan's edges on the row (`metadata.depends_on_ids`,
     titles resolved to ids in the same transaction) and dispatches only the roots; this is the
-    other half: when a task finishes, the rows waiting on it become runnable.
+    other half: when a task finishes, the rows waiting on it become runnable.  Its production
+    callers are the worker's completion hook (`celery_app.tasks.agent_tasks`, after the outcome
+    transaction commits — that leg dispatches immediately) and the service's own terminal writer
+    (`transition_task_status`, below), which runs in the status write's transaction and leaves the
+    broker hand-off to the stranded-row reconciler.  OR-01: before those callers existed this
+    function had zero production callers and every dependent stranded `pending` forever.
 
     Bounded and dialect-portable in the house way: a LIKE prefilter on the rendered JSON column
-    (the same shape `maintenance._reconcile_stranded_pending` uses) and the exact test re-derived
-    in Python.  Every released id is stamped with `stamp_rearmed` BEFORE the caller dispatches,
-    so a broker that refuses the hand-off leaves a bounded retry (the 5-min reconciler) instead of
-    a row only a human can rescue.  The caller owns the transaction — commit, THEN hand off — so a
-    dependent can never be dispatched to a row that is not yet `completed`.
+    (the same shape `maintenance._reconcile_stranded_pending` uses), a TARGET filter on this
+    completion's id and a PAGED id-ordered scan (`DAG_RELEASE_PAGES`), so a backlog of unrelated
+    pending rows can never consume the window and hide this parent's own dependents; the page
+    bound is stated and logged.  Every released id is stamped with `stamp_rearmed` BEFORE the
+    caller dispatches, so a broker that refuses the hand-off leaves a bounded retry (the
+    stranded-row reconciler, which re-arms for a 30-min window) instead of a row only a human can
+    rescue.  The caller owns the transaction — commit, THEN hand off — so a dependent can never be
+    dispatched to a row that is not yet `completed`.
 
-    Returns the ids this pass released (empty when nothing was waiting on `completed_id`).
+    IDEMPOTENT (OR-01).  Each released row is also stamped with `metadata.dag_released_at` in this
+    same transaction; a second pass skips it.  "The caller's dispatch message was lost" is NOT a
+    reason to release again — `metadata.rearmed_at` (stamped by `stamp_rearmed` right here) is the
+    delivery-debt marker the reconciler consumes, so the retry path is single-owner.
+
+    NOT this function's business: a dependent of a terminal NON-completed upstream.  That edge can
+    never be satisfied, so releasing it is impossible; the worker's completion hook fails those
+    rows BY NAME (`agent_tasks._block_dag_dependents`) instead of leaving them `pending` forever.
+
+    Returns the ids this pass released (empty when nothing was waiting on `completed_id`, or when
+    everything waiting had already been released by an earlier pass).
     """
     from sqlalchemy import String, cast
 
-    rows = (
-        await db.execute(
-            select(Task.id, Task.metadata_json)
-            .where(
-                Task.status == "pending",
-                cast(Task.metadata_json, String).like("%depends_on_ids%"),
+    target_id = int(completed_id)
+    candidates: list[tuple[int, list[int]]] = []
+    cursor = 0
+    for _page in range(DAG_RELEASE_PAGES):
+        rows = (
+            await db.execute(
+                select(Task.id, Task.metadata_json)
+                .where(
+                    Task.status == "pending",
+                    cast(Task.metadata_json, String).like("%depends_on_ids%"),
+                    Task.id > cursor,
+                )
+                .order_by(Task.id)
+                .limit(DAG_RELEASE_BATCH)
             )
-            .order_by(Task.id)
-            .limit(DAG_RELEASE_BATCH)
+        ).all()
+        if not rows:
+            break
+        cursor = int(rows[-1][0])
+        for task_id, metadata in rows:
+            if not isinstance(metadata, dict) or metadata.get(DAG_RELEASED_KEY):
+                continue
+            raw_deps = metadata.get("depends_on_ids")
+            if not isinstance(raw_deps, list):
+                continue
+            dep_ids = [
+                dep for dep in raw_deps
+                if isinstance(dep, int) and not isinstance(dep, bool)
+            ]
+            # Only the rows THIS completion can make runnable: a row whose edges do not name
+            # `completed_id` cannot have been made ready by it.  Without this target filter a
+            # backlog page could be consumed by unrelated rows (the F2 starvation finding).
+            if target_id not in dep_ids:
+                continue
+            candidates.append((int(task_id), dep_ids))
+        if len(rows) < DAG_RELEASE_BATCH:
+            break
+    else:
+        logger.warning(
+            "dag release: the %s-page scan bound was reached while releasing the dependents of "
+            "task %s; a later completion or the stranded-row reconciler must finish the rest",
+            DAG_RELEASE_PAGES,
+            completed_id,
         )
-    ).all()
-    candidates = [
-        (int(task_id), metadata)
-        for task_id, metadata in rows
-        if isinstance(metadata, dict) and metadata.get("depends_on_ids")
-    ]
     if not candidates:
         return []
-    needed = {int(dep) for _tid, meta in candidates for dep in meta["depends_on_ids"]}
+    needed = {dep for _task_id, dep_ids in candidates for dep in dep_ids}
     done = set(
         (
             await db.execute(
@@ -1391,9 +1483,7 @@ async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> li
         .all()
     )
     ready = [
-        task_id
-        for task_id, meta in candidates
-        if all(int(dep) in done for dep in meta["depends_on_ids"])
+        task_id for task_id, dep_ids in candidates if all(dep in done for dep in dep_ids)
     ]
     if ready:
         # F-26: the rows about to run RECORD their upstream agents' results HERE, in the same
@@ -1403,13 +1493,163 @@ async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> li
         ready_tasks = (
             await db.execute(select(Task).where(Task.id.in_(ready)))
         ).scalars().all()
+        released_at = utcnow().isoformat()
         for ready_task in ready_tasks:
             await materialize_upstream_results(db, ready_task)
+            # OR-01: the release marker rides the SAME transaction as the release itself, so a
+            # second completion hook sees it (the marker cannot be lost without the release).
+            merged = dict(ready_task.metadata_json or {})
+            merged[DAG_RELEASED_KEY] = released_at
+            merged["dag_released_by"] = int(completed_id)
+            ready_task.metadata_json = merged
+        await db.flush()
 
         from celery_app.tasks._common import stamp_rearmed  # lazy: worker layer, cycle-free
 
         await stamp_rearmed(db, ready, reason=f"dag_parent_{completed_id}")
     return ready
+
+
+#: The bound on ONE failed-dependent pass, and on the transitive expansion (a plan DAG can be a
+#: chain).  Reaching either bound is LOGGED, never silently truncated — the same rule the release
+#: pass above follows.
+_DEPENDENT_BLOCK_BATCH = 200
+_DEPENDENT_BLOCK_PASSES = 32
+#: Candidate PAGES per block pass.  One window was not enough: a backlog of unrelated pending
+#: dependent rows could occupy the whole 200-row page, so the terminal parent's own dependent was
+#: never examined (F2 starvation finding, pinned by the `*_beyond_the_global_batch` tests).  The
+#: scan is paged by id; reaching this bound is LOGGED, never silently truncated.
+_DEPENDENT_BLOCK_PAGES = 50
+#: The `tasks.metadata` key naming why a dependent can never run.  The worker's
+#: `agent_tasks._block_dag_dependents` writes the SAME string (one vocabulary, two writers); this
+#: module keeps its own private name so the service surface (`__all__`) does not grow.
+_DEPENDENCY_BLOCKED_KEY = "dependency_blocked"
+
+
+async def _fail_dependents_of_terminal(
+    db: AsyncSession,
+    *,
+    upstream_id: int,
+    upstream_status: str,
+    upstream_error: str | None,
+) -> list[int]:
+    """Fail — BY NAME — the pending dependents of a terminal NON-completed row (OR-01, service leg).
+
+    The service-side twin of the worker's `agent_tasks._block_dag_dependents`: the worker hook
+    covers the worker's own terminal write, this covers `transition_task_status` (the owner/API
+    `PATCH /tasks/{id}/status`).  Both write the same marker (`metadata.dependency_blocked`), the
+    same `error_message` shape and the same `task_dependency_blocked` activity row.
+
+    Runs in the CALLER's transaction — the status write and the blocked rows commit or roll back
+    together, so a failed transaction never leaves a dependent written off for a cancellation that
+    did not happen.  Transitive: a blocked row is itself a dead dependency, so the next pass ends
+    the rows waiting on IT; each pass is bounded and reaching the bound is logged.
+
+    Returns the ids this call settled (empty when nothing was waiting, or when every candidate was
+    already settled by an earlier writer).
+    """
+    from sqlalchemy import String, cast
+
+    from app.services.activity_service import log_activities
+
+    if upstream_error:
+        terminal_cause = f"ended {upstream_status!r} ({str(upstream_error)[:300]})"
+    else:
+        terminal_cause = f"ended {upstream_status!r}"
+    causes: dict[int, str] = {int(upstream_id): terminal_cause}
+    blocked: list[int] = []
+    for _pass in range(_DEPENDENT_BLOCK_PASSES):
+        blocked_now: list[int] = []
+        next_causes: dict[int, str] = {}
+        events: list[dict[str, Any]] = []
+        stamp = utcnow().isoformat()
+        cursor = 0
+        for _page in range(_DEPENDENT_BLOCK_PAGES):
+            rows = (
+                await db.execute(
+                    select(Task)
+                    .where(
+                        Task.status == "pending",
+                        cast(Task.metadata_json, String).like("%depends_on_ids%"),
+                        Task.id > cursor,
+                    )
+                    .order_by(Task.id)
+                    .limit(_DEPENDENT_BLOCK_BATCH)
+                )
+            ).scalars().all()
+            if not rows:
+                break
+            cursor = int(rows[-1].id)
+            for row in rows:
+                meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+                if meta.get(_DEPENDENCY_BLOCKED_KEY):
+                    continue          # an owner re-arm of a row this writer already settled
+                dep_ids = [
+                    dep for dep in (meta.get("depends_on_ids") or [])
+                    if isinstance(dep, int) and not isinstance(dep, bool)
+                ]
+                hit = [dep for dep in dep_ids if dep in causes]
+                if not hit:
+                    continue
+                direct = hit[0]
+                reason = (
+                    f"dependency_blocked: upstream task #{direct} {causes[direct]}; "
+                    "this task was never run"
+                )
+                blocked_id = int(row.id)
+                row.status = TaskStatus.FAILED
+                row.error_message = reason
+                row.claimed_by = None
+                row.claimed_at = None
+                row.heartbeat_at = None
+                row.updated_at = utcnow()
+                merged = dict(meta)
+                merged[_DEPENDENCY_BLOCKED_KEY] = {
+                    "upstream_id": direct,
+                    "upstream_status": upstream_status,
+                    "at": stamp,
+                    "reason": reason,
+                }
+                row.metadata_json = merged
+                blocked_now.append(blocked_id)
+                blocked.append(blocked_id)
+                next_causes[blocked_id] = f"ended 'failed' (it was blocked by task #{direct})"
+                events.append(
+                    {
+                        "agent_type": str(row.agent_type or _TASK_STATUS_ACTOR_ROLE),
+                        "action": "task_dependency_blocked",
+                        "summary": reason,
+                        "level": "warning",
+                        "detail": {
+                            "task_id": blocked_id,
+                            "upstream_id": direct,
+                            "upstream_status": upstream_status,
+                            "marker": _DEPENDENCY_BLOCKED_KEY,
+                        },
+                    }
+                )
+            if len(rows) < _DEPENDENT_BLOCK_BATCH:
+                break
+        else:
+            logger.warning(
+                "dependent block: the %s-page scan bound was reached while settling the "
+                "dependents of task %s; a later terminal outcome or pass continues",
+                _DEPENDENT_BLOCK_PAGES,
+                upstream_id,
+            )
+        if not blocked_now:
+            break
+        await db.flush()
+        await log_activities(db, events)
+        causes.update(next_causes)
+    else:
+        logger.warning(
+            "dependent block: stopped after %s transitive pass(es) while settling the dependents "
+            "of task %s; a later terminal outcome ends the rest",
+            _DEPENDENT_BLOCK_PASSES,
+            upstream_id,
+        )
+    return blocked
 
 
 # ── reads (get_agent_statuses is wired to /agents/status)
