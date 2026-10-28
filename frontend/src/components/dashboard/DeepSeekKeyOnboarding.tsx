@@ -19,6 +19,14 @@ import { api, type DeepSeekKeyStatus } from "@/lib/api";
  *    `localStorage`; NO key material of any kind is ever written client-side).  The prompt
  *    is not a nag: one dismiss is enough, and the Settings page remains the permanent
  *    entry point.
+ *
+ * UIB-03 — THE COPY IS DERIVED ONLY FROM WHAT THIS READ PROVES.  `GET /config/deepseek-key`
+ * answers whether a model key exists; it says NOTHING about dispatch being on (auto-mode may be
+ * off, the beat may be stopped, `dispatch_paused` may be true — all three are separate reads this
+ * banner does not make).  So the heading states the key fact and the planner's readiness, and
+ * never claims "the agents are switched on" — that was a runtime claim the key check cannot
+ * support.  The second line keeps the one guarantee that IS structural: a proposal does not run
+ * until the owner confirms it.
  */
 
 export const ONBOARDING_DISMISS_KEY = "polsia.deepseek_onboarding.dismissed";
@@ -73,7 +81,9 @@ export function DeepSeekKeyOnboarding() {
           <div>
             <p className="flex items-center gap-2">
               <Chip variant="accent">Ready</Chip>
-              <span className="text-sm font-bold text-ink">The agents are switched on</span>
+              <span className="text-sm font-bold text-ink">
+                The model key is configured — the planner is ready
+              </span>
             </p>
             <p className="mt-1 text-sm text-ink-muted">
               A DeepSeek key is configured. The planner can research candidate businesses and draft
@@ -106,7 +116,7 @@ export function DeepSeekKeyOnboarding() {
         <p className="flex items-center gap-2">
           <Chip variant="accent">Setup</Chip>
           <span className="text-sm font-bold text-ink">
-            Add a DeepSeek API key to switch the agents on
+            Add a DeepSeek API key so agent work can run
           </span>
         </p>
         <p className="mt-1 text-sm text-ink-muted">

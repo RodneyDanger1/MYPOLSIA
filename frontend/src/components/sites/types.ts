@@ -74,6 +74,70 @@ export type DeployResponse = {
   plan: DeployPlan;
 };
 
+/* ── the approval half of a LIVE deploy (AC-03/AC-04, backend deploy_service) ────────────────── */
+/** `POST /api/v1/approvals` — the mint response (`ApprovalIssueResponse`).
+ *
+ *  `token` is a BEARER CREDENTIAL: it authorizes exactly one fingerprint for its TTL.  It is used
+ *  once to repeat the live deploy and is NEVER rendered, logged or kept in a rendered state field.
+ *  `expires_at` is epoch seconds (the server's `int(minted.expires_at)`). */
+export type ApprovalMint = {
+  token: string;
+  action_fingerprint: string;
+  expires_at: number;
+  ttl_s: number | null;
+};
+
+/** The approval the server says this LIVE deploy needs: the fingerprint it computed for the exact
+ *  `deploy_payload(slug, service_id)` this site would send.  `message` is the server's own named
+ *  refusal, quoted so the operator sees WHY the first Confirm did not deploy. */
+export type ApprovalGate = {
+  fingerprint: string;
+  message: string;
+};
+
+/** The named-refusal envelope on an `ApiError`: `detail` (HTTPException shape) or `error`
+ *  (PolsiaError shape), per `lib/api`'s `refusalFrom`.  `null` when the error carries none. */
+function refusalEnvelope(error: unknown): Record<string, unknown> | null {
+  const body = (error as { body?: unknown } | null)?.body;
+  if (!body || typeof body !== "object") return null;
+  const bag = body as { detail?: unknown; error?: unknown };
+  const envelope =
+    bag.detail !== null && typeof bag.detail === "object"
+      ? bag.detail
+      : bag.error !== null && typeof bag.error === "object"
+        ? bag.error
+        : null;
+  return envelope as Record<string, unknown> | null;
+}
+
+/**
+ * The approval fingerprint a REFUSED live deploy demands — or `null`.
+ *
+ * A live Render deploy is `EXTERNAL_IRREVERSIBLE`, so `deploy_service._authorise_live_deploy`
+ * refuses it with `E_POLICY_DENIED` until a single-use token for
+ * `fingerprint("external_irreversible", "render", deploy_payload(slug, service_id))` is supplied.
+ * The backend puts its OWN computed value in the refusal (`context.fingerprint`, alongside
+ * `context.decision == "require_approval"`), which is what this reads: the browser never
+ * re-derives a security-relevant hash (a client-side copy of the canonicalisation could drift and
+ * mint a token that cannot verify — a lying "approved").
+ *
+ * `null` covers every other refusal: a sandbox block, the kill switch, an exhausted cap, a missing
+ * approval channel, or a refusal that names no fingerprint — none of which a mint can resolve.
+ */
+export function approvalRefusalFingerprint(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code !== "E_POLICY_DENIED") return null;
+  const envelope = refusalEnvelope(error);
+  const context = envelope?.context;
+  if (!context || typeof context !== "object") return null;
+  const fields = context as { decision?: unknown; fingerprint?: unknown };
+  if (fields.decision !== "require_approval") return null;
+  const fingerprint = fields.fingerprint;
+  if (typeof fingerprint !== "string") return null;
+  const trimmed = fingerprint.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 /** What the create form collects. Blank boxes are omitted from the request body. */
 export type SiteDraft = {
   title: string;

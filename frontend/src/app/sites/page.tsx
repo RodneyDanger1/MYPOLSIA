@@ -9,8 +9,11 @@ import type { DeployBoard } from "@/components/sites/SiteDeployControl";
 import type { LifecycleBoard } from "@/components/sites/SiteLifecycleControl";
 import {
   absoluteSiteUrl,
+  approvalRefusalFingerprint,
   bytesText,
   describeError,
+  type ApprovalGate,
+  type ApprovalMint,
   type DeployRecord,
   type DeployResponse,
   type DeployStateResponse,
@@ -94,6 +97,17 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
  * "deployed" for a deploy Render has not acknowledged.  When the server answers
  * `configured: false`, the row renders NO deploy button and names the missing variables.
  *
+ * UIB-02 — A LIVE DEPLOY IS TWO STEPS ON THE SERVER SIDE TOO.  It is `EXTERNAL_IRREVERSIBLE`, so
+ * `deploy_service` refuses it with `E_POLICY_DENIED` / `require_approval` until a single-use token
+ * for the fingerprint of `deploy_payload(slug, service_id)` is supplied.  Confirm therefore asks
+ * the server first (nothing is sent on a refusal), and the refusal's own `context.fingerprint` — the
+ * backend's computed value, never a client-side copy — arms "Approve & deploy", which mints through
+ * `POST /api/v1/approvals` and REPEATS the live deploy with `approval_token`.  The minted token is
+ * a bearer credential: it lives only in a ref for the one command it authorizes, is deleted on
+ * every exit, and is never rendered.  A refusal approval cannot resolve (`E_SANDBOX_BLOCKED`, the
+ * kill switch, an exhausted render day cap, "no approval channel configured") renders as the named
+ * refusal with NO mint control — the gate is only armed by the server's own `require_approval`.
+ *
  * Wave V26 (Sites 2.0) adds the template picker (three named presets), each row's real page list
  * (`pages` from `meta.json`, so a V24 site shows only its index and no invented links), and the
  * custom-domain field.  The domain is a RECORD: it is stored with the site and shown with the
@@ -124,9 +138,21 @@ export default function SitesPage() {
   const [deployStates, setDeployStates] = useState<Record<string, DeployStateResponse>>({});
   const [deployStateErrors, setDeployStateErrors] = useState<Record<string, string>>({});
   const [deployBusy, setDeployBusy] = useState<string | null>(null);
-  const [deployBusyKind, setDeployBusyKind] = useState<"preview" | "deploy" | null>(null);
+  const [deployBusyKind, setDeployBusyKind] = useState<"preview" | "deploy" | "approve" | null>(
+    null,
+  );
   const [deployPreviews, setDeployPreviews] = useState<Record<string, DeployResponse>>({});
   const [deployErrors, setDeployErrors] = useState<Record<string, string>>({});
+
+  // UIB-02 — the approval half of a LIVE deploy.  AC-03/AC-04 make a live Render deploy
+  // EXTERNAL_IRREVERSIBLE: the backend refuses `{dry_run:false}` until a single-use token for
+  // `fingerprint("external_irreversible", "render", deploy_payload(slug, service_id))` is supplied,
+  // and that refusal CARRIES the fingerprint it computed.  `approvalGates` holds that refusal per
+  // slug.  The minted bearer credential never enters React state at all: it is a local binding in
+  // `approveAndDeploy`, used for exactly one request and then dropped with the handler's frame.
+  const [approvalGates, setApprovalGates] = useState<Record<string, ApprovalGate>>({});
+  /** What actually happened after an approved deploy — the token is never part of this sentence. */
+  const [deployNotices, setDeployNotices] = useState<Record<string, string>>({});
 
   // Wave V27 — the lifecycle.  `deleteArmed` is a row whose Delete was clicked ONCE: no request has
   // been sent, and only Confirm calls the API.  `lifecycleErrors` is keyed by slug so a refusal stays
@@ -214,44 +240,145 @@ export default function SitesPage() {
     }
   }
 
-  /** Step 2: the LIVE deploy, only after the operator saw the plan and confirmed it. */
+  /** Apply a settled LIVE deploy response to the row: the badge/state come from the server's own
+   *  record shape, never a local guess.  A server that answers `dry_run: true` to a live request
+   *  has not deployed anything, and that is named as a broken answer instead of claimed. */
+  function applyLiveDeploy(slug: string, result: DeployResponse) {
+    if (result.dry_run) {
+      setDeployErrors((prev) => ({
+        ...prev,
+        [slug]: "the server answered a DRY RUN to a live deploy request — nothing was deployed",
+      }));
+      return;
+    }
+    setDeployStates((prev) => {
+      const current = prev[slug];
+      return {
+        ...prev,
+        [slug]: {
+          slug,
+          configured: result.configured,
+          missing: result.configured ? [] : (current?.missing ?? []),
+          service_id: current?.service_id ?? null,
+          last_deploy: asDeployRecord({
+            at: result.at,
+            state: result.state,
+            status: result.status,
+            deploy_id: result.deploy_id,
+            url: result.url,
+            error: null,
+          }),
+        },
+      };
+    });
+  }
+
+  /**
+   * Step 2: the LIVE deploy, only after the operator saw the plan and confirmed it.
+   *
+   * A live Render deploy is EXTERNAL_IRREVERSIBLE, so the backend's policy gate normally refuses
+   * this first call with `E_POLICY_DENIED` / `require_approval` and the fingerprint the owner must
+   * approve.  That is NOT an error state: the refusal arms the approval leg for this row (the
+   * server computed the fingerprint, so no client-side hash copy can drift), and nothing was sent.
+   * Every other refusal — sandbox, kill switch, an exhausted day cap, a missing approval channel,
+   * a Render config error — renders as the named refusal it is.
+   */
   async function confirmDeploy(slug: string) {
     setDeployBusy(slug);
     setDeployBusyKind("deploy");
     setDeployErrors((prev) => withoutKey(prev, slug));
+    setDeployNotices((prev) => withoutKey(prev, slug));
+    setApprovalGates((prev) => withoutKey(prev, slug));
     // The preview has served its purpose: drop it so the badge cannot keep claiming "Dry-run ok"
     // while the live call is in flight or after it failed.
     setDeployPreviews((prev) => withoutKey(prev, slug));
     try {
       const result = await api.post<DeployResponse>(`/sites/${slug}/deploy`, { dry_run: false });
       setDeployPreviews((prev) => withoutKey(prev, slug));
-      if (!result.dry_run) {
-        setDeployStates((prev) => {
-          const current = prev[slug];
-          return {
-            ...prev,
-            [slug]: {
-              slug,
-              configured: result.configured,
-              missing: result.configured ? [] : (current?.missing ?? []),
-              service_id: current?.service_id ?? null,
-              last_deploy: asDeployRecord({
-                at: result.at,
-                state: result.state,
-                status: result.status,
-                deploy_id: result.deploy_id,
-                url: result.url,
-                error: null,
-              }),
-            },
-          };
-        });
-      }
+      applyLiveDeploy(slug, result);
     } catch (error: unknown) {
-      setDeployErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
-      // The backend persisted a failed record before refusing: re-read it so the badge tells the
-      // truth instead of keeping a stale "never deployed".
-      await readDeployState(slug);
+      const fingerprint = approvalRefusalFingerprint(error);
+      if (fingerprint !== null) {
+        setApprovalGates((prev) => ({
+          ...prev,
+          [slug]: { fingerprint, message: describeError(error) },
+        }));
+      } else {
+        setDeployErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
+        // The backend persisted a failed record before refusing an upstream failure: re-read it so
+        // the badge tells the truth instead of keeping a stale "never deployed".
+        await readDeployState(slug);
+      }
+    } finally {
+      setDeployBusy(null);
+      setDeployBusyKind(null);
+    }
+  }
+
+  /**
+   * The approval leg: mint the single-use token for the fingerprint the server's refusal named
+   * (`POST /approvals`), then REPEAT the exact live deploy with it (`approval_token`).
+   *
+   * The token is a bearer credential: it is a local binding here, used for exactly one request and
+   * dropped with this frame; it is never placed in rendered state, never put in a message, and
+   * never logged.  The mint response is validated before use: a body with no token, or a token
+   * minted for a DIFFERENT fingerprint, is a named broken answer — the deploy is not sent on it.
+   */
+  async function approveAndDeploy(slug: string) {
+    const gate = approvalGates[slug];
+    if (!gate) return;
+    setDeployBusy(slug);
+    setDeployBusyKind("approve");
+    setDeployErrors((prev) => withoutKey(prev, slug));
+    setDeployNotices((prev) => withoutKey(prev, slug));
+    try {
+      const minted = await api.post<ApprovalMint>("/approvals", {
+        action_fingerprint: gate.fingerprint,
+      });
+      if (!minted || typeof minted.token !== "string" || minted.token.trim() === "") {
+        setDeployErrors((prev) => ({
+          ...prev,
+          [slug]: "the approval mint returned no token — nothing was sent to Render",
+        }));
+        return;
+      }
+      if (minted.action_fingerprint !== gate.fingerprint) {
+        setDeployErrors((prev) => ({
+          ...prev,
+          [slug]:
+            `the approval mint answered for ${String(minted.action_fingerprint)} instead of the ` +
+            `fingerprint the deploy was refused for (${gate.fingerprint}) — nothing was sent to Render`,
+        }));
+        return;
+      }
+      const result = await api.post<DeployResponse>(`/sites/${slug}/deploy`, {
+        dry_run: false,
+        approval_token: minted.token,
+      });
+      setApprovalGates((prev) => withoutKey(prev, slug));
+      applyLiveDeploy(slug, result);
+      setDeployNotices((prev) => ({
+        ...prev,
+        [slug]:
+          `Approval minted for ${gate.fingerprint} and the live deploy was repeated with it. ` +
+          "The token is single-use and is never displayed.",
+      }));
+    } catch (error: unknown) {
+      const fingerprint = approvalRefusalFingerprint(error);
+      if (fingerprint !== null) {
+        // The token did not verify (expired, or minted for a superseded payload): the server named
+        // the fingerprint it still wants, so the gate stays armed for a fresh mint.
+        setApprovalGates((prev) => ({
+          ...prev,
+          [slug]: { fingerprint, message: describeError(error) },
+        }));
+      } else {
+        // Approval cannot resolve this (sandbox, cap, config, upstream): drop the gate so no
+        // "Approve & deploy" control keeps promising a path that does not exist.
+        setApprovalGates((prev) => withoutKey(prev, slug));
+        setDeployErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
+        await readDeployState(slug);
+      }
     } finally {
       setDeployBusy(null);
       setDeployBusyKind(null);
@@ -261,6 +388,8 @@ export default function SitesPage() {
   function cancelDeployPreview(slug: string) {
     setDeployPreviews((prev) => withoutKey(prev, slug));
     setDeployErrors((prev) => withoutKey(prev, slug));
+    setApprovalGates((prev) => withoutKey(prev, slug));
+    setDeployNotices((prev) => withoutKey(prev, slug));
   }
 
   /** Arm the two-step delete: the row now asks for confirmation and NOTHING has been sent. */
@@ -395,12 +524,17 @@ export default function SitesPage() {
     busySlug: deployBusy,
     busyKind: deployBusyKind,
     previews: deployPreviews,
+    gates: approvalGates,
+    notices: deployNotices,
     errors: deployErrors,
     onDryRun: (slug) => {
       void dryRunDeploy(slug);
     },
     onDeploy: (slug) => {
       void confirmDeploy(slug);
+    },
+    onApprove: (slug) => {
+      void approveAndDeploy(slug);
     },
     onCancel: cancelDeployPreview,
   };

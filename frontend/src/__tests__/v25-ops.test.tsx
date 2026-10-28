@@ -8,7 +8,7 @@
  *   GET  /runs/{id}                           detail-only `tools_used` (null | [] | names)
  *   GET  /tasks?status=awaiting_approval      the parked rows
  *   POST /approvals                           approve one fingerprint (mint + attach + re-queue)
- *   PATCH /tasks/{id}/status                  deny a parked task (status=rejected)
+ *   PATCH /tasks/{id}/status                  deny a parked task (status=cancelled)
  *   GET  /agents/status                       the nine agents + trigger targets
  *   POST /agents/{type}/trigger               manual dispatch (creates a NEW task row)
  *   GET  /auto-mode, GET /config, GET /ops/sandbox   the kill-switch / auto-mode readings
@@ -20,7 +20,7 @@
  *   3. empty states are explicit on every panel;
  *   4. a failed runs read is named AND has a working Retry;
  *   5. Approve posts the real mint+attach body and names the outcome;
- *   6. Deny is a two-step write to `PATCH /tasks/{id}/status` (rejected), never a dead button;
+ *   6. Deny is a two-step write to `PATCH /tasks/{id}/status` (cancelled), never a dead button;
  *   7. an agent trigger disables in flight and renders the server's refusal BY NAME;
  *   8. auto-mode / dispatch-pause / sandbox are read, not guessed;
  *   9. polling is visibility-aware: hidden ticks issue nothing, becoming visible re-reads at once.
@@ -276,8 +276,8 @@ describe("/ops — pending approvals", () => {
     expect(screen.queryByText("tok_not_rendered")).toBeNull();
   });
 
-  it("deny is a two-step, real status write (rejected) — not a dead button", async () => {
-    mockPatch.mockResolvedValue({ ...PENDING_TASK, status: "rejected" });
+  it("deny is a two-step, real status write (cancelled — the legal parked transition) — not a dead button", async () => {
+    mockPatch.mockResolvedValue({ ...PENDING_TASK, status: "cancelled" });
     render(<OpsPage />);
 
     const deny = await screen.findByTestId("deny-3");
@@ -289,7 +289,7 @@ describe("/ops — pending approvals", () => {
     await flush();
 
     expect(mockPatch).toHaveBeenCalledWith("/tasks/3/status", {
-      status: "rejected",
+      status: "cancelled",
       error_message: expect.stringContaining("Denied"),
     });
     expect(await screen.findByTestId("ops-approvals-notice")).toHaveTextContent(/denied/i);

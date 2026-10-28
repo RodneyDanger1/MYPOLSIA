@@ -27,11 +27,12 @@ import { api } from "@/lib/api";
  * APPROVE: `POST /approvals {action_fingerprint, task_id}` — the shipped mint + attach + re-queue
  * loop. The minted token is never rendered.
  *
- * DENY: `PATCH /tasks/{id}/status {status:"rejected", error_message}` — the same typed write the
- * task sheet uses, against the `rejected` status the backend's vocabulary carries
- * (`task_service.VALID_TASK_STATUSES`; the write has no transition matrix, so the state this
- * control names is one the API genuinely reaches). Deny is a real state change, so it is two-step
- * (arm, then confirm); a single accidental click cannot refuse work.
+ * DENY: `PATCH /tasks/{id}/status {status:"cancelled", error_message}` — the ONE terminal edge the
+ * transition matrix allows FROM `awaiting_approval` (`task_service.TASK_TRANSITIONS`:
+ * awaiting_approval -> cancelled; `rejected` has no edge from a parked row, which is why the old
+ * write always answered 409). Cancelling clears the parked approval and drops the token in the same
+ * write (`_clear_parked_approval`), so the safe action really does end the run. Deny is a real state
+ * change, so it is two-step (arm, then confirm); a single accidental click cannot refuse work.
  */
 export const APPROVALS_LIMIT = 50;
 const APPROVALS_PATH = `/tasks?status=awaiting_approval&limit=${APPROVALS_LIMIT}`;
@@ -147,13 +148,13 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
     setActionError(null);
     try {
       await api.patch(`/tasks/${task.id}/status`, {
-        status: "rejected",
+        status: "cancelled",
         error_message: "Denied by the operator in Ops — no approval token was minted.",
       });
       if (!alive.current) return;
       setTasks((previous) => previous?.filter((row) => row.id !== task.id) ?? previous);
       setArmedDeny(null);
-      setNotice(`Task #${task.id} was denied and marked rejected.`);
+      setNotice(`Task #${task.id} was denied and cancelled; its parked approval was cleared.`);
       onChanged();
     } catch (e) {
       if (alive.current) setActionError(errorText(e));
@@ -267,7 +268,7 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
                   </Button>
                   {armedDeny === task.id ? (
                     <span className="ui-label text-ink-muted">
-                      Deny marks this task rejected — it will not run.
+                      Deny cancels this task — it will not run.
                     </span>
                   ) : null}
                 </div>

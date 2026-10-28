@@ -10,6 +10,15 @@
  *   GET  /sites/{slug}/deploy -> {slug, configured, missing[], service_id, last_deploy|null}
  *   POST /sites/{slug}/deploy {dry_run} -> {slug, dry_run, configured, state, status, deploy_id,
  *                                         url, at, message, plan{method,url,headers,body}}
+ *   POST /approvals {action_fingerprint} -> {token, action_fingerprint, expires_at, ttl_s}
+ *   POST /sites/{slug}/deploy {dry_run:false, approval_token} -> the submitted deploy
+ *
+ * UIB-02: a LIVE Render deploy is `EXTERNAL_IRREVERSIBLE` in `policy_firewall`, so the backend
+ * refuses it with `E_POLICY_DENIED` / `require_approval` until a single-use token for the exact
+ * fingerprint is supplied — and that refusal carries the fingerprint the SERVER computed.  The
+ * tests below pin the two-step the page now performs (Confirm -> refusal -> mint -> repeat with the
+ * token), the named refusals approval cannot resolve (sandbox / no approval channel / a mint that
+ * answers no token or another fingerprint), and that the minted token never reaches the document.
  *
  * Pinned here, all against the operator's real path through the UI:
  *  - a configured site shows its honest status badge ("Never deployed") and a working Deploy
@@ -18,6 +27,11 @@
  *    URL, body — with the credential redacted; nothing is called live until Confirm;
  *  - Confirm posts `{dry_run: false}` and the badge reports the Render deploy id, not a bare
  *    "deployed" the server did not prove;
+ *  - a `require_approval` refusal arms "Approve & deploy" with the server's fingerprint, and that
+ *    control mints for exactly that fingerprint and REPEATS the live deploy with the returned
+ *    token — the token itself never appears in the rendered document;
+ *  - a sandbox block / a missing approval channel / a bad mint body render as named refusals with
+ *    NO approval control (never a dead button promising a path that does not exist);
  *  - the control is disabled + aria-busy while a call is in flight;
  *  - with `configured: false` there is NO dead button — the row names exactly what is missing;
  *  - a failed deploy shows its stored reason; a refused call shows the server's code + fix hint.
@@ -92,6 +106,46 @@ const LIVE: DeployResponse = {
   message: "Render accepted the deploy: dep-abc123 (status created)",
   plan: DRY.plan,
 };
+
+/** The fingerprint `deploy_service.deploy_payload` + `policy_firewall.fingerprint` yield for this
+ *  site — the SERVER computes it and puts it in the refusal; the browser only reads it. */
+const DEPLOY_FINGERPRINT = "9f2c4ab1d7e35608c1a4b9ff";
+
+/** A bearer credential the test mints; it must NEVER appear in the rendered document. */
+const MINTED_TOKEN = "1760000000.0123456789abcdef0123456789abcdef";
+
+const MINT = {
+  token: MINTED_TOKEN,
+  action_fingerprint: DEPLOY_FINGERPRINT,
+  expires_at: 1_760_000_000,
+  ttl_s: 3600,
+};
+
+/** The real `E_POLICY_DENIED` / `require_approval` refusal from
+ *  `deploy_service._authorise_live_deploy`, envelope and all (`detail` = HTTPException shape). */
+function approvalRefusal(fingerprint = DEPLOY_FINGERPRINT): ApiError {
+  return new ApiError(
+    403,
+    "deploy_site: the live Render deploy of a site is refused by policy: irreversible action",
+    "E_POLICY_DENIED",
+    `mint a single-use approval token for fingerprint ${fingerprint} (POST /api/v1/approvals) ` +
+      'and repeat this deploy with {"approval_token": "<token>"}',
+    {
+      detail: {
+        code: "E_POLICY_DENIED",
+        message:
+          "deploy_site: the live Render deploy of a site is refused by policy: irreversible action",
+        how_to_fix: `mint a single-use approval token for fingerprint ${fingerprint}`,
+        context: {
+          decision: "require_approval",
+          policy_code: "POLSIA-E115",
+          fingerprint,
+          channel: "render",
+        },
+      },
+    },
+  );
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -277,6 +331,182 @@ describe("/sites — deploy refusals", () => {
   });
 });
 
+// ── 3b. the approval leg of a LIVE deploy (UIB-02) ──────────────────────────────────────────
+describe("/sites — the approval leg of a LIVE deploy", () => {
+  /** Drive the real page to the state the backend produces for every live deploy: the dry run,
+   *  then Confirm refused with `require_approval` and the server's fingerprint. */
+  async function toApprovalGate() {
+    const user = userEvent.setup();
+    const row = await renderPage();
+    mockPost.mockResolvedValueOnce(DRY).mockRejectedValueOnce(approvalRefusal());
+    await user.click(within(row).getByTestId("site-deploy-button-landing-page"));
+    await within(row).findByTestId("site-deploy-preview-landing-page");
+    await user.click(within(row).getByRole("button", { name: /confirm deploy landing page/i }));
+    const gate = await within(row).findByTestId("site-deploy-approval-landing-page");
+    return { user, row, gate };
+  }
+
+  it("asks the server first: Confirm sends no token and the refusal arms the gate with the server's fingerprint", async () => {
+    const { row, gate } = await toApprovalGate();
+
+    expect(mockPost).toHaveBeenNthCalledWith(1, "/sites/landing-page/deploy", { dry_run: true });
+    expect(mockPost).toHaveBeenNthCalledWith(2, "/sites/landing-page/deploy", { dry_run: false });
+    // The first live attempt carries NO approval token — nothing is minted before the server names
+    // the fingerprint, and no build could have been queued (the refusal is the policy gate).
+    expect(JSON.stringify(mockPost.mock.calls[1]?.[1] ?? {})).not.toContain("approval_token");
+
+    expect(gate).toHaveTextContent("E_POLICY_DENIED");
+    expect(gate).toHaveTextContent("nothing was sent");
+    expect(
+      within(row).getByTestId("site-deploy-fingerprint-landing-page"),
+    ).toHaveTextContent(DEPLOY_FINGERPRINT);
+    // A refusal approval can resolve is NOT painted as an error: it is the approval step.
+    expect(within(row).queryByTestId("site-deploy-error-landing-page")).not.toBeInTheDocument();
+  });
+
+  it("mints for exactly that fingerprint and repeats the deploy with the token — never rendering it", async () => {
+    const { user, row, gate } = await toApprovalGate();
+    expect(gate).toBeInTheDocument();
+
+    mockPost.mockResolvedValueOnce(MINT).mockResolvedValueOnce(LIVE);
+    await user.click(within(row).getByTestId("site-deploy-approve-landing-page"));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(4));
+    expect(mockPost).toHaveBeenNthCalledWith(3, "/approvals", {
+      action_fingerprint: DEPLOY_FINGERPRINT,
+    });
+    expect(mockPost).toHaveBeenNthCalledWith(4, "/sites/landing-page/deploy", {
+      dry_run: false,
+      approval_token: MINTED_TOKEN,
+    });
+
+    // The bearer credential is never rendered — not as text, not in any attribute.
+    expect(document.body.innerHTML).not.toContain(MINTED_TOKEN);
+    expect(document.body.textContent ?? "").not.toContain(MINTED_TOKEN);
+
+    // The gate closed and the badge reports the server's own deploy id (never a bare "deployed").
+    expect(within(row).queryByTestId("site-deploy-approval-landing-page")).not.toBeInTheDocument();
+    const badge = within(row).getByTestId("site-deploy-badge-landing-page");
+    expect(badge).toHaveTextContent(/submitted/i);
+    expect(badge).toHaveTextContent("dep-abc123");
+    const notice = within(row).getByTestId("site-deploy-notice-landing-page");
+    expect(notice).toHaveTextContent(DEPLOY_FINGERPRINT);
+    expect(notice).toHaveTextContent(/never displayed/i);
+    expect(notice).not.toHaveTextContent(MINTED_TOKEN);
+  });
+
+  it("renders E_SANDBOX_BLOCKED as the named refusal — no approval control, nothing claimed sent", async () => {
+    const user = userEvent.setup();
+    const row = await renderPage();
+    const sandbox = new ApiError(
+      403,
+      "deploy_site: the live Render deploy of a site is refused by policy: SANDBOX_MODE=true: " +
+        "external action recorded as a labelled draft, nothing sent",
+      "E_SANDBOX_BLOCKED",
+      "run with SANDBOX_MODE=false to send real actions",
+      {
+        detail: {
+          code: "E_SANDBOX_BLOCKED",
+          message:
+            "deploy_site: the live Render deploy of a site is refused by policy: SANDBOX_MODE=true: " +
+            "external action recorded as a labelled draft, nothing sent",
+          how_to_fix: "run with SANDBOX_MODE=false to send real actions",
+          context: {
+            decision: "deny",
+            policy_code: "POLSIA-E114",
+            sandbox: true,
+            fingerprint: DEPLOY_FINGERPRINT,
+          },
+        },
+      },
+    );
+    mockPost.mockResolvedValueOnce(DRY).mockRejectedValueOnce(sandbox);
+
+    await user.click(within(row).getByTestId("site-deploy-button-landing-page"));
+    await within(row).findByTestId("site-deploy-preview-landing-page");
+    await user.click(within(row).getByRole("button", { name: /confirm deploy landing page/i }));
+
+    const error = await within(row).findByTestId("site-deploy-error-landing-page");
+    expect(error).toHaveTextContent("E_SANDBOX_BLOCKED");
+    expect(error).toHaveTextContent(/nothing sent/i);
+    // Approval cannot lift a sandbox block: no mint control may be offered.
+    expect(within(row).queryByTestId("site-deploy-approve-landing-page")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("site-deploy-approval-landing-page")).not.toBeInTheDocument();
+  });
+
+  it("renders the 'no approval channel' refusal with no mint control (mint could never verify)", async () => {
+    const user = userEvent.setup();
+    const row = await renderPage();
+    const noChannel = new ApiError(
+      403,
+      "deploy_site: the live Render deploy of a site is refused by policy: approval required but " +
+        "no approval channel configured",
+      "E_POLICY_DENIED",
+      "set APPROVAL_SECRET and restart the service",
+      {
+        detail: {
+          code: "E_POLICY_DENIED",
+          message:
+            "deploy_site: the live Render deploy of a site is refused by policy: approval required " +
+            "but no approval channel configured",
+          how_to_fix: "set APPROVAL_SECRET and restart the service",
+          context: { decision: "deny", policy_code: "POLSIA-E114" },
+        },
+      },
+    );
+    mockPost.mockResolvedValueOnce(DRY).mockRejectedValueOnce(noChannel);
+
+    await user.click(within(row).getByTestId("site-deploy-button-landing-page"));
+    await within(row).findByTestId("site-deploy-preview-landing-page");
+    await user.click(within(row).getByRole("button", { name: /confirm deploy landing page/i }));
+
+    const error = await within(row).findByTestId("site-deploy-error-landing-page");
+    expect(error).toHaveTextContent("E_POLICY_DENIED");
+    expect(error).toHaveTextContent(/no approval channel configured/i);
+    expect(error).toHaveTextContent("APPROVAL_SECRET");
+    expect(within(row).queryByTestId("site-deploy-approve-landing-page")).not.toBeInTheDocument();
+  });
+
+  it("mint refused by name (APPROVAL_SECRET unset) is rendered and the deploy is NOT repeated", async () => {
+    const { user, row } = await toApprovalGate();
+    mockPost.mockRejectedValueOnce(
+      new ApiError(
+        503,
+        "the approvals channel is not configured: APPROVAL_SECRET is unset, so no token could " +
+          "ever verify",
+        "E_CONFIG",
+        "set APPROVAL_SECRET in .env and restart the service",
+      ),
+    );
+
+    await user.click(within(row).getByTestId("site-deploy-approve-landing-page"));
+
+    const error = await within(row).findByTestId("site-deploy-error-landing-page");
+    expect(error).toHaveTextContent("E_CONFIG");
+    expect(error).toHaveTextContent("APPROVAL_SECRET");
+    // Only the three calls so far: dry, refused live, refused mint. No token-bearing deploy.
+    expect(mockPost).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(mockPost.mock.calls.map((call) => call[1] ?? {}))).not.toContain(
+      "approval_token",
+    );
+  });
+
+  it("a mint for another fingerprint is a named broken answer — the deploy is not sent on it", async () => {
+    const { user, row } = await toApprovalGate();
+    mockPost.mockResolvedValueOnce({ ...MINT, action_fingerprint: "some-other-fingerprint-000" });
+
+    await user.click(within(row).getByTestId("site-deploy-approve-landing-page"));
+
+    const error = await within(row).findByTestId("site-deploy-error-landing-page");
+    expect(error).toHaveTextContent(/instead of the fingerprint/i);
+    expect(error).toHaveTextContent("nothing was sent to Render");
+    expect(mockPost).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(mockPost.mock.calls.map((call) => call[1] ?? {}))).not.toContain(
+      MINTED_TOKEN,
+    );
+  });
+});
+
 // ── 4. the component contract in isolation ──────────────────────────────────────────────────
 describe("SiteDeployControl — the row's deploy surface", () => {
   it("keeps the other row controls intact and adds no dead button", async () => {
@@ -294,9 +524,12 @@ describe("SiteDeployControl — the row's deploy surface", () => {
           busySlug: null,
           busyKind: null,
           previews: {},
+          gates: {},
+          notices: {},
           errors: {},
           onDryRun,
           onDeploy: jest.fn(),
+          onApprove: jest.fn(),
           onCancel: jest.fn(),
         }}
       />,
