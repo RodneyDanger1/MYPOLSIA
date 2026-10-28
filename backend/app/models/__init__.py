@@ -6,6 +6,11 @@ from app.core.database import (
     Base as Base,  # noqa: E402  (load-bearing re-export: importing app.models is what registers every table on Base.metadata, which alembic/env.py and tests/integration/conftest.py depend on — the `as Base` spelling marks it as an intentional re-export rather than a dead import)
 )
 from app.models.ads import AdCampaign, AdMetric
+
+# W2/SENTINEL: the single-use approval ledger.  Registered here for the same reason as every other
+# model — this package's import IS the registration, and a table missing from `Base.metadata` is a
+# table `create_all` never makes (the first spend would then be an unattributed failure).
+from app.models.approval import ConsumedApproval
 from app.models.auto_mode import AutoModeSession
 from app.models.chat import ChatMessage
 from app.models.company import CompanyConfig
@@ -35,6 +40,7 @@ __all__ = [
     "ChatMessage",
     "CompanyConfig",
     "Competitor",
+    "ConsumedApproval",
     "DailyReport",
     "EmailCampaign",
     "EmailLog",

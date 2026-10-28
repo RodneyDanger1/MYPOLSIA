@@ -308,6 +308,32 @@ def deploy_payload(slug: str, service_id: str) -> dict[str, Any]:
     return {"action": DEPLOY_ACTION, "slug": slug, "service_id": service_id}
 
 
+def deploy_fingerprint(slug: str, service_id: str) -> str:
+    """The approval fingerprint of a live deploy of `slug` to `service_id` — computed ONCE here.
+
+    The gate (`_authorise_live_deploy`), the state read (`deploy_state`) and any future caller must
+    all ask this function, so the value the UI mints for can never drift from the value the gate
+    verifies.  `None` is not accepted: an unknown service id has no fingerprint, and the caller that
+    cannot name one must say so rather than produce a token minted for `service_id: ""`.
+    """
+    if not service_id:
+        raise PolsiaError(
+            E_CONFIG,
+            f"a live deploy of {slug!r} has no approval fingerprint yet: the Render service id "
+            "is not configured, so the action a token would approve cannot be named",
+            how_to_fix=f"set {RENDER_SERVICE_ID_ENV} (and {RENDER_API_KEY_ENV}), then read "
+                       "GET /api/v1/sites/<slug>/deploy again",
+            context={"slug": slug, "env": RENDER_SERVICE_ID_ENV},
+        )
+    from app.agents.policy_firewall import ActionClass, fingerprint
+
+    return fingerprint(
+        ActionClass.EXTERNAL_IRREVERSIBLE.value,
+        RENDER_CHANNEL,
+        deploy_payload(slug, service_id),
+    )
+
+
 async def render_deploys_today(db: AsyncSession, *, now: datetime | None = None) -> int:
     """MEASURED live Render deploys in the company-local day containing `now`.
 
@@ -336,8 +362,8 @@ async def render_deploys_today(db: AsyncSession, *, now: datetime | None = None)
     return int(value)
 
 
-def _authorise_live_deploy(
-    *, slug: str, service_id: str, sends_today: int, approval_token: str
+async def _authorise_live_deploy(
+    *, slug: str, service_id: str, sends_today: int, approval_token: str, db: AsyncSession
 ) -> dict[str, Any]:
     """Run the shipped decision path for the live deploy; refuse by name or return the payload.
 
@@ -345,16 +371,34 @@ def _authorise_live_deploy(
     token both come back as DECISIONS (not exceptions from `enforce`), and both are raised here as
     the named refusal: a live deploy is a single network POST, so there is no useful "draft" to
     persist — the honest answer is the refusal that names the control that stopped it.
+
+    SINGLE-USE IS ENFORCED HERE (W2/SENTINEL, closing the wave-1 GAP).  `enforce()` answers the
+    DECISION question ("is this token valid for this action") and is stateless by design; the SPEND
+    happens in this seam, through `consume_approval_or_refuse`, BEFORE the Render POST is opened.
+    Consequences, all deliberate:
+      * the SAME token cannot authorise a second deploy: the ledger's UNIQUE index refuses it and
+        the caller gets `E_POLICY_DENIED` / `POLSIA-E121` / `reason: "already_used"`;
+      * a deploy that fails AFTER authorisation (timeout, Render 5xx) still spent the approval —
+        one approval authorises one ATTEMPT, and a transient failure must not leave the approval
+        replayable;
+      * a deploy refused BEFORE the decision (kill switch, sandbox, render cap, bad/foreign token)
+        spends NOTHING: the token stays usable, because no irreversible effect was authorised.
+
+    A `db` session is REQUIRED for the same reason the cap count is: an approval that cannot be
+    recorded as spent cannot be proven single-use, and `deploy_site` refuses the live action with
+    the named `E_CONFIG` before reaching this function without one.
     """
     from app.agents.policy_firewall import (
         ActionClass,
         ActionRequest,
         Decision,
         configured_approval_secret,
+        consume_approval_or_refuse,
         enforce,
     )
 
     payload = deploy_payload(slug, service_id)
+    secret = configured_approval_secret()
     decision = enforce(
         ActionRequest(
             agent_type=OWNER_DEPLOY_SLOT,
@@ -368,10 +412,21 @@ def _authorise_live_deploy(
             # from a measured zero (the firewall only consults it when a cap exists).
             sends_this_hour=None,
         ),
-        approval_secret=configured_approval_secret(),
+        approval_secret=secret,
         direct_caller=OWNER_DEPLOY_SLOT,
     )
     if decision.decision is Decision.ALLOW:
+        if approval_token:
+            await consume_approval_or_refuse(
+                db,
+                secret,
+                approval_token,
+                # The fingerprint the decision actually verified — never one re-derived here, so
+                # the spend can only ever bind the action the gate just allowed.
+                action_fingerprint=str(decision.audit.get("fingerprint") or ""),
+                action_label=f"live Render deploy of site {slug!r}",
+                consumed_by=f"deploy:{slug}",
+            )
         return payload
 
     code = decision.e_code or E_POLICY_DENIED
@@ -431,10 +486,18 @@ async def _record_render_deploy(
 
 # ── reads ───────────────────────────────────────────────────────────────────────────────────
 def deploy_state(slug: str, *, root: Path | None = None) -> dict[str, Any]:
-    """`{slug, configured, missing, service_id, last_deploy}` — a pure local read, no Render call.
+    """`{slug, configured, missing, service_id, approval_fingerprint, last_deploy}`.
 
-    `last_deploy` is `null` when the site has never been deployed (or its record is not a JSON
-    object); an unknown slug is the named `E_NOT_FOUND`, because this is a resource read.
+    A pure local read, no Render call.  `last_deploy` is `null` when the site has never been
+    deployed (or its record is not a JSON object); an unknown slug is the named `E_NOT_FOUND`,
+    because this is a resource read.
+
+    `approval_fingerprint` (weaver R-UIB02-1) is the fingerprint a human approval token must be
+    minted for to run the live deploy this read describes — computed by `deploy_fingerprint`, the
+    SAME function the gate uses, never a client-side copy.  It is `null` exactly when the deploy
+    cannot be authorised yet (`configured: false`, i.e. no Render service id), because a token
+    minted for `service_id: ""` would never verify against the real deploy: the honest answer is
+    "no fingerprint exists yet", not a plausible-looking digest for an action that cannot run.
     """
     _api_key, service_id, missing = credentials()
     return {
@@ -442,6 +505,9 @@ def deploy_state(slug: str, *, root: Path | None = None) -> dict[str, Any]:
         "configured": not missing,
         "missing": missing,
         "service_id": service_id,
+        "approval_fingerprint": (
+            deploy_fingerprint(slug, service_id) if service_id and not missing else None
+        ),
         "last_deploy": site_service.read_deploy_state(slug, root=root),
         # api_key is deliberately not returned in any form: the UI needs "configured", not the key.
     }
@@ -497,6 +563,10 @@ async def deploy_site(
             "deploy_id": None,
             "url": None,
             "at": None,
+            # The preview is the EXACT deploy a live attempt would make, so it can carry the exact
+            # fingerprint a token would have to be minted for (weaver R-UIB02-1): the UI can now
+            # mint BEFORE the first live attempt instead of provoking a refusal to learn it.
+            "approval_fingerprint": deploy_fingerprint(slug, service),
             "message": (
                 f"dry run: {plan['method']} {plan['url']} was NOT sent; nothing was changed"
             ),
@@ -523,11 +593,13 @@ async def deploy_site(
             context={"slug": slug, "channel": RENDER_CHANNEL},
         )
     sends_today = await render_deploys_today(db)
-    _authorise_live_deploy(
+    approval_fingerprint = deploy_fingerprint(slug, service)
+    await _authorise_live_deploy(
         slug=slug,
         service_id=service,
         sends_today=sends_today,
         approval_token=approval_token,
+        db=db,
     )
 
     stamp = at or _now()
@@ -687,6 +759,7 @@ async def deploy_site(
         "deploy_id": deploy_id.strip(),
         "url": url,
         "at": stamp,
+        "approval_fingerprint": approval_fingerprint,
         "message": (
             f"Render accepted the deploy: {deploy_id.strip()} "
             f"(status {render_status or 'unknown'})"
@@ -731,6 +804,7 @@ __all__ = [
     "RENDER_CHANNEL",
     "RENDER_SERVICE_ID_ENV",
     "credentials",
+    "deploy_fingerprint",
     "deploy_payload",
     "deploy_site",
     "deploy_state",

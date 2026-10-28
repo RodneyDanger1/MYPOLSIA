@@ -32,20 +32,28 @@ import json
 import logging
 import math
 import re
+import secrets
 import time
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.core.errors import (
+    E_DB,
     E_POLICY_DENIED,
     E_RATE_LIMITED,
     E_RUN_CANCELLED,
     E_SANDBOX_BLOCKED,
     PolsiaError,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only (the runtime import is lazy, per CLAUDE.md:116)
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -741,8 +749,24 @@ class RateCaps:
 
 
 # ---------------------------------------------------------------------------
-# Approval tokens (single-use, HMAC-signed, TTL)
+# Approval tokens (HMAC-signed, TTL, nonce-backed, single-use via a DB ledger)
 # ---------------------------------------------------------------------------
+
+#: The named policy code an APPROVAL REPLAY carries (W2/SENTINEL).  E114 (authority/cap-unknown),
+#: E115 (require approval), E117 (rate cap), E118 (kill switch) and E120 (run cancelled) were
+#: taken; a replay is a DIFFERENT control — the approval was genuinely given and already spent —
+#: so it gets its own name rather than borrowing "approval required" (which would tell an operator
+#: to mint a token they already minted, with no hint that a reused token was the problem).
+_REPLAY_POLICY_CODE = "POLSIA-E121"
+
+#: Hex chars of the random `jti` nonce every NEWLY minted token carries (8 random bytes).
+JTI_HEX_CHARS = 16
+#: Hex chars of the HMAC signature half — the shipped width, unchanged.
+SIG_HEX_CHARS = 32
+#: Signature + nonce: the exact length of a nonce-bearing signature body.
+_TOKEN_BODY_CHARS = SIG_HEX_CHARS + JTI_HEX_CHARS
+_HEX_BODY = re.compile(r"^[0-9a-f]+$")
+
 
 @dataclass
 class ApprovalToken:
@@ -750,18 +774,85 @@ class ApprovalToken:
     action_fingerprint: str
     expires_at: float
     issued_to: str
+    #: The random nonce this mint carries.  "" only for a token built by hand in the legacy shape.
+    jti: str = ""
+
+
+@dataclass(frozen=True)
+class ParsedApproval:
+    """The three halves of a presented token, plus the raw signature body (the ledger key)."""
+
+    exp: int
+    sig: str
+    jti: str
+    body: str
+
+    @property
+    def legacy(self) -> bool:
+        """True for a pre-nonce `{exp}.{signature}` token (still verified until it expires)."""
+        return not self.jti
+
+
+@dataclass(frozen=True)
+class ApprovalConsumption:
+    """The outcome of trying to SPEND one token: `ok`, or the named reason it was refused."""
+
+    ok: bool
+    reason: str = ""            # "" | "invalid" | "expired" | "already_used"
+    token_id: str = ""
+    jti: str = ""
+
+
+def _split_token(token: Any) -> ParsedApproval | None:
+    """Parse `{exp}.{sig}` or `{exp}.{sig}{jti}`; `None` when the shape is not a token at all.
+
+    The wire format keeps EXACTLY ONE dot on purpose.  A nonce inside the signature half means the
+    shipped parser in `app/api/v1/data.py::_verify_wipe_token` (`partition(".")`, then "a dot in the
+    signature half is malformed") keeps accepting freshly minted tokens — the data wipe's own
+    single-use marker keys on that half, so it keeps working without a cross-lane edit.  A body of
+    48 hex chars is nonce-bearing; everything else is verified as a legacy token.
+    """
+    if not isinstance(token, str) or not token:
+        return None
+    exp_s, _, body = token.partition(".")
+    if not exp_s or not body or "." in body:
+        return None
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return None
+    if len(body) == _TOKEN_BODY_CHARS and _HEX_BODY.match(body):
+        return ParsedApproval(exp, body[:SIG_HEX_CHARS], body[SIG_HEX_CHARS:], body)
+    return ParsedApproval(exp, body, "", body)
+
+
+def _signed_message(action_fingerprint: str, exp: int, jti: str, issued_to: str) -> bytes:
+    """The exact bytes the HMAC covers: nonce-bearing for a new token, legacy otherwise.
+
+    Two messages exist because two token shapes do: a token minted before the nonce must keep
+    verifying until its TTL runs out (an in-flight approval is not invalidated by a deploy), and a
+    token minted after it must bind its nonce or two mints in the same second would be identical.
+    """
+    if jti:
+        return f"{action_fingerprint}|{exp}|{jti}|{issued_to}".encode()
+    return f"{action_fingerprint}|{exp}|{issued_to}".encode()
 
 
 def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
                    issued_to: str = "operator") -> ApprovalToken:
-    """Mint a single-use HMAC approval token for a gated action (TTL-bounded).
+    """Mint a single-use HMAC approval token for a gated action (TTL-bounded, nonce-bearing).
 
-    The ISSUER is now live: `POST /api/v1/approvals` (owner-authenticated, D1/T02) calls this for a
+    The ISSUER is live: `POST /api/v1/approvals` (owner-authenticated, D1/T02) calls this for a
     named action fingerprint and returns the token + expiry, and `agent_tasks` publishes
     `settings.approval_secret` plus the task's supplied token as the run's approval context, so a
-    token that verifies lets the gated action PROCEED (`decide()`'s token branch).  Until D1/T02
-    landed there was no production issuer and the firewall's "approval required but no approval
-    channel configured" DENY was final for gated actions.
+    token that verifies lets the gated action PROCEED (`decide()`'s token branch).
+
+    SINGLE-USE (W2/SENTINEL): every mint embeds a random 64-bit `jti` nonce, and a token is SPENT by
+    inserting that nonce's digest into the `consumed_approvals` ledger under a UNIQUE index
+    (`consume_approval`).  Before the nonce existed, two mints in the same second for the same
+    fingerprint were byte-identical, so a naive consumption record could not tell a fresh approval
+    from a replay — and, worse, nothing recorded consumption at all, so `verify_approval` answered
+    "valid" to the same token forever (wave-1 GAP: the deploy gate ALLOWED a replay).
 
     The safety shape is unchanged and deliberate: a token is scoped to ONE fingerprint (it verifies
     only against the exact action+payload class it was minted for), TTL-bounded, and only useful when
@@ -771,23 +862,189 @@ def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
     NOTE (still true): the token is bearer-style — anyone holding it AND the secret's cooperation
     can approve that fingerprint.  Delivery to the owner is the operator's channel.
     """
+    jti = secrets.token_hex(JTI_HEX_CHARS // 2)
     exp = int(time.time()) + ttl_s
-    msg = f"{action_fingerprint}|{exp}|{issued_to}".encode()
-    sig = hmac.new(secret, msg, hashlib.sha256).hexdigest()[:32]
-    return ApprovalToken(f"{exp}.{sig}", action_fingerprint, exp, issued_to)
+    sig = hmac.new(secret, _signed_message(action_fingerprint, exp, jti, issued_to),
+                   hashlib.sha256).hexdigest()[:SIG_HEX_CHARS]
+    return ApprovalToken(f"{exp}.{sig}{jti}", action_fingerprint, exp, issued_to, jti)
 
 
 def verify_approval(secret: bytes, token: str, *, action_fingerprint: str,
                     now: float | None = None, issued_to: str = "operator") -> bool:
+    """Is this token signed by `secret`, unexpired, and scoped to exactly this fingerprint?
+
+    STATELESS and non-consuming on purpose: this is the *decision* question ("may this action
+    proceed"), and it is asked in places that must not spend anything (the worker's pre-flight
+    check of a parked approval, a task's stored token being re-validated, the shipped tests that
+    ask about a token's scope).  Spending is `consume_approval`, called by the seam that actually
+    performs the irreversible effect — one token, one action.
+
+    Both token shapes are accepted (see `_split_token`): the legacy `{exp}.{sig}` and the
+    nonce-bearing `{exp}.{sig}{jti}`.  A token's nonce is covered by the HMAC, so appending 16 hex
+    chars to a legacy token's signature cannot turn it into a verifiable nonce-bearing one.
+    """
+    parsed = _split_token(token)
+    if parsed is None:
+        return False
+    if (now or time.time()) > parsed.exp:
+        return False
+    want = hmac.new(secret, _signed_message(action_fingerprint, parsed.exp, parsed.jti, issued_to),
+                    hashlib.sha256).hexdigest()[:SIG_HEX_CHARS]
+    return hmac.compare_digest(want, parsed.sig)
+
+
+def approval_token_id(token: str) -> str:
+    """The ledger key of a token: sha256 hex of its signature body ("" when unparseable).
+
+    The RAW token is deliberately never stored (`app/models/approval.py`): a token is a bearer
+    credential.  A digest is deterministic, so the same presented token always maps to the same
+    ledger row, and an exported database cannot be used to replay approvals.
+    """
+    parsed = _split_token(token)
+    return hashlib.sha256(parsed.body.encode("utf-8")).hexdigest() if parsed is not None else ""
+
+
+#: Test/injection seam, mirroring `app.services.activity_service.ISOLATED_SESSION_FACTORY`: the
+#: ledger writer must NEVER reuse the caller's transaction (an INSERT rolled back together with a
+#: failed request would silently re-arm the token it was supposed to spend).
+CONSUMED_SESSION_FACTORY: Callable[[], AsyncSession] | None = None
+
+
+def _consumed_factory(db: AsyncSession) -> Callable[[], AsyncSession]:
+    """The session factory the ledger writer uses: the explicit override, else `db`'s own engine."""
+    if CONSUMED_SESSION_FACTORY is not None:
+        return CONSUMED_SESSION_FACTORY
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+    from app.core.database import get_session_factory
+
+    bind = db.bind
+    if isinstance(bind, AsyncEngine):
+        return async_sessionmaker(bind, class_=AsyncSession, expire_on_commit=False)
+    return get_session_factory()
+
+
+async def consume_approval(db: AsyncSession, secret: bytes, token: str, *,
+                           action_fingerprint: str, now: float | None = None,
+                           consumed_by: str = "") -> ApprovalConsumption:
+    """VERIFY and SPEND one approval token — the single-use step for an irreversible action.
+
+    Order matters and is the fail-safe direction: the stateless checks (shape, expiry, HMAC,
+    fingerprint scope) run FIRST, so an invalid/expired/mis-scoped token never writes a ledger row
+    (a rejected token must not be able to "burn" a real one).  Only a token that verifies is
+    inserted, and the UNIQUE index on `consumed_approvals.token_id` is what makes the spend atomic
+    across the API process and every worker: the second INSERT cannot succeed, and it is reported
+    as `already_used` — never as a success, and never as "invalid" (which would hide the replay).
+
+    An INSERT that fails for any OTHER reason is the named `E_DB` refusal: a ledger that cannot
+    record the spend cannot prove the approval is single-use, and the honest answer is to refuse
+    the action rather than perform it with an unproven approval.
+    """
+    parsed = _split_token(token)
+    if parsed is None:
+        return ApprovalConsumption(False, "invalid")
+    if (now or time.time()) > parsed.exp:
+        return ApprovalConsumption(False, "expired")
+    if not verify_approval(secret, token, action_fingerprint=action_fingerprint, now=now):
+        return ApprovalConsumption(False, "invalid")
+    token_id = approval_token_id(token)
+    from app.models.approval import ConsumedApproval
+
+    row = ConsumedApproval(
+        token_id=token_id,
+        jti=parsed.jti or None,
+        action_fingerprint=action_fingerprint,
+        consumed_by=(consumed_by or "")[:120],
+    )
     try:
-        exp_s, sig = token.split(".", 1)
-        exp = int(exp_s)
-    except (ValueError, AttributeError):
-        return False
-    if (now or time.time()) > exp:
-        return False
-    want = hmac.new(secret, f"{action_fingerprint}|{exp}|{issued_to}".encode(), hashlib.sha256).hexdigest()[:32]
-    return hmac.compare_digest(want, sig)
+        async with _consumed_factory(db)() as ledger:
+            ledger.add(row)
+            await ledger.commit()
+    except IntegrityError:
+        # THE single-use guarantee: the unique index refused a second spend of this token.
+        return ApprovalConsumption(False, "already_used", token_id, parsed.jti)
+    except SQLAlchemyError as exc:
+        raise PolsiaError(
+            E_DB,
+            f"the approval token could not be recorded as spent ({type(exc).__name__}), so its "
+            "single-use property cannot be proven — refusing the action",
+            how_to_fix=(
+                "check that the consumed_approvals table exists and the database is writable "
+                "(alembic upgrade head), then retry; an approval is never spent on an unproven "
+                "ledger write"
+            ),
+            context={"table": "consumed_approvals", "action_fingerprint": action_fingerprint},
+        ) from exc
+    return ApprovalConsumption(True, "", token_id, parsed.jti)
+
+
+async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str, *,
+                                     action_fingerprint: str, action_label: str,
+                                     now: float | None = None,
+                                     consumed_by: str = "") -> ApprovalConsumption:
+    """Spend the token or raise the NAMED refusal that explains why this attempt cannot proceed.
+
+    The four refusals are distinct on purpose and carry `reason` in `context`:
+      * `already_used` -> `POLSIA-E121` + `approval_replay: true` (a replay is its own control);
+      * `expired`      -> the TTL ran out, nothing was attempted;
+      * `invalid`      -> wrong fingerprint/secret/shape, nothing was spent;
+      * a ledger fault -> the named `E_DB` from `consume_approval`.
+    """
+    spent = await consume_approval(
+        db, secret, token, action_fingerprint=action_fingerprint, now=now,
+        consumed_by=consumed_by or action_label,
+    )
+    if spent.ok:
+        return spent
+    if spent.reason == "already_used":
+        raise PolsiaError(
+            E_POLICY_DENIED,
+            f"{action_label} refused: this approval token was already used — an approval is "
+            "spent by the one action it authorised, so a replay cannot authorise a second one",
+            how_to_fix=(
+                "mint a FRESH token for fingerprint "
+                f"{action_fingerprint} (POST /api/v1/approvals) and retry once; reusing a token "
+                "is exactly the replay the ledger refuses"
+            ),
+            context={
+                "decision": "deny",
+                "policy_code": _REPLAY_POLICY_CODE,
+                "reason": "already_used",
+                "approval_replay": True,
+                "fingerprint": action_fingerprint,
+                "jti": spent.jti,
+            },
+        )
+    if spent.reason == "expired":
+        raise PolsiaError(
+            E_POLICY_DENIED,
+            f"{action_label} refused: the approval token expired — nothing was attempted",
+            how_to_fix=(
+                "mint a fresh token for fingerprint "
+                f"{action_fingerprint} and retry promptly"
+            ),
+            context={
+                "decision": "deny",
+                "policy_code": "POLSIA-E115",
+                "reason": "expired",
+                "fingerprint": action_fingerprint,
+            },
+        )
+    raise PolsiaError(
+        E_POLICY_DENIED,
+        f"{action_label} refused: the approval token did not verify for this action (it was "
+        "minted for a different action, or APPROVAL_SECRET changed) — nothing was spent",
+        how_to_fix=(
+            "mint a token for exactly fingerprint "
+            f"{action_fingerprint} (POST /api/v1/approvals) and present it verbatim"
+        ),
+        context={
+            "decision": "deny",
+            "policy_code": "POLSIA-E115",
+            "reason": "invalid",
+            "fingerprint": action_fingerprint,
+        },
+    )
 
 
 def fingerprint(action_class: str, channel: str, payload: dict) -> str:
@@ -1254,10 +1511,14 @@ def assert_sandboxed_side_effect_allowed(agent_type: str, action: str, *, decisi
 __all__ = [
     "AGENT_CAPABILITIES",
     "APPROVAL_THRESHOLDS",
+    "CONSUMED_SESSION_FACTORY",
     "DIRECT_CALLER_CAPABILITIES",
+    "JTI_HEX_CHARS",
+    "SIG_HEX_CHARS",
     "ActionClass",
     "ActionRequest",
     "AgentCapability",
+    "ApprovalConsumption",
     "ApprovalToken",
     "Decision",
     "E_RUN_CANCELLED",
@@ -1266,6 +1527,7 @@ __all__ = [
     "RunApproval",
     "RunCancellation",
     "RunTaint",
+    "approval_token_id",
     "assert_sandboxed_side_effect_allowed",
     "begin_run_cancellation",
     "canonical_payload",
@@ -1273,6 +1535,8 @@ __all__ = [
     "capability_for",
     "close_quarantine",
     "configured_approval_secret",
+    "consume_approval",
+    "consume_approval_or_refuse",
     "current_run_approval",
     "current_run_cancellation",
     "current_run_channel_sends",

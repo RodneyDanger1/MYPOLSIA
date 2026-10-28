@@ -34,16 +34,20 @@ THE EXPORT (V10-D2)
     on any build failure), so the endpoint cannot leak scratch files.
 
 THE WIPE (V10-D3, completed by DT-06)
-    `DELETE /api/v1/data` deletes EVERY shipped owner-data table (all 24: the 8 export members
-    plus the 16 the V10 scope left behind — prospects, email_logs, email_campaigns,
+    `DELETE /api/v1/data` deletes EVERY shipped owner-data table (`MEMBER_MODELS`: the 8 export
+    members plus the 16 the V10 scope left behind — prospects, email_logs, email_campaigns,
     support_inbox_items, stripe_events, expense_records, ad_campaigns/ad_metrics, daily_reports,
     auto_mode_sessions, competitors, social_*, task_attachments, vision_descriptions, …), the
     memory rows' ChromaDB documents (through the shipped fail-closed `memory_service.delete_memory`,
     never a bare `DELETE FROM memory_entries`), and the owner's file stores (attachment blobs,
     generated sites, site packages/exports, run workspaces, stale export temp archives).  It KEEPS
-    `company_config` rows, the DeepSeek key store and the single-use consumed-token record — the
-    three entries `kept` names.  `kept` is the COMPLETE statement of what survives; the previous
-    list named two of eighteen surviving stores, which made the control's promise false.
+    `company_config` rows, the `consumed_approvals` approval ledger, the DeepSeek key store and the
+    single-use consumed-token record — the four entries `kept` names.  `kept` is the COMPLETE
+    statement of what survives; the previous list named two of eighteen surviving stores, which
+    made the control's promise false.
+    The approval ledger is KEPT on purpose (W2): deleting spent jtis during a wipe would resurrect
+    every approval token presented before it — the owner's data deletion would become a replay
+    window for the deploy gate.
 
     Two query modes:
 
@@ -51,8 +55,9 @@ THE WIPE (V10-D3, completed by DT-06)
         needs no token, never consumes one;
       * `?confirm_token=<token>` — the guarded wipe.  The token is minted through the SHIPPED
         approvals machinery (`POST /api/v1/approvals` with `action_fingerprint =
-        DATA_WIPE_ACTION_FINGERPRINT`), which mints `"{exp}.{sig}"` via
-        `policy_firewall.issue_approval` under the SAME `APPROVAL_SECRET`; verification here is
+        DATA_WIPE_ACTION_FINGERPRINT`), which mints `"{exp}.{sig}{jti}"` via
+        `policy_firewall.issue_approval` under the SAME `APPROVAL_SECRET` (the legacy
+        `"{exp}.{sig}"` shape still verifies until it expires); verification here is
         `policy_firewall.verify_approval` — the REAL primitive, same secret, same parse.  No
         new mint exists in this module: the shipped mint already accepts any fingerprint string,
         and `DATA_WIPE_ACTION_FINGERPRINT` embeds a digest of the frozen member set, so a future
@@ -170,8 +175,10 @@ EXPORT_MODELS: dict[str, type[Any]] = {
     "chat_messages": ChatMessage,
 }
 
-#: The WIPE members (DT-06): EVERY shipped owner-data table — all 24 ORM tables except the KEPT
-#: `company_config` (the 8 export members plus the 16 the V10 scope silently left behind).
+#: The WIPE members (DT-06): EVERY shipped owner-data table — the 8 export members plus the 16 the
+#: V10 scope silently left behind.  W2: `consumed_approvals` (the approval-token ledger) is NOT a
+#: member — it is security state, KEPT for the same reason the wipe's own consumed record is (see
+#: `KEPT`); the schema's other non-member is the KEPT `company_config`.
 #: `DATA_WIPE_ACTION_FINGERPRINT` digests this map, so changing the scope invalidates old tokens.
 MEMBER_MODELS: dict[str, type[Any]] = {
     "tasks": Task,
@@ -239,12 +246,20 @@ WIPE_ORDER: tuple[str, ...] = (
 #: What the wipe provably leaves alone.  This is the COMPLETE list of surviving data stores: a
 #: client must not have to assume, and the wipe must not under-report (DT-06).
 #:   * `company_config` — the owner's company profile rows;
+#:   * `consumed_approvals` — the approval-token single-use ledger (`consumed_approvals` table,
+#:     W2).  Security state, not owner content: deleting spent nonces would re-arm every token
+#:     presented before the wipe (a replay window the wipe must not open);
 #:   * `deepseek_key_store` — `backend/data/deepseek_api_key.json` (a FILE; never a member);
 #:   * `data_wipe_consumed_record` — `backend/data/data_wipe_consumed.json`, the single-use marker
 #:     that must survive the wipe or a used token could wipe again.
 #: Process configuration (`.env`), the database engine's own files and the code are not data
 #: stores; they are not owner content and are not listed.
-KEPT: tuple[str, ...] = ("company_config", "deepseek_key_store", "data_wipe_consumed_record")
+KEPT: tuple[str, ...] = (
+    "company_config",
+    "consumed_approvals",
+    "deepseek_key_store",
+    "data_wipe_consumed_record",
+)
 
 #: The owner's FILE stores, label -> an absolute-ish root.  The wipe removes the CONTENTS of each
 #: (the directory itself is kept, so the running service does not lose its mount point).  Each

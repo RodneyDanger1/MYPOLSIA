@@ -343,8 +343,17 @@ async def test_minted_token_wipes_members_and_keeps_config_and_key_store(
     assert body["dry_run"] is False
     assert body["deleted"] == seeded
     assert body["total_rows"] == sum(seeded.values())
-    # DT-06: `kept` is the COMPLETE statement of what survives — now three stores.
-    assert body["kept"] == ["company_config", "deepseek_key_store", "data_wipe_consumed_record"]
+    # DT-06: `kept` is the COMPLETE statement of what survives — now four stores.
+    # W2 DELIBERATE RE-PIN (2026-10-28; migration 0018): old list was
+    # ["company_config", "deepseek_key_store", "data_wipe_consumed_record"]; the approval-token
+    # single-use ledger (`consumed_approvals`) is KEPT — deleting spent jtis during a wipe would
+    # re-arm every token presented before it (a replay window).  Named here, not absorbed silently.
+    assert body["kept"] == [
+        "company_config",
+        "consumed_approvals",
+        "deepseek_key_store",
+        "data_wipe_consumed_record",
+    ]
 
     assert await _member_counts(async_db_session) == {table: 0 for table in seeded}
 

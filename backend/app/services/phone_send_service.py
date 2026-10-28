@@ -84,9 +84,41 @@ TEMP_PREFIX = "polsia-phone-send-"
 AUDIT_ACTION = "phone_send"
 AUDIT_AGENT = "system"
 
-#: The real driver script. `POLSIA_PHONE_SEND_DRIVER` exists for an operator who keeps the driver
-#: outside the repo; nothing in the app sets it, and a missing file is a named 503.
-DRIVER_PATH = Path(__file__).resolve().parents[3] / "scripts" / "phone_send_driver.py"
+#: The driver script's file name (the only part that is the same in every layout).
+DRIVER_FILENAME = "phone_send_driver.py"
+
+#: The package root: `<repo>/backend` in a checkout, `/app` in the backend image.  Both layouts are
+#: real, and the OLD anchor (`parents[3]`) resolved to the FILESYSTEM ROOT in the image (`/`), so
+#: the refusal named `/scripts/phone_send_driver.py` — a path that does not exist in the image and
+#: is not where anyone would mount it (`sentinel/REPORT.md` §4.1 P3).
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def driver_candidates() -> list[Path]:
+    """Every path the driver is looked for, in order: package-adjacent first, then its parent.
+
+    WHY TWO.  `backend/Dockerfile`'s build context is `backend/`, so a driver shipped beside the
+    package belongs at `<package>/scripts` (`/app/scripts` in the image); a checkout keeps it at the
+    REPO root, `<package>/../scripts` (`<repo>/scripts`).  Naming only one of them is what produced
+    the wrong-path refusal, so both are named — and the refusal now lists them all, so an operator
+    reading the error knows exactly where the file is expected.
+    """
+    return [
+        BACKEND_ROOT / "scripts" / DRIVER_FILENAME,
+        BACKEND_ROOT.parent / "scripts" / DRIVER_FILENAME,
+    ]
+
+
+#: The real driver script: the first candidate that EXISTS at import time, else the primary (whose
+#: absence `send()` reports as the named 503 with both candidates listed).  `POLSIA_PHONE_SEND_DRIVER`
+#: still overrides this for an operator who keeps the driver outside the tree; nothing in the app
+#: sets it.  Resolving "first existing" ONCE here (not per call) keeps `DRIVER_PATH` a plain module
+#: attribute — the shipped tests monkeypatch it to their own path and must never be silently
+#: redirected to a real driver that happens to be on this host.
+DRIVER_PATH = next(
+    (candidate for candidate in driver_candidates() if candidate.is_file()),
+    driver_candidates()[0],
+)
 
 #: Statuses this route's codes answer with. Codes the canonical table already maps keep their
 #: shipped status (`http_status_for`); only E_PHONE_SEND_UNPAIRED needs the local row.
@@ -672,7 +704,14 @@ async def send(
             E_PHONE_UNAVAILABLE,
             f"the phone send driver is missing: {driver}",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
-            context={"driver_path": str(driver)},
+            context={
+                "driver_path": str(driver),
+                # The honest metadata: WHERE the driver is looked for, not just the one path that
+                # happened to be picked.  A refusal that names only the first candidate sends an
+                # operator looking in the wrong directory when the layout is the other one.
+                "driver_candidates": [str(path) for path in driver_candidates()],
+                "driver_path_env": "POLSIA_PHONE_SEND_DRIVER",
+            },
         )
 
     limit = SEND_TIMEOUT_S if timeout is None else timeout
@@ -723,9 +762,11 @@ def http_refusal(exc: PolsiaError) -> HTTPException:
 
 
 __all__ = [
+    "BACKEND_ROOT",
     "BODY_MAX",
     "BRIDGE_TIMEOUT_S",
     "BRIDGE_URL_ENV",
+    "DRIVER_FILENAME",
     "DRIVER_NAME",
     "DRIVER_PATH",
     "DriverRun",
@@ -735,6 +776,7 @@ __all__ = [
     "SendResult",
     "bridge_url",
     "driver_argv",
+    "driver_candidates",
     "driver_executable",
     "http_refusal",
     "mask_number",

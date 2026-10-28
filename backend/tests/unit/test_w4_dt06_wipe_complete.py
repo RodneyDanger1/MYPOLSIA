@@ -96,6 +96,7 @@ def fake_chroma(monkeypatch) -> FakeCollection:
 async def _seed(db, tmp_path: Path) -> None:
     """One row in every previously-untouched table family + the file stores' contents."""
     from app.models.ads import AdCampaign, AdMetric
+    from app.models.approval import ConsumedApproval
     from app.models.auto_mode import AutoModeSession
     from app.models.chat import ChatMessage
     from app.models.company import CompanyConfig
@@ -174,6 +175,17 @@ async def _seed(db, tmp_path: Path) -> None:
     db.add(SocialPost(content="post"))
     db.add(SocialEngagement(author_handle="@someone", content="a mention"))
 
+    # W2 (migration 0018): one SPENT approval token.  The wipe must KEEP this row — deleting spent
+    # nonces would re-arm the token and turn the owner's data deletion into a replay window.
+    db.add(
+        ConsumedApproval(
+            token_id="a" * 64,
+            jti="0123456789abcdef",
+            action_fingerprint="external_irreversible|render|deploy",
+            consumed_by="w4-dt06-seed",
+        )
+    )
+
     # ── an attachment row + vision row + the blob on disk ───────────────────────────────────
     blob = tmp_path / "attachments" / "task-1" / "stored.png"
     blob.write_bytes(b"attachment-bytes")
@@ -242,19 +254,28 @@ def _files(root: Path) -> list[str]:
 
 
 def test_every_orm_table_is_a_member_or_the_declared_kept_config():
-    """DT-06's scope pin: the wipe set is the SCHEMA, minus exactly `company_config`."""
+    """DT-06's scope pin: the wipe set is the SCHEMA, minus the DECLARED kept tables.
+
+    W2 DELIBERATE RE-PIN (2026-10-28; migration 0018): old assertion
+    `orm_tables - members == {"company_config"}`.  `consumed_approvals` (the approval-token
+    single-use ledger) is NOT a wipe member: it is security state that must outlive the wipe or a
+    used approval token could be replayed after it.  It is declared in `KEPT`, so the wipe still
+    reports every survivor; the equality below cannot hide a third, undeclared survivor.
+    """
     orm_tables = set(Base.metadata.tables)
     members = set(data_module.MEMBER_MODELS)
-    assert orm_tables - members == {"company_config"}, (
-        "every shipped table must be wiped; the only survivor is the kept company config. "
-        f"missing from the wipe: {sorted(orm_tables - members - {'company_config'})}"
+    assert orm_tables - members == {"company_config", "consumed_approvals"}, (
+        "every shipped table must be wiped or DECLARED kept; the survivors are the kept company "
+        f"config and the kept approval ledger. missing from the declaration: "
+        f"{sorted(orm_tables - members - {'company_config', 'consumed_approvals'})}"
     )
     assert members - orm_tables == set(), "the wipe names a table the schema does not have"
     assert data_module.KEPT == (
         "company_config",
+        "consumed_approvals",
         "deepseek_key_store",
         "data_wipe_consumed_record",
-    ), "kept must name every surviving data store (company config + the two files)"
+    ), "kept must name every surviving data store (company config + approval ledger + the two files)"
     assert "invoice_dunning_claim_results" in members, "the DT-05 ledger is owner data too"
 
 
@@ -303,6 +324,18 @@ async def test_the_wipe_deletes_every_member_and_declares_the_exact_kept_set(
     assert int(
         (await async_db_session.execute(select(func.count()).select_from(CompanyConfig))).scalar_one()
     ) == 1, "company_config must survive"
+    from app.models.approval import ConsumedApproval
+
+    assert int(
+        (
+            await async_db_session.execute(
+                select(func.count()).select_from(ConsumedApproval)
+            )
+        ).scalar_one()
+    ) == 1, (
+        "the approval-token ledger must survive the wipe: deleting spent jtis would re-arm every "
+        "token presented before it (a replay window)"
+    )
     assert secret_store.get_deepseek_api_key() == KEY_SENTINEL, "the key store must survive"
     assert data_module._CONSUMED_TOKENS_PATH.exists(), (
         "the single-use marker must survive the wipe (or a used token could wipe again)"

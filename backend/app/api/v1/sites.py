@@ -174,12 +174,20 @@ class DeployRecordResponse(BaseModel):
 
 
 class DeployStateResponse(BaseModel):
-    """`GET .../deploy` — whether deploy is configured, and the last real deploy (null if none)."""
+    """`GET .../deploy` — whether deploy is configured, the last real deploy, and the fingerprint.
+
+    `approval_fingerprint` (weaver R-UIB02-1) is the value the UI mints a single-use approval token
+    for (`POST /api/v1/approvals`) so a live deploy can be authorised on the FIRST attempt instead
+    of provoking a refusal to learn the fingerprint.  It is `null` when no Render service id is
+    configured: the token is bound to `deploy_payload(slug, service_id)`, so with no service id
+    there is no action to approve yet, and a fabricated digest would be mintable-but-unusable.
+    """
 
     slug: str
     configured: bool
     missing: list[str]
     service_id: str | None
+    approval_fingerprint: str | None = None
     last_deploy: DeployRecordResponse | None
 
 
@@ -196,6 +204,9 @@ class DeployResponse(BaseModel):
     at: str | None
     message: str
     plan: DeployPlanResponse
+    #: The fingerprint this deploy is (or would be) gated on — the same value `GET .../deploy`
+    #: serves, so a UI that previewed first need not provoke a refusal to mint.
+    approval_fingerprint: str | None = None
 
 
 DEPLOY_REFUSED_ACTION = "deploy_refused"
@@ -269,6 +280,8 @@ async def get_deploy_state(slug: str) -> DeployStateResponse:
 
     `configured: false` plus `missing` is the honest answer when the owner's Render credential or
     service id is absent — the UI hides the Deploy control rather than offering a dead button.
+    `approval_fingerprint` is the fingerprint to mint an approval token for (R-UIB02-1); it is
+    `null` while the Render service id is unknown, because the token is bound to it.
     An unknown slug is the named `E_NOT_FOUND`, the same resource-read rule as `read_site`.
     """
     with refusal_guard():

@@ -509,11 +509,17 @@ async def test_get_deploy_state_is_null_before_the_first_deploy(
     resp = await api_client.get("/api/v1/sites/landing-page/deploy", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    # W2 DELIBERATE RE-PIN (SENTINEL, weaver R-UIB02-1): the state body gained ONE key,
+    # `approval_fingerprint` — the fingerprint a single-use token must be minted for, computed by
+    # the SAME function the deploy gate verifies (`deploy_service.deploy_fingerprint`).  OLD pin:
+    # {slug, configured, missing, service_id, last_deploy}; NEW: those five plus the fingerprint,
+    # because "configured" is exactly the case in which a live deploy HAS an approvable action.
     assert body == {
         "slug": "landing-page",
         "configured": True,
         "missing": [],
         "service_id": SERVICE_ID,
+        "approval_fingerprint": deploy_service.deploy_fingerprint("landing-page", SERVICE_ID),
         "last_deploy": None,
     }
 
