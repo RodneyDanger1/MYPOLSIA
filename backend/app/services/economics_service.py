@@ -137,7 +137,7 @@ def _parse_world_bank(payload: Any) -> dict[str, Any]:
                 "no older year is substituted (never 0)"
             ),
         }
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise MalformedSourcePayload(
             f"World Bank value for {year} is {value!r}, not a finite number or null"
         )
@@ -198,7 +198,7 @@ def _parse_frankfurter(payload: Any) -> dict[str, Any]:
     rates: dict[str, float] = {}
     for currency in FX_CURRENCIES:
         value = rates_document.get(currency)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, int | float) and not isinstance(value, bool):
             rates[currency] = float(value)
     if not rates:
         raise MalformedSourcePayload(

@@ -100,6 +100,25 @@ class RevenueSnapshotResponse(ORMModel):
     ONE such row into a bare, codeless 500 for the whole `/finance/revenue` list (L1-11).  `None`
     is served as null ("not measured"), never a fabricated `0` (the house rule in api.ts: a null
     money field is not a zero reading).
+
+    TS-1 — the additive PROVENANCE marker (appended after `created_at`, so every pre-TS-1 client
+    parses the seven original keys unchanged).  A nullable column alone does not tell a client
+    WHICH values were measured: a partial snapshot, a repaired legacy row (its fabricated zeros
+    are NULL now) and an all-NULL row all look like "some nulls".  The three fields are derived
+    from the row by `finance_service.snapshot_provenance` — never stored, never guessed:
+
+      * `measured` — the snapshot columns that carry a value (a supplied `0` counts: it is a
+        measured zero, not an absent one), in the row's own column order;
+      * `unmeasured` — the exact complement: the columns nothing measured;
+      * `provenance` — the coverage: `"complete"` (all seven measured), `"partial"` (some), or
+        `"unmeasured"` (none — the row records a date but no measurement).
+
+    The frontend renders `unmeasured` columns as the em dash and labels a `partial` row as a
+    partial snapshot instead of presenting it as the day's complete reading.  HONEST LIMIT: the
+    marker is row-derived, so a pre-0017 database that still carries fabricated all-zero rows
+    reads as `"complete"` — that state is uncreatable at the current head (0017 dropped the
+    defaults; the writer writes explicit NULLs), and detecting it retroactively needs the run
+    ledger, not the row (see the service helper's docstring).
     """
 
     id: int
@@ -112,6 +131,9 @@ class RevenueSnapshotResponse(ORMModel):
     total_revenue_month_cents: int | None = None
     stripe_balance_cents: int | None = None
     created_at: UtcDatetime | None = None
+    measured: list[str] = []
+    unmeasured: list[str] = []
+    provenance: str = "unmeasured"
 
 
 class ExpenseRecordResponse(ORMModel):

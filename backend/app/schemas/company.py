@@ -39,7 +39,7 @@ def non_finite_paths(value: Any, prefix: str = "") -> list[str]:
         for key, item in value.items():
             paths.extend(non_finite_paths(item, f"{prefix}.{key}" if prefix else str(key)))
         return paths
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         paths = []
         for index, item in enumerate(value):
             paths.extend(non_finite_paths(item, f"{prefix}[{index}]"))

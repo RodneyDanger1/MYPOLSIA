@@ -78,6 +78,7 @@ from app.services.finance_service import (
     money,
     record_stripe_event,
     reporting_currency_filter,
+    snapshot_provenance,
 )
 from app.services.query_helpers import fetch_rows
 
@@ -106,9 +107,18 @@ async def finance_summary(db: AsyncSession = Depends(get_db)) -> FinanceSummaryR
 async def finance_revenue(
     limit: int = Query(default=30, ge=1, le=365), db: AsyncSession = Depends(get_db)
 ) -> list[RevenueSnapshotResponse]:
+    """The snapshot rows, each carrying its TS-1 measured/unmeasured provenance marker.
+
+    The marker is computed per row from the row's own values (`snapshot_provenance`) and attached
+    with `model_copy`: it is not a column and cannot be supplied by a caller, so the wire can never
+    disagree with the values it describes.  The seven pre-TS-1 keys are unchanged and in order.
+    """
     with refusal_guard():
         rows = await list_revenue_snapshots(db, limit=limit)
-    return [RevenueSnapshotResponse.model_validate(row) for row in rows]
+    return [
+        RevenueSnapshotResponse.model_validate(row).model_copy(update=snapshot_provenance(row))
+        for row in rows
+    ]
 
 
 @router.get(
@@ -679,9 +689,9 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
     price: float | None = None
     price_band = idea.get("price_band") if isinstance(idea, dict) else None
     if (
-        isinstance(price_band, (list, tuple))
+        isinstance(price_band, list | tuple)
         and price_band
-        and isinstance(price_band[0], (int, float))
+        and isinstance(price_band[0], int | float)
         and not isinstance(price_band[0], bool)
     ):
         price = float(price_band[0])
@@ -713,7 +723,7 @@ async def build_planning_view(db: AsyncSession) -> dict[str, Any]:
 
     owner_hours = company.owner_hours_per_week if company is not None else None
     monthly_hours: float | None = None
-    if isinstance(owner_hours, (int, float)) and not isinstance(owner_hours, bool):
+    if isinstance(owner_hours, int | float) and not isinstance(owner_hours, bool):
         monthly_hours = round(float(owner_hours) * 52 / 12, 2)
     if monthly_hours is None:
         reasons["capacity.max_clients"] = "owner_hours_per_week is not set in the company profile"

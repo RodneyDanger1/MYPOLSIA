@@ -1,11 +1,20 @@
 """GET /api/v1/dashboard/*
 
 `/summary` answers with ONE statement: the four KPI counts and the active-agent
-list come from a single grouped scan of the day window, and the company KPIs and
-the last report date ride along as scalar subqueries of the same SELECT.  The
-original issued four `count(*)` calls plus a company read plus a report read
-(measured at 294.968 ms on 200k rows; the grouped aggregate on an indexed schema is
-0.905 ms — `matrix-s200k.json`, 4 → 1 round trips).
+list come from a single grouped scan of the day window, and the company KPIs, the
+last report date and (TS-4) the newest measured snapshot ride along as scalar
+subqueries of the same SELECT.  The original issued four `count(*)` calls plus a
+company read plus a report read (measured at 294.968 ms on 200k rows; the grouped
+aggregate on an indexed schema is 0.905 ms — `matrix-s200k.json`, 4 → 1 round trips).
+
+TS-4 — THE KPI CARD WAS CONFIGURED DATA WEARING A MEASUREMENT'S SHAPE.  `kpis` is
+`company_config.kpis` verbatim (owner-typed Settings values); the page renders
+"MRR / Active customers / Churn rate" from it.  On the same stack `/finance/summary`
+said MRR is unmeasured (`mrr_cents: null`) while the dashboard showed a configured
+`mrr_usd: 0` as `$0.00`.  The response now declares the configured provenance
+(`kpis_provenance`) AND carries the measured finance headline (`measured_finance`) from
+the newest `revenue_snapshots` row — the same row the finance summary reads — as three
+more columns of the SAME statement, so this honest addition costs no extra round trip.
 
 Day window: `day_window(db)` — the frozen helper's own default, i.e. the company
 timezone from `settings.company_timezone`, dialect-bound.  Reading
@@ -30,15 +39,18 @@ from app.config import settings
 from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.company import CompanyConfig
+from app.models.finance import RevenueSnapshot
 from app.models.report import ActivityLog, DailyReport
 from app.models.task import Task
 from app.schemas.report import (
     ActivityEventResponse,
     DailyReportResponse,
+    DashboardMeasuredFinance,
     DashboardSummaryResponse,
     ReportsListResponse,
 )
 from app.services.activity_service import get_recent_activity
+from app.services.finance_service import SNAPSHOT_MEASUREMENT_COLUMNS, snapshot_provenance
 from app.services.query_helpers import agent_rollup_expr, fetch_one, fetch_scalars
 from app.services.report_service import build_cash_block, get_daily_report
 
@@ -69,8 +81,22 @@ def _summary_statement(db: AsyncSession):
         .limit(1)
         .subquery("company_row")
     )
+    # TS-4: the newest MEASURED snapshot — the same row `finance_service.get_finance_summary`
+    # reads (newest by date, id as the tie-break) — as a 1-row subquery joined into this
+    # statement.  The measured columns are selected by name so `snapshot_provenance` can run on
+    # the row values without a second read.
+    latest_snapshot = (
+        select(
+            *[RevenueSnapshot.__table__.c[column] for column in SNAPSHOT_MEASUREMENT_COLUMNS],
+            RevenueSnapshot.snapshot_date,
+        )
+        .order_by(RevenueSnapshot.snapshot_date.desc(), RevenueSnapshot.id.desc())
+        .limit(1)
+        .subquery("latest_snapshot")
+    )
     # LEFT JOIN keeps the aggregate's single row when there is no company row at
-    # all (the empty-database case the shipped test exercises).
+    # all (the empty-database case the shipped test exercises) — and when there is no
+    # snapshot row yet (every measured-finance column comes back NULL = "unmeasured").
     return select(
         today.c.total,
         today.c.completed,
@@ -80,7 +106,11 @@ def _summary_statement(db: AsyncSession):
         select(func.max(DailyReport.report_date)).scalar_subquery().label("last_report_date"),
         company_row.c.kpis.label("kpis"),
         company_row.c.timezone.label("company_timezone"),
-    ).select_from(today.outerjoin(company_row, true()))
+        latest_snapshot.c.snapshot_date,
+        *[latest_snapshot.c[column] for column in SNAPSHOT_MEASUREMENT_COLUMNS],
+    ).select_from(
+        today.outerjoin(company_row, true()).outerjoin(latest_snapshot, true())
+    )
 
 
 def _split_agents(rollup_value: str | None) -> list[str]:
@@ -124,6 +154,20 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
             "dashboard summary: company_config.kpis is %s, not a mapping; reading it as absent",
             type(row.kpis).__name__,
         )
+    # TS-4: the measured counterpart of the configured KPI card.  The values are the SAME ones
+    # `/finance/summary` serves for the newest snapshot (`None` = unmeasured, `0` = measured zero);
+    # `snapshot_provenance` names the row's coverage so a partial day is not presented as complete.
+    latest_values = {
+        column: getattr(row, column) for column in SNAPSHOT_MEASUREMENT_COLUMNS
+    }
+    measured_finance = DashboardMeasuredFinance(
+        mrr_cents=int(row.mrr_cents) if row.mrr_cents is not None else None,
+        active_subscribers=(
+            int(row.active_subscribers) if row.active_subscribers is not None else None
+        ),
+        last_snapshot_date=row.snapshot_date,
+        provenance=str(snapshot_provenance(latest_values)["provenance"]),
+    )
     return DashboardSummaryResponse(
         tasks_today_total=int(row.total or 0),
         tasks_today_completed=int(row.completed or 0),
@@ -132,6 +176,8 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
         active_agents=_split_agents(row.agents),
         kpis=kpis,
         last_report_date=row.last_report_date,
+        kpis_provenance="configured",
+        measured_finance=measured_finance,
     )
 
 

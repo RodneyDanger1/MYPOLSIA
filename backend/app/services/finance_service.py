@@ -19,6 +19,7 @@ Three measured problems this module fixes:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -37,7 +38,7 @@ from app.agents.accounting import (
     unit_economics,
 )
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
-from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, today_in
+from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, today_in, today_utc
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.invoice import Invoice, InvoiceStatus
@@ -496,6 +497,22 @@ async def upsert_revenue_snapshot(
     The UPDATE half only moves the columns THIS call supplied: a retry that omits a column must
     not erase a value an earlier same-day run did measure (the row is the DAY's snapshot, not
     the last attempt's).
+
+    TS-3 — NO MEASUREMENT, NO ROW.  A call that supplies a date and no measured column used to be
+    an accepted primitive: it wrote a seven-NULL row (or, before 0017, a seven-ZERO row), and row
+    EXISTENCE is the provenance signal `get_finance_summary` (`last_snapshot_date`),
+    `build_cash_block` and the finance page's idle state all read.  It now refuses `E_VALIDATION`
+    BY NAME.  A supplied `0` IS a measurement (`is not None`, never truthiness) and still writes.
+
+    TS-2 — A SNAPSHOT RECORDS A DAY THAT HAPPENED.  `snapshot_date` is model-controlled (the
+    finance agent supplies it inside its JSON output), and `get_finance_summary` picks the
+    newest-by-date row: one future-dated snapshot would hijack the summary — and the dashboard's
+    measured-finance block — until that date arrived.  Live evidence of the quirk class: run 5
+    (started 2026-10-14) stamped `snapshot_date = 2026-02-05` from the model.  A date AFTER both
+    the company-local today and the UTC today is therefore refused `E_VALIDATION`; the maximum is
+    used because the agent is told to emit a UTC date while the rest of the app thinks in the
+    company's local day, and refusing a legitimate "today" at the UTC/local boundary would be a
+    false refusal, not a guard.
     """
     unknown = sorted(set(values) - set(_SNAPSHOT_COLUMNS))
     if unknown:
@@ -505,6 +522,56 @@ async def upsert_revenue_snapshot(
             f"revenue snapshot has no column(s) {unknown}",
             how_to_fix=f"supply only these snapshot columns: {', '.join(_SNAPSHOT_COLUMNS)}",
             context={"unknown": unknown},
+        )
+
+    # TS-2 (input validation at the boundary): a datetime is a `date` SUBCLASS, and a string would
+    # die as an uncoded TypeError in the future-date comparison before the database ever sees it.
+    if isinstance(snapshot_date, datetime) or not isinstance(snapshot_date, date):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"revenue snapshot date must be a date, not {type(snapshot_date).__name__}",
+            how_to_fix="pass snapshot_date as a datetime.date (YYYY-MM-DD); never a datetime or a string",
+            context={"snapshot_date": repr(snapshot_date)[:120]},
+        )
+    company_today = today_in()
+    utc_today = today_utc()
+    latest_plausible_day = max(company_today, utc_today)
+    if snapshot_date > latest_plausible_day:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"revenue snapshot date {snapshot_date.isoformat()} is in the future — a snapshot "
+            "records a day that happened",
+            how_to_fix=(
+                "supply snapshot_date = the day the run actually measured (YYYY-MM-DD), not later "
+                "than today; a future-dated row becomes the newest snapshot and would hijack every "
+                "summary read until that date arrives"
+            ),
+            context={
+                "snapshot_date": snapshot_date.isoformat(),
+                "latest_plausible_day": latest_plausible_day.isoformat(),
+                "company_local_today": company_today.isoformat(),
+                "utc_today": utc_today.isoformat(),
+            },
+        )
+
+    # TS-3: a row's existence is a provenance claim; only a call that measured something may make
+    # it.  `values.get(...) is not None` keeps a supplied 0 (a measured zero) and refuses only a
+    # call whose every optional value is absent/None.
+    measured_values = {
+        column: values.get(column)
+        for column in _SNAPSHOT_COLUMNS
+        if values.get(column) is not None
+    }
+    if not measured_values:
+        raise PolsiaError(
+            E_VALIDATION,
+            "revenue snapshot measured no column — refusing to write a date-only row",
+            how_to_fix=(
+                "supply at least one measured snapshot column ("
+                + ", ".join(_SNAPSHOT_COLUMNS)
+                + "); a row with a date and no values claims a day was measured"
+            ),
+            context={"snapshot_date": snapshot_date.isoformat()},
         )
 
     insert_fn = pg_insert if dialect_name(db) == "postgresql" else sqlite_insert
@@ -606,8 +673,55 @@ _SNAPSHOT_COLUMNS = (
     "total_revenue_month_cents",
     "stripe_balance_cents",
 )
+#: TS-1 — THE measurement vocabulary of a snapshot row, in the row's own column order.  Public so
+#: the wire marker (`RevenueSnapshotResponse.measured` / `.unmeasured` / `.provenance`) and the
+#: dashboard's measured-finance block read the SAME list: a column the marker calls measured is a
+#: column the writer could have supplied, and the two surfaces cannot drift.
+SNAPSHOT_MEASUREMENT_COLUMNS: tuple[str, ...] = _SNAPSHOT_COLUMNS
 #: `expense_records` columns a payload expense entry may supply (`date` handled separately).
 _EXPENSE_COLUMNS = ("category", "vendor", "amount_cents", "currency", "description", "external_ref")
+
+
+def snapshot_provenance(snapshot: RevenueSnapshot | Mapping[str, Any]) -> dict[str, Any]:
+    """TS-1 — what a snapshot row actually MEASURED, derived from the row itself.
+
+    THE DEFECT.  `RevenueSnapshotResponse` served seven nullable money/count columns with no
+    marker for which of them were measured.  A legacy row (written before migration 0017 dropped
+    `DEFAULT 0`) carries non-NULL zeros the run never supplied; a repaired row carries NULLs where
+    the zeros were fabricated; a partial row (a run that measured only balance + month revenue)
+    carries a mix.  Every reader had to infer the state from nulls alone, and a row with 4 measured
+    values looked identical in SHAPE to a row with 4 unmeasured ones.
+
+    THE MARKER IS DERIVED AND THEREFORE NOT FABRICABLE.  `measured` is exactly the columns whose
+    value is not NULL (a supplied `0` is a measured zero and IS included — `is not None`, never
+    truthiness), `unmeasured` is its exact complement, and `provenance` names the coverage:
+    `"complete"` (all seven carry a value), `"partial"` (some do), `"unmeasured"` (none do).
+
+    WHAT THIS CANNOT PROVE, stated honestly.  A database that still predates 0017's writer/DDL
+    halves can hold an all-zeros row that was never measured: the reader sees seven non-NULL values
+    and cannot distinguish a complete measurement from a fabricated one without the run ledger.
+    That state is uncreatable on the current schema (the server defaults are gone and
+    `upsert_revenue_snapshot` writes explicit NULLs), and this marker's job is to make the
+    PARTIAL/unmeasured states — the ones the live repair produced — visible on the wire instead of
+    leaving them to be inferred differently by every client.
+
+    `snapshot` is an ORM row or a mapping of the same column names (the dashboard composes the
+    latest row from one SELECT and reuses this helper).
+    """
+    def value(column: str) -> Any:
+        if isinstance(snapshot, Mapping):
+            return snapshot.get(column)
+        return getattr(snapshot, column)
+
+    measured = [column for column in SNAPSHOT_MEASUREMENT_COLUMNS if value(column) is not None]
+    unmeasured = [column for column in SNAPSHOT_MEASUREMENT_COLUMNS if value(column) is None]
+    if not measured:
+        provenance = "unmeasured"
+    elif unmeasured:
+        provenance = "partial"
+    else:
+        provenance = "complete"
+    return {"measured": measured, "unmeasured": unmeasured, "provenance": provenance}
 
 
 def _iso_date(value: Any) -> date | None:

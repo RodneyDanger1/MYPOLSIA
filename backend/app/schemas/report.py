@@ -49,7 +49,46 @@ class DailyReportResponse(ORMModel):
     cash_block: dict[str, Any] | None = None
 
 
+class DashboardMeasuredFinance(BaseModel):
+    """TS-4 — the finance ledger's measured headline, beside the owner-configured KPIs.
+
+    THE DEFECT.  `DashboardSummaryResponse.kpis` is `company_config.kpis` verbatim — values the
+    OWNER typed into Settings.  The dashboard page rendered them as "MRR / Active customers /
+    Churn rate", so a configured `mrr_usd: 0` read as a measured `$0.00` on the same screen where
+    `/finance/summary` correctly said MRR is unmeasured (`mrr_cents: null`).  Two surfaces
+    disagreed about the same fact, and the dashboard's copy was the false one.
+
+    THIS BLOCK is the measured counterpart, read from the SAME newest `revenue_snapshots` row
+    `get_finance_summary` uses (one statement, no second round trip):
+
+      * `mrr_cents` / `active_subscribers` — `None` means UNMEASURED (the exact value the finance
+        page serves), `0` means a measured zero;
+      * `last_snapshot_date` — the date of that row (None when no snapshot exists);
+      * `provenance` — the TS-1 coverage marker for the row: `complete` / `partial` / `unmeasured`
+        (`finance_service.snapshot_provenance`), so a partial day cannot be presented as a full
+        reading.
+
+    There is deliberately no measured `churn_rate`: the ledger stores `churned_today` (a COUNT of
+    that day's churn), and dividing it is arithmetic the data does not support, so the dashboard
+    reports the configured churn rate as configured only.
+    """
+
+    mrr_cents: int | None = None
+    active_subscribers: int | None = None
+    last_snapshot_date: date | None = None
+    provenance: str = "unmeasured"
+
+
 class DashboardSummaryResponse(BaseModel):
+    """`GET /dashboard/summary`.
+
+    TS-4 additive provenance (appended AFTER the pre-existing keys, so every pre-TS-4 client keeps
+    parsing the seven original fields unchanged): `kpis` remains the configured values verbatim,
+    but the response now DECLARES their provenance (`kpis_provenance: "configured"`) and carries
+    the measured finance headline beside them (`measured_finance`).  A configured KPI zero can no
+    longer be the only thing a client sees on this wire.
+    """
+
     tasks_today_total: int = 0
     tasks_today_completed: int = 0
     tasks_today_pending: int = 0
@@ -57,6 +96,8 @@ class DashboardSummaryResponse(BaseModel):
     active_agents: list[str] = []
     kpis: dict[str, Any] = {}
     last_report_date: date | None = None
+    kpis_provenance: str = "configured"
+    measured_finance: DashboardMeasuredFinance | None = None
 
 
 class ReportsListResponse(BaseModel):
