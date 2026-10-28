@@ -28,13 +28,32 @@ from app.core.errors import PolsiaError
 
 
 def _dead_broker(monkeypatch) -> None:
-    """Make the single-task dispatch raise exactly like a refused broker."""
+    """Make BOTH dispatch shapes raise exactly like a refused broker.
+
+    A single-row hand-off goes through `run_agent_task.delay`; a multi-row hand-off goes through
+    `celery.group(...).apply_async()`. Patching only `.delay` made this double lie on any machine
+    with a real Redis running: the group publish SUCCEEDED, `enqueue_created` did not raise, and
+    the test failed `DID NOT RAISE` (measured 2026-10-28 against the live stack). A test double
+    must refuse every transport the production path can choose.
+    """
+    import celery
+
     import celery_app.tasks.agent_tasks as agent_tasks
 
     def dead(*_args, **_kwargs):
         raise ConnectionError("Error 61 connecting to localhost:6379. Connection refused.")
 
+    class _DeadGroup:
+        def __init__(self, _sigs) -> None:
+            pass
+
+        def apply_async(self):
+            raise ConnectionError(
+                "Error 61 connecting to localhost:6379. Connection refused."
+            )
+
     monkeypatch.setattr(agent_tasks.run_agent_task, "delay", dead, raising=False)
+    monkeypatch.setattr(celery, "group", _DeadGroup)
 
 
 def test_a_dead_broker_re_arms_the_sweep_row_and_names_the_refusal(queue_db, monkeypatch):
