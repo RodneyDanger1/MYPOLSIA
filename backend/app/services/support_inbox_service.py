@@ -5,13 +5,20 @@ body quarantined into its prompt (`app/agents/customer_support/agent.py:64-149` 
 subject/body, reference-only refuses by name, malformed refuses by name).  Nothing produced
 such an item.  This service is the ingest that populates it:
 
-* `submit_item`    — the owner (via `POST /api/v1/support/inbox`) or a future IMAP poller
-  stores one message.  `provider_message_id` is the unique ingest key: a re-submitted id
-  returns the STORED row unchanged (at-least-once delivery must not duplicate, and must
-  never overwrite a stored customer message with whatever arrived second).  R4 OUTREACH-3
-  (V9/B3): the ingest ALSO stamps `replied_at` on the matching prospect's unstamped
-  `email_logs` rows (`stamp_prospect_replied` below) — one reply stops the follow-up chain,
-  because the every-3h sweep (`celery_app/tasks/followups.py`) filters on that column.
+* `submit_item`    — the owner (via `POST /api/v1/support/inbox`) stores one message.
+  `provider_message_id` is the unique ingest key: a re-submitted id returns the STORED row
+  unchanged (at-least-once delivery must not duplicate, and must never overwrite a stored
+  customer message with whatever arrived second).  R4 OUTREACH-3 (V9/B3): the ingest ALSO
+  stamps `replied_at` on the matching prospect's unstamped `email_logs` rows
+  (`stamp_prospect_replied` below) — one reply stops the follow-up chain, because the every-3h
+  sweep (`celery_app/tasks/followups.py`) filters on that column.
+* `ingest_inbound_item` — W5: the INBOUND-EMAIL PROVIDER's path (`POST
+  /api/v1/support/inbox/inbound`).  It is `submit_item` plus the three things a webhook needs and
+  an owner POST does not: the provider's body/size cap (an unauthenticated-by-the-owner payload is
+  caller input), an HONEST `created` flag (a re-delivery answers `created=False` without writing a
+  row) and ONE audit row per delivery under the stable action `support_inbox_inbound`.  The item
+  it writes is byte-for-byte the owner path's row, so the shipped attach sweep consumes both
+  identically.
 * `attach_pending` — the 3h sweep's helper (`celery_app/tasks/agent_tasks.py`,
   `_email_inbox_sweep`): oldest-first pending items become one deduped CS task each,
   carrying `metadata.inbox_item` in the RD12 shape; the item is then marked `dispatched`
@@ -31,6 +38,7 @@ row already exists would stay pending forever (every tick would re-hit the same 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -44,6 +52,7 @@ from app.core.timeutil import as_bound_instant, dialect_name, now_utc
 from app.models.outreach import EmailLog, Prospect
 from app.models.support import SupportInboxItem
 from app.models.task import Task
+from app.services.activity_service import log_activity
 from app.services.query_helpers import fetch_scalars
 
 logger = logging.getLogger(__name__)
@@ -61,6 +70,37 @@ MAX_PROVIDER_MESSAGE_ID_LEN = 240
 #: The columns of `tasks.dedupe_key` rows this service creates — greppable so a reader can
 #: find every producer of the shape.
 DEDUPE_KEY_PREFIX = "support-inbox-"
+
+#: W5 — the inbound-email webhook's INPUT CAPS.  Every field the webhook accepts is bounded and
+#: refused BY NAME (`E_VALIDATION` + `context.field`), never truncated — a truncated customer
+#: message is altered evidence.  `provider_message_id`/`from_address`/`subject` reuse
+#: `submit_item`'s bounds; `body` deliberately had NO bound on the owner path (an authenticated
+#: owner may paste what they like), so the provider path carries the explicit cap below.
+MAX_INBOUND_BODY_CHARS = 65_536
+MAX_INBOUND_PROVIDER_CHARS = 64
+
+#: The ONE stable `activity_log.action` every inbound delivery writes (greppable by an operator,
+#: pinned by `tests/unit/test_w5_inbound.py`).  The agent_type says who wrote it: the provider's
+#: webhook is SYSTEM bookkeeping, not an agent's action.
+INBOUND_AUDIT_ACTION = "support_inbox_inbound"
+INBOUND_AUDIT_AGENT = "system"
+
+
+@dataclass(frozen=True, slots=True)
+class InboundIngestResult:
+    """What one inbound delivery produced: the stored row, whether it is NEW, the provider tag.
+
+    `created` is exact for every sequential delivery (including the shipped at-least-once retry
+    case).  The concurrency guarantee is the DATABASE's, not this flag's: two racing FIRST
+    deliveries of one id produce exactly ONE row (the unique key + `ON CONFLICT DO NOTHING` in
+    `submit_item`), and both callers return that row's id; the loser may still report
+    `created=True` because no deployed dialect here offers a portable "did MY insert win" answer
+    for a no-op insert.  A delivery of an id that already exists always reports `created=False`.
+    """
+
+    item: SupportInboxItem
+    created: bool
+    provider: str | None
 
 #: The ANSWER window (V8/C5, code-gap §10.2): the support function only ANSWERS mail received
 #: in the last 14 days (dossier §11 line 128, verbatim).  The bound is enforced at the ATTACH
@@ -222,6 +262,102 @@ async def submit_item(
             context={"provider_message_id": pid},
         )
     return existing
+
+
+async def ingest_inbound_item(
+    db: AsyncSession,
+    *,
+    provider_message_id: str,
+    from_address: str,
+    subject: str,
+    body: str,
+    received_at: datetime | None = None,
+    provider: str | None = None,
+) -> InboundIngestResult:
+    """Ingest ONE inbound-email-provider delivery (W5) — `submit_item` + cap + created flag + audit.
+
+    This is the webhook's service path, NOT a second writer: the row is written by `submit_item`
+    exactly as the owner's POST writes it (`status='pending'`, same fields, same
+    `ON CONFLICT (provider_message_id) DO NOTHING` idempotency, same prospect-reply stamping), so
+    the shipped attach sweep (`attach_pending`) consumes provider mail and owner mail identically.
+
+    Differences from the owner path, each for a stated reason:
+
+    * the provider payload is CALLER input the owner did not type, so `body` and `provider` are
+      bounded and refused BY NAME (`E_VALIDATION` + `context.field`) before any write;
+    * a re-delivery must answer `created=False` and write NOTHING new — the unique row is the
+      guarantee (see `InboundIngestResult`), and the pre-read below is what makes the flag honest
+      for every non-concurrent delivery;
+    * ONE `activity_log` row per delivery under `INBOUND_AUDIT_ACTION`, written through
+      `log_activity` in the SAME transaction as the item: a rolled-back item can never leave an
+      audit row claiming it landed, and a landed item can never be un-audited.  The row carries
+      IDs and flags only — never the customer body and never the shared secret.
+
+    Flush-only, like every other function here: the caller (the route's `get_db`) commits.
+    """
+    provider_tag = (provider or "").strip() or None
+    if provider_tag is not None and len(provider_tag) > MAX_INBOUND_PROVIDER_CHARS:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"inbound support payload provider is {len(provider_tag)} characters; the maximum "
+            f"is {MAX_INBOUND_PROVIDER_CHARS}",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={
+                "field": "provider",
+                "length": len(provider_tag),
+                "max_len": MAX_INBOUND_PROVIDER_CHARS,
+            },
+        )
+    if isinstance(body, str) and len(body) > MAX_INBOUND_BODY_CHARS:
+        raise PolsiaError(
+            E_VALIDATION,
+            f"inbound support payload body is {len(body)} characters; the maximum is "
+            f"{MAX_INBOUND_BODY_CHARS}.  The message is refused rather than truncated: a clipped "
+            "customer email would be altered evidence.",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"field": "body", "length": len(body), "max_len": MAX_INBOUND_BODY_CHARS},
+        )
+
+    # Pre-read for the honest `created` flag.  `submit_item` stays the single writer: it re-reads
+    # the conflicting row itself, so a delivery of a known id below still answers that stored row
+    # and never overwrites it.
+    known_id = (provider_message_id or "").strip()
+    existing_id: int | None = None
+    if known_id:
+        existing_id = await db.scalar(
+            select(SupportInboxItem.id)
+            .where(SupportInboxItem.provider_message_id == known_id)
+            .limit(1)
+        )
+
+    item = await submit_item(
+        db,
+        provider_message_id=provider_message_id,
+        from_address=from_address,
+        subject=subject,
+        body=body,
+        received_at=received_at,
+    )
+    created = existing_id is None
+
+    await log_activity(
+        db,
+        INBOUND_AUDIT_AGENT,
+        INBOUND_AUDIT_ACTION,
+        summary=(
+            f"support inbox: inbound message stored as item {item.id}"
+            if created
+            else f"support inbox: duplicate inbound delivery for item {item.id} (no new row)"
+        ),
+        detail={
+            "item_id": int(item.id),
+            "provider_message_id": item.provider_message_id,
+            "provider": provider_tag,
+            "created": created,
+            "status": item.status,
+        },
+    )
+    return InboundIngestResult(item=item, created=created, provider=provider_tag)
 
 
 async def list_items(
@@ -413,10 +549,16 @@ async def count_expired_pending(db: AsyncSession, *, now: datetime | None = None
 __all__ = [
     "ANSWER_WINDOW_DAYS",
     "DEDUPE_KEY_PREFIX",
+    "INBOUND_AUDIT_ACTION",
+    "INBOUND_AUDIT_AGENT",
+    "MAX_INBOUND_BODY_CHARS",
+    "MAX_INBOUND_PROVIDER_CHARS",
     "MAX_PROVIDER_MESSAGE_ID_LEN",
     "VALID_STATUSES",
+    "InboundIngestResult",
     "attach_pending",
     "count_expired_pending",
+    "ingest_inbound_item",
     "inbox_task_dedupe_key",
     "list_items",
     "stamp_prospect_replied",

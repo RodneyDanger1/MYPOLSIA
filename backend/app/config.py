@@ -231,6 +231,17 @@ class Settings(BaseSettings):
     render_api_key: str = ""
     render_service_id: str = ""
 
+    # --- inbound support inbox (W5, 2026-10-28: the provider-agnostic email webhook) ---
+    # The shared secret an inbound-email provider (Postmark/SendGrid-style) presents on
+    # `POST /api/v1/support/inbox/inbound` in the `X-Polsia-Inbound-Secret` header.  DEDICATED and
+    # separate from `api_key` on purpose: a third party's webhook configuration must never have to
+    # hold the key that opens the whole dashboard API.
+    # Blank = NOT CONFIGURED: the route refuses the NAMED `E_CONFIG` (503) for EVERY caller — there
+    # is no open fallback, because an unauthenticated inbox route would let anyone write customer
+    # email into the product.  The value is compared in constant time (`app/api/v1/support.py`),
+    # is never logged, and never appears in a refusal (the refusal names this SETTING, not a value).
+    support_inbound_secret: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
