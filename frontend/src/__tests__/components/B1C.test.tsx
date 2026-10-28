@@ -348,11 +348,10 @@ describe("A5-05 — the waiting count is the declared total, not the page", () =
 /* ══ A5-06 · a citation to a document that does not exist is a defect ══════════════════════════ */
 
 describe("A5-06 — every doc citation in the UI resolves", () => {
-  const CITED = [
-    "src/components/dashboard/AgentStatusGrid.tsx",
-    "src/components/dashboard/MetricsCard.tsx",
-    "src/components/layout/TopbarPopover.tsx",
-  ];
+  // F-12 (wave B2): AgentStatusGrid.tsx and MetricsCard.tsx were retired, so the only remaining
+  // file that carries the wave-U4 why-comment and its `COMPLETENESS.md §7.2 item 7` citation is
+  // TopbarPopover, whose path is outside this seat's territory (REQUESTS.md R2).
+  const CITED = ["src/components/layout/TopbarPopover.tsx"];
 
   function read(relativePath: string): string {
     return fs.readFileSync(path.join(ROOT, relativePath), "utf8");

@@ -65,15 +65,6 @@ function renderedStyleText(container: HTMLElement): string {
     .join(" ");
 }
 
-const WHY_COMMENT =
-  "Unwired since the U1 dashboard rebuild — zero non-test imports as of wave U4; kept per the campaign no-delete rule; wire-vs-retire decision recorded in REQUESTS.";
-
-/** Whitespace-insensitive matching so an autoformatter re-wrapping the comment cannot
- *  silently un-test it. */
-function normalized(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 describe("u4-darktail — app/error.tsx (U1 design language, behavior identical)", () => {
   it("carries zero old-dark classes in source and in the rendered subtree", () => {
     const source = readSource("src/app/error.tsx");
@@ -133,22 +124,6 @@ describe("u4-darktail — app/error.tsx (U1 design language, behavior identical)
     render(<SegmentError error={withMeta} reset={jest.fn()} />);
     expect(screen.getByText(/^Digest: d-9$/)).toBeInTheDocument();
     consoleError.mockRestore();
-  });
-});
-
-describe("u4-darktail — the proven-dead pair is labelled (why-comments on disk)", () => {
-  it("MetricsCard.tsx carries the wave-U4 why-comment at the top", () => {
-    const source = normalized(readSource("src/components/dashboard/MetricsCard.tsx"));
-    const at = source.indexOf(normalized(WHY_COMMENT));
-    expect(at).toBeGreaterThan(-1);
-    expect(at).toBeLessThan(400);
-  });
-
-  it("AgentStatusGrid.tsx carries the wave-U4 why-comment at the top", () => {
-    const source = normalized(readSource("src/components/dashboard/AgentStatusGrid.tsx"));
-    const at = source.indexOf(normalized(WHY_COMMENT));
-    expect(at).toBeGreaterThan(-1);
-    expect(at).toBeLessThan(400);
   });
 });
 

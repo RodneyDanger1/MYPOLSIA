@@ -22,7 +22,7 @@ import { ApiError, api } from "@/lib/api";
 import TasksPage from "@/app/tasks/page";
 import TaskDetailPage from "@/app/tasks/[id]/page";
 import { parseTaskId } from "@/app/tasks/[id]/parseTaskId";
-import { TASK_STATUS_VALUES } from "@/components/tasks/TaskStatusControl";
+import { legalTaskStatusTargets } from "@/components/tasks/TaskStatusControl";
 import { VALID_AGENT_TYPES } from "@/components/tasks/NewTaskDialog";
 import type { TaskRow } from "@/components/tasks/types";
 
@@ -122,17 +122,19 @@ describe("/tasks/[id] detail page", () => {
     expect(parseTaskId(undefined)).toBeNull();
   });
 
-  it("offers exactly the seven wire statuses the service's guard accepts, current one marked", async () => {
+  it("offers exactly the legal targets of the current status, and shows the current one as text", async () => {
     mockGet.mockResolvedValueOnce(taskRow({ id: 5, status: "pending" }));
     render(<TaskDetailPage params={{ id: "5" }} />);
     await screen.findByRole("heading", { name: "Task one" });
 
     const select = screen.getByLabelText("New status");
+    // OLD pin (pre-B2-C5-R1): ["", ...TASK_STATUS_VALUES] — all seven wire values, from every
+    // status. NEW: the matrix's legal targets for `pending` (F-17), sorted by the service.
     expect(within(select).getAllByRole("option").map((o) => (o as HTMLOptionElement).value)).toEqual([
       "",
-      ...TASK_STATUS_VALUES,
+      ...legalTaskStatusTargets("pending"),
     ]);
-    expect(within(select).getByRole("option", { name: "pending (current)" })).toBeInTheDocument();
+    expect(screen.getByTestId("status-current")).toHaveTextContent("pending");
   });
 });
 

@@ -58,8 +58,68 @@ export type ChatConfirmAck = { task_id: number };
 /** A row as this rail holds it: the wire row plus the live-only extras the 201 body carries.
  *  A history read does NOT carry intent/refusal/token (frozen contract), so after a reload a
  *  reply renders as its persisted text only — the extras exist while the session's own send
- *  made them, which is exactly what the wire supports. */
-export type ChatItem = ChatMessageRow & { refusal?: ChatRefusal | null };
+ *  made them, which is exactly what the wire supports.
+ *
+ *  `key` is the row's STABLE identity (F-38): a wire row's fingerprint, or `local:<n>` from a
+ *  monotonic counter for a row this session appended optimistically. `local` marks the latter
+ *  until a history read proves the server holds it. */
+export type ChatItem = ChatMessageRow & {
+  refusal?: ChatRefusal | null;
+  key: string;
+  local?: true;
+};
+
+/** What identifies a row's CONTENT across the two sources: a local row's `created_at` is this
+ *  browser's clock and the persisted row's is the server's, so timestamps can never be compared —
+ *  role + text is the pair a history read can confirm. */
+function confirmationKey(row: { role: string; content: string }): string {
+  return `${row.role}\u0000${row.content}`;
+}
+
+/**
+ * F-38 — merge a history read into the transcript instead of replacing it.
+ *
+ * The measured defect: `load()` ended with `setItems(data.items)`, so a read that STARTED before a
+ * send and LANDED after it erased the exchange the user had just watched appear. Reads are now a
+ * merge:
+ *  - wire rows are the base, oldest-first as served, each with a fingerprint key (duplicate rows of
+ *    the same role/text get an occurrence suffix so two identical messages stay two rows);
+ *  - a `local` row survives while no read has confirmed its content, and is dropped (in favour of
+ *    the server's own row) the moment one has — matched as a MULTISET, so a send repeated twice
+ *    needs two wire rows before both local copies retire.
+ *
+ * Nothing local is ever overwritten by a read that does not contain it, and no row is invented:
+ * the merged list is exactly the wire rows plus the rows this session is still waiting to see.
+ */
+export function mergeHistory(rows: ChatMessageRow[], prev: ChatItem[]): ChatItem[] {
+  const occurrences = new Map<string, number>();
+  const next: ChatItem[] = rows.map((row) => {
+    const base = `wire:${confirmationKey(row)}\u0000${row.created_at ?? ""}`;
+    const seen = (occurrences.get(base) ?? 0) + 1;
+    occurrences.set(base, seen);
+    return { ...row, key: seen === 1 ? base : `${base}\u0000#${seen}` };
+  });
+
+  const available = new Map<string, number>();
+  for (const row of next) {
+    const key = confirmationKey(row);
+    available.set(key, (available.get(key) ?? 0) + 1);
+  }
+
+  const pending: ChatItem[] = [];
+  for (const item of prev) {
+    if (!item.local) continue;
+    const key = confirmationKey(item);
+    const remaining = available.get(key) ?? 0;
+    if (remaining > 0) {
+      available.set(key, remaining - 1); // this read confirms the local row — the wire row wins
+      continue;
+    }
+    pending.push(item);
+  }
+
+  return [...next, ...pending];
+}
 
 /** The single confirm gate this rail can offer. Confirm tokens are single-use and history rows
  *  do not carry one, so at most the latest confirmable reply is actionable; an earlier unused
@@ -88,6 +148,8 @@ export function useChat() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ChatConfirmGate | null>(null);
   const readSeq = useRef(0);
+  /** F-38: the local row sequence. Monotonic for the lifetime of the hook instance. */
+  const localSeq = useRef(0);
 
   const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     const seq = ++readSeq.current;
@@ -98,7 +160,9 @@ export function useChat() {
     try {
       const data = await api.get<{ items: ChatMessageRow[]; total: number }>(HISTORY_PATH);
       if (seq !== readSeq.current) return; // a newer read already landed — drop this one
-      setItems(Array.isArray(data?.items) ? data.items : []);
+      // F-38: MERGE, never replace. A read that started before a send arrives with a body that
+      // predates it; replacing the list erased the exchange the user had just watched appear.
+      setItems((prev) => mergeHistory(Array.isArray(data?.items) ? data.items : [], prev));
       setTotal(typeof data?.total === "number" ? data.total : null);
       setStatus("ready");
       setError(null);
@@ -128,18 +192,28 @@ export function useChat() {
         );
       }
       const now = new Date().toISOString();
-      setItems((prev) => [
-        ...prev,
-        { role: "owner", content: text, created_at: now, task_id: null },
-        {
-          role: "polsia",
-          content: reply.reply.text,
-          created_at: now,
-          task_id: reply.task_id ?? null,
-          refusal: reply.refusal ?? null,
-        },
-      ]);
-      setTotal((prev) => (prev === null ? null : prev + 2));
+      // F-38: a monotonic local sequence, never reused and never renumbered by a later read, so
+      // these two rows keep one identity for as long as they are on screen.
+      const owner: ChatItem = {
+        role: "owner",
+        content: text,
+        created_at: now,
+        task_id: null,
+        key: `local:${++localSeq.current}`,
+        local: true,
+      };
+      const replyRow: ChatItem = {
+        role: "polsia",
+        content: reply.reply.text,
+        created_at: now,
+        task_id: reply.task_id ?? null,
+        refusal: reply.refusal ?? null,
+        key: `local:${++localSeq.current}`,
+        local: true,
+      };
+      setItems((prev) => [...prev, owner, replyRow]);
+      // `total` stays the server's LAST declared count — never incremented by a local guess. The
+      // two rows above are labelled as unconfirmed by `unconfirmed` until a read returns them.
       if (reply.requires_confirm && reply.confirm_token) {
         setConfirm({
           token: reply.confirm_token,
@@ -183,5 +257,18 @@ export function useChat() {
     [load],
   );
 
-  return { items, total, status, error, sending, sendError, confirm, load, send, confirmAction };
+  return {
+    items,
+    total,
+    /** How many rendered rows are still waiting for a history read to confirm them (F-38). */
+    unconfirmed: items.filter((item) => item.local).length,
+    status,
+    error,
+    sending,
+    sendError,
+    confirm,
+    load,
+    send,
+    confirmAction,
+  };
 }

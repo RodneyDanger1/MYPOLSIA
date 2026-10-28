@@ -89,6 +89,10 @@ export function ChatRail() {
 
   const gate = chat.confirm;
   const showEmpty = chat.status === "ready" && chat.items.length === 0;
+  // F-38: rows this session appended but no history read has returned yet. They render, so the
+  // count has to account for them instead of printing "SHOWING 52 OF 50".
+  const unconfirmed = chat.unconfirmed;
+  const countedRows = chat.items.length - unconfirmed;
 
   return (
     <section
@@ -98,14 +102,18 @@ export function ChatRail() {
     >
       <div className="flex items-center justify-between border-b border-[#E3E3E3] px-3 py-2.5">
         <h2 className="font-serif text-base text-[#111]">Chat</h2>
-        {chat.status === "ready" && chat.total !== null && chat.total > 0 ? (
+        {chat.status === "ready" && (chat.total !== null || unconfirmed > 0) ? (
           <span
             data-testid="chat-count"
             className="font-mono text-[10px] uppercase tracking-wider text-[#6e6e6e]"
           >
-            {chat.items.length === chat.total
-              ? `${chat.total} ${chat.total === 1 ? "MESSAGE" : "MESSAGES"}`
-              : `SHOWING ${chat.items.length} OF ${chat.total}`}
+            {chat.total === null
+              ? `${unconfirmed} NOT YET IN A HISTORY READ`
+              : unconfirmed > 0
+                ? `${chat.total} ${chat.total === 1 ? "MESSAGE" : "MESSAGES"} · ${unconfirmed} NEWER THAN THE LAST READ`
+                : countedRows === chat.total
+                  ? `${chat.total} ${chat.total === 1 ? "MESSAGE" : "MESSAGES"}`
+                  : `SHOWING ${countedRows} OF ${chat.total}`}
           </span>
         ) : null}
       </div>
@@ -124,15 +132,16 @@ export function ChatRail() {
 
         {showEmpty && (
           <p className="font-serif text-xs leading-relaxed text-[#6e6e6e]">
-            No messages yet. Ask about your tasks or spend, or ask to file a new task — a task is
-            created only after you confirm it.
+            No messages yet. This rail answers five reads and one write: “status” for today’s
+            counts, “runs”, “finance”, “report”, “task 12” for one task — or say “create a task
+            to …”, and a task is created only after you confirm it.
           </p>
         )}
 
         {chat.items.length > 0 && (
           <ul className="space-y-2 pb-2">
-            {chat.items.map((item, index) => (
-              <MessageRow key={`${item.role}-${index}`} item={item} />
+            {chat.items.map((item) => (
+              <MessageRow key={item.key} item={item} />
             ))}
           </ul>
         )}
