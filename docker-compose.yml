@@ -162,6 +162,11 @@ services:
     restart: unless-stopped
 
   celery_beat:
+    # 2026-10-28 wave-1 finding F2-FEED-2 (in vivo): a full-stack compose recreate resurrected
+    # beat (restart: unless-stopped) and it dispatched scheduler work against a REAL model key
+    # with no owner action. Beat must never come up implicitly. Explicit opt-in only:
+    #   docker compose --profile scheduler up -d celery_beat
+    profiles: ["scheduler"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -196,7 +201,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    restart: unless-stopped
+    # 2026-10-28: was `unless-stopped` — it does not survive compose recreate protection and
+    # autodispatch spends money. Deliberate manual start/stop:
+    #   arm:   docker compose --profile scheduler up -d celery_beat
+    #   disarm: docker compose stop celery_beat
+    restart: "no"
 
   frontend:
     build:
