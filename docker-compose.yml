@@ -58,6 +58,8 @@ services:
       # data/deepseek_api_key.json); the chroma store nests under it (deepest path mounts last).
       - backend_data:/app/data
       - chroma_data:/app/data/chroma
+      # 2026-10-28 OOM fix: shared embedding-model cache with the worker.
+      - chroma_cache:/root/.cache/chroma
       - ~/.claude:/root/.claude:ro
       # wave V16 (E5/P-01): the Phone Link store — READ-ONLY (`read_only: true`; the service also
       # opens every database with SQLite's `mode=ro`, so a write is refused by the store, not by
@@ -115,11 +117,17 @@ services:
       # container and every phone route refused E_PHONE_UNAVAILABLE ("contacts.db is missing")
       # despite a healthy mount.  (On beat this var is inert; set for env consistency.)
       PHONE_LINK_DB_DIR: /phone-link
+      # 2026-10-28 live defect: four forked workers each downloaded the 79 MB
+      # Chroma ONNX model at once on an 8 GB host; the worker was SIGKILLed (exit
+      # 137) and its tasks stranded. One process is the shipped shape here.
+      CELERY_WORKER_CONCURRENCY: "1"
     volumes:
       # /app/data carries runtime state incl. the DeepSeek key store (DEEPSEEK_KEY_FILE default
       # data/deepseek_api_key.json); the chroma store nests under it (deepest path mounts last).
       - backend_data:/app/data
       - chroma_data:/app/data/chroma
+      # 2026-10-28 OOM fix: shared embedding-model cache (one download per host).
+      - chroma_cache:/root/.cache/chroma
       - ~/.claude:/root/.claude:ro
       # wave V16 (E5/P-01): the Phone Link store — READ-ONLY (`read_only: true`; the service also
       # opens every database with SQLite's `mode=ro`, so a write is refused by the store, not by
@@ -143,7 +151,9 @@ services:
     # non-API consumers of the image.
     healthcheck:
       disable: true
-    command: celery -A celery_app.worker worker --loglevel=info --concurrency=4
+    # 2026-10-28: was --concurrency=4 -> 4 fork workers x 79 MB model download =>
+    # OOM/exit 137. Single process; the chroma_cache volume makes the model one-time.
+    command: celery -A celery_app.worker worker --loglevel=info --concurrency=1 --pool=solo
     logging:
       driver: json-file
       options:
@@ -287,5 +297,6 @@ volumes:
   postgres_data:
   redis_data:
   chroma_data:
+  chroma_cache:
   celery_beat_data:
   backend_data:
