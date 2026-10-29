@@ -1,9 +1,17 @@
 """Static-site PACKAGE export (V9 B2, R5 #4): `POST /api/v1/site/package`.
 
-Builds `site-<slug>/` — `index.html` (about/business copy, services, contact) + `HOSTING-README.md`
-— from the company's OWN fields into `backend/data/exports/`, and returns the file paths.  NO
-hosting, NO deployment, NO promises: the package is a folder of static files and the README says
-exactly that (deployment stays retired per D24; the endpoint name says "package").
+Builds `site-<slug>/` — `index.html` (about/business copy, services, the product catalogue when
+the profile records one, contact) + `HOSTING-README.md` — from the company's OWN fields into
+`backend/data/exports/`, and returns the file paths.  NO hosting, NO deployment, NO promises: the
+package is a folder of static files and the README says exactly that (deployment stays retired per
+D24; the endpoint name says "package").
+
+Wave 3 / R-W09-1: the catalogue is NOT a second renderer.  `index.html` calls
+`site_service.catalogue_rows` + `site_service.catalogue_section` — the exact implementation the
+served `/sites/<slug>/` page uses — so the downloadable package and the served site cannot tell
+different stories (names/identifiers/descriptions + selling prices only; no cost or margin; no
+cart, checkout or order form; an inquiry is the only order path).  An absent/unrecognised
+`pricing_model` renders NO products block: the package stays a brochure, never an invented shop.
 
 Deterministic: the same company fields render byte-identical HTML (no timestamps, no ordering
 nondeterminism), every interpolated value is HTML-escaped, and the only refusal is `E_CONFIG` when
@@ -25,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
 from app.models.company import CompanyConfig
 from app.services.company_service import get_company
+from app.services.site_service import catalogue_rows, catalogue_section
 
 #: Where packages land (module attribute so a test can point it at a scratch dir).
 EXPORTS_ROOT = Path(__file__).resolve().parents[2] / "data" / "exports"
@@ -51,6 +60,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <h2>Services</h2>
 {services}
 </section>
+{products}
 <section id="contact">
 <h2>Contact</h2>
 <address>
@@ -107,6 +117,23 @@ def _services(company: CompanyConfig) -> str:
     return f"<ul>\n<li>{_esc(item)}</li>\n</ul>"
 
 
+def _products(company: CompanyConfig) -> str:
+    """The PRODUCTS block, rendered by the SAME code the served site uses (wave 3 / R-W09-1).
+
+    `site_service.catalogue_rows` + `catalogue_section` are the one implementation of the
+    storefront contract, so the downloadable package and the served page cannot tell different
+    stories.  Only recorded names/identifiers/descriptions and SELLING prices are rendered —
+    never `unit_cost` / `margin_pct` / `cogs`; the only order path is an inquiry, and the block
+    says it is a catalogue, not a shop.  An absent/unrecognised `pricing_model` renders NOTHING
+    here: the package stays a brochure rather than inventing a product line.
+    """
+    rows = catalogue_rows(getattr(company, "pricing_model", None))
+    if not rows:
+        return ""
+    contact = str(company.notification_email or "").strip()
+    return "\n".join(catalogue_section(rows, contact))
+
+
 def _contact(company: CompanyConfig) -> str:
     """The CONTACT section: the real email, plus explicitly-labelled placeholder slots."""
     lines = [f"<p>Email: {_esc(company.notification_email)}</p>"]
@@ -134,12 +161,26 @@ def _website_line(website: str) -> str:
 
 def render_site_package(company: CompanyConfig) -> dict[str, str]:
     """`{filename: content}` for the package — pure and deterministic (no clock, no I/O)."""
+    products = _products(company)
     html_document = _HTML_TEMPLATE.format(
         name=_esc(company.name),
         tagline=_esc(_tagline(company)),
         about=_esc(_about(company)),
         services=_services(company),
+        products=products,
         contact=_contact(company),
+    )
+    # wave 3 / R-W09-1: the README names the catalogue the page now carries, and the SAME
+    # not-a-shop boundary the page states — so a package published by hand cannot read as a
+    # shopable storefront.  With no recorded product line there is no such sentence to make.
+    catalogue_note = (
+        "\n## Products\n\n"
+        "`index.html` carries the catalogue recorded in the company profile's `pricing_model`: "
+        "product names, recorded descriptions and selling prices. It is a catalogue, not a shop "
+        "— there is no cart, checkout or online payment, and the only order path is an inquiry. "
+        "Internal costs and margins are never written into this package.\n"
+        if products
+        else ""
     )
     readme = (
         f"# {company.name} — static site package\n\n"
@@ -147,8 +188,10 @@ def render_site_package(company: CompanyConfig) -> dict[str, str]:
         "no deployment and no uptime promise** attached to it — nothing here is published, and "
         "Polsia makes no promises about what happens if you publish it.\n\n"
         "## Contents\n\n"
-        "- `index.html` — the site page (about, services, contact), built from the company profile.\n"
-        "- `HOSTING-README.md` — this file.\n\n"
+        "- `index.html` — the site page (about, services, the recorded product catalogue when the "
+        "company profile has one, contact), built from the company profile.\n"
+        "- `HOSTING-README.md` — this file.\n"
+        f"{catalogue_note}\n"
         "## Publishing it yourself\n\n"
         "Any static host can serve this folder (upload `index.html` where it serves the site "
         "root). Review the contact section first: placeholder lines are marked in the page.\n"

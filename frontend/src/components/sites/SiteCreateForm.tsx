@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
@@ -165,6 +166,26 @@ export function SiteCreateForm({
         Publishing warning: the contact page prints the contact email, website, legal name and
         mailing address from the company profile, and the catalogue prints product names and
         selling prices. Clear a field in Settings → Company to keep it off the site.
+      </p>
+
+      {/* WAVE 3 / F-09 storefront contract: the owner should know what kind of page this is
+          BEFORE creating it. The catalogue is read from `pricing_model`; only recorded product
+          names, their one-line descriptions and SELLING prices are printed (internal cost/margin
+          never is), a row with no real price says "price not recorded", and there is no cart,
+          checkout or payment step — the only order path is an inquiry. A form that stayed silent
+          about all four would let someone expect a shop. */}
+      <p className="text-xs text-ink-muted" data-testid="sites-catalogue-warning">
+        The Products section is a catalogue, not a shop: it prints only the product names, the
+        one-line descriptions and the selling prices recorded under{" "}
+        <Link href="/settings" className="text-link hover:underline">
+          Settings → pricing model
+        </Link>{" "}
+        — internal cost and margin are never printed, and a product with no recorded selling price
+        says &ldquo;price not recorded&rdquo; rather than $0. There is no cart, checkout or online
+        payment; orders are by inquiry (the contact email link, or the contact page). If the
+        company profile has no contact email, the catalogue says ordering is by inquiry and the
+        contact page publishes no address — set one in Settings → Company so an inquiry can
+        actually reach you.
       </p>
 
       <div className="flex flex-wrap items-center gap-3">

@@ -203,3 +203,31 @@ describe("/sites — the publishing warning", () => {
     expect(warning).toHaveTextContent(/Clear a field in Settings/);
   });
 });
+
+// ── 5. what the Products section is (wave 3 / F-09 storefront contract) ────────────────────
+describe("/sites — the catalogue honesty on the create form", () => {
+  it("states the catalogue is not a shop, prints no cost, and has an inquiry order path", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<SitesPage />);
+    await screen.findByTestId("sites-empty");
+
+    const catalogue = screen.getByTestId("sites-catalogue-warning");
+    // The source of the content, and the not-a-shop boundary.
+    expect(catalogue).toHaveTextContent(/Settings → pricing model/);
+    expect(catalogue).toHaveTextContent(/catalogue, not a shop/);
+    expect(catalogue).toHaveTextContent(/no cart, checkout or online payment/);
+    // What may print, and what may never print.
+    expect(catalogue).toHaveTextContent(/product names, the one-line descriptions and the selling prices/);
+    expect(catalogue).toHaveTextContent(/internal cost and margin are never printed/);
+    expect(catalogue).toHaveTextContent(/price not recorded/);
+    // The order path is an inquiry, and a MISSING contact email is named as the reason it cannot
+    // reach anyone (found live on /sites/cinder-lye/: the page pointed at an empty contact page).
+    expect(catalogue).toHaveTextContent(/If the\n?\s*company profile has no contact email/);
+    expect(catalogue).toHaveTextContent(/set one in Settings → Company/);
+    // The review path is a real link to Settings — a sentence with no way there is a dead end.
+    expect(screen.getByRole("link", { name: /Settings → pricing model/ })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
+  });
+});

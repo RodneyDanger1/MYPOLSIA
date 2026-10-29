@@ -45,15 +45,19 @@ The generated page, in the order it is assembled:
   * `tagline` — the caller's tagline, else the profile's value prop / description / mission;
   * about — the profile's description (else mission), omitted rather than invented when empty;
   * who-we-serve — `target_market`, omitted when the profile has none;
-  * products (wave 2 / F-09) — a CATALOGUE built from `company_config.pricing_model` when it holds
-    a product list (a list of objects under `skus`/`plans`/`products`/`items`/`tiers`/`packages`/
-    `offerings`, each with a name-ish and a selling-price-ish field).  ONLY the name and the
-    selling price are printed — `unit_cost`, `margin_pct` and every other internal number are
-    deliberately never read, because a public page must not leak the company's costs.  A row with
-    no recorded price says "price not recorded"; a profile with no recognisable list renders NO
-    products section at all (nothing is invented).  The section is explicitly a catalogue, NOT a
-    shop: there is no cart, no checkout, no payment step and no order form — the CTA is an
-    "Ask about an order" `mailto:` when a contact address exists, or a plain "get in touch" line;
+  * products (wave 2 / F-09; wave 3 adds the contract fields R-W2-B1.1/B1.3) — a CATALOGUE built
+    from `company_config.pricing_model` when it holds a product list (a list of objects under
+    `skus`/`plans`/`products`/`items`/`tiers`/`packages`/`offerings`).  A row prints its display
+    name (`name`/`title`/`label`/`product`), its identifier in a SEPARATE slot ONLY when it has no
+    name (`sku` is not a product name), its one-line `description` when one is recorded (bounded,
+    escaped) and its SELLING price.  `unit_cost`, `margin_pct`, `cogs` and every other internal
+    number are deliberately never read, because a public page must not leak the company's costs.
+    A row with no recorded price says "price not recorded"; a profile with no recognisable list
+    renders NO products section at all (nothing is invented).  The section is explicitly a
+    catalogue, NOT a shop: there is no cart, no checkout, no payment step and no order form — the
+    CTA is an "Ask about an order" `mailto:` when a contact address exists, or a plain "get in
+    touch" line.  Both the site generator and the downloadable site package render it through
+    THIS one implementation (`catalogue_rows` + `catalogue_section`), so the two cannot drift;
   * one CTA — a `mailto:` link ONLY when the company profile carries a contact address
     (`notification_email`, this schema's contact field: there is no `sender_email` column), else a
     plain "get in touch" line with NO address invented; and
@@ -85,7 +89,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import quote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -219,12 +223,38 @@ def _website_line(website: str) -> str:
 # generator recognisably reads the shapes real writers produced and prints NOTHING for any other
 # shape — an invented product row would be a fabricated claim on a public page.
 _PRODUCT_LIST_KEYS = ("skus", "plans", "products", "items", "tiers", "packages", "offerings")
-_PRODUCT_NAME_KEYS = ("name", "sku", "title", "label", "product")
+#: DISPLAY NAME: `name` | `title` | `label` | `product`.  `sku` is deliberately NOT a name
+#: (R-W2-B1.3): a product code is an identifier, and it must not masquerade as the product's name.
+_PRODUCT_NAME_KEYS = ("name", "title", "label", "product")
+#: The identifier slot.  Rendered ONLY for a row that has no name-ish field (contract §1): the
+#: identifier is never invented and a recorded name is never replaced by a code.
+_PRODUCT_SKU_KEYS = ("sku",)
+#: The short catalogue line under the product name (contract §1 / R-W2-B1.1).  STRING cells only:
+#: a number here is not a description, and this reader never looks at a cost key for it.
+_PRODUCT_DESCRIPTION_KEYS = ("description",)
+#: A description is one line of public copy; anything longer is cut with an ellipsis rather than
+#: allowed to turn the page into an essay (deterministic, no clock/randomness in the cut).
+MAX_PRODUCT_DESCRIPTION = 200
 #: SELLING price fields only.  Cost/margin keys (`unit_cost`, `margin_pct`, `cogs`) are
 #: deliberately absent: they are internal numbers, and a public page must never print them.
 _PRODUCT_PRICE_KEYS = ("retail", "price", "price_usd", "amount", "unit_price", "list_price")
 #: Upper bound on rendered rows: a hostile/huge pricing_model cannot turn the page into a dump.
 MAX_PRODUCTS = 50
+
+
+class CatalogueRow(NamedTuple):
+    """One catalogue row: only what a public product line records, and nothing internal.
+
+    `name` and `sku` are separate slots on purpose: a name-ish field wins the name slot, and the
+    identifier is rendered only when there is no name (contract §1).  `price` is `""` when the row
+    recorded no real selling price — rendered as "price not recorded", never as a cost or `$0`.
+    `description` is `""` when the row recorded none; when present it is one bounded, escaped line.
+    """
+
+    name: str
+    sku: str
+    price: str
+    description: str
 
 
 def _currency_prefix(currency: Any) -> str:
@@ -250,12 +280,30 @@ def _price_text(value: Any, prefix: str) -> str:
     return f"{prefix}{float(value):,.2f}"
 
 
-def _product_rows(pricing_model: Any) -> list[tuple[str, str]]:
-    """The catalogue rows `(name, price_text)` a pricing_model carries — `[]` when it carries none.
+def _bounded_text(value: Any, limit: int) -> str:
+    """One collapsed, length-bounded line of TEXT — `""` for a non-string or an empty value.
 
-    Recognised: the first list of objects under a known list key; each row needs a non-blank
-    name-ish string; the price is the first SELLING-price field that is a real number (`""` when
-    none).  Unknown shapes produce NO rows (the section is omitted, never invented).
+    Whitespace is collapsed so a description cannot smuggle newlines or a wall of indentation into
+    the markup; an over-long value is cut at `limit` characters including the ellipsis.  The caller
+    escapes the result; this function adds no markup of its own."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def catalogue_rows(pricing_model: Any) -> list[CatalogueRow]:
+    """The catalogue rows a pricing_model carries — `[]` when it carries none.
+
+    Recognised: the first list of objects under a known list key.  A row is renderable when it
+    carries a non-blank name-ish field OR a non-blank identifier; only the selling price and the
+    recorded description are read beside those (never `unit_cost`/`margin_pct`/`cogs`).  Unknown
+    shapes produce NO rows (the section is omitted, never invented).
+
+    Public because the downloadable site package renders the SAME catalogue (R-W09-1): one reader,
+    one set of display rules, so the served page and the package cannot tell different stories.
     """
     if not isinstance(pricing_model, dict):
         return []
@@ -267,7 +315,7 @@ def _product_rows(pricing_model: Any) -> list[tuple[str, str]]:
         candidate = lists.get(list_key)
         if not isinstance(candidate, list):
             continue
-        rows: list[tuple[str, str]] = []
+        rows: list[CatalogueRow] = []
         for item in candidate:
             if not isinstance(item, dict):
                 continue
@@ -278,35 +326,55 @@ def _product_rows(pricing_model: Any) -> list[tuple[str, str]]:
                 if text:
                     name = text
                     break
-            if not name:
+            sku = ""
+            for sku_key in _PRODUCT_SKU_KEYS:
+                text = _clean(lowered.get(sku_key))
+                if text:
+                    sku = text
+                    break
+            if not name and not sku:
                 continue
             price = ""
             for price_key in _PRODUCT_PRICE_KEYS:
                 price = _price_text(lowered.get(price_key), prefix)
                 if price:
                     break
-            rows.append((name, price))
+            description = ""
+            for description_key in _PRODUCT_DESCRIPTION_KEYS:
+                text = _bounded_text(lowered.get(description_key), MAX_PRODUCT_DESCRIPTION)
+                if text:
+                    description = text
+                    break
+            rows.append(
+                CatalogueRow(name=name, sku=sku, price=price, description=description)
+            )
         if rows:
             return rows
     return []
 
 
-def _products_section(rows: Sequence[tuple[str, str]], contact: str) -> list[str]:
-    """The catalogue section — names + selling prices only, and EXPLICITLY not a shop.
+def catalogue_section(rows: Sequence[CatalogueRow], contact: str) -> list[str]:
+    """The catalogue section — recorded names/identifiers/descriptions + selling prices ONLY.
 
     No cart, no checkout, no payment step and no order form: the only order path is an inquiry
     (a `mailto:` with a prefilled subject when the profile carries an address, a plain line
-    otherwise).  Every interpolated value goes through `_esc`."""
+    otherwise).  Every interpolated value goes through `_esc`.  A row's identifier appears only
+    when the row has no name, in its own `<span class="product-sku">` slot."""
     if not rows:
         return []
     shown = list(rows)[:MAX_PRODUCTS]
     parts: list[str] = ['<section id="products">', "<h2>Products</h2>", '<ul class="product-list">']
-    for name, price in shown:
-        price_html = _esc(price) if price else "price not recorded"
-        parts.append(
-            '<li><span class="product-name">'
-            f"{_esc(name)}</span> <span class=\"product-price\">{price_html}</span></li>"
-        )
+    for row in shown:
+        cells: list[str] = []
+        if row.name:
+            cells.append(f'<span class="product-name">{_esc(row.name)}</span>')
+        elif row.sku:
+            cells.append(f'<span class="product-sku">{_esc(row.sku)}</span>')
+        price_html = _esc(row.price) if row.price else "price not recorded"
+        cells.append(f'<span class="product-price">{price_html}</span>')
+        if row.description:
+            cells.append(f'<span class="product-desc">{_esc(row.description)}</span>')
+        parts.append("<li>" + " ".join(cells) + "</li>")
     parts.append("</ul>")
     if len(rows) > len(shown):
         parts.append(
@@ -320,9 +388,13 @@ def _products_section(rows: Sequence[tuple[str, str]], contact: str) -> list[str
             f'href="mailto:{_esc(contact)}?subject={subject}">Ask about an order</a></p>'
         )
     else:
-        parts.append(
-            '<p class="note">Ordering is by inquiry — use the contact page to get in touch.</p>'
-        )
+        # WAVE 3 (found live on `/sites/cinder-lye/`): the old line said "use the contact page to
+        # get in touch" while the contact page printed NO details (no email is configured) — a
+        # catalogue that pointed at a page with no way to reach anyone. A public page must not
+        # claim an order path it does not have, so without a contact address it states the plain
+        # fact the contract asks for; the CONTACT page says the rest ("orders are by inquiry once
+        # a contact address is added").
+        parts.append('<p class="note">Ordering is by inquiry.</p>')
     parts.append(
         '<p class="note">Prices are as recorded in the company profile. This is a catalogue, '
         "not a shop: there is no cart, checkout or online payment — orders are by inquiry.</p>"
@@ -446,7 +518,7 @@ footer a { color: var(--accent); }
 
 .contact-list dd { margin: 0 0 0.75rem; }
 
-/* wave 2 / F-09: the catalogue list — names + selling prices, no controls of any kind. */
+/* wave 2 / F-09: the catalogue list — recorded product lines, no controls of any kind. */
 .product-list { list-style: none; margin: 0 0 1rem; padding: 0; }
 
 .product-list li {
@@ -462,7 +534,17 @@ footer a { color: var(--accent); }
 
 .product-name { font-weight: 600; }
 
+/* wave 3 / R-W2-B1.3: the identifier slot — its own line element, never the name slot. */
+.product-sku {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+}
+
 .product-price { font-variant-numeric: tabular-nums; }
+
+/* wave 3 / R-W2-B1.1: the recorded one-line description wraps under the name/price row. */
+.product-desc { flex-basis: 100%; color: var(--muted); font-size: 0.9rem; }
 
 .note { color: var(--muted); }
 
@@ -840,11 +922,11 @@ def render_pages(
             f"<p>{_esc(target_market)}</p>",
             "</section>",
         ]
-    # wave 2 / F-09: the catalogue the profile already knows (names + selling prices only).  An
-    # unrecognised/absent pricing_model adds NOTHING — the page is a brochure then, and it never
-    # pretends to be a shop in either case.
-    product_rows = _product_rows(getattr(company, "pricing_model", None))
-    index_main += _products_section(product_rows, contact)
+    # wave 2 / F-09: the catalogue the profile already knows (names/identifiers/descriptions +
+    # selling prices only).  An unrecognised/absent pricing_model adds NOTHING — the page is a
+    # brochure then, and it never pretends to be a shop in either case.
+    product_rows = catalogue_rows(getattr(company, "pricing_model", None))
+    index_main += catalogue_section(product_rows, contact)
     index_main.append("</main>")
 
     about_title = f"About {site_name}" if site_name else "About"
@@ -1517,13 +1599,18 @@ async def generate_site(
 
 __all__ = [
     "DEFAULT_TEMPLATE",
+    "MAX_PRODUCTS",
+    "MAX_PRODUCT_DESCRIPTION",
     "PAGES",
     "SITES_ROOT",
     "SITEMAP_FILE",
     "SLUG_PATTERN",
     "STYLES_FILE",
     "TEMPLATES",
+    "CatalogueRow",
     "build_seo",
+    "catalogue_rows",
+    "catalogue_section",
     "delete_site",
     "derive_slug",
     "generate_site",
