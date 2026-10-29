@@ -99,12 +99,39 @@ class ChatHistoryItem(BaseModel):
     task_id: int | None
 
 
+class ChatPendingConfirm(BaseModel):
+    """F-40 (wave 6, ADDITIVE): the stored proposal's still-open confirm gate.
+
+    THE DEFECT IT CLOSES (`visuals/VISUALS-FINDINGS-W5.md` §4): the stored reply says *"Confirm and
+    I'll queue it … single-use token, expires in 15 min"* and the activity strip says *awaiting
+    confirm*, but the token lived only in the 201 body — so any reload dropped the card while the
+    rail kept instructing the owner to click it.  The owner lost the request and the guidance lied.
+
+    WHAT THIS IS: `token` re-issues the SAME single-use binding for the stored OWNER row — the
+    approvals minter's HMAC scope `chat-confirm:<chat_message_id>`, expiring at the row's original
+    `created_at + 15 min` — so the card can be restored.  (The mint is nonce-bearing, so its bytes
+    differ from the original 201's token; the row, scope and expiry are identical, and confirming
+    either token consumes the row.)  It is present ONLY while that window is open:
+    `pending_confirm` is `null` once the token expired or was consumed, so a client that renders a
+    card only when this block exists cannot offer a dead gate.  `intent` carries the same
+    `create_task` facts the 201 served (agent, title, paid-run caps), so the restored card's
+    disclosure is not re-guessed.
+    """
+
+    chat_message_id: int
+    token: str
+    expires_at: UtcDatetime
+    intent: ChatIntent
+
+
 class ChatHistoryResponse(BaseModel):
     """`{"items": [...], "total": int}` — `total` is the FULL stored-row count, not the page size.
 
     `items` is the most recent `limit` rows in READING order (oldest -> newest), matching how a
-    chat transcript renders.
+    chat transcript renders.  F-40 appends the ADDITIVE `pending_confirm` key (the restored gate,
+    or `null`); the per-row shape is unchanged.
     """
 
     items: list[ChatHistoryItem]
     total: int
+    pending_confirm: ChatPendingConfirm | None = None

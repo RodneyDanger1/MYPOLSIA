@@ -90,6 +90,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -113,11 +114,12 @@ from app.core.errors import (
     ERROR_HINTS,
     PolsiaError,
 )
-from app.models.chat import ChatMessage
+from app.models.chat import ChatMessage, ChatRole
 from app.schemas.chat import (
     ChatHistoryItem,
     ChatHistoryResponse,
     ChatIntent,
+    ChatPendingConfirm,
     ChatRefusal,
     ChatReply,
     ChatResponse,
@@ -512,6 +514,102 @@ def check_confirm_token(secret: bytes, token: str) -> ConfirmTokenCheck:
     return ConfirmTokenCheck(ok=True, chat_message_id=chat_message_id)
 
 
+# ── F-40: restoring the confirm gate from the STORED proposal ────────────────
+
+
+def pending_confirm_expiry(row: ChatMessage) -> int | None:
+    """The ORIGINAL expiry (epoch seconds) of the confirm token a pending reply offered, or `None`.
+
+    WHY: F-40 (`visuals/VISUALS-FINDINGS-W5.md` §4) — the stored reply says *"Confirm and I'll queue
+    it … expires in 15 min"* but the confirm token lived only in the 201 body, so a reload dropped
+    the card while the rail kept showing the instruction.  The stored OWNER row already carries the
+    pending plan (`intent.state == "pending"`), and the token is bound to
+    `chat-confirm:<row id>` — so the same BINDING can be re-issued when the history is read, **for
+    its original window only**: `created_at + CONFIRM_TOKEN_TTL_S`.  (The approvals minter is
+    nonce-bearing, so the re-issued bytes differ from the original 201's token; the row, the scope
+    and the expiry are what make it the same gate — and confirming either one consumes the row.)
+
+    The row's `created_at` is the exchange time (the DB's `now()`), so the restored window can
+    differ from the originally minted `exp` by the sub-second gap between that stamp and the mint
+    call — at most one second, never a longer-lived token.  A row with no stamp cannot be placed in
+    time, so no gate is restored (a made-up window would be a fabricated expiry).
+    """
+    created = row.created_at
+    if created is None:
+        return None
+    stamp = created if created.tzinfo is not None else created.replace(tzinfo=UTC)
+    expires_at = int(stamp.timestamp()) + CONFIRM_TOKEN_TTL_S
+    # Same comparison `check_confirm_token` uses: a token is still accepted at exactly `exp`.
+    if int(time.time()) > expires_at:
+        return None
+    return expires_at
+
+
+#: How many recent owner rows the history read scans for a pending proposal.  The pending plan is
+#: the NEWEST such row, so a handful is plenty; the bound keeps one GET from walking the table.
+_PENDING_SCAN = 25
+
+
+async def restore_pending_confirm(db: AsyncSession) -> ChatPendingConfirm | None:
+    """The still-open confirm gate for the newest stored proposal, or `None` (F-40).
+
+    STRICTLY the pending case: the row must be the OWNER row of a `create_task` exchange whose
+    `intent.state` is still `"pending"` and whose `task_id` is unset (the consumption marker sets
+    both `state="consumed"` and `task_id`).  A consumed, refused or answered exchange restores
+    nothing.  Only the NEWEST pending row is considered: every older pending row expires no later
+    than it does, so if the newest window is closed there is nothing to offer.
+
+    An unconfigured `APPROVAL_SECRET` restores nothing (a token that can never verify must never be
+    minted — the same rule `handle_message` applies).  The disclosure fields are re-read from the
+    SAME policy object the 201 used, so a restored card states the caps the click is bounded by.
+    """
+    secret = configured_approval_secret()
+    if not secret:
+        return None
+    rows = await fetch_scalars(
+        db,
+        select(ChatMessage)
+        .where(
+            ChatMessage.role == ChatRole.OWNER,
+            ChatMessage.task_id.is_(None),
+            ChatMessage.intent.is_not(None),
+        )
+        .order_by(ChatMessage.id.desc())
+        .limit(_PENDING_SCAN),
+        what="pending chat proposals",
+    )
+    for row in rows:
+        intent = row.intent if isinstance(row.intent, dict) else None
+        if not intent or intent.get("kind") != "create_task" or intent.get("state") != "pending":
+            continue
+        expires_at = pending_confirm_expiry(row)
+        if expires_at is None:
+            return None  # the newest pending proposal's window is closed; nothing older is open
+        token = issue_confirm_token(
+            secret, chat_message_id=row.id, ttl_s=expires_at - int(time.time())
+        )
+        raw_plan = intent.get("plan")
+        plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+        agent_type = plan.get("agent_type") or DEFAULT_CHAT_AGENT
+        from app.agents.accounting import budget_policy_from_settings
+
+        budget = budget_policy_from_settings()
+        return ChatPendingConfirm(
+            chat_message_id=row.id,
+            token=token,
+            expires_at=datetime.fromtimestamp(expires_at, UTC),
+            intent=ChatIntent(
+                kind="create_task",
+                agent_type=agent_type,
+                title=plan.get("title"),
+                paid_run=True,
+                run_cost_cap_usd=float(budget.per_run_cap_usd),
+                day_cost_cap_usd=float(budget.day_limit_usd),
+            ),
+        )
+    return None
+
+
 # ── answer rendering (real reads; honest placeholders) ───────────────────────
 
 
@@ -776,10 +874,17 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
         db.add(owner_row)
         await db.flush()  # the token is bound to this row's id
         confirm_token = issue_confirm_token(secret, chat_message_id=owner_row.id)
+        # F-40: the copy must stay TRUE after a reload, not only while the card is on screen.  The
+        # card IS restored while the token's original window is open (GET /chat re-issues the same
+        # bound token from this row's `intent`), and once it closes the stored message can no
+        # longer queue anything — so it says exactly that instead of an unqualified instruction.
         reply_text = (
             f"Ready to file this for the {agent_type} agent:\n\"{title}\"\n"
             "Confirm and I'll queue it — nothing is created until you confirm "
-            f"(single-use token, expires in {CONFIRM_TOKEN_TTL_S // 60} min)." + _sandbox_note()
+            f"(single-use token, expires in {CONFIRM_TOKEN_TTL_S // 60} min). "
+            "Reloading the page brings the card back while that token is still valid; once it "
+            "expires this stored message cannot queue anything — send the request again."
+            + _sandbox_note()
         )
         if not decision.understood:
             # F-04: the router says it did not understand, out loud, instead of filing to the
@@ -1000,7 +1105,14 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
 
 
 async def list_history(db: AsyncSession, limit: int = 50) -> ChatHistoryResponse:
-    """The most recent `limit` rows in reading order (oldest -> newest) + the FULL total."""
+    """The most recent `limit` rows in reading order (oldest -> newest) + the FULL total.
+
+    F-40 (wave 6): the response also carries `pending_confirm` — the still-open confirm gate for
+    the newest stored proposal (see `restore_pending_confirm`), so a reload can restore the card
+    the stored message instructs the owner to click.  The per-row shape is UNCHANGED (the frozen
+    `{role, content, created_at, task_id}`); the restored block is a separate top-level key, and
+    it is `null` when there is nothing open to offer.
+    """
     rows = await fetch_scalars(
         db,
         select(ChatMessage)
@@ -1025,4 +1137,6 @@ async def list_history(db: AsyncSession, limit: int = 50) -> ChatHistoryResponse
             how_to_fix=ERROR_HINTS[E_DB],
             context={"query": "chat history total"},
         )
-    return ChatHistoryResponse(items=items, total=int(total))
+    return ChatHistoryResponse(
+        items=items, total=int(total), pending_confirm=await restore_pending_confirm(db)
+    )

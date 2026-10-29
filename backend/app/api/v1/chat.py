@@ -6,6 +6,12 @@ FROZEN (plan §7 C1 / WAVE-PLAN "Frozen interface — CHAT"); the UI codes again
     POST /api/v1/chat/confirm   body {"confirm_token": str} -> 200 {"task_id": int} | 409
     GET  /api/v1/chat?limit=50  -> 200 {"items": [{role, content, created_at, task_id}], "total"}
 
+F-40 (wave 6) appends ONE key to the history read: `pending_confirm` — the still-open confirm gate
+for the newest stored `create_task` proposal (`null` once its original 15-minute token window is
+closed or it was consumed).  The per-row shape above is unchanged, and the token can only be
+restored while it would still verify; see `ChatPendingConfirm` and
+`chat_service.restore_pending_confirm`.
+
 All three carry the owner's API key (`verify_api_key`, the same router-level dependency every
 sibling v1 router uses).  The deterministic router, the confirm-token mint/verify, the task
 hand-off path and the persistence all live in `app/services/chat_service.py`; this module is

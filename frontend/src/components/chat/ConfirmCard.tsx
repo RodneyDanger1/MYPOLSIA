@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui";
+import { absoluteStamp } from "@/components/dashboard/format";
 import type { ChatConfirmGate } from "@/components/chat/useChat";
 
 /** Money for a disclosure sentence: two decimals, never a bare float. */
@@ -61,6 +62,22 @@ export function ConfirmCard({
             CONFIRM files it through the same path the agents page uses. Nothing is created until
             you do.
           </p>
+
+          {/* F-40 — a gate rebuilt from the STORED proposal says so. After a reload the card used
+              to vanish while the message still said "Confirm and I'll queue it"; the server now
+              restores the same single-use binding for its ORIGINAL window, and this line states
+              that provenance plus the expiry the click is bounded by. */}
+          {gate.restored ? (
+            <p
+              data-testid="chat-confirm-restored"
+              className="mt-1 font-mono text-[10px] leading-relaxed text-[#6e6e6e]"
+            >
+              Restored from the stored proposal — this is the same pending request, and its
+              single-use token expires at{" "}
+              {gate.expiresAt ? absoluteStamp(gate.expiresAt) : "a time this server did not record"}.
+              Confirming here files it exactly as the original card would have.
+            </p>
+          ) : null}
 
           {/* F-29 — the disclosure sits between the sentence and the button, so it is read BEFORE
               the click; the costs come from the reply, not from this component. */}

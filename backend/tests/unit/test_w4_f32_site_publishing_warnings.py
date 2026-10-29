@@ -32,7 +32,15 @@ EMAIL = "hello@cinder-lye.example"
 def _company(**overrides) -> CompanyConfig:
     values = {
         "name": "Cinder & Lye",
-        "value_prop": "Small-batch candles.",
+        # WAVE 6 (copy-census wiring): this fixture used to read `"Small-batch candles."` — a BANNED
+        # claim (`copy_claims.small_batch`).  `publishing_warnings` now appends one warning per
+        # blocking census finding, so that value would have added a second entry and the
+        # `len(warnings) == 1` pins below would have had to grow.  The fixture therefore carries an
+        # ALLOWED line instead ("made to order" + "soy candle" are the supplier's own words), which
+        # keeps every assertion in this file exactly as strong as it was: one contact warning when a
+        # contact field is set, `[]` when nothing is.  The banned-claim case is pinned in its own
+        # suite (`test_w6_publishing_copy_warnings.py`) rather than by weakening these checks.
+        "value_prop": "Made-to-order soy candles.",
         "sender_legal_name": None,
         "sender_postal_address": None,
         "notification_email": None,

@@ -19,8 +19,13 @@ import { ApiError, api } from "@/lib/api";
  *  - A failed send keeps the typed text (the rail only clears the composer on success) and its
  *    named failure is rendered from `sendError`; the message is not added to the transcript,
  *    because nothing proves the server persisted it.
- *  - The confirm gate is separate state: it survives the silent history refresh that follows a
- *    successful confirm (the wire rows carry no token, so a reload cannot re-offer one).
+ *  - The confirm gate is separate state. F-40 (wave 6): it can now be RESTORED from the stored
+ *    proposal — `GET /api/v1/chat` carries `pending_confirm`, the still-open single-use token for
+ *    the newest stored `create_task` proposal (the server re-issues it from the owner row and its
+ *    ORIGINAL 15-minute window, and sends `null` once that window has closed or the token was
+ *    consumed). A reload therefore brings the card back while the token is valid, instead of
+ *    leaving a stored message that instructs the owner to click a control that is gone. A read
+ *    never overwrites a gate this session already holds (a live or confirmed gate is newer).
  */
 
 /** One persisted transcript row — the frozen GET shape. `role` is an open string on the wire
@@ -82,6 +87,45 @@ export type ChatDispatchDisclosure = {
 
 /** The 200 body of POST /api/v1/chat/confirm. */
 export type ChatConfirmAck = { task_id: number };
+
+/**
+ * F-40 — the stored proposal's still-open confirm gate, as `GET /api/v1/chat` restores it.
+ *
+ * The server sends this ONLY while the original single-use token's 15-minute window is open (and
+ * `null` after expiry, consumption, or when no proposal is pending), so a caller can render a card
+ * whenever this block exists. `intent` carries the same `create_task` facts the 201 served — the
+ * paid-run caps included — so the restored card's disclosure is read, never re-guessed.
+ */
+export type ChatPendingConfirm = {
+  chatMessageId: number | null;
+  token: string;
+  expiresAt: string | null;
+  intent: ChatIntent;
+};
+
+/** Defensive parse of the additive `pending_confirm` block: only a token-bearing `create_task`
+ *  gate survives. Anything else (an older server, a junk shape, an empty token) is "no gate" —
+ *  never a card built on invented fields. */
+function asPendingConfirm(value: unknown): ChatPendingConfirm | null {
+  if (value === null || typeof value !== "object") return null;
+  const bag = value as Record<string, unknown>;
+  const token = typeof bag.token === "string" && bag.token.trim() !== "" ? bag.token : null;
+  if (token === null) return null;
+  const rawIntent = bag.intent;
+  if (rawIntent === null || typeof rawIntent !== "object") return null;
+  const intent = rawIntent as ChatIntent;
+  if (intent.kind !== "create_task") return null;
+  const chatMessageId =
+    typeof bag.chat_message_id === "number" && Number.isInteger(bag.chat_message_id)
+      ? bag.chat_message_id
+      : null;
+  return {
+    chatMessageId,
+    token,
+    expiresAt: typeof bag.expires_at === "string" && bag.expires_at !== "" ? bag.expires_at : null,
+    intent,
+  };
+}
 
 /** A row as this rail holds it: the wire row plus the live-only extras the 201 body carries.
  *  A history read does NOT carry intent/refusal/token (frozen contract), so after a reload a
@@ -149,18 +193,24 @@ export function mergeHistory(rows: ChatMessageRow[], prev: ChatItem[]): ChatItem
   return [...next, ...pending];
 }
 
-/** The single confirm gate this rail can offer. Confirm tokens are single-use and history rows
- *  do not carry one, so at most the latest confirmable reply is actionable; an earlier unused
- *  token stays valid server-side until it is used or expires.
+/** The single confirm gate this rail can offer. Confirm tokens are single-use and the 201 reply is
+ *  the only body that mints one, so at most the latest confirmable reply is actionable; an earlier
+ *  unused token stays valid server-side until it is used or expires.
  *
  *  F-29: `disclosure` travels WITH the gate — the cost facts the server declared on the same 201
- *  that minted this token. It is never re-read or guessed at click time. */
+ *  that minted this token. It is never re-read or guessed at click time.
+ *
+ *  F-40: `restored` marks a gate rebuilt from the STORED proposal by a history read (never one this
+ *  session minted) and `expiresAt` is that token's original expiry when the server declared one, so
+ *  the card can state what it is rather than looking identical to a freshly minted gate. */
 export type ChatConfirmGate = {
   token: string;
   status: "pending" | "confirming" | "confirmed" | "failed";
   taskId: number | null;
   error: string | null;
   disclosure: ChatDispatchDisclosure;
+  restored: boolean;
+  expiresAt: string | null;
 };
 
 /** A non-negative finite number off the wire, or `null` (never a coerced string/NaN). */
@@ -206,12 +256,34 @@ export function useChat() {
       setError(null);
     }
     try {
-      const data = await api.get<{ items: ChatMessageRow[]; total: number }>(HISTORY_PATH);
+      const data = await api.get<{
+        items: ChatMessageRow[];
+        total: number;
+        pending_confirm?: unknown;
+      }>(HISTORY_PATH);
       if (seq !== readSeq.current) return; // a newer read already landed — drop this one
       // F-38: MERGE, never replace. A read that started before a send arrives with a body that
       // predates it; replacing the list erased the exchange the user had just watched appear.
       setItems((prev) => mergeHistory(Array.isArray(data?.items) ? data.items : [], prev));
       setTotal(typeof data?.total === "number" ? data.total : null);
+      // F-40: restore the stored proposal's gate — but NEVER over one this session holds. A live
+      // send's gate (pending/confirming/confirmed/failed) is newer than any read, and the server
+      // stops sending the block once the token is consumed.
+      const restored = asPendingConfirm(data?.pending_confirm);
+      if (restored !== null) {
+        setConfirm(
+          (prev) =>
+            prev ?? {
+              token: restored.token,
+              status: "pending",
+              taskId: null,
+              error: null,
+              disclosure: disclosureFrom(restored.intent),
+              restored: true,
+              expiresAt: restored.expiresAt,
+            },
+        );
+      }
       setStatus("ready");
       setError(null);
     } catch (e) {
@@ -271,6 +343,9 @@ export function useChat() {
           // F-29: captured from THIS reply — the same body that minted the token. The card shows
           // it before the click; the click itself sends only the token.
           disclosure: disclosureFrom(reply.intent),
+          // F-40: this gate is LIVE (the reply that minted it is on screen), not restored.
+          restored: false,
+          expiresAt: null,
         });
       }
       return reply;

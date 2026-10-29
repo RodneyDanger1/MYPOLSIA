@@ -18,7 +18,6 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -75,6 +74,7 @@ from app.core.errors import (
 )
 from app.core.openapi_errors import declare_error_responses
 from app.core.redis_client import close_redis
+from app.core.site_static import SiteStaticFiles
 from app.services import site_service
 
 
@@ -677,9 +677,16 @@ def create_app() -> FastAPI:
     # request serve its index.html.  The directory is created HERE, at app construction, because
     # StaticFiles checks it while the mount is built — a fresh install with no site yet must boot
     # and answer /api/v1/sites with an honest empty list, not fail on a missing folder.
+    #
+    # WAVE 6 / F-39: the mount is `SiteStaticFiles`, NOT a bare `StaticFiles` — the bare mount
+    # served EVERY file in a site directory, so `/sites/<slug>/.fixture.json` (the lanes' revers-
+    # ible marker) returned 200 on all 17 legacy directories and any future fixture/debug file
+    # would have been published the moment it was written.  It now serves the generator's own file
+    # set only and refuses a dotfile / non-page path as a NAMED 404 (`E_NOT_FOUND` envelope +
+    # `X-Polsia-Error-Code`); the markers stay on disk (their disposition is the owner's).
     sites_root = site_service.SITES_ROOT
     sites_root.mkdir(parents=True, exist_ok=True)
-    application.mount("/sites", StaticFiles(directory=str(sites_root), html=True), name="sites")
+    application.mount("/sites", SiteStaticFiles(directory=str(sites_root), html=True), name="sites")
 
     @application.get("/", include_in_schema=False)
     async def root() -> dict[str, str | None]:
