@@ -161,7 +161,12 @@ def test_a_ticket_is_not_the_key_and_it_authenticates_the_socket(ws_key, ws_clie
     body = resp.json()
     ticket = body["ticket"]
     assert KEY not in ticket, "the ticket must not embed the key"
-    assert ticket.startswith("v1."), "the ticket must carry its version and expiry"
+    # R-W03-1 (wave 3) re-pin.  OLD: `v1.<expires>.<sig>` — 3 fields, no subject, so the socket had
+    # no client identity and its cap fell back to the peer address (nginx's IP, shared by every
+    # browser).  NEW: `v2.<expires>.<subject>.<sig>` — the subject is the identity a socket is
+    # counted under, and it is covered by the signature.  The SEMANTICS below are unchanged.
+    assert ticket.startswith("v2."), "the ticket must carry its version, expiry and subject"
+    assert len(ticket.split(".")) == 4, ticket
     assert body["expires_in"] == ws_module._TICKET_TTL_SECONDS
     assert ws_module.verify_ws_ticket(ticket) is True
 
@@ -180,16 +185,22 @@ def test_the_ticket_route_requires_the_owner_key_and_a_forged_ticket_is_refused(
     ).status_code == 401
 
     ticket, _ = ws_module.mint_ws_ticket()
-    head, expiry, signature = ticket.split(".")
-    forged = f"{head}.{expiry}.{'0' * len(signature)}"
+    # R-W03-1: 4 fields now — `v2.<expires>.<subject>.<signature>` (was `v1.<expires>.<signature>`).
+    head, expiry, subject, signature = ticket.split(".")
+    forged = f"{head}.{expiry}.{subject}.{'0' * len(signature)}"
     assert ws_module.verify_ws_ticket(forged) is False
     accepted, code = _handshake(ws_client, f"/ws/activity?ticket={forged}")
     assert not accepted and code == ws_module.WS_CLOSE_POLICY
 
+    # The subject is SIGNED: swapping it for another identity breaks the signature (otherwise a
+    # client could pick any cap key it liked).
+    assert ws_module.verify_ws_ticket(f"{head}.{expiry}.other-subject.{signature}") is False
+
     # A far-future expiry is refused even with a valid signature for it: a ticket cannot outlive
     # its TTL by construction.
-    far = ws_module._ticket_signature(9999999999)
-    assert ws_module.verify_ws_ticket(f"v1.9999999999.{far}") is False
+    # R-W03-1: `_ticket_signature` now takes the subject too (`v2.<expires>.<subject>` is signed).
+    far = ws_module._ticket_signature(9999999999, "subj")
+    assert ws_module.verify_ws_ticket(f"v2.9999999999.subj.{far}") is False
 
     # And an expired ticket is refused.
     expired, _ = ws_module.mint_ws_ticket(now=time.time() - ws_module._TICKET_TTL_SECONDS - 5)

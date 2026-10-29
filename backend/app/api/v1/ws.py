@@ -29,8 +29,14 @@ never showed a fault.  Now:
     detected by a failed send instead of a silent socket;
   * `_drain_client` holds the receive side open, so a client that leaves is noticed immediately
     (a client disconnect is a normal end: no close frame, no warning);
-  * `_MAX_SOCKETS_PER_CLIENT` caps the sockets one client address may hold; the extra one is
-    refused with 1013 (try again later), before accept;
+  * `_MAX_SOCKETS_PER_CLIENT` caps the sockets one CLIENT IDENTITY may hold, and
+    `_MAX_SOCKETS_PER_OPERATOR` caps the install; the extra one is refused with 1013 (try again
+    later), before accept.  The identity is the TICKET'S SUBJECT (one browser page/connection) or,
+    for a header-authenticated client, the operator — **never the peer address**.  Keying on the
+    address was R-W03-1: behind nginx every browser is the same peer (`172.18.0.9`), so four open
+    sockets anywhere in the install starved every other page, and the app's dashboard plus its
+    activity strip could exhaust the whole budget by themselves (measured: 8 refused handshakes on
+    one page, `403` on every later attempt);
   * every BACKEND fault — the activity bus unreachable, the subscription ending, a failed send
     that is not a disconnect — closes with 1011 (internal error), never 1000.  The codes are
     module constants and are pinned by `tests/unit/test_b2_api.py`.
@@ -43,6 +49,8 @@ import hashlib
 import hmac
 import json
 import logging
+import re
+import secrets
 import time
 import urllib.parse
 from typing import Any
@@ -67,6 +75,10 @@ WS_CLOSE_CAPACITY = 1013    # this client already holds the maximum number of so
 #: var (and an unset setting keeps the shipped behaviour).
 _TICKET_TTL_SECONDS = int(getattr(settings, "ws_ticket_ttl_seconds", 30))
 _MAX_SOCKETS_PER_CLIENT = int(getattr(settings, "ws_max_sockets_per_client", 4))
+#: The install-wide bound, per authenticated operator (R-W03-1).  Generous on purpose: the browser
+#: mints ONE ticket per connection, so this is "how many activity sockets can this install hold at
+#: once" — 32 pages, far above real use, and still a real bound on a leaked/reconnecting client.
+_MAX_SOCKETS_PER_OPERATOR = int(getattr(settings, "ws_max_sockets_per_operator", 32))
 _HEARTBEAT_SECONDS = float(getattr(settings, "ws_heartbeat_seconds", 20.0))
 
 #: Query parameters that are CREDENTIALS: refused as auth, and scrubbed from the scope before the
@@ -74,10 +86,21 @@ _HEARTBEAT_SECONDS = float(getattr(settings, "ws_heartbeat_seconds", 20.0))
 #: is short-lived by construction.
 _CREDENTIAL_QUERY_KEYS = frozenset({"key", "api_key", "api-key"})
 
-#: Sockets currently open, per client address.  Single-user install: the API key is global, so the
-#: only per-client identity the handshake carries is the peer address — that is what "per user"
-#: means here.  Mutated only between awaits, so the asyncio loop keeps it consistent.
+#: Ticket format version.  v1 was `v1.<expires>.<sig>` and carried NO subject, so it could not
+#: identify a client; v1 tickets are refused (they live 30 s, so a redeploy retires them anyway).
+_TICKET_VERSION = "v2"
+#: The subject's own bound: 1-64 URL-safe characters.  Minted here (`token_urlsafe(12)` = 16), so a
+#: verified ticket's subject can never be hostile.
+_SUBJECT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+#: Sockets currently open, per CLIENT IDENTITY (R-W03-1: never per peer address).  The identity is
+#: `<operator>|s:<ticket subject>` for a ticket client, or `<operator>|s:-` for a header client.
+#: Mutated only between awaits, so the asyncio loop keeps it consistent.
 _open_sockets: dict[str, int] = {}
+
+#: The same sockets counted per OPERATOR (`<operator>`), i.e. per install for the shipped
+#: single-key deployment: the bound a client cannot escape by minting more tickets.
+_operator_sockets: dict[str, int] = {}
 
 
 class WsTicketResponse(BaseModel):
@@ -100,37 +123,91 @@ def _ticket_secret() -> bytes:
     return hashlib.sha256(material).digest()
 
 
-def _ticket_signature(expires: int) -> str:
-    return hmac.new(_ticket_secret(), f"v1.{expires}".encode("ascii"), hashlib.sha256).hexdigest()
+def _ticket_signature(expires: int, subject: str) -> str:
+    """HMAC over `v2.<expires>.<subject>` — the subject is SIGNED, so it cannot be swapped."""
+    return hmac.new(
+        _ticket_secret(), f"{_TICKET_VERSION}.{expires}.{subject}".encode("ascii"), hashlib.sha256
+    ).hexdigest()
 
 
 def mint_ws_ticket(*, now: float | None = None) -> tuple[str, int]:
-    """Mint `(ticket, ttl_seconds)`.  `now` is a test seam; production uses the wall clock."""
+    """Mint `(ticket, ttl_seconds)`.  `now` is a test seam; production uses the wall clock.
+
+    R-W03-1: every mint carries a fresh random SUBJECT.  The browser mints one ticket per
+    connection (`useActivityFeed.connect`), so the subject is the connection's identity — two
+    pages behind the same nginx get two identities instead of sharing one proxy address.  The
+    subject is public (it rides the URL) and reveals nothing: it is random, not derived from the
+    owner or the key.
+    """
+    subject = secrets.token_urlsafe(12)
     expires = int(now if now is not None else time.time()) + _TICKET_TTL_SECONDS
-    return f"v1.{expires}.{_ticket_signature(expires)}", _TICKET_TTL_SECONDS
+    return f"{_TICKET_VERSION}.{expires}.{subject}.{_ticket_signature(expires, subject)}", (
+        _TICKET_TTL_SECONDS
+    )
 
 
-def verify_ws_ticket(ticket: str | None, *, now: float | None = None) -> bool:
-    """True only for a ticket this process minted, still inside its TTL.
+def parse_ws_ticket(ticket: str | None, *, now: float | None = None) -> tuple[int, str] | None:
+    """`(expires, subject)` for a ticket this process minted and that is still inside its TTL.
+
+    The ONE place a ticket is read.  `verify_ws_ticket` is this predicate's boolean, and the cap
+    key is built from the returned subject (so the identity a socket is counted under is a value
+    whose signature was checked here, never a client-supplied string).
 
     A forged far-future expiry is refused too: the expiry may not exceed the TTL, so a hand-rolled
-    `v1.9999999999.<sig>` cannot buy an unlimited window even if the signature check were bypassed.
+    `<ver>.9999999999.<subject>.<sig>` cannot buy an unlimited window even if the signature check
+    were bypassed.  v1 tickets (no subject) are refused: they cannot identify a client.
     """
     if not ticket:
-        return False
+        return None
     parts = ticket.split(".")
-    if len(parts) != 3 or parts[0] != "v1":
-        return False
+    if len(parts) != 4 or parts[0] != _TICKET_VERSION:
+        return None
     try:
         expires = int(parts[1])
     except ValueError:
-        return False
+        return None
+    subject = parts[2]
+    if not _SUBJECT_PATTERN.match(subject):
+        return None
     current = now if now is not None else time.time()
     if expires < current:
-        return False
+        return None
     if expires > current + _TICKET_TTL_SECONDS + 1:
-        return False
-    return hmac.compare_digest(parts[2], _ticket_signature(expires))
+        return None
+    if not hmac.compare_digest(parts[3], _ticket_signature(expires, subject)):
+        return None
+    return expires, subject
+
+
+def verify_ws_ticket(ticket: str | None, *, now: float | None = None) -> bool:
+    """True only for a valid, unexpired `v2` ticket (see `parse_ws_ticket`)."""
+    return parse_ws_ticket(ticket, now=now) is not None
+
+
+def operator_identity() -> str:
+    """A stable, one-way identity for the configured owner key — the install's operator.
+
+    Derived (a truncated sha256 of a domain-separated string) rather than the key itself: this
+    value appears in cap keys and log lines, and it must never be usable as a credential.
+    An OPEN backend (no key configured) has one anonymous operator, which is the honest answer.
+    """
+    material = b"polsia-ws-operator\x00" + (settings.api_key or "").encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def _socket_identity(websocket: WebSocket, ticket: str | None) -> tuple[str, str]:
+    """`(cap key, kind)` for this handshake — the identity a socket is COUNTED under.
+
+    R-W03-1: `kind` is `session` when a verified ticket names a subject (one page/connection),
+    `operator` when the client authenticated with the header (no subject: the operator's program
+    owns it).  The peer address is NOT an identity: behind nginx it is the proxy, and keying on it
+    made every browser share one budget.  The operator id is always the outer key, so no client can
+    escape the install-wide bound by minting tickets.
+    """
+    parsed = parse_ws_ticket(ticket)
+    if parsed is not None:
+        return f"{operator_identity()}|s:{parsed[1]}", "session"
+    return f"{operator_identity()}|s:-", "operator"
 
 
 def _redact_query_string(scope: dict[str, Any]) -> None:
@@ -204,26 +281,46 @@ async def activity_socket(websocket: WebSocket) -> None:
         logger.warning("activity websocket refused: missing/invalid credential")
         return
 
-    client = getattr(websocket, "client", None)
-    client_key = client.host if client is not None else "unknown"
-    if _open_sockets.get(client_key, 0) >= _MAX_SOCKETS_PER_CLIENT:
+    # R-W03-1: the identity is the ticket's SUBJECT (or the operator for a header client), never
+    # the peer address — behind nginx every browser is the same peer, and the old keying let four
+    # open sockets anywhere starve every page.  Refused BEFORE accept, exactly as before.
+    cap_key, cap_kind = _socket_identity(websocket, supplied_ticket)
+    operator_key = operator_identity()
+    session_count = _open_sockets.get(cap_key, 0)
+    operator_count = _operator_sockets.get(operator_key, 0)
+    if session_count >= _MAX_SOCKETS_PER_CLIENT:
         await websocket.close(code=WS_CLOSE_CAPACITY)
         logger.warning(
-            "activity websocket refused: %s already holds %d open socket(s) (cap %d)",
-            client_key, _open_sockets.get(client_key, 0), _MAX_SOCKETS_PER_CLIENT,
+            "activity websocket refused: %s identity already holds %d open socket(s) (cap %d); "
+            "the peer address is not used for this",
+            cap_kind, session_count, _MAX_SOCKETS_PER_CLIENT,
+        )
+        return
+    if operator_count >= _MAX_SOCKETS_PER_OPERATOR:
+        await websocket.close(code=WS_CLOSE_CAPACITY)
+        logger.warning(
+            "activity websocket refused: this install already holds %d open activity socket(s) "
+            "(cap %d for the operator)",
+            operator_count, _MAX_SOCKETS_PER_OPERATOR,
         )
         return
 
-    _open_sockets[client_key] = _open_sockets.get(client_key, 0) + 1
+    _open_sockets[cap_key] = session_count + 1
+    _operator_sockets[operator_key] = operator_count + 1
     try:
         await websocket.accept()
         await _serve(websocket)
     finally:
-        remaining = _open_sockets.get(client_key, 1) - 1
+        remaining = _open_sockets.get(cap_key, 1) - 1
         if remaining > 0:
-            _open_sockets[client_key] = remaining
+            _open_sockets[cap_key] = remaining
         else:
-            _open_sockets.pop(client_key, None)
+            _open_sockets.pop(cap_key, None)
+        remaining_operator = _operator_sockets.get(operator_key, 1) - 1
+        if remaining_operator > 0:
+            _operator_sockets[operator_key] = remaining_operator
+        else:
+            _operator_sockets.pop(operator_key, None)
 
 
 async def _serve(websocket: WebSocket) -> None:
