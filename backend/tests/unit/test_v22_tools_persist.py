@@ -58,8 +58,14 @@ ROW_KEYS = [
     "tokens_used", "cost_usd", "cost_source", "pricing_version",
 ]
 
-#: The detail adds exactly the V21 counters plus the V22 tool list.
-DETAIL_EXTRA_KEYS = {"num_turns", "is_error", "tools_used"}
+#: The detail adds exactly the V21 counters + the V22 tool list + the SV-W4-04 F-26 markers.
+#: WAVE-4 RE-PIN (2026-10-29, SV-W4-04): OLD {"num_turns", "is_error", "tools_used"}; NEW adds
+#: "cost_scope" and "interrupted_reason" — the interruption markers `close_stale_agent_runs` writes
+#: to `usage_json` now reach `GET /runs/{id}`.  The arithmetic: 3 detail extras -> 5; the frozen
+#: list/export row (`ROW_KEYS` below) is UNCHANGED, which is what keeps B8's contract intact.
+DETAIL_EXTRA_KEYS = {
+    "num_turns", "is_error", "tools_used", "cost_scope", "interrupted_reason"
+}
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
 

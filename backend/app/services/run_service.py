@@ -46,6 +46,12 @@ from the DeepSeek envelope's `tools_used`).  `tools_used` is served EXACTLY as r
 a list = the tool names.  Collapsing `null` into `[]` would turn "never recorded" into the
 measured zero "no tool ran" — a different fact this read refuses to tell.  The list/export row
 set is unchanged: `tools_used` is DETAIL-ONLY (B8's frozen contract is not widened).
+
+SV-W4-04 adds the F-26 INTERRUPTION MARKERS to the SAME detail read: `cost_scope`
+(`in_flight_partial` / `unmeasured`) and `interrupted_reason` (`E_RUN_STALE`) from
+`usage_json`.  They exist because the closer writes them but no read surfaced them, so a cancelled
+run's `cost_usd: null` was indistinguishable from "not measured yet".  Both are detail-only for
+the same frozen-list reason, and both are `null` when the row carries no marker.
 """
 from __future__ import annotations
 
@@ -101,17 +107,30 @@ class RunRowData:
 
 @dataclass(frozen=True)
 class RunDetailData(RunRowData):
-    """One ledger row PLUS the stored accounting counters and the persisted tool list.
+    """One ledger row PLUS the stored accounting counters, the persisted tool list and the
+    interruption markers F-26 writes (SV-W4-04).
 
     `num_turns`/`is_error` come from the row's `usage_json` (where `_apply_run_usage` records the
     agent's `RUN_META_KEYS`).  `tools_used` is the V22 column and keeps THREE states:
     `None` = never recorded (legacy row / tool-less run), `[]` = recorded and none ran, a list =
     the recorded names.  `None` is never 0 / False / [] — that distinction is the contract.
+
+    `cost_scope`/`interrupted_reason` are the F-26 markers the stale-run closer writes into
+    `usage_json` (`task_service.RUN_COST_SCOPE_KEY` / `RUN_INTERRUPTED_KEY`):
+      * `cost_scope` — `"in_flight_partial"` (the ledger kept the cost measured up to the kill) or
+        `"unmeasured"` (cost is unknown and stays NULL, never 0); `None` when the row carries no
+        scope marker (a settled run, or a legacy row the closer never touched).
+      * `interrupted_reason` — the interruption's coded reason (`"E_RUN_STALE"`), `None` when the
+        row was not closed as interrupted.
+    Without these, a cancelled run served `cost_usd:null` and looked exactly like "not measured
+    yet" — the marker is what tells an interrupted, partially-measured run apart.
     """
 
     num_turns: int | None = None
     is_error: bool | None = None
     tools_used: list[str] | None = None
+    cost_scope: str | None = None
+    interrupted_reason: str | None = None
 
 
 def _nonempty_str(value: Any) -> str | None:
@@ -173,6 +192,25 @@ def _usage_counters(raw: str | None) -> tuple[int | None, bool | None]:
     if payload is None:
         return None, None
     return _count_or_none(payload.get("num_turns")), _flag_or_none(payload.get("is_error"))
+
+
+def _interruption_markers(raw: str | None) -> tuple[str | None, str | None]:
+    """`(cost_scope, interrupted_reason)` from a row's raw `usage_json` text (SV-W4-04).
+
+    The F-26 closer writes `usage_json.cost_scope` (`in_flight_partial` / `unmeasured`) and
+    `usage_json.interrupted.reason_code` (`E_RUN_STALE`).  Read with the SAME per-row junk rule as
+    every other `usage_json` fact in this module: NULL / unparseable / non-object -> both None; a
+    value that is not a non-empty string -> None.  Nothing is derived from `cost_usd` — a NULL cost
+    alone cannot distinguish "unmeasured because interrupted" from "not measured yet", which is
+    exactly the fact the marker carries.  The list/export row set does NOT grow these fields (B8's
+    frozen ledger contract); they are detail-only, like `tools_used`.
+    """
+    payload = _usage_payload(raw)
+    if payload is None:
+        return None, None
+    interrupted = payload.get("interrupted")
+    reason = interrupted.get("reason_code") if isinstance(interrupted, dict) else None
+    return _nonempty_str(payload.get("cost_scope")), _nonempty_str(reason)
 
 
 def _tools_used_from_raw(raw: str | None) -> list[str] | None:
@@ -395,6 +433,7 @@ async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
     data = _row_to_data(row[:15])
     num_turns, is_error = _usage_counters(row[14])
     tools_used = _tools_used_from_raw(row[15])
+    cost_scope, interrupted_reason = _interruption_markers(row[14])
     return RunDetailData(
         id=data.id,
         task_id=data.task_id,
@@ -415,4 +454,6 @@ async def get_run(db: AsyncSession, *, run_id: int) -> RunDetailData | None:
         num_turns=num_turns,
         is_error=is_error,
         tools_used=tools_used,
+        cost_scope=cost_scope,
+        interrupted_reason=interrupted_reason,
     )

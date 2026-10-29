@@ -341,7 +341,6 @@ async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
             "expected": str(TaskStatus.PENDING),
         },
     )
-    return task
 
 
 async def list_tasks(
@@ -452,6 +451,62 @@ def task_execution_state(task: Task) -> tuple[str | None, bool]:
     return None, False
 
 
+#: The `tasks.metadata` key that KEEPS the error text a completed row used to carry (SV-W4-03).
+#: A completion ends the failure history: the column must stop serving an earlier attempt's
+#: failure (live defect: task 313 was `completed` and still served its attempt-1
+#: `E_AGENT_BAD_OUTPUT` text, so any surface painting `error_message` showed a finished task as
+#: failed).  The evidence is MOVED here — never destroyed — with the attempt count and who retired
+#: it; the failed attempt itself stays in `agent_runs` (`GET /api/v1/runs?task_id=`).
+LAST_ATTEMPT_ERROR_KEY = "last_attempt_error"
+#: Characters of a retired error text kept in the bag.  `tasks.error_message` is unbounded Text;
+#: a metadata bag must not grow without a bound.  Truncation is STATED in the kept text.
+LAST_ATTEMPT_ERROR_MAX_CHARS = 8000
+
+
+def _retire_error_message(task: Task, *, status: str, actor: str) -> None:
+    """Move a COMPLETED row's stale `error_message` into `metadata.last_attempt_error`.
+
+    The success transition used to just NULL the column (F-23 residue).  That fixed the OWNER-VISIBLE
+    lie but dropped the row's own failure history: nothing on the task said an earlier attempt had
+    failed, or why, and the only remaining trace was the run ledger.  The text is therefore RETIRED,
+    not erased — `metadata.last_attempt_error` keeps the message, the attempt count it happened on,
+    the status it was retired by, who retired it and when.  `error_message` is then NULL, so
+    `completed` and its served evidence agree (SV-W4-03).
+
+    Rules, all deliberate:
+      * a string with content is retired; None / "" means there is nothing to preserve and the
+        column is simply cleared (no key is invented);
+      * the message is bounded by `LAST_ATTEMPT_ERROR_MAX_CHARS` with an explicit truncation
+        marker — a bag write must not become an unbounded payload;
+      * the bag is MERGED (a copy is reassigned so SQLAlchemy marks the JSON column dirty), never
+        replaced: another writer's keys (`approval_cleared`, `result_status`, …) survive;
+      * this function only ever runs on a COMPLETED transition; the requeue path keeps the column
+        (`pending` is not a completion) and a caller-supplied error is written as supplied.
+    """
+    message = task.error_message
+    if isinstance(message, str) and message:
+        kept = message
+        if len(kept) > LAST_ATTEMPT_ERROR_MAX_CHARS:
+            kept = (
+                kept[:LAST_ATTEMPT_ERROR_MAX_CHARS]
+                + f"… [truncated at {LAST_ATTEMPT_ERROR_MAX_CHARS} chars]"
+            )
+        attempts = task.attempts
+        bag = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+        merged = dict(bag)
+        merged[LAST_ATTEMPT_ERROR_KEY] = {
+            "message": kept,
+            "attempts": (
+                attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else None
+            ),
+            "retired_at": utcnow().isoformat(),
+            "retired_by": actor,
+            "retired_on_status": status,
+        }
+        task.metadata_json = merged
+    task.error_message = None
+
+
 def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
     """Drop a parked approval from the row's bag in the WRITER's own transaction (R3/B2-C4-R3).
 
@@ -516,8 +571,10 @@ async def update_task_status(
 ) -> Task | None:
     """Set status (+ optional result/error).  Returns None when the task is absent.
 
-    `result_summary`/`error_message` are assigned only when not None, so a
-    completion cannot wipe a previous error message (and vice versa).
+    `result_summary`/`error_message` are assigned only when not None, so an ordinary write cannot
+    wipe a previously recorded message (and vice versa).  The ONE exception is a completion: a
+    `completed` row retires an earlier attempt's error to `metadata.last_attempt_error` and clears
+    the column (F-23 residue + SV-W4-03 — see `_retire_error_message`).
 
     An unknown `status` is refused by NAME (`E_VALIDATION`) BEFORE anything is mutated —
     0002's own doctrine is that the value sets are "asserted by the code paths that write
@@ -548,9 +605,10 @@ async def update_task_status(
     if error_message is not None:
         task.error_message = error_message
     elif status == TaskStatus.COMPLETED:
-        # F-23 residue (see `transition_task_status`'s twin): a completion ends the failure
-        # history — a `completed` row must not keep an earlier attempt's error text.
-        task.error_message = None
+        # F-23 residue + SV-W4-03 (see `transition_task_status`'s twin): a completion ends the
+        # failure history — the text is RETIRED to `metadata.last_attempt_error`, never just
+        # dropped, so "completed" and its evidence agree while the earlier attempt stays auditable.
+        _retire_error_message(task, status=str(TaskStatus.COMPLETED), actor="update_task_status")
     task.updated_at = utcnow()
     await db.flush()
     return task
@@ -585,7 +643,9 @@ async def transition_task_status(
          never happened (the H-02 rule).
 
     `result_summary`/`error_message` keep the service's "only when supplied" rule — a transition
-    must not wipe a previously recorded message.
+    must not wipe a previously recorded message — EXCEPT on a completion, which retires an earlier
+    attempt's error to `metadata.last_attempt_error` and clears the column (`_retire_error_message`,
+    the one rule both completed-writers share).
     """
     _require_valid_task_status(status)
     target = TaskStatus(status)
@@ -651,11 +711,12 @@ async def transition_task_status(
     if error_message is not None:
         task.error_message = error_message
     elif target is TaskStatus.COMPLETED:
-        # F-23 residue: a COMPLETED row carrying an earlier attempt's failure text is a lie the
-        # owner reads (live: task 313 completed at 21:23 with `E_AGENT_BAD_OUTPUT … <= 280 chars`
-        # still on the row).  A completion ENDS the failure history; the retry path that preserves
-        # it writes `pending`, not `completed`, so it is untouched.
-        task.error_message = None
+        # F-23 residue + SV-W4-03: a COMPLETED row carrying an earlier attempt's failure text is a
+        # lie the owner reads (live: task 313 completed at 21:23 with `E_AGENT_BAD_OUTPUT … <= 280
+        # chars` still on the row).  A completion ENDS the failure history — the text is RETIRED to
+        # `metadata.last_attempt_error` (not destroyed), and the retry path that preserves it in the
+        # COLUMN writes `pending`, not `completed`, so it is untouched.
+        _retire_error_message(task, status=target.value, actor=actor)
     task.updated_at = utcnow()
     await db.flush()
 

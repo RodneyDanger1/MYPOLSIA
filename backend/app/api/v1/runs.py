@@ -94,7 +94,9 @@ the frozen row plus the accounting facts the record truly stores.
       Serving `[]` for `null` would turn "never recorded" into the measured zero "no tool ran" — a
       different fact, and exactly the lie V21 refused to tell.
     * The list/export row set is UNCHANGED: `tools_used` is detail-only, so the ledger feed does
-      not grow a field (B8's frozen list contract).
+      not grow a field (B8's frozen list contract).  SV-W4-04's `cost_scope` / `interrupted_reason`
+      (the F-26 interruption markers) are detail-only for the same reason — the run detail is where
+      a cancelled run stops looking like "not measured yet".
   * A missing run is the named 404 `E_NOT_FOUND` envelope (the `tasks.py:130-140` shape), never an
     empty 200 body.
   * A malformed at-rest `usage_json`/`tools_used` reads as null and the row still serves (the U5
@@ -176,17 +178,27 @@ class RunsResponse(BaseModel):
 
 
 class RunDetail(RunRow):
-    """ONE run: the frozen row + the stored counters + the persisted tool list.
+    """ONE run: the frozen row + the stored counters + the persisted tool list + F-26 markers.
 
     `tools_used` (V22/L1) keeps the three states on the wire: `null` = never recorded, `[]` =
     recorded and no tool ran, a list = the recorded names.  `num_turns`/`is_error` are `null` when
     the row has no stored `usage_json` (a legacy/pre-accounting row): null means "not recorded",
     never 0 turns and never a fabricated `is_error=False`.
+
+    SV-W4-04: `cost_scope` / `interrupted_reason` are the F-26 interruption markers the stale-run
+    closer stores in `usage_json`.  `cost_scope` is `"in_flight_partial"` (the ledger kept the cost
+    measured up to the kill — a LOWER BOUND, never the run's total) or `"unmeasured"` (cost is
+    unknown and stays `null`, never 0); `interrupted_reason` is the coded reason (`"E_RUN_STALE"`).
+    Both are `null` when the row carries no marker (a settled run, or a legacy row).  They are
+    DETAIL-ONLY: the list/export row is B8's frozen field set and does not grow (the `tools_used`
+    precedent), so a caller must read the detail to tell an interrupted run from an unmeasured one.
     """
 
     num_turns: int | None
     is_error: bool | None
     tools_used: list[str] | None
+    cost_scope: str | None
+    interrupted_reason: str | None
 
 
 #: The CSV header, DERIVED from the row model so it cannot drift from the wire contract.
@@ -258,6 +270,8 @@ def _detail_model(row: RunDetailData) -> RunDetail:
         num_turns=row.num_turns,
         is_error=row.is_error,
         tools_used=row.tools_used,
+        cost_scope=row.cost_scope,
+        interrupted_reason=row.interrupted_reason,
     )
 
 
