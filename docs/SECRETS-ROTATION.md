@@ -30,7 +30,8 @@ Nothing in this file prints a secret value. Rotation steps use placeholders.
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `.env`; the webhook secret ALSO has a leaked copy in `wave-v10/stripe-lab/listen.log` (W6-S1) | payment reads, webhook signature | read financial data / forge webhooks |
 | `RENDER_API_KEY`, `RENDER_SERVICE_ID` | `.env` (unset today) | live deploys of generated sites | deploy/replace the owner's sites |
 | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL` | `.env`, the settings secret store, or Settings → Integrations (the send path resolves stored > env > Settings; wave 7 F-W7-01/F-47) | outbound email | send as the owner's domain |
-| `POLSIA_INBOUND_SECRET` | `.env` (blank = not configured) | the inbound-mail webhook | inject fake inbound email into the support inbox |
+| `SUPPORT_INBOUND_SECRET` | `.env` (blank = not configured) | the owner/JSON inbound-mail webhook | inject fake inbound email into the support inbox |
+| `SENDGRID_INBOUND_PUBLIC_KEY`, `SENDGRID_INBOUND_OAUTH_TOKEN` | `.env` / secret store (blank = not configured) | SendGrid Inbound Parse webhook signature (ECDSA P-256, 300 s tolerance) or OAuth bearer | forge an inbound delivery as SendGrid (otherwise 401 `E_AUTH`) |
 | `WS` tickets | derived (HMAC of a domain-separated `API_KEY`), 30 s TTL, never stored | one activity socket | nothing after 30 s; cannot be turned back into the key |
 
 Containment status re-verified in waves 7–8 (2026-10-29, wave-7 build live for wave-8 probes):

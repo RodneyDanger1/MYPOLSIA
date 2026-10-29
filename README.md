@@ -8,7 +8,7 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 
 ## What this is, in one screen
 
-- **The fleet** — an orchestrator (tool-less planner: your morning plan + evening summary) plus eight
+- **The fleet** — an orchestrator (planner with five read-only registry tools: your morning plan + evening summary) plus eight
   specialist agents, all on a **DeepSeek-first runtime** (key entered in the app, stored
   server-side) with the Claude Code CLI as fallback. Every external action passes a policy
   firewall: sandbox labeling, per-channel send caps, cost budgets, an approval flow, and a
@@ -265,13 +265,19 @@ Fill in the relevant sections of `.env` to activate each integration:
 
 - **Twitter/X** — Post social content
 - **SendGrid** — Send cold emails and support replies (wired); the support inbox is filled via the
-  owner-authenticated `POST /api/v1/support/inbox` — there is no mail-poll (IMAP) setting
+  owner-authenticated `POST /api/v1/support/inbox` or the **SendGrid Inbound Parse** webhook
+  (multipart + ECDSA/OAuth, wave 9) — there is no mail-poll (IMAP) setting. The send adapter's
+  dedupe key is the provider's `X-Message-Id` header; that header is **not documented** by SendGrid,
+  so an accepted send that omits it is recorded as a NAMED failed-send undercount (the attempt
+  carries a `polsia-<hex>` correlation id in the documented `custom_args`; using it as the dedupe
+  key is an open decision, not a silent fallback)
 - **Web search for competitor research** — no web-search key exists (the advertised-but-dead
-  settings were removed, D14): under the CLI runtime the agent reaches the web through the CLI's
-  own WebSearch/WebFetch tools; under the DeepSeek-first runtime the agent's registry tools
-  (`web_fetch`, `web_search`) ride the request and every `tool_calls` turn is executed by
-  `app/agents/deepseek_runtime.py`, so `competitor_research` searches and fetches for real (V28
-  correction: the earlier "tool-calling is deferred / prompt context only" text was stale)
+  settings were removed, D14): under the CLI runtime `competitor_research`'s allowlist grants
+  **WebFetch only** (it can fetch a known URL; `WebSearch` is NOT granted); under the DeepSeek-first
+  runtime its registry tools (`web_fetch`, `web_search`) ride the request and every `tool_calls`
+  turn is executed by `app/agents/deepseek_runtime.py`, so it searches and fetches for real (V28
+  correction: the earlier "tool-calling is deferred / prompt context only" text was stale; wave-9
+  capability audit II also corrected the orchestrator's "tool-less" description above)
 - **Google Ads / Meta Ads** — Campaign management (partly implemented, by name):
   `integrations.read_ad_metrics` reads the provider's own campaign metrics — the Google Ads leg
   requires **five** values, `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
