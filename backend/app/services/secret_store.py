@@ -634,8 +634,13 @@ def _anchored_default_secrets_file() -> Path:
 
 
 def _resolve_secrets_file() -> Path:
-    """The active generic secret store: explicit `POLSIA_SECRETS_FILE` > repo-anchored default."""
-    raw = os.environ.get(SECRETS_FILE_ENV_VAR) or getattr(settings, "secrets_file", "")
+    """The active generic secret store: explicit `POLSIA_SECRETS_FILE` > `settings.secrets_file`
+    (the same variable, readable from `.env`) > the repo-anchored default.
+
+    SV-W4-05 (wave 5): the middle branch used to be a blind `getattr(settings, "secrets_file", "")`
+    over a name with no field; the field now exists, so the precedence is real end to end.
+    """
+    raw = os.environ.get(SECRETS_FILE_ENV_VAR) or settings.secrets_file
     if isinstance(raw, str) and raw.strip():
         return Path(raw).expanduser()
     return _anchored_default_secrets_file()
@@ -716,6 +721,23 @@ def _store_secrets_document(path: Path, document: dict[str, Any]) -> None:
         ) from exc
 
 
+def _settings_fallback(key: str) -> str:
+    """The Settings field matching a secret name, or "" — never a phantom settings read.
+
+    `get_secret`/`secret_status` resolve a credential as: stored document > process environment >
+    the matching `Settings` field.  That third leg is a DYNAMIC name (`key.lower()`), so it is
+    the one place in the product where `getattr(settings, <computed>)` is legitimate — and it is
+    guarded here: a name that is not a declared field answers "" instead of pretending a setting
+    exists (`Settings` is `extra="ignore"`, so the old blind `getattr(..., "")` silently answered
+    "" for every undeclarable name; SV-W4-05, wave 5).
+    """
+    field = key.lower()
+    if field not in type(settings).model_fields:
+        return ""
+    value = getattr(settings, field, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def get_secret(name: str) -> str | None:
     """The value of `name`: stored > process environment > the matching Settings field.
 
@@ -736,7 +758,7 @@ def get_secret(name: str) -> str | None:
         )
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()
-    env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+    env_value = os.environ.get(key) or _settings_fallback(key)
     text = env_value.strip() if isinstance(env_value, str) else ""
     return text or None
 
@@ -791,7 +813,7 @@ def secret_status(name: str) -> dict[str, Any]:
     stored = document.get(key)
     if isinstance(stored, str) and stored.strip():
         return {"configured": True, "source": _SOURCE_STORED, "masked": mask_secret(stored.strip())}
-    env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+    env_value = os.environ.get(key) or _settings_fallback(key)
     text = env_value.strip() if isinstance(env_value, str) else ""
     if text:
         return {"configured": True, "source": _SOURCE_ENV, "masked": mask_secret(text)}
@@ -820,7 +842,7 @@ def secret_statuses(names: Iterable[str]) -> dict[str, dict[str, Any]]:
                 "masked": mask_secret(stored.strip()),
             }
             continue
-        env_value = os.environ.get(key) or getattr(settings, key.lower(), "")
+        env_value = os.environ.get(key) or _settings_fallback(key)
         text = env_value.strip() if isinstance(env_value, str) else ""
         if text:
             statuses[key] = {

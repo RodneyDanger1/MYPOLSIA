@@ -65,12 +65,15 @@ from app.core.database import dispose_engine
 from app.core.errors import (
     E_AUTH,
     E_INTERNAL,
+    E_METHOD_NOT_ALLOWED,
+    E_NOT_FOUND,
     E_VALIDATION,
     ERROR_HINTS,
     PolsiaError,
     http_status_for,
     to_http_detail,
 )
+from app.core.openapi_errors import declare_error_responses
 from app.core.redis_client import close_redis
 from app.services import site_service
 
@@ -262,6 +265,44 @@ def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:
             "context": context if isinstance(context, dict) else {},
         },
     }
+
+
+def framework_refusal(request: Request, exc: StarletteHTTPException) -> PolsiaError | None:
+    """Name the framework's OWN refusals so they use the product envelope (SV-W4-02, wave 5).
+
+    WHY: at HEAD `GET /api/v1/sites/cinder-lye` answered `405 {"detail": "Method Not Allowed"}` and
+    an unknown path answered `404 {"detail": "Not Found"}` — a SECOND wire shape.  The dashboard's
+    `isRefusal` parses `{"ok": false, "error": {...}}` only, so a framework refusal reached the
+    owner as an unnamed status with no `how_to_fix`.  Measured live on the rebuilt wave-4 app by
+    `systems-validator` (VALIDATION-MATRIX §3.2, probe `raw/w5/live-openapi-probe.txt`).
+
+    ONLY the two route-level refusals are named here.  Every other uncoded `HTTPException` keeps
+    FastAPI's own body, on purpose: the 422 validation array is a documented contract
+    (`tests/unit/test_refusal_unify.py`), and the Stripe webhook's bad-signature 400 is a plain
+    `{"detail": <string>}` pinned the same way.  A coded detail never reaches this function — it
+    is wrapped by `coded_detail_envelope` first.
+    """
+    if exc.status_code == 405:
+        return PolsiaError(
+            E_METHOD_NOT_ALLOWED,
+            f"{request.method} is not allowed on {request.url.path}",
+            how_to_fix=(
+                "use the method the OpenAPI schema declares for this path "
+                "(GET /openapi.json lists every operation)"
+            ),
+            context={"method": request.method, "path": request.url.path},
+        )
+    if exc.status_code == 404:
+        return PolsiaError(
+            E_NOT_FOUND,
+            f"no operation matches {request.method} {request.url.path}",
+            how_to_fix=(
+                "check the path and method against the OpenAPI schema at /openapi.json; "
+                "a route miss is not a missing row"
+            ),
+            context={"method": request.method, "path": request.url.path},
+        )
+    return None
 
 
 def _sanitize_non_finite(value: Any) -> Any:
@@ -464,7 +505,21 @@ def create_app() -> FastAPI:
         """
         envelope = coded_detail_envelope(exc.detail)
         if envelope is None:
-            return await http_exception_handler(request, exc)
+            # SV-W4-02 (wave 5): a framework route miss / wrong verb is a named refusal too, so
+            # the product has ONE wire shape.  Everything else (422 validation array, the
+            # webhook's plain-detail 400) keeps FastAPI's body — the documented exception set.
+            refusal = framework_refusal(request, exc)
+            if refusal is None:
+                return await http_exception_handler(request, exc)
+            logger.warning(
+                "%s on %s %s: %s", refusal.code, request.method, request.url.path,
+                refusal.message,
+            )
+            headers = dict(exc.headers or {})
+            headers.setdefault("X-Polsia-Error-Code", refusal.code)
+            return JSONResponse(
+                status_code=exc.status_code, content=to_http_detail(refusal), headers=headers
+            )
         logger.warning(
             "%s on %s %s: %s", envelope["error"]["code"], request.method, request.url.path,
             envelope["error"]["message"],
@@ -611,6 +666,11 @@ def create_app() -> FastAPI:
     api_v1.include_router(sites.router)
     application.include_router(api_v1)
     application.include_router(ws.router)
+
+    # SV-W4-01 (wave 5): the shared refusal classes (`openapi_errors.py`) are declared on every
+    # operation AFTER the routers are included and BEFORE the schema is first generated.  Live
+    # at the base commit: 114 operations, 0 declaring 401, 113 declaring no error beyond 422.
+    declare_error_responses(application)
 
     # wave V24 (L3): serve the generated sites as REAL static files at `/sites/<slug>/` (nginx
     # proxies `/sites/` here; the FE iframe previews the same URL).  `html=True` makes a directory

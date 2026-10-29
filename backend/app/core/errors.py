@@ -30,6 +30,11 @@ E_REDIS = "E_REDIS"                       # broker / pub-sub unavailable
 E_AUTH = "E_AUTH"                         # missing or wrong credentials
 E_VALIDATION = "E_VALIDATION"             # caller-supplied input is malformed
 E_NOT_FOUND = "E_NOT_FOUND"               # requested resource does not exist
+#: SV-W4-02 (wave 5): the framework's own "wrong verb for this path" refusal (405).  It used to
+#: reach the wire as `{"detail": "Method Not Allowed"}` — a second shape the dashboard's
+#: `isRefusal` could not name — while every product refusal is the envelope.  Named here so the
+#: route/verb refusal travels the same wire as the rest (`app/main.py::framework_refusal`).
+E_METHOD_NOT_ALLOWED = "E_METHOD_NOT_ALLOWED"
 
 # agent runtime
 E_AGENT_UNKNOWN = "E_AGENT_UNKNOWN"       # agent_type not in AGENT_MAP
@@ -137,6 +142,10 @@ ERROR_HINTS: dict[str, str] = {
     E_AUTH: "send a valid X-API-Key header",
     E_VALIDATION: "fix the request body/parameters named in the message",
     E_NOT_FOUND: "check the id, or seed the row first (make seed)",
+    E_METHOD_NOT_ALLOWED: (
+        "use the method the OpenAPI schema declares for this path (GET /openapi.json lists "
+        "every operation)"
+    ),
     E_AGENT_UNKNOWN: "use an agent_type from crew_factory.AGENT_MAP",
     E_CLI_MISSING: "install the Claude Code CLI and/or set CLAUDE_CLI_PATH",
     E_CLI_TIMEOUT: "raise CLAUDE_TIMEOUT_SECONDS (DEEPSEEK_TIMEOUT_SECONDS on the DeepSeek runtime) or shrink the prompt; a timed-out attempt is retried up to AGENT_MAX_RETRIES times (jittered backoff), each retry costing the full timeout again",
@@ -174,6 +183,8 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_AUTH: 401,
     E_VALIDATION: 422,
     E_NOT_FOUND: 404,
+    # SV-W4-02: the route missed the path / the verb is wrong for it — the framework's 405.
+    E_METHOD_NOT_ALLOWED: 405,
     E_AGENT_UNKNOWN: 422,
     E_TASK_NOT_RUNNABLE: 409,
     E_TASK_CLAIMED: 409,

@@ -15,9 +15,11 @@ log on the path every agent action uses (found by the 200k-row shipped-code benc
 abandoned because of it).  A 1s connect timeout, a 1s socket timeout and `Retry(NoBackoff(), 0)` turn
 "stall for seconds per event" into "fail in ≤1s, then the caller's breaker owns recovery".
 
-These two knobs are read with a getattr fallback so `app/config.py` (a frozen interface owned by the
-campaign, and asserted field-by-field by the parity suite) does not have to change for a transport
-detail — same pattern the service layer uses for `stripe_signature_tolerance`.
+These two knobs are REAL `Settings` fields (`redis_connect_timeout_seconds`,
+`redis_socket_timeout_seconds`).  Until wave 5 they were read with a getattr fallback over names
+that did not exist on `Settings` — so `extra="ignore"` silently discarded the environment value
+and the hardcoded 1.0 s always won (`SV-W4-05`, measured in
+`polsia-work/build/swarm-2026-10-28/systems-validator/VALIDATION-MATRIX.md` §5).
 """
 from __future__ import annotations
 
@@ -31,8 +33,8 @@ from redis.retry import Retry
 
 from app.config import settings
 
-_CONNECT_TIMEOUT_S = float(getattr(settings, "redis_connect_timeout_seconds", 1.0))
-_SOCKET_TIMEOUT_S = float(getattr(settings, "redis_socket_timeout_seconds", 1.0))
+_CONNECT_TIMEOUT_S = float(settings.redis_connect_timeout_seconds)
+_SOCKET_TIMEOUT_S = float(settings.redis_socket_timeout_seconds)
 
 _client: aioredis.Redis | None = None
 _subscriber: aioredis.Redis | None = None

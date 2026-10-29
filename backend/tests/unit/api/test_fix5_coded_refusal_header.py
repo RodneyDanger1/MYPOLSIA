@@ -50,15 +50,28 @@ async def test_direct_raise_and_guard_path_agree_header_for_header(api_client, a
 
 
 @pytest.mark.asyncio
-async def test_uncoded_http_exceptions_keep_the_default_shape_and_no_header(api_client):
-    """The negative control: `setdefault` must not turn every 404 into a refusal envelope.
+async def test_uncoded_http_exceptions_keep_the_default_shape_and_no_header(api_client, monkeypatch):
+    """The negative control: `setdefault` must not turn EVERY uncoded exception into a refusal.
 
-    An UNCODED `HTTPException` (a plain route miss) goes straight back to FastAPI's own
-    handler — byte-identical default body, and no `X-Polsia-Error-Code` invented for it.
+    REPAIRED PIN (wave 5, SV-W4-02): OLD expectation = a plain route miss answers
+    `{"detail": "Not Found"}` with no code header.  NEW = a route miss and a wrong verb are
+    NAMED refusals (`E_NOT_FOUND` / `E_METHOD_NOT_ALLOWED`, envelope + header), because the
+    dashboard's `isRefusal` parses the envelope only and the old shape left a 405 unnamed —
+    pinned in `tests/unit/test_w5_error_envelope_shapes.py`.
+
+    The pass-through rule still holds for the documented exception: the Stripe webhook's
+    bad-signature 400 is the framework's plain `{"detail": <string>}`, with no invented header.
     """
-    resp = await api_client.get("/api/v1/__no_such_route__")
-    assert resp.status_code == 404
-    assert resp.json() == {"detail": "Not Found"}
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "stripe_webhook_secret", "whsec_fix5_negative_control")
+    resp = await api_client.post(
+        "/api/v1/finance/stripe/webhook",
+        content=b'{"id":"evt_x"}',
+        headers={"stripe-signature": "t=1,v1=badsig"},
+    )
+    assert resp.status_code == 400
+    assert set(resp.json()) == {"detail"}, "a plain-detail exception must stay plain"
     assert resp.headers.get("X-Polsia-Error-Code") is None
 
 

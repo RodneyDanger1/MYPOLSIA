@@ -135,11 +135,22 @@ async def test_a_plain_string_detail_passes_through_unchanged(api_client, monkey
 
 
 @pytest.mark.asyncio
-async def test_a_routed_miss_keeps_the_default_shape(api_client):
-    """Starlette's own 404 (no code anywhere) must stay exactly as FastAPI rendered it."""
+async def test_a_routed_miss_is_now_the_product_envelope(api_client):
+    """REPAIRED PIN (wave 5, SV-W4-02): OLD body = `{"detail": "Not Found"}`.
+
+    That second wire shape is exactly what the dashboard's `isRefusal` could not name, so a route
+    miss reached the owner with no code and no `how_to_fix`.  NEW body = the refusal envelope
+    `E_NOT_FOUND` plus the machine-readable header; the 422-array and plain-detail-400 pins in this
+    file are UNCHANGED (they are the documented framework-shape exceptions).
+    """
     resp = await api_client.get("/api/v1/definitely-not-a-route")
     assert resp.status_code == 404
-    assert resp.json() == {"detail": "Not Found"}
+    body = resp.json()
+    assert set(body) == {"ok", "error"}, f"a route miss must use the product envelope: {body}"
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_NOT_FOUND"
+    assert body["error"]["how_to_fix"], "a named refusal must say how to fix it"
+    assert resp.headers["x-polsia-error-code"] == "E_NOT_FOUND"
 
 
 @pytest.mark.asyncio

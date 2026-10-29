@@ -19,11 +19,6 @@ RESIDUAL (recorded, not hidden): a service-layer list read does not expose its c
 route restates its own filter predicates for the count.  `tests/unit/test_v20_api_typing.py` pins
 every route's header against a seeded table under each filter combination — a future filter added
 to one side and not the other fails that pin instead of serving a quiet lie.
-
-HANDOFF (outside this lane's territory): `app/main.py`'s `expose_headers` list should gain
-`X-Polsia-Total` so a CROSS-ORIGIN browser client can read it (`X-Polsia-Row-Count` is already
-there for the same reason).  Nothing consumes it from the browser today, so the header is
-server-complete and browser-invisible until that one line lands.
 """
 from __future__ import annotations
 

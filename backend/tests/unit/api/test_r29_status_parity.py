@@ -11,7 +11,7 @@ e.g. a failing `get_db` — read the other and answered a 500 whose code header 
 refusal, two different wires.
 
 Pinned here, through the REAL shipped app (`api_client` → ASGITransport → the request middleware +
-both exception handlers), for the nine codes plus thirteen controls and one deliberately-unmapped
+both exception handlers), for the nine codes plus fourteen controls and one deliberately-unmapped
 code (`E_DEEPSEEK_KEY`):
 
   * pre-route vs in-route → identical status, identical full header set (modulo the per-request
@@ -59,6 +59,7 @@ from app.core.errors import (
     E_DEEPSEEK_KEY,
     E_EGRESS_BLOCKED,
     E_INTEGRATION,
+    E_METHOD_NOT_ALLOWED,
     E_NOT_FOUND,
     E_PHONE_UNAVAILABLE,
     E_POLICY_DENIED,
@@ -110,6 +111,10 @@ CONTROLS = [
     # E_TASK_CLAIMED.  In the controls so its status is proven pre-route AND in-route, not only
     # in the census literal below.
     E_RUN_CANCELLED,
+    # wave 5 / SV-W4-02: the framework's wrong-verb refusal was given a NAME (it used to reach the
+    # wire as `{"detail": "Method Not Allowed"}`).  In the controls so the status table AND the wire
+    # prove 405 on both raise paths, not only in the census literal.
+    E_METHOD_NOT_ALLOWED,
 ]
 
 #: `E_DEEPSEEK_KEY` is deliberately unmapped in BOTH tables (it refuses inside the agent runtime,
@@ -122,6 +127,8 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     E_AUTH: 401,
     E_VALIDATION: 422,
     E_NOT_FOUND: 404,
+    # wave 5 / SV-W4-02: the framework's wrong-verb refusal is a NAMED code now (405).
+    E_METHOD_NOT_ALLOWED: 405,
     E_AGENT_UNKNOWN: 422,
     E_TASK_CLAIMED: 409,
     E_TASK_NOT_RUNNABLE: 409,
@@ -153,6 +160,7 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     # address or a non-web port — the caller asked for it, so 403, never a 5xx.
     E_EGRESS_BLOCKED: 403,
 }
+#: The census is EXACTLY the 26 rows above (`test_the_status_tables_agree_exactly_and_match_the_census`).
 
 
 class _Raiser:

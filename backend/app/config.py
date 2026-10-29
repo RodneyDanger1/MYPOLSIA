@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     db_pool_recycle_seconds: int = 1800
     db_statement_timeout_ms: int = 30_000
 
+    # --- redis transport bounds (SV-W4-05, wave 5) ---
+    # `app/core/redis_client.py` read both through `getattr(settings, "<name>", 1.0)` over names
+    # that were NOT fields: `Settings` is `extra="ignore"`, so a tuned value in `.env` was
+    # silently discarded and the transport always ran the hardcoded 1.0 s.  They are declared
+    # fields now (1.0 s is the measured bound that turns "stall for seconds" into "fail in ≤1 s";
+    # see the module docstring).  Read at import time, so a change needs a restart.
+    redis_connect_timeout_seconds: float = 1.0
+    redis_socket_timeout_seconds: float = 1.0
+
     # --- redis / celery ---
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
@@ -62,6 +71,12 @@ class Settings(BaseSettings):
     task_retry_backoff_seconds: int = 20
     activity_retention_days: int = 90
     activity_bulk_flush: int = 200
+    # SV-W4-05 (wave 5): `company_service._cache_ttl()` read this name via
+    # `getattr(settings, ..., 30.0)`, but it was NOT a field — an operator setting
+    # `COMPANY_CONTEXT_TTL_SECONDS` in `.env` was ignored and the cache always kept 30 s.
+    # Deliberately short: the agent prompt is built from the cached context, so staleness is
+    # bounded and visible within a cycle (`company_service.py` module comment).
+    company_context_ttl_seconds: float = 30.0
 
     # --- activity event bus ---
     # The publish breaker's window: after a failed Redis publish, further events are SKIPPED (and
@@ -79,6 +94,17 @@ class Settings(BaseSettings):
                 "(0 would disable the publish breaker)"
             )
         return value
+
+    # --- agent runtime selection (SV-W4-05, wave 5) ---
+    # `crew_factory._spawn_facts()` read `os.getenv("POLSIA_MODEL_BACKEND")` first and then
+    # `getattr(settings, "model_backend", "")`, but the second name was NOT a field: a `.env`
+    # declaration (as opposed to a container env var) could never reach it.  The field accepts
+    # BOTH documented spellings (`POLSIA_MODEL_BACKEND` is the one `.env.example`/README use).
+    # Blank = let the provider seam decide (`deepseek_runtime.available()`), which is the
+    # authoritative signal; the fallback tokens are listed in `crew_factory._NON_CLI_BACKENDS`.
+    model_backend: str = Field(
+        default="", validation_alias=AliasChoices("POLSIA_MODEL_BACKEND", "MODEL_BACKEND")
+    )
 
     # --- chroma ---
     # POSIX-absolute because it is the CONTAINER path (backend/Dockerfile ENV); on Windows the
@@ -120,6 +146,15 @@ class Settings(BaseSettings):
     ws_max_sockets_per_client: int = 4
     ws_max_sockets_per_operator: int = 32
     ws_heartbeat_seconds: float = 20.0
+    # F-03b (wave 5): a ticket carries a FRESH RANDOM SUBJECT per mint and the socket cap is per
+    # subject, so an unlimited mint is an unlimited supply of socket identities — one client that
+    # re-mints in a loop could occupy the install-wide cap above.  The mint route bounds it per
+    # operator over a rolling window, and additionally refuses a mint while the operator is
+    # already at the socket cap (cap accounting).  30 per 60 s is far above real use (the browser
+    # mints ONE ticket per connection, with exponential backoff on failure) and low enough that a
+    # runaway reconnect loop cannot create identities faster than ~1 per 2 s.
+    ws_ticket_mint_limit: int = 30
+    ws_ticket_mint_window_seconds: float = 60.0
 
     # --- kill switch (fleet dispatch gate; registry D4 — the switch was settings-dead) ---
     # "" = run; "throttle" = agents with external actions pause (reads continue); "freeze" = all
@@ -150,6 +185,22 @@ class Settings(BaseSettings):
     # --- stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    # SV-W4-05 (wave 5): `finance._signature_tolerance()` read this via
+    # `getattr(settings, "stripe_signature_tolerance", 300)`, but it was NOT a field, so
+    # `STRIPE_SIGNATURE_TOLERANCE` in `.env` was inert and the replay window was always Stripe's
+    # own 300 s default.  A configured non-positive value is still the DEFAULT, never "off"
+    # (the F21/V12 entry-point floor); the field only makes the knob real.
+    stripe_signature_tolerance: int = 300
+
+    # --- secret stores (one local file each; neither value is ever logged) ---
+    # `services/secret_store.py::_resolve_secrets_file` reads `POLSIA_SECRETS_FILE` from the
+    # process environment FIRST, then this field, then the repo-anchored default
+    # (`backend/data/secrets.json`).  SV-W4-05 (wave 5): the field did not exist, so the middle
+    # branch of that precedence was dead and `SECRETS_FILE`/`POLSIA_SECRETS_FILE` in `.env` (as
+    # opposed to the container env) could never reach Settings.  Blank = the anchored default.
+    secrets_file: str = Field(
+        default="", validation_alias=AliasChoices("POLSIA_SECRETS_FILE", "SECRETS_FILE")
+    )
 
     # --- integrations (optional) ---
     twitter_api_key: str = ""
@@ -212,6 +263,11 @@ class Settings(BaseSettings):
     # 1..393216 (default 8K non-thinking / 64K thinking / 128K at effort `max`), so the ceiling is
     # deliberately NOT raised by default — this makes the shipped bound SETTABLE, not unbounded.
     deepseek_max_tokens: int = 8192
+    # SV-W4-05 (wave 5): `deepseek_runtime._tool_loop_bound()` read this through `_setting(...)`,
+    # i.e. `getattr(settings, "<name>", 4)`, and it was NOT a field — `DEEPSEEK_TOOL_LOOP_MAX_
+    # ITERATIONS` in `.env` was inert.  Range: 1..12 (the runtime clamps; 0 would refuse every run
+    # needing a tool, and an unbounded loop is the hang this bound exists to prevent).
+    deepseek_tool_loop_max_iterations: int = 4
 
     # --- phone link (wave V16, E5: the owner's phone, read-only) ---
     # The Phone Link store directory (phone.db/calling.db/contacts.db — the Windows Phone Link

@@ -131,6 +131,17 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
         # exactly these; nothing removed.
         "IN_FLIGHT_USAGE_KEY", "RUN_COST_SCOPE_KEY", "RUN_INTERRUPTED_KEY",
         "APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY", "record_run_usage_progress",
+        # wave 5 / logic-debugger (2026-10-28): A-W4-03's normaliser and the two retired-attempt
+        # keys it writes.  `task_metadata_bag` is the ONE place a non-object `tasks.metadata` blob
+        # (`[null]`, observed live on task 313) is turned into a mergeable bag — consumed by this
+        # module's own writers and by `celery_app/tasks/agent_tasks.py`'s eight merge sites.
+        # `FOREIGN_METADATA_KEY`/`_MAX_CHARS` bound and name what a foreign blob is preserved
+        # under; `LAST_ATTEMPT_VERDICT_KEY` is where a superseded `result_status` is retired (the
+        # neighbour of the already-exported `LAST_ATTEMPT_ERROR_KEY`, which joins the set here
+        # for the same reason: both are the completion's retirement records).
+        # OLD set = the names above without these five; NEW adds exactly these; nothing removed.
+        "task_metadata_bag", "FOREIGN_METADATA_KEY", "FOREIGN_METADATA_MAX_CHARS",
+        "LAST_ATTEMPT_VERDICT_KEY", "LAST_ATTEMPT_ERROR_KEY",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__
