@@ -473,10 +473,13 @@ def _migration_graph() -> tuple[dict[str, str | None], set[str]]:
     return revisions, children
 
 
-def test_the_migration_chain_has_exactly_one_head_and_it_is_0019() -> None:
+def test_the_migration_chain_has_exactly_one_head_and_it_is_0020() -> None:
     revisions, children = _migration_graph()
     heads = sorted(revision for revision in revisions if revision not in children)
-    assert heads == ["0019"], f"expected the single live head 0019, found {heads}"
+    # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020 (migration 0020 strengthens 0019's
+    # email provider-evidence CHECK; linearity unchanged).
+    assert heads == ["0020"], f"expected the single live head 0020, found {heads}"
+    assert revisions["0020"] == "0019"
     assert revisions["0019"] == "0018"
     assert revisions["0018"] == "0017"
     assert revisions["0017"] == "0016"

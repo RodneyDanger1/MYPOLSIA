@@ -412,8 +412,10 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
     # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`).
     # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
     # (`0019_email_sent_requires_provider_id.py`: the email status default + PG-only CHECK).
+    # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020
+    # (`0020_email_sent_requires_provider_evidence.py`: the same CHECK strengthened).
     # V24's 0012 -> 0011 leg is unchanged and still asserted below.
-    assert heads == ["0019"], f"expected a single head (0019), found {heads}"
+    assert heads == ["0020"], f"expected a single head (0020), found {heads}"
     assert graph["0012"] == "0011"
     assert (
         graph["0013"] == "0012"
@@ -423,4 +425,5 @@ def test_the_migration_chain_has_one_head_and_0012_chains_after_0011():
         and graph["0017"] == "0016"
         and graph["0018"] == "0017"
         and graph["0019"] == "0018"
+        and graph["0020"] == "0019"
     )

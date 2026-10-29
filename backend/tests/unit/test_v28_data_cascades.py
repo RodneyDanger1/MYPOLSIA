@@ -168,7 +168,7 @@ def test_a_prospect_with_send_history_cannot_be_deleted(con) -> None:
     con.execute("INSERT INTO prospects (id, email) VALUES (1, 'p@example.com')")
     con.execute("INSERT INTO email_campaigns (id, name, status) VALUES (1, 'real', 'sent')")
     con.execute(
-        "INSERT INTO email_logs (id, prospect_id, campaign_id, status) VALUES (1, 1, 1, 'sent')"
+        "INSERT INTO email_logs (id, prospect_id, campaign_id, sendgrid_id, status, sent_at) VALUES (1, 1, 1, 'sg-w8-fixture-1', 'sent', CURRENT_TIMESTAMP)"
     )
     con.commit()
 

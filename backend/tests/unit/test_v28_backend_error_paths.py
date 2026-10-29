@@ -33,6 +33,7 @@ refusal that a route still turns into a 500 is not a fixed product.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -76,9 +77,12 @@ async def test_deleting_a_prospect_with_send_history_is_a_named_refusal(
     # W7: this fixture IS send history (the delete refusal's own words: "already been emailed"),
     # so it states the send state explicitly — migration 0019 made `email_logs.status` default
     # `draft`, i.e. a row that states no status no longer claims a performed send.
+    # W8 DELIBERATE RE-PIN (2026-10-29; migration 0020): a `sent` row must now also carry the
+    # instant it was recorded (`sent_at`), so this send-history fixture states one.  Counts and
+    # the FK refusal under test are unchanged.
     async_db_session.add(
         EmailLog(prospect_id=prospect_id, subject="Hello", status="sent",
-                 sendgrid_id="sg-v28-hello")
+                 sendgrid_id="sg-v28-hello", sent_at=datetime.now(UTC))
     )
     await async_db_session.commit()
     await _enable_sqlite_foreign_keys(async_db_session)
@@ -106,10 +110,11 @@ async def test_delete_route_answers_the_named_refusal_when_send_history_exists(
     async_db_session.add(prospect)
     await async_db_session.flush()
     prospect_id = prospect.id
-    # W7 (see the sibling test): send history is stated, not defaulted.
+    # W7 (see the sibling test): send history is stated, not defaulted.  W8 (0020) also states
+    # `sent_at` — a `sent` row without a recording instant is refused by the strengthened CHECK.
     async_db_session.add(
         EmailLog(prospect_id=prospect_id, subject="Hello", status="sent",
-                 sendgrid_id="sg-v28-grace")
+                 sendgrid_id="sg-v28-grace", sent_at=datetime.now(UTC))
     )
     await async_db_session.commit()
     await _enable_sqlite_foreign_keys(async_db_session)

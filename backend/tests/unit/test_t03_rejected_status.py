@@ -127,15 +127,18 @@ def test_the_migration_chain_is_linear_with_a_single_head():
     # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
     # (`0019_email_sent_requires_provider_id.py`: the email status default + the PG-only
     # sent-requires-provider-id CHECK); linearity itself is unchanged.
-    assert heads == ["0019"], f"expected a single head (0019), found {heads}"
+    # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020
+    # (`0020_email_sent_requires_provider_evidence.py`: the SAME constraint strengthened to a
+    # non-blank sendgrid_id AND a sent_at; linearity itself is unchanged).
+    assert heads == ["0020"], f"expected a single head (0020), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0019"
+    cursor: str | None = "0020"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0019", "0018", "0017", "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006",
+        "0020", "0019", "0018", "0017", "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006",
         "0005", "0004", "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
@@ -339,7 +342,9 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # approval ledger); the 0005/0006 legs below are unchanged.
         # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019 (migration 0019, the email status
         # default + the PG-only sent-requires-provider-id CHECK); the legs below are unchanged.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
+        # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020 (migration 0020 strengthens that
+        # CHECK to a non-blank id + a sent_at); the legs below are unchanged.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0020"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

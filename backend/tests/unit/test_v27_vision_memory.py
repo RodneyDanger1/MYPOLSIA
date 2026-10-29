@@ -283,7 +283,9 @@ def test_migration_0016_chains_after_0015_and_the_single_head_is_0018():
     # W2 DELIBERATE RE-PIN (2026-10-28): the chain head moved 0017 -> 0018
     # (`0018_consumed_approvals.py`, the single-use approval ledger).
     # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019 (`0019_email_sent_requires_provider_id.py`).
-    assert heads == ["0019"], f"expected a single head (0019), found {heads}"
+    # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020 (`0020_email_sent_requires_provider_evidence.py`).
+    assert heads == ["0020"], f"expected a single head (0020), found {heads}"
+    assert graph["0020"] == "0019", "W8's evidence-strengthened CHECK must chain directly after 0019"
     assert graph["0019"] == "0018", "W7's email-acceptance revision must chain directly after 0018"
     assert graph["0018"] == "0017", "W2's approval-ledger revision must chain directly after 0017"
     assert graph["0017"] == "0016", "W4's DT-01/DT-05 revision must chain directly after 0016"
@@ -404,7 +406,8 @@ def test_migration_0016_round_trips_creates_both_cascades_and_both_indexes(monke
         # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`,
         # additive: the approval ledger does not touch this table).
         # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019 (email acceptance, additive here).
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
+        # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020 (email evidence, additive here).
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0020"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='vision_descriptions'"
         ).fetchone() is not None

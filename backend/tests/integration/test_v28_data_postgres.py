@@ -28,7 +28,10 @@ BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
 # (`0019_email_sent_requires_provider_id.py`: the email status default + the PG-only CHECK; no new
 # table, so the count stays 26).
-HEAD = "0019"
+# W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020
+# (`0020_email_sent_requires_provider_evidence.py`: the same CHECK strengthened to a non-blank
+# sendgrid_id AND a sent_at; still no new table).  PG-ONLY test: not executed on this host.
+HEAD = "0020"
 EXPECTED_TABLE_COUNT = 26
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]

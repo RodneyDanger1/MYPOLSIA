@@ -97,21 +97,39 @@ async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospe
 
 
 async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Prospect, bool]:
-    """`(prospect, created)` for an email address — SELECT first, then create.
+    """`(prospect, created)` for an email address — SELECT first, then insert-if-missing.
 
-    The create attempt runs inside `db.begin_nested()` ON PURPOSE: a duplicate trips
-    `create_prospect`'s flush, and without a savepoint that failed flush rolls back the whole
-    session transaction and poisons it — the very re-select this function needs then dies with
-    `PendingRollbackError` (measured, see the S2 seat's raw/probe_dup_prospect.py). The savepoint
-    scopes the rollback to the failed insert, the caller's pending work survives, and the
-    duplicate refusal is re-resolved by re-selecting. Anything other than an `already exists`
-    refusal is re-raised — never swallowed. `flush` only; the worker owns the commit.
+    WAVE 8 — WHY THIS IS NO LONGER A SAVEPOINT.  The previous shape wrapped `create_prospect`'s
+    flush in `db.begin_nested()` to survive the duplicate-IntegrityError.  That is a
+    PostgreSQL-correct trick and a **SQLite transaction bug**: pysqlite's legacy transaction
+    control emits SAVEPOINT without an explicit BEGIN, so RELEASE of the outermost savepoint
+    COMMITS the session's open transaction (SQLAlchemy documents the workaround; measured here).
+    The prospect row therefore became DURABLE while the run's own settlement was still pending —
+    a worker that failed before committing left an orphan prospect behind, breaking the "one commit
+    per run" contract on that engine (the live send row itself was correctly discarded; only the
+    savepoint's work leaked).  Re-pinned by
+    `test_w8_failure_mode_truth.py::test_a_send_row_is_discarded_when_the_run_transaction_rolls_back`
+    (RED: restore `begin_nested` → the prospect survives the rollback).
 
-    WAVE 7: the lookup is CASE-INSENSITIVE and ordered by id, and the row is created stored
-    normalised — so a legacy mixed-case row is FOUND rather than duplicated, and the
-    suppression check `send_compliant_email` runs has one row to answer from.
+    The replacement is ONE `INSERT ... ON CONFLICT DO NOTHING RETURNING id` (the same shape the
+    email-log write uses), so a concurrent creator is resolved by the database without an
+    exception and without a savepoint.  `flush` only — the worker owns the commit.
+
+    WAVE 7 (kept): the lookup is CASE-INSENSITIVE and ordered by id, and the row is created stored
+    normalised — so a legacy mixed-case row is FOUND rather than duplicated, and the suppression
+    check `send_compliant_email` runs has one row to answer from.
     """
     normalized = normalize_address(address)
+    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        # The same refusal `create_prospect` raises, with the same message shape the RD30
+        # callers match on ("is not a usable address") — an item-scoped skip, never a poisoned
+        # session, and nothing flushed.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"prospect email {normalized!r} is not a usable address",
+            how_to_fix=ERROR_HINTS[E_VALIDATION],
+            context={"email": address},
+        )
     lookup = (
         select(Prospect)
         .where(func.lower(Prospect.email) == normalized)
@@ -121,15 +139,37 @@ async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Pros
     existing = await fetch_scalar(db, lookup, what=f"prospect {normalized!r}")
     if existing is not None:
         return existing, False
+    insert_fn = pg_insert if dialect_name(db) == "postgresql" else sqlite_insert
     try:
-        async with db.begin_nested():
-            return await create_prospect(db, normalized), True
-    except PolsiaError as exc:
-        if exc.code == E_VALIDATION and "already exists" in exc.message:
-            again = await fetch_scalar(db, lookup, what=f"prospect {normalized!r}")
-            if again is not None:
-                return again, False
-        raise
+        created_id = (
+            await db.execute(
+                insert_fn(Prospect)
+                .values(email=normalized)
+                .on_conflict_do_nothing(index_elements=["email"])
+                .returning(Prospect.id)
+            )
+        ).scalars().one_or_none()
+    except Exception as exc:  # noqa: BLE001 - translated below
+        raise db_refusal("prospect insert", exc) from exc
+    if created_id is not None:
+        created = await fetch_scalar(
+            db,
+            select(Prospect).where(Prospect.id == created_id),
+            what=f"prospect {normalized!r} (just created)",
+        )
+        if created is not None:
+            return created, True
+    again = await fetch_scalar(db, lookup, what=f"prospect {normalized!r}")
+    if again is not None:
+        # The raced row is the natural key's row: it IS this mailbox, found exactly once.
+        return again, False
+    raise PolsiaError(
+        E_VALIDATION,
+        f"prospect {normalized} already exists",
+        how_to_fix="re-use the existing prospect row (prospects.email is unique) "
+        "or update its status instead of re-inserting",
+        context={"email": normalized},
+    )
 
 
 def _follow_up_due_at(

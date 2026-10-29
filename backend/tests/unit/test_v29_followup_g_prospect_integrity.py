@@ -26,6 +26,8 @@ DOUBLES: none.  Real SQLite through the shared fixture, real service calls and r
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import func, select, text
 
@@ -160,12 +162,15 @@ async def test_a_prospect_with_send_history_is_left_as_residual_never_cascaded(
     # send state explicitly.  Migration 0019 moved `email_logs.status`'s default to `draft` (a row
     # that states no status must not claim a performed send), so an unstated row is no longer a
     # send; the assertion below (`email_logs == 2`) is unchanged.
+    # W8 DELIBERATE RE-PIN (2026-10-29; migration 0020): a `sent` row now also carries the instant
+    # it was recorded, so both send-history fixtures state `sent_at`; the count is unchanged.
+    now = datetime.now(UTC)
     async_db_session.add_all(
         [
             EmailLog(prospect_id=prospect_id, subject="First touch", status="sent",
-                     sendgrid_id="sg-v29g-first"),
+                     sendgrid_id="sg-v29g-first", sent_at=now),
             EmailLog(prospect_id=prospect_id, subject="Follow-up", status="sent",
-                     sendgrid_id="sg-v29g-follow"),
+                     sendgrid_id="sg-v29g-follow", sent_at=now),
         ]
     )
     await async_db_session.commit()

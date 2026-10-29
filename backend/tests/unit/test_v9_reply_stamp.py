@@ -19,6 +19,7 @@ pattern).  Every row is written by the REAL service on the real schema.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.core.timeutil import as_bound_instant
@@ -39,6 +40,7 @@ def _log(prospect_id: int, db, *, replied_at: datetime | None = None, step: int 
         subject=f"s{step}",
         body="b",
         status="sent",
+        sendgrid_id=f"sg-w8-reply-{step}-{uuid.uuid4().hex[:8]}",
         sent_at=as_bound_instant(NOW - timedelta(days=5), db),
         follow_up_due=as_bound_instant(NOW - timedelta(hours=1), db),
         replied_at=as_bound_instant(replied_at, db) if replied_at is not None else None,
@@ -162,6 +164,7 @@ def test_reply_stops_the_chain_and_the_next_sweep_finds_nothing(queue_db, monkey
                 subject="s1",
                 body="b",
                 status="sent",
+                sendgrid_id="sg-w8-reply-e2e",
                 sent_at=as_bound_instant(SWEEP_NOW - timedelta(days=4), db),
                 follow_up_due=as_bound_instant(SWEEP_NOW - timedelta(hours=1), db),
             )

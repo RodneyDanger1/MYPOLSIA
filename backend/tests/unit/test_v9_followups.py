@@ -183,6 +183,11 @@ def _seed_due_log(
                 subject=f"s{step}",
                 body="b",
                 status=status,
+                # W8 DELIBERATE FIXTURE REPAIR (2026-10-29; migration 0020): a row that claims
+                # `sent` must carry the provider's message id — this sweep fixture states one so
+                # the row is the send-history shape the production database accepts.  `sent_at`
+                # was already stated; no assertion or count changes.
+                sendgrid_id=f"sg-v9-sweep-{address}-{step}",
                 sent_at=as_bound_instant(SWEEP_NOW - timedelta(days=4), db),
                 follow_up_due=as_bound_instant(
                     SWEEP_NOW + timedelta(hours=due_offset_hours), db

@@ -121,7 +121,11 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
         # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
         # (`0019_email_sent_requires_provider_id.py`, the SQLite leg is a column-default rebuild
         # that keeps the FK order and every index, so the guard legs below are unchanged).
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0019"
+        # W8 DELIBERATE RE-PIN (2026-10-29): head 0019 -> 0020
+        # (`0020_email_sent_requires_provider_evidence.py`, another rebuild of the same table that
+        # inserts the strengthened CHECK into the DDL and replays every explicit index — the FK
+        # order and the row counts below are unchanged).
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0020"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1

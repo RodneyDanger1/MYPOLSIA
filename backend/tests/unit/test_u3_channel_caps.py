@@ -86,7 +86,8 @@ async def _prospect(db) -> int:
 
 async def _email(db, prospect_id: int, sent_at, *, status: str = "sent") -> None:
     """Real `email_logs` row — `status` decides whether it was a send."""
-    db.add(EmailLog(prospect_id=prospect_id, subject="hi", status=status, sent_at=sent_at))
+    db.add(EmailLog(prospect_id=prospect_id, subject="hi", status=status, sent_at=sent_at,
+                sendgrid_id="sg-w8-fixture" if status == "sent" else None))
     await db.flush()
 
 

@@ -238,7 +238,16 @@ MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 # status may no longer claim a performed send).  No table/index was added or removed; the
 # PostgreSQL-only sent-requires-provider-id CHECK is migration-side, exactly like 0017's state
 # CHECK (SQLite cannot ALTER-ADD a constraint).
-DDL_SHA256 = "0c013b1f293de221ae3d973416151084146a5150909b52309aa2adc11cef83b3"
+# W8 DELIBERATE RE-PIN (2026-10-29; migration 0020): old
+# 0c013b1f293de221ae3d973416151084146a5150909b52309aa2adc11cef83b3 ->
+# 9924925900c634fb97623bfa07aeccc6350dbf14666b409f7e098256f2f06ac1 — ONE constraint ADDED to
+# ONE existing table: `ck_email_logs_sent_requires_provider_id` on `email_logs`, now mapped in
+# `models/outreach.py` so `create_all` renders it on SQLite as well (0020's rule: a `sent` row
+# carries a NON-BLANK `sendgrid_id` AND a `sent_at`).  0019's predicate accepted an empty string
+# and a NULL `sent_at`; both probes inserted on the live PG before 0020.  No column, index or
+# table changed.  The PostgreSQL-only part is 0020's ALTER on the live table; SQLite keeps the
+# rule through this DDL.
+DDL_SHA256 = "9924925900c634fb97623bfa07aeccc6350dbf14666b409f7e098256f2f06ac1"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (

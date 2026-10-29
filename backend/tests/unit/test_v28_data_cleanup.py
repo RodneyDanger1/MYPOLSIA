@@ -168,7 +168,7 @@ def _seed_mixed(con: sqlite3.Connection) -> None:
         "INSERT INTO prospects (id, email, company) VALUES (?, ?, ?)",
         [(1, "drill@example.com", "Acme"), (2, "real@example.com", "Acme"), (3, "x@example.com", "Drill Co")],
     )
-    con.execute("INSERT INTO email_logs (id, prospect_id, campaign_id, status) VALUES (1, 2, 2, 'sent')")
+    con.execute("INSERT INTO email_logs (id, prospect_id, campaign_id, sendgrid_id, status, sent_at) VALUES (1, 2, 2, 'sg-w8-fixture-1', 'sent', CURRENT_TIMESTAMP)")
     con.executemany(
         "INSERT INTO memory_entries (id, category, title, content) VALUES (?, 'x', ?, 'c')",
         [(1, "[drill] memory"), (2, "real memory")],
@@ -402,7 +402,7 @@ def test_apply_leaves_no_dangling_email_logs_behind_a_deleted_prospect(db_path) 
         con.execute("INSERT INTO prospects (id, email) VALUES (1, 'drill@example.com')")
         con.execute("INSERT INTO email_campaigns (id, name, status) VALUES (1, 'real', 'sent')")
         con.execute(
-            "INSERT INTO email_logs (id, prospect_id, campaign_id, status) VALUES (1, 1, 1, 'sent')"
+            "INSERT INTO email_logs (id, prospect_id, campaign_id, sendgrid_id, status, sent_at) VALUES (1, 1, 1, 'sg-w8-fixture-1', 'sent', CURRENT_TIMESTAMP)"
         )
         con.commit()
     finally:
@@ -459,7 +459,7 @@ def test_apply_skips_a_tagged_parent_that_owns_an_untagged_child(db_path) -> Non
         con.execute("INSERT INTO prospects (id, email) VALUES (30, 'real@example.com')")
         con.execute("INSERT INTO email_campaigns (id, name, status) VALUES (30, '[drill] email', 'sent')")
         con.execute(
-            "INSERT INTO email_logs (id, prospect_id, campaign_id, status) VALUES (30, 30, 30, 'sent')"
+            "INSERT INTO email_logs (id, prospect_id, campaign_id, sendgrid_id, status, sent_at) VALUES (30, 30, 30, 'sg-w8-fixture-30', 'sent', CURRENT_TIMESTAMP)"
         )
         con.commit()
     finally:
