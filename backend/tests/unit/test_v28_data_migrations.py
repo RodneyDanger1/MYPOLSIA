@@ -45,8 +45,10 @@ BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # `0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05), 16 -> 17 revisions.
 # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`),
 # 17 -> 18 revisions.
-HEAD = "0018"
-REVISION_COUNT = 18
+# W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019 (`0019_email_sent_requires_provider_id.py`),
+# 18 -> 19 revisions; the table count below is unchanged (0019 adds a default + CHECK, not a table).
+HEAD = "0019"
+REVISION_COUNT = 19
 
 #: The schema's 26 product tables (25 at `0017` + 0018's single-use approval ledger, measured from
 #: `Base.metadata`).  Spelled out (not
@@ -155,13 +157,14 @@ def test_the_chain_from_zero_reaches_the_head_with_exactly_the_26_model_tables(f
         con.close()
 
 
-def test_the_revision_graph_is_one_line_of_eighteen_revisions_ending_at_0018(fresh_db) -> None:
+def test_the_revision_graph_is_one_line_of_nineteen_revisions_ending_at_0019(fresh_db) -> None:
     """No branch, no orphan: every revision is reachable from the single head by `down_revision`."""
     cfg, _db_path = fresh_db
     script = ScriptDirectory.from_config(cfg)
 
     # W4/F3 DELIBERATE RE-PIN: head ["0016"] -> ["0017"]; 16 -> 17 chain links.
-    # W2 DELIBERATE RE-PIN: head ["0017"] -> ["0018"]; 17 -> 18 chain links.  Linearity unchanged.
+    # W2 DELIBERATE RE-PIN: head ["0017"] -> ["0018"]; 17 -> 18 chain links.
+    # W7 DELIBERATE RE-PIN: head ["0018"] -> ["0019"]; 18 -> 19 chain links.  Linearity unchanged.
     assert script.get_heads() == [HEAD], script.get_heads()
     chain: list[str] = []
     revision = script.get_revision(HEAD)

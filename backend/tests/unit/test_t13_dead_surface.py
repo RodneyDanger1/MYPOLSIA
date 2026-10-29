@@ -72,9 +72,12 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
     # `compliance_preflight` (the worker-resolved preflight builder) and `unsubscribe_prospect`
     # (the opt-out producer behind the public route). NEW pins added deliberately with them;
     # nothing was removed.
+    # W7 DELIBERATE RE-PIN (2026-10-29): `normalize_address` was added to _persist_prospect
+    # (case-variant addresses split one mailbox into two prospect rows and could bypass the
+    # suppression list). The surface grew; nothing was removed.
     assert set(outreach_service.__all__) == {
-        "compliance_preflight", "create_prospect", "list_prospects", "record_sent_emails",
-        "unsubscribe_prospect"
+        "compliance_preflight", "create_prospect", "list_prospects", "normalize_address",
+        "record_sent_emails", "unsubscribe_prospect"
     }
     # T02b (wave-W5) DELIBERATELY extended `task_service.__all__` with the approval-token
     # delivery pair — `attach_approval_token` (the re-queue write the mint route calls) and its

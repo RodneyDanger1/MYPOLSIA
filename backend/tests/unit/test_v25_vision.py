@@ -207,7 +207,9 @@ def test_migration_0013_creates_the_table_cascade_and_index_then_round_trips(mon
         # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017
         # (`0017_truth_defaults_and_dunning_results.py`, DT-01 + DT-05). Old: "0016".
         # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`).
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
+        # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
+        # (`0019_email_sent_requires_provider_id.py`).
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='task_attachments'"
         ).fetchone() is not None

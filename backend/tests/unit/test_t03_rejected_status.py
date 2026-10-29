@@ -1,20 +1,20 @@
-"""T03/D2 — `rejected`: the refused-before-execution task state, its Enum escalation, and the
+"""T03/D2 â€” `rejected`: the refused-before-execution task state, its Enum escalation, and the
 0006 migration that carries it.
 
 What this pins, layer by layer:
 
 * the value set exists in ONE place (`app.models.task.TaskStatus`), the column renders the SHIPPED
   `ck_tasks_status` CHECK (SQLAlchemy `Enum(native_enum=False, create_constraint=True)`), and
-  migration 0006's own literal is exactly the 0002 six + `rejected` — order preserved;
+  migration 0006's own literal is exactly the 0002 six + `rejected` â€” order preserved;
 * the WRITERS accept it: `create_task`/`update_task_status` round-trip `rejected`, the read filters
   serve it;
 * the CHOKE POINT lands it: a run refused by the dispatch budget gate (before any provider call,
-  before any `agent_runs` row) ends `rejected` — while a normal terminal failure still ends
+  before any `agent_runs` row) ends `rejected` â€” while a normal terminal failure still ends
   `failed` (a failure is not a refusal);
 * migration 0006 round-trips 0005 -> head -> 0005 -> head on SQLite and moves exactly its own rows.
 
 A fresh `create_all` schema now enforces the value set on SQLite too (measured: the CHECK is in
-the CREATE TABLE text), which this file turns into a live assertion — a bogus raw write fails at
+the CREATE TABLE text), which this file turns into a live assertion â€” a bogus raw write fails at
 the database, not only at the service.
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _migration_0006_values() -> list[str]:
     return [*parse(old.group(1)), *parse(new.group(1))]
 
 
-# ── the type is the source of truth ───────────────────────────────────────────────────────────
+# â”€â”€ the type is the source of truth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def test_the_enum_members_are_the_shipped_values_with_rejected_appended():
@@ -106,13 +106,13 @@ def _revision_graph() -> dict[str, str | None]:
 def test_the_migration_chain_is_linear_with_a_single_head():
     """0012 is the ONE head; walking down visits every revision exactly once, in order.
 
-    V22: the head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) — a deliberate
+    V22: the head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) â€” a deliberate
     re-pin of the head literal; the linearity law itself is unchanged.
-    V23: the head moved 0010 -> 0011 (`0011_company_human_rate.py`, lane L3) — another deliberate
+    V23: the head moved 0010 -> 0011 (`0011_company_human_rate.py`, lane L3) â€” another deliberate
     re-pin (`company_config.human_hourly_rate`); the linearity law itself is unchanged.
-    V24: the head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) — deliberate re-pin; the
+    V24: the head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) â€” deliberate re-pin; the
     revision is INDEX-ONLY (five additive indexes), so no DDL hash in the schema-frozen pin moved.
-    V25: the head moved 0012 -> 0013 -> 0014 — TWO deliberate re-pins in one wave: L1's
+    V25: the head moved 0012 -> 0013 -> 0014 â€” TWO deliberate re-pins in one wave: L1's
     `0013_task_attachments.py` (the vision-input table) and L4's `0014_ads_nullable_revenue.py`
     (measured-zero vs unknown).  Both are linear additions; the linearity law is unchanged.
     """
@@ -124,16 +124,19 @@ def test_the_migration_chain_is_linear_with_a_single_head():
     # unchanged.  Old assertion: heads == ["0016"].
     # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`, the
     # single-use approval-token ledger); linearity itself is unchanged.
-    assert heads == ["0018"], f"expected a single head (0018), found {heads}"
+    # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
+    # (`0019_email_sent_requires_provider_id.py`: the email status default + the PG-only
+    # sent-requires-provider-id CHECK); linearity itself is unchanged.
+    assert heads == ["0019"], f"expected a single head (0019), found {heads}"
 
     order: list[str] = []
-    cursor: str | None = "0018"
+    cursor: str | None = "0019"
     while cursor is not None:
         order.append(cursor)
         cursor = graph[cursor]
     assert order == [
-        "0018", "0017", "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006", "0005", "0004",
-        "0003", "0002", "0001"
+        "0019", "0018", "0017", "0016", "0015", "0014", "0013", "0012", "0011", "0010", "0009", "0008", "0007", "0006",
+        "0005", "0004", "0003", "0002", "0001"
     ], order
     assert len(order) == len(graph), "the chain must not branch"
 
@@ -153,7 +156,7 @@ def test_0006_carries_its_fragments_for_BOTH_dialects():
     assert "'rejected'" in rendered_pg and "'rejected'" in rendered_sqlite
 
 
-# ── the writers ───────────────────────────────────────────────────────────────────────────────
+# â”€â”€ the writers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @pytest.mark.asyncio
@@ -179,7 +182,7 @@ def test_the_fresh_schema_enforces_the_value_set_at_rest(tmp_path):
     from sqlalchemy import create_engine
     from sqlalchemy import text as sa_text
 
-    import app.models  # noqa: F401  — register every table
+    import app.models  # noqa: F401  â€” register every table
     from app.core.database import Base
 
     engine = create_engine(f"sqlite:///{(tmp_path / 'check.db').as_posix()}")
@@ -199,7 +202,7 @@ def test_the_fresh_schema_enforces_the_value_set_at_rest(tmp_path):
     engine.dispose()
 
 
-# ── the choke point: refused -> rejected, failed -> failed ────────────────────────────────────
+# â”€â”€ the choke point: refused -> rejected, failed -> failed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def test_a_budget_refused_dispatch_lands_rejected_with_nothing_charged(queue_db, monkeypatch):
@@ -238,7 +241,7 @@ def test_a_normal_terminal_failure_still_lands_failed_not_rejected(queue_db, mon
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
     # E_CLI_MISSING is NOT in agent_tasks.RETRYABLE_CODES (infrastructure-terminal), so the run
-    # ends `failed` rather than being requeued — which is what makes this the honest contrast to
+    # ends `failed` rather than being requeued â€” which is what makes this the honest contrast to
     # the budget refusal above (a refusal is `rejected`; a run that failed is `failed`).
     install_run_spy(
         delegate=False,
@@ -257,7 +260,7 @@ def test_a_normal_terminal_failure_still_lands_failed_not_rejected(queue_db, mon
 
 @pytest.mark.asyncio
 async def test_an_unknown_status_is_refused_by_name_before_any_write(async_db_session):
-    """A typo cannot become a stored value — the writer refuses by name (E_VALIDATION)."""
+    """A typo cannot become a stored value â€” the writer refuses by name (E_VALIDATION)."""
     task = await create_task(async_db_session, title="typo guard", agent_type="finance")
     await async_db_session.flush()
     with pytest.raises(PolsiaError) as excinfo:
@@ -267,7 +270,7 @@ async def test_an_unknown_status_is_refused_by_name_before_any_write(async_db_se
     assert fresh is not None and fresh.status == "pending"
 
 
-# ── migration 0006 round-trip (SQLite) ────────────────────────────────────────────────────────
+# â”€â”€ migration 0006 round-trip (SQLite) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _snapshot(db_path: pathlib.Path) -> dict[tuple[str, str], str | None]:
@@ -322,19 +325,21 @@ def test_0006_round_trips_0005_head_0005_head_and_moves_only_its_own_rows(monkey
         # `0009_drop_invoices_tax_server_default.py` (deliberate old -> new: "0008" ->
         # "0009", wave v14 S1-04); the 0005/0006 legs below are unchanged and still assert
         # THIS revision's own moves.
-        # V22: the chain head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) —
+        # V22: the chain head moved 0009 -> 0010 (`0010_agent_run_tools_used.py`, lane L1) â€”
         # a deliberate re-pin of the head literal; the 0005/0006 legs below are unchanged.
-        # V23: the chain head moved 0010 -> 0011 (`0011_company_human_rate.py`, lane L3) — another
+        # V23: the chain head moved 0010 -> 0011 (`0011_company_human_rate.py`, lane L3) â€” another
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
-        # V24: the chain head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) — index-only,
+        # V24: the chain head moved 0011 -> 0012 (`0012_perf_indexes.py`, lane L6) â€” index-only,
         # deliberate re-pin; the 0005/0006 legs below are unchanged.
-        # V25: 0013 (L1, task_attachments) and 0014 (L4, ads nullable revenue) — deliberate re-pin;
+        # V25: 0013 (L1, task_attachments) and 0014 (L4, ads nullable revenue) â€” deliberate re-pin;
         # the 0005/0006 legs below are unchanged.
         # W4/F3 DELIBERATE RE-PIN (2026-10-28): head 0016 -> 0017 (migration 0017, DT-01 + DT-05,
         # W4 MONEY+DATA); the 0005/0006 legs below are unchanged.
         # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (migration 0018, the single-use
         # approval ledger); the 0005/0006 legs below are unchanged.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
+        # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019 (migration 0019, the email status
+        # default + the PG-only sent-requires-provider-id CHECK); the legs below are unchanged.
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
         assert con.execute("SELECT id, name FROM ad_campaigns WHERE external_id = 'g-dup'").fetchall() == [
             (1, "oldest")
         ], "pre-clean keeps MIN(id)"

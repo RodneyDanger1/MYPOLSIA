@@ -169,7 +169,7 @@ def test_migration_0018_round_trips_and_preserves_unrelated_rows(monkeypatch, tm
     command.upgrade(cfg, "head")
     con = sqlite3.connect(db_path.as_posix())
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
         assert con.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='consumed_approvals'"
         ).fetchone()[0] == 1
@@ -213,7 +213,7 @@ def test_migration_0018_round_trips_and_preserves_unrelated_rows(monkeypatch, tm
     command.upgrade(cfg, "head")
     con = sqlite3.connect(db_path.as_posix())
     try:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
         assert con.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='consumed_approvals'"
         ).fetchone()[0] == 1

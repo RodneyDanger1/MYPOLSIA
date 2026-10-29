@@ -243,7 +243,7 @@ def test_migration_0017_round_trips_and_preserves_rows_on_sqlite(monkeypatch, tm
         # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`,
         # additive).  This test still proves 0017's own effects below, and now also proves the
         # 0018 upgrade applies cleanly on top of a database that already carries rows.
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0018"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0019"
         assert con.execute(
             "SELECT mrr_cents, arr_cents, stripe_balance_cents FROM revenue_snapshots "
             "WHERE snapshot_date = '2026-10-22'"
@@ -295,4 +295,4 @@ def test_the_chain_has_a_single_head_at_0018():
     cfg.set_main_option("script_location", "alembic")
     # W2 DELIBERATE RE-PIN (2026-10-28): old assertion `heads == ["0017"]`; head moved to 0018
     # (`0018_consumed_approvals.py`, additive).  The single-head LAW is unchanged.
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["0018"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["0019"]

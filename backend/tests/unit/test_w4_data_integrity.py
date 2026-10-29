@@ -473,10 +473,11 @@ def _migration_graph() -> tuple[dict[str, str | None], set[str]]:
     return revisions, children
 
 
-def test_the_migration_chain_has_exactly_one_head_and_it_is_0018() -> None:
+def test_the_migration_chain_has_exactly_one_head_and_it_is_0019() -> None:
     revisions, children = _migration_graph()
     heads = sorted(revision for revision in revisions if revision not in children)
-    assert heads == ["0018"], f"expected the single live head 0018, found {heads}"
+    assert heads == ["0019"], f"expected the single live head 0019, found {heads}"
+    assert revisions["0019"] == "0018"
     assert revisions["0018"] == "0017"
     assert revisions["0017"] == "0016"
 

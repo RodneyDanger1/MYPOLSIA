@@ -118,7 +118,10 @@ def test_chain_upgrade_over_a_seeded_0002_db_works_with_fk_enforcement_on(
         # guard legs below are unchanged (0017's SQLite rebuild keeps a valid FK order).
         # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`,
         # additive: the approval ledger carries no FK, so the guard legs are unchanged).
-        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0018"
+        # W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
+        # (`0019_email_sent_requires_provider_id.py`, the SQLite leg is a column-default rebuild
+        # that keeps the FK order and every index, so the guard legs below are unchanged).
+        assert _scalar(con, "SELECT version_num FROM alembic_version") == "0019"
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _scalar(con, "SELECT COUNT(*) FROM ad_campaigns") == 1
         assert _scalar(con, "SELECT COUNT(*) FROM ad_metrics") == 1
