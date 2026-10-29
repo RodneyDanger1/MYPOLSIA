@@ -92,7 +92,10 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
 
     WHY (RD4 §4 coverage-matrix note 3, recorded gap): this agent's duty is "read the inbox", but
     the inbox body never reached the assembled prompt — sweep tasks carry a title only, the agent
-    has no tools and no DB session, and `run()` passed no `extra_context` at all.  There is no
+    holds no inbox tool and no DB session, and `run()` passed no `extra_context` at all.  (W9
+    correction: this sentence used to say "has no tools", which was false — the firewall grants
+    this agent the read-only `phone_read` registry tool.  It has no INBOX tool, which is the fact
+    the paragraph needs.)  There is no
     inbox table in the frozen schema (`tests/unit/test_models_schema_frozen.py`), so the ingest
     contract is the task's own `metadata` JSON — the frozen `tasks.metadata` column, carried to
     the agent by the worker (`celery_app/tasks/agent_tasks.py`, which used to drop it):
@@ -108,9 +111,10 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
     Absent material: `None` — the run degrades to exactly its previous behaviour and never
     invents a message.  A PRESENT-but-unusable item (a reference with no attached body, or a
     malformed attachment) is a NAMED refusal raised BEFORE any model call: this agent cannot
-    fetch an inbox (no tools, no IMAP path — README:93), and answering a message nobody can read
-    would be fabrication.  The `inbox_item_id` reference is deliberately still accepted: it lets
-    the refusal NAME what the task pointed at instead of silently ignoring it.
+    fetch an inbox (no inbox/IMAP tool — its only registry tool is the read-only `phone_read`;
+    README:93), and answering a message nobody can read would be fabrication.  The
+    `inbox_item_id` reference is deliberately still accepted: it lets the refusal NAME what the
+    task pointed at instead of silently ignoring it.
     """
     metadata = task.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}

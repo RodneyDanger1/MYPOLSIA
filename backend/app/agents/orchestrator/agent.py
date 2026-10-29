@@ -11,9 +11,20 @@ output shape depends on which one ran:
   * evening  -> `{summary, insights[], mode:"evening"}` — the run-ledger narrative the evening
     cycle writes into `daily_reports`.
 
-Tools: NONE (`--tools ""`). The orchestrator is a planner: it reads the context it is given and
-emits a plan. It cannot fetch, post or spend, which is the entire point of keeping it tool-less
-(a planner that can act is a planner that can be injected into acting).
+Tools (W9/CAPABILITY-AUDITOR — this paragraph used to describe the orchestrator as having no
+tools at all, which was the stale half of a two-branch truth):
+
+  * Claude CLI branch — NO CLI tools (`--tools ""`; `denied_tools=("*",)`): the planner emits a
+    plan, it does not act in the world.
+  * DeepSeek branch — the REGISTRY reads the firewall grants it
+    (`policy_firewall.AGENT_CAPABILITIES["orchestrator"].agent_tools`): `macro_snapshot`,
+    `pricing_catalog`, `phone_read`, `signals_read`, `fx_convert`.  It therefore CAN fetch
+    (`signals_read` reads the keyless market feeds) and CAN read the owner's phone store
+    (`phone_read`; message bodies that look like codes are withheld by
+    `tool_registry.PHONE_CODE_WITHHELD`) — and it still cannot post, spend, email, refund or
+    deploy: its action classes are READ + INTERNAL_WRITE and its channel list is empty.
+  * Either way `base_agent.layers_for` renders exactly the tools of the runtime that will run the
+    agent, so the plan is made from the surface the model is actually given.
 """
 from __future__ import annotations
 

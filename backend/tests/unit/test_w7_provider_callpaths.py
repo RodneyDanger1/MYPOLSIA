@@ -282,7 +282,20 @@ def test_the_send_is_bounded_by_the_adapter_not_left_to_the_os(monkeypatch, conf
     built = _Ok.last
     assert built is not None
     assert built.client.timeout == integrations.SENDGRID_TIMEOUT_SECONDS == 20.0
-    assert out["result"] == {"status_code": 202, "message_id": "sg-w7-1"}
+    # REPAIRED PIN (wave 9, forge — SV-W8-03).  The result grew the two fields the anchored
+    # `X-Message-Id` fallback needs, so an exact-equality check on the old TWO-key shape would
+    # pin the pre-wave-9 behaviour:
+    #   OLD: {"status_code": 202, "message_id": "sg-w7-1"}
+    #   NEW: the same two values, PLUS `message_id_source` (which evidence the id is) and
+    #        `correlation_id` (the anchor minted for this attempt).
+    # Every old assertion still holds exactly: the status and the provider id are unchanged.
+    assert out["result"]["status_code"] == 202
+    assert out["result"]["message_id"] == "sg-w7-1"
+    assert out["result"]["message_id_source"] == integrations.SENDGRID_ID_SOURCE_HEADER
+    assert out["result"]["correlation_id"].startswith(integrations.SENDGRID_CORRELATION_PREFIX)
+    assert set(out["result"]) == {
+        "status_code", "message_id", "message_id_source", "correlation_id"
+    }
 
 
 def test_a_transport_fault_is_a_named_refusal_that_names_the_unknown_outcome(

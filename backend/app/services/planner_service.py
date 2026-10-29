@@ -58,6 +58,7 @@ from app.core.database import utcnow
 from app.core.errors import (
     E_CLI_TIMEOUT,
     E_NOT_FOUND,
+    E_POLICY_DENIED,
     E_TASK_CLAIMED,
     E_VALIDATION,
     ERROR_HINTS,
@@ -351,13 +352,55 @@ def require_who_pays(idea: dict[str, Any], index: int) -> None:
 
 # ── the two agent seams (mockable; each runs the SAME machinery the fleet runs) ──────────────
 
+def _dispatch_gate(agent_type: str) -> None:
+    """The FLEET gates a directly-constructed agent run must pass (W9/CAPABILITY-AUDITOR).
+
+    WHY this exists: both planner steps construct the agent CLASSES themselves instead of going
+    through `crew_factory.run_agent_for_task`, which is where the fleet's pre-dispatch gates live
+    (kill switch freeze/throttle, the owner's `dispatch_paused` switch, and the spawn-level
+    safety preflight over the CLI binary/auth facts a dispatch would actually need).
+
+    MEASURED before this call existed: with `POLSIA_KILL_SWITCH=freeze`, `_proposal_sync` still
+    constructed and ran `CompanyPlannerAgent` — the freeze only happened to be caught by the
+    separate per-step budget gate (`_gate_planner_budget`, which maps a freeze to `BudgetStop`),
+    and the safety legs were never asked at all.  So "the fleet gates run before anything is
+    instantiated" was true for the worker and FALSE for the planner's two seams.
+
+    The problems are raised as the SAME named refusal the worker raises (`E_POLICY_DENIED`, with
+    the measured reasons in the message and in `context`), by construction: the list comes from
+    `crew_factory.dispatch_preflight` itself, never a second copy of the rules.
+
+    KNOWN RESIDUAL (recorded, not hidden — REPORT-W9 `N-W9-CA-04`): the owner's
+    `company_config.dispatch_paused` flag is resolved where a DB SESSION exists
+    (`crew_factory.resolve_dispatch_paused`) and PASSED INTO `dispatch_preflight`.  These two seams
+    run on a worker thread with no session, so they call the preflight without it: a paused
+    company is stopped by the per-step budget gate only if the pause also trips a budget rule.
+    Wiring it is one call in `propose()` (which owns the session) plus the `asyncio.to_thread`
+    argument; it is left for the owner of the pause switch because it changes `propose()`'s DB read
+    pattern, which another lane is measuring this wave.
+    """
+    from app.agents.crew_factory import dispatch_preflight
+
+    problems = dispatch_preflight(agent_type)
+    if not problems:
+        return
+    raise PolsiaError(
+        E_POLICY_DENIED,
+        f"planner step refused for {agent_type!r} before dispatch: {'; '.join(problems)}",
+        how_to_fix=ERROR_HINTS.get(E_POLICY_DENIED, ""),
+        context={"agent_type": agent_type, "problems": problems, "step": "planner"},
+    )
+
+
 def _research_sync(profile: dict[str, Any]) -> dict[str, Any]:
     """The fetch step: run the SHIPPED competitor_research agent (same mechanism, same budget).
 
     Sync by design (the agent machinery is sync); the async service calls it through
     `asyncio.to_thread` — the same way the worker runs agents, so the contextvar/publish
-    behaviour is identical to a dispatched run.
+    behaviour is identical to a dispatched run.  The fleet gates run FIRST (see
+    `_dispatch_gate`), so a frozen/paused fleet refuses before the class is built.
     """
+    _dispatch_gate("competitor_research")
     agent = CompetitorResearchAgent()
     task = {
         "title": "Planner landscape research",
@@ -370,7 +413,11 @@ def _research_sync(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _proposal_sync(profile: dict[str, Any], research: dict[str, Any]) -> dict[str, Any]:
-    """The model step: run the company_planner agent with the research as quarantined DATA."""
+    """The model step: run the company_planner agent with the research as quarantined DATA.
+
+    The fleet gates run first, exactly as on the research step (`_dispatch_gate`).
+    """
+    _dispatch_gate("company_planner")
     agent = CompanyPlannerAgent()
     task = {
         "title": "Propose business candidates",

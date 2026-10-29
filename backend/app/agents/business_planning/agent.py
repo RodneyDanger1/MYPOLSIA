@@ -3,10 +3,14 @@
 Duty (README:31, agents/page.tsx:8): "Strategy, KPIs, growth recommendations" / "Analyzes
 strategy, updates KPIs, identifies opportunities".
 
-Tools: `Read` only. It reads the company's own context (already in the prompt) and reasons; it
-cannot write to any system of record itself — `recommendations` and `kpi_updates` are proposals
-that the services layer persists (or that a human approves), which is why its numbers must be
-argued from the context rather than invented.
+Tools (W9/CAPABILITY-AUDITOR — this paragraph used to describe the CLI's `Read` rule as the
+agent's whole tool surface, which left out the three REGISTRY reads the firewall also grants):
+the CLI branch may use the path-scoped
+`Read(./**)` rule and nothing else; the DeepSeek branch may call `macro_snapshot`,
+`pricing_catalog` and `fx_convert` (all READ class, no channel). It cannot write to any system of
+record itself — `recommendations` and `kpi_updates` are proposals that the services layer persists
+(or that a human approves), which is why its numbers must be argued from the context the run was
+given rather than invented.
 
 Output (lane 05 `BusinessPlan` + lane 03's `focus_areas`): `{summary, recommendations[],
 kpi_updates{}, focus_areas[]}` where each recommendation carries `title`, `rationale`, `impact`,

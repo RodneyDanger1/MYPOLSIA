@@ -19,6 +19,7 @@ action first and the agent records a labelled draft instead.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -696,12 +697,187 @@ SENDGRID_TIMEOUT_SECONDS = 20.0
 #: inventing a refusal for a success. ANY other status is a refusal, never a recorded send.
 SENDGRID_ACCEPTED_STATUSES = (200, 201, 202)
 
+# ---------------------------------------------------------------------------
+# THE DOCUMENTED MAIL SEND ANSWER TABLE (wave 9, SV-W8-02).
+#
+# Source: https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send
+# (vendor `dateModified` 2025-09-25; fetched 2026-10-29).  The page documents EXACTLY:
+#
+#     202 Accepted
+#     400 / 401 / 403 / 404 / 405 / 413 / 500   with the body
+#     {"errors": [{"field": ..., "message": ..., "help": ...}], "id": "..."}
+#
+# WHY this table exists: before wave 9 every one of those answers reached the caller as the SAME
+# flattened string (the pinned SDK's own `str(exc)` inside ONE `E_INTEGRATION`), so a 413 ("the
+# message is too large"), a 401 ("the key is wrong") and a 500 ("SendGrid is the failing side,
+# retry") were indistinguishable — and the retry decision cannot be made from an
+# indistinguishable refusal.  The refusal SHAPE is still the ONE envelope; the ANSWER is named.
+#
+# `retryable` is a statement about the ANSWER, not about this codebase's retry policy: 5xx/429 is
+# the provider's side and the same request may succeed later; a 4xx (including 413) is this
+# caller's request and will fail identically until the payload/key/endpoint changes.
+# ---------------------------------------------------------------------------
+SENDGRID_ERROR_CLASSES: dict[int, tuple[str, bool]] = {
+    400: ("caller_error", False),        # malformed request body (the page prints a field table)
+    401: ("caller_error", False),        # missing/revoked API key
+    403: ("caller_error", False),        # valid key, no permission to send
+    404: ("caller_error", False),        # wrong endpoint/host
+    405: ("caller_error", False),        # wrong method
+    413: ("payload_too_large", False),   # the request body exceeds the API's limit
+    500: ("upstream_error", True),       # SendGrid's side — the same request may succeed later
+}
+#: Answered statuses the pinned SDK can raise that the vendor page does NOT list. Kept in their
+#: own table so `SENDGRID_ERROR_CLASSES` stays exactly the page, and this extension stays visible
+#: (`python_http_client` 3.3.7 raises typed classes for 429/503/504). An answered status must
+#: never be reported as an unclassified one.
+SENDGRID_UNDOCUMENTED_STATUS_CLASSES: dict[int, tuple[str, bool]] = {
+    429: ("rate_limited", True),
+    503: ("upstream_error", True),
+    504: ("upstream_error", True),
+}
+
+#: The correlation id this adapter mints for EVERY attempt and carries in the DOCUMENTED
+#: `custom_args` body field ("values that are specific to the entire send ... carried along with
+#: the email and its activity data"). It is the anchor for the `X-Message-Id` fallback below.
+SENDGRID_CORRELATION_ARG = "polsia_correlation_id"
+SENDGRID_CORRELATION_PREFIX = "polsia-"
+#: `message_id_source` values on a successful send. A consumer must be able to tell the provider's
+#: own id from "the provider accepted it and returned no id", or it will either fabricate one or
+#: call an accepted send "failed".
+SENDGRID_ID_SOURCE_HEADER = "response-header:x-message-id"
+SENDGRID_ID_SOURCE_ABSENT = "absent"
+
+
+def _sendgrid_error_class(status: int) -> tuple[str, bool]:
+    """(class name, retryable) for ONE answered status — documented table first, then families."""
+    if status in SENDGRID_ERROR_CLASSES:
+        return SENDGRID_ERROR_CLASSES[status]
+    if status in SENDGRID_UNDOCUMENTED_STATUS_CLASSES:
+        return SENDGRID_UNDOCUMENTED_STATUS_CLASSES[status]
+    if 500 <= status < 600:
+        return ("upstream_error", True)
+    if 400 <= status < 500:
+        return ("caller_error", False)
+    return ("unclassified", False)
+
+
+def _sendgrid_answer_fields(body: Any) -> tuple[list[dict[str, str]], str]:
+    """The DOCUMENTED answer surface of a Mail Send response: `errors[]` entries and body `id`.
+
+    The vendor page documents the error body as `{"errors": [{"field", "message", "help"}],
+    "id"}`.  Bytes (the pinned `python_http_client.HTTPError.body`), `str`, and an already-decoded
+    mapping are all accepted, because the three shapes reach the adapter from different places
+    (an exception, a returned response, a test double).  A body that is not that JSON yields
+    `([], "")` — never a parse exception, never an invented field, never a guessed request id.
+
+    Bounded on purpose: a refusal carries at most 5 entries of at most 200 characters each.  A
+    provider response is attacker-adjacent input, and a refusal is not a log dump.
+    """
+    payload: Any = body
+    if isinstance(body, bytes | bytearray):
+        try:
+            payload = json.loads(bytes(body).decode("utf-8", "replace"))
+        except (ValueError, UnicodeDecodeError):
+            return [], ""
+    elif isinstance(body, str):
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return [], ""
+    if not isinstance(payload, dict):
+        return [], ""
+    request_id = str(payload.get("id") or "").strip()[:200]
+    errors: list[dict[str, str]] = []
+    raw_errors = payload.get("errors")
+    if isinstance(raw_errors, list):
+        for entry in raw_errors[:5]:
+            if not isinstance(entry, dict):
+                continue
+            errors.append({
+                key: str(entry.get(key) or "").strip()[:200]
+                for key in ("field", "message", "help")
+            })
+    return errors, request_id
+
+
+class SendGridSendError(RuntimeError):
+    """SendGrid ANSWERED the send with a status that is not an accepted one.
+
+    Named class so ONE exception carries the whole documented answer: the status, its class
+    (`payload_too_large` / `caller_error` / `upstream_error` / `rate_limited`), whether a retry is
+    the right move, the provider's own `errors[{field,message,help}]` entries and its body `id`.
+    `integration_call` turns it into the ordinary `E_INTEGRATION` refusal — the ONE envelope —
+    with the classification in the message, so no caller can mistake a 413 for a 401 for a 500.
+
+    Distinct from `ProviderTransportError` on purpose, in both directions: a send that produced
+    an ANSWER is a definite "no" (no `outcome_unknown`), and a send that produced NO answer is the
+    ambiguous class (the message may have gone out) — the two must never be collapsed.
+
+    `retryable` is the ANSWER's verdict (`upstream_error`/`rate_limited` may succeed later;
+    `caller_error`/`payload_too_large` will not until the request changes).  It is NOT an
+    instruction to retry blindly: a 500 on a MUTATION still leaves the outcome unknown at the
+    product level and an operator checks the provider's activity before re-sending.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        errors: list[dict[str, str]] | None = None,
+        request_id: str = "",
+        provider_detail: str = "",
+        sdk_exception: str = "",
+    ) -> None:
+        self.status = int(status)
+        self.error_class, self.retryable = _sendgrid_error_class(self.status)
+        self.errors = list(errors or [])
+        self.request_id = str(request_id or "").strip()[:200]
+        self.provider_detail = str(provider_detail or "").strip()[:500]
+        self.sdk_exception = str(sdk_exception or "").strip()
+        super().__init__(self._render())
+
+    def _render(self) -> str:
+        rendered = (
+            f"SendGrid rejected the send with HTTP {self.status} "
+            f"({self.error_class}, retryable={'true' if self.retryable else 'false'}) — "
+            f"not an accepted send status {SENDGRID_ACCEPTED_STATUSES}"
+        )
+        detail = ""
+        if self.errors:
+            detail = self.errors[0].get("message") or ""
+        detail = detail or self.provider_detail
+        if detail:
+            rendered += f": {detail}"
+        if self.errors:
+            rendered += "; provider errors: [" + "; ".join(
+                "field={field!r} message={message!r} help={help!r}".format(
+                    field=entry.get("field", ""),
+                    message=entry.get("message", ""),
+                    help=entry.get("help", ""),
+                )
+                for entry in self.errors
+            ) + "]"
+        if self.request_id:
+            rendered += f"; provider request id: {self.request_id}"
+        if self.sdk_exception:
+            rendered += f"; SDK exception: {self.sdk_exception}"
+        return rendered
+
 
 def _sendgrid_send(
     *, to: str, subject: str, body: str, api_key: str, from_email: str
 ) -> Any:  # pragma: no cover - provider
+    import uuid
+
     from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail
+    from sendgrid.helpers import mail as mail_helpers
+
+    Mail = mail_helpers.Mail
+    # `CustomArg` is the message-level custom-arg wrapper. Read defensively: a client build that
+    # models only `Mail` still exercises this adapter (the repo's own doubles do), and a missing
+    # CustomArg must degrade to the LOGGED "no anchor" path, never to an ImportError that reads
+    # like "the integration is not installed".
+    custom_arg_cls = getattr(mail_helpers, "CustomArg", None)
 
     client = SendGridAPIClient(api_key)
     # The SDK exposes no timeout parameter; its underlying client reads `.timeout` on every
@@ -721,47 +897,100 @@ def _sendgrid_send(
         )
     message = Mail(from_email=from_email, to_emails=to,
                    subject=subject, plain_text_content=body)
+
+    # X-Message-Id — THE MEASURED CONTRACT, AND WHY THE FALLBACK IS ANCHORED (wave 9, SV-W8-03).
+    #
+    # MEASURED: the Mail Send page (vendor `dateModified` 2025-09-25) documents its answers as the
+    # status codes in `SENDGRID_ERROR_CLASSES` plus the `{"errors": [...], "id": ...}` body; it
+    # documents NO response headers at all, and the string `X-Message-Id` appears ZERO times on
+    # it (systems-validator, wave 8, SV-W8-03). The header IS present on real 202 answers, and it
+    # is the per-send id this adapter has returned since RD14 — so the dependency is real, is
+    # UNDOCUMENTED, and is now pinned by a test (`test_w9_sendgrid_error_mapping.py`) instead of
+    # being implied by a comment. If SendGrid ever stops sending it, that test does not fail (it
+    # would be a real-provider measurement) — but the fallback below means the product still has
+    # an anchored key, and the absence is logged: the failure mode is visible, not silent.
+    #
+    # WHY a key at all: `email_logs.sendgrid_id` is the dedupe key (`record_sent_emails` skips an
+    # item without one), and the STATUS CODE is not a key — keying on "202" collapsed distinct
+    # sends onto ONE row (the RD14 measurement: 3 distinct sends -> 1 row).
+    #
+    # THE FALLBACK IS ANCHORED, NOT FABRICATED. Every attempt mints `correlation_id` BEFORE the
+    # request and carries it in the DOCUMENTED `custom_args` body field ("values that are specific
+    # to the entire send ... carried along with the email and its activity data"), so on a 202
+    # that arrives WITHOUT `X-Message-Id`:
+    #   * `message_id` stays "" — a provider id is never invented (`provider_message_id()`'s
+    #     "the provider's OWN id" stays true; it is the DEDUPE key that gets a fallback, below);
+    #   * `message_id_source` says "absent" and the absence is LOGGED (never silent);
+    #   * `correlation_id` is returned — a value that really travelled with THIS message and can
+    #     be found in SendGrid's own activity data, so the send can be traced and deduped without
+    #     a fabricated SendGrid id.
+    # A consumer that records `email_logs.sendgrid_id` must therefore use `correlation_id` (and
+    # keep the source) when `message_id_source == "absent"`, rather than recording "" (which would
+    # call an accepted send "failed") or the status code (which would merge sends).
+    # REQUESTS-W9 item 1 is that one-line consumer change in celery_app/tasks/agent_tasks.py
+    # (another lane's file).
+    correlation_id = f"{SENDGRID_CORRELATION_PREFIX}{uuid.uuid4().hex}"
+    add_custom_arg = getattr(message, "add_custom_arg", None)
+    if callable(add_custom_arg) and custom_arg_cls is not None:
+        add_custom_arg(custom_arg_cls(SENDGRID_CORRELATION_ARG, correlation_id))
+    else:  # pragma: no cover - the pinned SDK always has both (contract-pinned by a test)
+        logger.warning(
+            "sendgrid: the installed SDK exposes no Mail.add_custom_arg/CustomArg, so this send "
+            "carries NO correlation anchor; a missing X-Message-Id on the answer will be "
+            "untraceable at the provider (refusing to invent an id)"
+        )
+
     try:
         response = client.send(message)
     except Exception as exc:
         # `python_http_client` attaches `status_code` to every typed HTTPError — the provider
-        # ANSWERED (a 401/403/429/5xx is a real answer, and the generic handler reports it as
-        # one). An exception with no status is a transport fault: the request may have been
-        # applied and no answer came back, so it is raised as the distinct ambiguity class.
-        if getattr(exc, "status_code", None) is None:
+        # ANSWERED (a 400/401/403/404/405/413/500/429/5xx is a real answer). An exception with no
+        # status is a transport fault: the request may have been applied and no answer came back,
+        # so it is raised as the distinct ambiguity class (never as an "answer").
+        status = getattr(exc, "status_code", None)
+        if status is None:
             raise ProviderTransportError(
                 f"SendGrid did not answer (transport fault or timeout after "
                 f"{SENDGRID_TIMEOUT_SECONDS:g}s): {type(exc).__name__}: {exc}",
                 timeout_seconds=SENDGRID_TIMEOUT_SECONDS,
             ) from exc
-        raise
+        errors, request_id = _sendgrid_answer_fields(getattr(exc, "body", None))
+        raise SendGridSendError(
+            status=int(status),
+            errors=errors,
+            request_id=request_id,
+            provider_detail=str(exc),
+            sdk_exception=type(exc).__name__,
+        ) from exc
     status = int(getattr(response, "status_code", 0) or 0)
     if status not in SENDGRID_ACCEPTED_STATUSES:
         # Defence in depth for a client build that RETURNS an error response instead of raising:
-        # `integration_call` turns this into the named E_INTEGRATION refusal, never a success.
-        raise RuntimeError(
-            f"SendGrid answered HTTP {status}, which is not an accepted send status "
-            f"{SENDGRID_ACCEPTED_STATUSES}"
+        # `integration_call` turns this into the named E_INTEGRATION refusal with the documented
+        # classification, never a success and never a bare "failed".
+        answer_body = getattr(response, "body", None)
+        errors, request_id = _sendgrid_answer_fields(answer_body)
+        raise SendGridSendError(
+            status=status,
+            errors=errors,
+            request_id=request_id,
+            provider_detail=str(answer_body or ""),
         )
-    headers = getattr(response, "headers", None) or {}
-    # WHY (RD14): the send caps' producer (`outreach_service.record_sent_emails`) dedupes on
-    # `email_logs.sendgrid_id`, and SendGrid's per-message id is the `X-Message-Id` response
-    # header — UNIQUE per send. Returning only `status_code` made every send's dedupe key "202",
-    # so consecutive real sends collapsed onto ONE row (measured: 3 distinct sends -> 1 row) and
-    # the email cap counted 1 forever (recorded gap: "RateCaps send-cap producer — channel_sends
-    # has no writer"). No `X-Message-Id` -> empty string, and the caller's status_code fallback
-    # applies exactly as before (no behavior change there).
-    message_id = ""
-    if isinstance(headers, dict):
-        message_id = str(headers.get("X-Message-Id") or "")
-        if not message_id:
-            message_id = next(
-                (str(value) for key, value in headers.items() if str(key).lower() == "x-message-id"),
-                "",
-            )
+    message_id = _response_header(response, "x-message-id")
+    if not message_id:
+        logger.warning(
+            "sendgrid: the accepted send (HTTP %s) carried no X-Message-Id response header (the "
+            "header is not on the vendor's Mail Send page); message_id stays empty and the "
+            "anchored correlation id %s was carried in custom_args[%s] — record THAT as the "
+            "dedupe key, never the status code",
+            status, correlation_id, SENDGRID_CORRELATION_ARG,
+        )
     return {
-        "status_code": int(getattr(response, "status_code", 0)),
+        "status_code": status,
         "message_id": message_id,
+        "message_id_source": (
+            SENDGRID_ID_SOURCE_HEADER if message_id else SENDGRID_ID_SOURCE_ABSENT
+        ),
+        "correlation_id": correlation_id,
     }
 
 
@@ -1335,7 +1564,14 @@ def read_revenue_facts(*, days: int = 30) -> dict[str, Any]:
 
 __all__ = [
     "SENDGRID_ACCEPTED_STATUSES",
+    "SENDGRID_CORRELATION_ARG",
+    "SENDGRID_CORRELATION_PREFIX",
+    "SENDGRID_ERROR_CLASSES",
+    "SENDGRID_ID_SOURCE_ABSENT",
+    "SENDGRID_ID_SOURCE_HEADER",
     "SENDGRID_TIMEOUT_SECONDS",
+    "SENDGRID_UNDOCUMENTED_STATUS_CLASSES",
+    "SendGridSendError",
     "SOCIAL_POST_TIMEOUT_SECONDS",
     "STRIPE_TIMEOUT_SECONDS",
     "TWITTER_TIMEOUT_SECONDS",

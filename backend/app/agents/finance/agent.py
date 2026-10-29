@@ -77,8 +77,10 @@ def failed_payments_extra_context(task: dict[str, Any]) -> str | None:
 
     Absent material: `None` — the run degrades to exactly its previous behaviour and never
     invents a payment.  A PRESENT-but-unusable attachment (not a list of objects) is a NAMED
-    refusal raised BEFORE any model call: this agent cannot query Stripe (no tools, no DB
-    session), so a malformed attachment is a producer bug, not something to guess around.
+    refusal raised BEFORE any model call: this agent cannot query Stripe at all (it holds no
+    Stripe tool and no DB session — its only registry tools are the read-only `macro_snapshot`,
+    `pricing_catalog` and `fx_convert`; W9 correction of "no tools"), so a malformed attachment
+    is a producer bug, not something to guess around.
     An EMPTY list is not an attachment at all (`None`): "no failed payments" needs no context.
     """
     metadata = task.get("metadata")

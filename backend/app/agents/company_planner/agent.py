@@ -7,8 +7,10 @@ the plan's V9-D3/D1 corrections keep the registry and main.py single-writer for 
 
 Design (V9-D1): the prompt is the ROLE constant IN this file — no agent in this tree carries a
 `prompt.md`, and the injection-guard test greps THIS file.  The planner performs no fetches of
-its own: the research step is the shipped `competitor_research` agent (SAME WebSearch/WebFetch
-mechanism, SAME `RESEARCH_FETCH_BUDGET`), run by the service; its output reaches this agent as
+its own: the research step is the shipped `competitor_research` agent (the same registry
+`web_search`/`web_fetch` tools and the same `RESEARCH_FETCH_BUDGET` — W9 correction: this line
+named the CLI's `WebSearch`/`WebFetch`, which is not the branch the planner's research runs on),
+run by the service; its output reaches this agent as
 untrusted DATA through `collect_structured(extra_context=...)`.  This run plans only — it
 cannot send, post, spend or schedule, and its output schema (`PlannerProposalDraft`) carries
 SIGNALS: the rubric and gates are computed in Python by `planner_service`.
@@ -59,8 +61,9 @@ send, post, spend or schedule anything — do not claim otherwise.
 Return between 3 and 5 candidates, best-first, and list open questions in `notes`."""
 
 #: The prompt the agent actually runs with: the rules above plus the research-budget line — the
-#: planner's fetch step is the SAME mechanism as competitor_research (WebSearch/WebFetch) and
-#: honors the SAME V8/C5 budget constant, quoted from the same import.
+#: planner's fetch step is the SAME mechanism as competitor_research (its registry
+#: `web_search`/`web_fetch` tools) and honors the SAME V8/C5 budget constant, quoted from the
+#: same import.
 ROLE = _ROLE + f"""
 
 Research budget: your research was fetched for you under the fleet's research budget — at most {RESEARCH_FETCH_BUDGET} research fetches (a search or a fetch each counts as one). Cite from the research block's recorded fetches only; never ask for or attempt fetches of your own."""

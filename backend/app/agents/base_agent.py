@@ -775,12 +775,32 @@ class BasePolsiaAgent(ABC):
         }
 
     def _outcome_contract(self) -> str:
+        """The output contract line — DERIVED from the schema that will validate the answer.
+
+        W9/CAPABILITY-AUDITOR: both halves used to be typed here rather than read from the model.
+        The `status` vocabulary was the literal "'ok' | 'partial' | 'refused'" for EVERY agent
+        (so a schema that narrows or widens it would be told the wrong words), and an empty
+        required list rendered as the dangling "(required: )".  MEASURED instance: the planner's
+        `PlannerProposalDraft` declares only `ideas` — no `status` at all — yet its contract told
+        the model to set one.  The vocabulary and the required list now come from
+        `model_fields` / `model_json_schema()`, so the prompt cannot disagree with the validator.
+        """
+        import typing
+
         model = self.output_model()
         required = model.model_json_schema().get("required") or []
+        required_text = ", ".join(str(name) for name in required) if required else "none"
+        status_field = model.model_fields.get("status")
+        allowed = tuple(typing.get_args(status_field.annotation)) if status_field is not None else ()
+        if allowed:
+            status_rule = f" Set status to {' | '.join(repr(str(word)) for word in allowed)}."
+        else:
+            # A schema with no `status` field cannot carry a refusal word; telling the model to
+            # send one would be an instruction the validator silently drops.
+            status_rule = " This schema declares no `status` field — do not add one."
         return (
             f"exactly one JSON object valid against schema '{model.__name__}' "
-            f"(required: {', '.join(required)}), no prose, no markdown fences. "
-            f"Set status to 'ok' | 'partial' | 'refused'."
+            f"(required: {required_text}), no prose, no markdown fences.{status_rule}"
         )
 
     def assemble_prompt(

@@ -193,9 +193,13 @@ def _subtype_for_status(status_code: int) -> str:
 
 
 #: Provider-terminal HTTP answers: the provider ANSWERED, and the answer says the ACCOUNT or the
-#: CREDENTIAL is the problem.  Both are documented DeepSeek statuses — 401/403 = an invalid key,
-#: 402 = insufficient balance (also delivered as the `error_insufficient_balance` subtype).
-#: No retry can fix either; a human must (enter a key / top up the account).
+#: CREDENTIAL is the problem.  CORRECTED (wave 9, SV-W8-05): the vendor's error table documents
+#: 401 (invalid authentication) and 402 (insufficient balance), and does NOT list 403. 401/403 are
+#: kept as the auth family anyway because a 403 from an intermediary (a key with no permission, a
+#: gateway in front of the API) is the same operator answer — a key problem no retry can fix —
+#: and 402 = insufficient balance (also delivered as the `error_insufficient_balance` subtype).
+#: The behaviour is unchanged; only this claim was wrong. No retry can fix either; a human must
+#: (enter a key / top up the account).
 AUTH_REJECTED_STATUSES = (401, 403)
 BALANCE_REJECTED_STATUSES = (402,)
 INSUFFICIENT_BALANCE_SUBTYPE = "error_insufficient_balance"
@@ -1395,6 +1399,47 @@ def _call_timeout_seconds(inv: claude_cli.Invocation) -> int:
     return max(1, min(configured, requested)) if requested > 0 else configured
 
 
+def _bounded_call_timeout(
+    inv: claude_cli.Invocation, ceiling_s: int, provider_calls: int
+) -> tuple[int, httpx.Timeout]:
+    """THIS provider call's wall clock: the per-call ceiling, capped by the run's budget (W8-LD-02).
+
+    `_call_timeout_seconds` is the CEILING (a single call may use all of it).  The run budget is
+    the aggregate: `claude_cli.build_invocation` sets `Invocation.deadline_monotonic` from
+    `claude_cli.run_wall_clock_budget()` (soft limit - settle reserve - ladder backoff), and every
+    provider call of the tool loop — and every re-dispatch of `run_with_retries`, which reuses the
+    same invocation — sees only what is left.  A spent budget raises the named `E_CLI_TIMEOUT`
+    refusal BEFORE the request leaves, so the run settles inside its worker instead of being
+    killed by Celery's soft limit (the measured defect: up to 4 tool calls x 300 s inside one
+    840 s worker, x3 attempts through the ladder).
+
+    Returns `(seconds, httpx.Timeout)`; `seconds` is also what the refusal envelope names, so the
+    message and the enforced bound cannot disagree.
+    """
+    remaining = inv.remaining_seconds()
+    if remaining is None:
+        return int(ceiling_s), httpx.Timeout(float(ceiling_s))
+    if remaining <= 0:
+        raise PolsiaError(
+            E_CLI_TIMEOUT,
+            (
+                f"the run's wall-clock budget ({inv.run_budget_seconds or 0:.1f}s, derived from "
+                f"the worker's soft time limit) is spent after {provider_calls - 1} provider "
+                "call(s); refusing to start another"
+            ),
+            how_to_fix=ERROR_HINTS[E_CLI_TIMEOUT],
+            context={
+                "run_budget_seconds": inv.run_budget_seconds,
+                "remaining_seconds": round(remaining, 3),
+                "provider_calls": provider_calls - 1,
+                "timeout_s": int(ceiling_s),
+                "transport": "http",
+            },
+        )
+    bounded = max(1, int(min(float(ceiling_s), remaining)))
+    return bounded, httpx.Timeout(float(bounded))
+
+
 def _max_tokens() -> int:
     """The per-call output bound (L3-04): the configured `deepseek_max_tokens`, else the default.
 
@@ -1760,6 +1805,12 @@ def invoke(
             # the request's own `max_tokens` ceiling (see `_prompt_tokens_bound` and
             # `accounting.call_cost_bound_usd`). `body["max_tokens"]` is the value `_build_body`
             # sent, so the bound prices the request that is actually about to leave.
+            # W8-LD-02: EVERY provider call of this loop — not just the first — is bounded by what
+            # is LEFT of the run's own wall clock (claude_cli.run_wall_clock_budget, derived from
+            # the worker's soft time limit).  Without this the tool loop was the deepest multiplier
+            # in the system: up to 4 calls x the 300 s ceiling inside ONE dispatch, and
+            # `run_with_retries` could re-dispatch that three times.
+            call_timeout_s, timeout = _bounded_call_timeout(inv, timeout_s, provider_calls)
             call_bound = accounting.call_cost_bound_usd(
                 model_id,
                 prompt_tokens_bound=_prompt_tokens_bound(
@@ -1774,7 +1825,7 @@ def invoke(
                 headers=headers,
                 body=body,
                 timeout=timeout,
-                timeout_s=timeout_s,
+                timeout_s=call_timeout_s,
                 key=key,
                 model_id=model_id,
                 started=started,
