@@ -73,7 +73,13 @@ async def test_deleting_a_prospect_with_send_history_is_a_named_refusal(
     async_db_session.add(prospect)
     await async_db_session.flush()
     prospect_id = prospect.id
-    async_db_session.add(EmailLog(prospect_id=prospect_id, subject="Hello"))
+    # W7: this fixture IS send history (the delete refusal's own words: "already been emailed"),
+    # so it states the send state explicitly — migration 0019 made `email_logs.status` default
+    # `draft`, i.e. a row that states no status no longer claims a performed send.
+    async_db_session.add(
+        EmailLog(prospect_id=prospect_id, subject="Hello", status="sent",
+                 sendgrid_id="sg-v28-hello")
+    )
     await async_db_session.commit()
     await _enable_sqlite_foreign_keys(async_db_session)
 
@@ -100,7 +106,11 @@ async def test_delete_route_answers_the_named_refusal_when_send_history_exists(
     async_db_session.add(prospect)
     await async_db_session.flush()
     prospect_id = prospect.id
-    async_db_session.add(EmailLog(prospect_id=prospect_id, subject="Hello"))
+    # W7 (see the sibling test): send history is stated, not defaulted.
+    async_db_session.add(
+        EmailLog(prospect_id=prospect_id, subject="Hello", status="sent",
+                 sendgrid_id="sg-v28-grace")
+    )
     await async_db_session.commit()
     await _enable_sqlite_foreign_keys(async_db_session)
 

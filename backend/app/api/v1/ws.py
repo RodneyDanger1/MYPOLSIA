@@ -62,7 +62,6 @@ import logging
 import re
 import secrets
 import time
-import urllib.parse
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -72,6 +71,7 @@ from app.api.deps import refusal_guard
 from app.config import settings
 from app.core import events
 from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.query_scrub import scrub_query_credentials
 from app.core.security import api_key_matches, verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -95,10 +95,10 @@ _MAX_SOCKETS_PER_CLIENT = int(settings.ws_max_sockets_per_client)
 _MAX_SOCKETS_PER_OPERATOR = int(settings.ws_max_sockets_per_operator)
 _HEARTBEAT_SECONDS = float(settings.ws_heartbeat_seconds)
 
-#: Query parameters that are CREDENTIALS: refused as auth, and scrubbed from the scope before the
-#: server can log them.  `ticket` is deliberately NOT here — a ticket is the supported URL form and
-#: is short-lived by construction.
-_CREDENTIAL_QUERY_KEYS = frozenset({"key", "api_key", "api-key"})
+#: The credential pair set and the scrub itself live in `app/core/query_scrub.py` (wave 7 / W6-S3):
+#: ONE definition shared with the HTTP middleware, so the two transports cannot drift.  `ticket` is
+#: deliberately NOT a credential there — it is the supported URL form and is short-lived by
+#: construction.  `_redact_query_string` below is this socket's call site.
 
 #: Ticket format version.  v1 was `v1.<expires>.<sig>` and carried NO subject, so it could not
 #: identify a client; v1 tickets are refused (they live 30 s, so a redeploy retires them anyway).
@@ -300,21 +300,14 @@ def _socket_identity(websocket: WebSocket, ticket: str | None) -> tuple[str, str
 
 
 def _redact_query_string(scope: dict[str, Any]) -> None:
-    """Remove credential-bearing pairs from the ASGI scope's query string, IN PLACE.
+    """Remove credential-bearing pairs from this socket's ASGI scope, IN PLACE.
 
-    WHY here and not in a logger filter: uvicorn's access line is formatted from `self.scope`, the
-    very dict this handler is handed, at accept/close time.  Scrubbing the scope before the
-    handshake completes is therefore the one place an application can keep a credential out of the
-    line the server is about to emit.  Non-credential pairs are preserved (re-encoded).
+    The HTTP half of the same rule is `app.core.query_scrub.RequestLogScrub` (a middleware), but the
+    SOCKET must call it itself and here: it reads `?key=`/`?ticket=` first (so a URL-borne key is
+    refused with its own reason, not the generic missing-credential one) and scrubs synchronously
+    before `accept()`.  Both transports delegate to ONE function, so the pair set cannot drift.
     """
-    raw = scope.get("query_string") or b""
-    if not raw:
-        return
-    pairs = urllib.parse.parse_qsl(raw.decode("latin-1"), keep_blank_values=True)
-    kept = [(name, value) for name, value in pairs if name not in _CREDENTIAL_QUERY_KEYS]
-    if len(kept) == len(pairs):
-        return
-    scope["query_string"] = urllib.parse.urlencode(kept).encode("latin-1")
+    scrub_query_credentials(scope)
 
 
 # ── the ticket route (F-46: the ONLY way a URL can carry a credential) ────────────────────────

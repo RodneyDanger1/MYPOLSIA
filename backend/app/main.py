@@ -73,6 +73,7 @@ from app.core.errors import (
     to_http_detail,
 )
 from app.core.openapi_errors import declare_error_responses
+from app.core.query_scrub import RequestLogScrub
 from app.core.redis_client import close_redis
 from app.core.site_static import SiteStaticFiles
 from app.services import site_service
@@ -422,6 +423,13 @@ def create_app() -> FastAPI:
     # F-01: added FIRST so it sits INSIDE CORSMiddleware (the last added is the outermost), and an
     # uncaught exception still reaches the client with the app's envelope AND CORS headers.
     application.add_middleware(ErrorBoundary)
+    # WAVE 7 / W6-S3: a credential in a query string must not be WRITTEN TO THE ACCESS LOG.  Added
+    # after ErrorBoundary (so it wraps it) and before CORSMiddleware (so CORS stays outermost):
+    # every HTTP request is scrubbed before any route, dependency or exception handler sees it, and
+    # uvicorn formats its access line from the same scope dict afterwards.  The WebSocket half was
+    # already handled in the socket handler (it needs to read `?key=` to refuse it BY NAME, then
+    # scrub); both call `app.core.query_scrub.scrub_query_credentials` — ONE definition.
+    application.add_middleware(RequestLogScrub)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

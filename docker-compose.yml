@@ -92,7 +92,11 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # F-45 (wave 7): uvicorn's access log printed the FULL request target, including query-string
+    # credentials (`?token=` is a real public opt-out capability that the route must READ from the
+    # URL, so it cannot be stripped pre-routing). nginx is the access-log owner here and logs a
+    # path-only format; uvicorn's duplicate line is disabled.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
     logging:
       driver: json-file
       options:

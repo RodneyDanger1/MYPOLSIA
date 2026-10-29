@@ -93,11 +93,45 @@ def test_2r01_ws_and_keyed_api_routes_stay_out_of_the_burst_class() -> None:
 # ── 2R-03 / W1: the WS key no longer lands in nginx logs ────────────────────────────────────────
 
 
-def test_2r03_ws_access_log_off_only_in_the_ws_block() -> None:
+def test_2r03_no_access_log_line_ever_carries_a_query_string() -> None:
+    """2R-03 (wave-v14) re-pinned by W6-S3 (wave 7): the log must not be able to carry a credential.
+
+    OLD arithmetic (wave-v14 .. wave-6): exactly ONE `access_log` directive in the whole file —
+    `off` in the `/ws/` block — and every other location kept nginx's DEFAULT `combined` format,
+    whose `$request` field is the raw request line INCLUDING the query string.  That default is how
+    five `GET /api/v1/sites?api_key=…` lines reached the nginx log (W6-S3, measured).
+
+    NEW arithmetic: TWO directives — the same `access_log off` in `/ws/`, plus ONE http-scope
+    `access_log … no_query` whose `log_format` names `$request_method $uri $server_protocol` and
+    neither `$request` nor `$args`/`$query_string`.  The count assertion is therefore split into
+    "`off` appears once" + "the only writing directive uses the no-query format", which pins the
+    same property (no other location may log) without forbidding the one global format.
+    """
     ws_block = _block(NGINX_CONF, "location /ws/ {")
     assert re.search(r"^\s*access_log off;", ws_block, flags=re.MULTILINE)
-    assert len(re.findall(r"^\s*access_log\s", NGINX_CONF, flags=re.MULTILINE)) == 1, (
-        "the directive is present on the /ws/ block ONLY (every other location keeps logging)"
+    off_directives = re.findall(r"^\s*access_log\s+off;", NGINX_CONF, flags=re.MULTILINE)
+    assert len(off_directives) == 1, (
+        "`access_log off` is the /ws/ block's belt; it must not spread to (or be lost from) any "
+        f"other location (found {len(off_directives)})"
+    )
+    # The ONE writing directive, and the format it names.
+    writers = re.findall(r"^\s*access_log\s+(?!off)([^;]+);", NGINX_CONF, flags=re.MULTILINE)
+    assert len(writers) == 1, f"exactly one writing access_log is allowed, found {writers}"
+    assert writers[0].strip().endswith("no_query"), (
+        f"a location writing the default format would log `$request` (query string): {writers[0]!r}"
+    )
+    fmt = next(
+        line
+        for line in NGINX_CONF.splitlines()
+        if line.strip().startswith("log_format no_query")
+    )
+    assert "$request_method $uri $server_protocol" in fmt, fmt
+    assert fmt.count("$request") == 1, (
+        "the DEFAULT combined field is `$request` (raw line + query); only `$request_method` may "
+        f"appear: {fmt!r}"
+    )
+    assert "$args" not in fmt and "$query_string" not in fmt, (
+        f"the format must never name the query string: {fmt!r}"
     )
 
 
