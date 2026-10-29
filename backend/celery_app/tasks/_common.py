@@ -16,8 +16,10 @@ import hashlib
 import logging
 import threading
 from collections.abc import Coroutine
-from datetime import datetime
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
@@ -28,6 +30,59 @@ from app.core.timeutil import now_utc
 from app.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+#: The leaf types the ledger's JSON columns cannot store.  `Decimal` is the one that bit on the
+#: live stack (a company context carries `owner_budget_usd` as `NUMERIC(10,2)`); the others are
+#: the same class of value (a JSON column has no date/UUID type either).
+_NON_JSON_LEAVES = (Decimal, datetime, date, time, UUID)
+
+
+def json_safe(value: Any, *, path: str = "") -> tuple[Any, list[str]]:
+    """Return `(a JSON-encodable copy of value, the paths whose leaf had to become text)`.
+
+    WHY THIS EXISTS (measured on the live stack, wave 8): `agent_runs.input_context` is a JSONB
+    column and `create_agent_run` hands it the company context, which carries
+    `company.owner_budget_usd` as a `Decimal` (`NUMERIC(10,2)` at rest).  SQLAlchemy's JSON
+    serializer is `json.dumps`, so the INSERT raised `TypeError: Object of type Decimal is not
+    JSON serializable` AFTER the task row had been claimed: the delivery died, the row stayed
+    `in_progress` with no run row and no settlement, and — with Beat off — nothing requeued it.
+    The write boundary now converts the leaves a JSON column cannot hold into their `str()` form
+    (the SAME convention `task_service` already uses for metadata:
+    `json.dumps(metadata, default=str)`) and the caller LOGS every converted path, so a stored
+    context is never silently different from the runtime value.
+
+    Identity when nothing needs converting: an unchanged value is returned as the SAME object and
+    an empty path list, so a context without such leaves writes byte-identical bytes to before.
+    Deliberately NOT a general "stringify anything" fallback — an unknown type stays as it is and
+    keeps failing loudly at the serializer; only the four JSON-less leaf types are converted.
+    """
+    if isinstance(value, dict):
+        converted: dict[Any, Any] = {}
+        converted_paths: list[str] = []
+        changed = False
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            new_item, item_paths = json_safe(item, path=child_path)
+            converted[key] = new_item
+            converted_paths += item_paths
+            changed = changed or new_item is not item
+        return (converted, converted_paths) if changed else (value, [])
+    if isinstance(value, list | tuple):
+        items: list[Any] = []
+        converted_paths = []
+        changed = False
+        for index, item in enumerate(value):
+            new_item, item_paths = json_safe(item, path=f"{path}[{index}]")
+            items.append(new_item)
+            converted_paths += item_paths
+            changed = changed or new_item is not item
+        if not changed:
+            return value, []
+        return items, converted_paths
+    if isinstance(value, _NON_JSON_LEAVES):
+        return str(value), [path or "value"]
+    return value, []
+
 
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None

@@ -53,6 +53,7 @@ from celery_app.tasks._common import (
     dedupe_key,
     dispatch_paused_reason,
     enqueue_created,
+    json_safe,
     merge_actions,
     paused_skip,
     prior_actions,
@@ -165,6 +166,87 @@ def _settle_no_provider_calls(run_row: Any, *, source: str) -> None:
 def worker_id() -> str:
     """Identity of this worker process, for `tasks.claimed_by`."""
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+#: The activity action a claimed row gets when the run could not even be CREATED (wave 8).
+PRE_RUN_FAILURE_ACTION = "task_failed_before_run"
+
+
+async def _settle_pre_run_failure(
+    *, task_id: int, agent_type: str, worker: str, exc: BaseException
+) -> dict[str, Any]:
+    """Settle a claimed row whose run row could not be created — the wedge this fixes.
+
+    MEASURED on the live stack (wave 8): `create_agent_run` raised
+    `TypeError: Object of type Decimal is not JSON serializable` (the company context carries
+    `owner_budget_usd` as a Decimal into a JSONB column).  The task row had ALREADY been claimed,
+    so the delivery died with: status `in_progress`, one attempt spent, NO `agent_runs` row, NO
+    settlement, and — because a Celery exception does not reach `self.retry`'s ladder — no
+    redelivery of its own.  With Beat off only a lease sweep (next worker start) could recover it.
+
+    This helper puts such an exception on the SAME ladder a failed RUN uses: the row is written
+    `failed` with the real exception text, and when the failure is retryable and the ladder has
+    room it goes back to `pending` with the reconciler's `rearmed_at` marker (so a retry message
+    that is lost still has a second net).  The attempt is NOT refunded: an execution that got as
+    far as the claim consumed one ladder slot, so a deterministic failure cannot loop forever.
+
+    It never fabricates a run row: `agent_runs` stays empty for the attempt, and the activity row
+    (`task_failed_before_run`) is the record that a delivery died before any work existed.
+    """
+    from app.core.database import get_session_factory
+    from app.models.task import TaskStatus
+    from app.services.activity_service import log_activity
+    from app.services.task_service import update_task_status
+
+    error = f"{type(exc).__name__}: {exc}"
+    retryable = is_retryable(exc)
+    attempts = 0
+    requeued = False
+    async with get_session_factory()() as db:
+        task_row = await update_task_status(db, task_id, "failed", error_message=error)
+        if task_row is not None:
+            task_row.claimed_by = None
+            task_row.claimed_at = None
+            task_row.heartbeat_at = None
+            attempts = int(task_row.attempts or 0)
+            if retryable and attempts <= settings.agent_max_retries:
+                task_row.status = TaskStatus.PENDING
+                requeued = True
+                await stamp_rearmed(db, [task_id], reason="pre_run_requeued")
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action=PRE_RUN_FAILURE_ACTION,
+                summary=(
+                    f"task {task_id}: the run row could not be created "
+                    f"({type(exc).__name__}); the claim was settled "
+                    f"({'requeued for its retry' if requeued else 'left failed'}, attempt {attempts})"
+                ),
+                level="warning",
+                detail={
+                    "task_id": task_id,
+                    "worker": worker,
+                    "attempts": attempts,
+                    "requeued": requeued,
+                    "retryable": retryable,
+                    "error": error[:2000],
+                },
+            )
+        await db.commit()
+    logger.error(
+        "task %s: pre-run failure (%s); %s", task_id, error,
+        "requeued" if requeued else "left failed",
+    )
+    return {
+        "status": "failed",
+        "task_id": task_id,
+        "agent_type": agent_type,
+        "attempts": attempts,
+        "error": error,
+        "retryable": retryable,
+        "requeued": requeued,
+        "_exception": exc,
+    }
 
 
 def is_retryable(exc: BaseException | None) -> bool:
@@ -2384,32 +2466,59 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         return spend_refusal
 
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
-    async with session_factory() as db:
-        context = await get_full_context(db)
-        # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
-        # producer (agents hold no database session). Copy-on-write, own channels only.
-        context = await _with_channel_sends(db, agent_type, context)
-        # V12/W-C worker hook: the compliance preflight outreach runs must carry (W1 OPEN(a)) —
-        # same "the worker owns the DB, the agent does not" reasoning as the channel counts.
-        context = await _with_compliance_preflight(db, agent_type, context)
-        # V9/B2(e) worker hook: the 7-day per-agent quality snapshot the orchestrator's ONE
-        # weekly line reads — same "the worker owns the DB, the agent does not" reasoning as
-        # the channel counts above.
-        context = await _with_agent_quality(db, agent_type, context)
-        # V15/4-05a worker hook (E2-H4 frozen): the stored memories relevant to this run's task
-        # — same "the worker owns the DB, the agent does not" reasoning as the hooks above; the
-        # base agent's `context_memories` seam renders them into every agent's prompt.
-        context = await _with_run_memories(
-            db, agent_type, context, query=_run_memory_query(task_dict)
+    #
+    # WAVE 8 (live defect): everything from here to `run_id = run.id` runs AFTER the claim and
+    # BEFORE any work.  An exception here used to escape to Celery and leave the row
+    # `in_progress` with an attempt spent, no run row and no settlement — a permanent wedge with
+    # Beat off.  The `except` settles the claim through the same ladder a failed run uses.
+    try:
+        async with session_factory() as db:
+            context = await get_full_context(db)
+            # T5 worker hook: the per-channel send counts the agents' cap checks read have no other
+            # producer (agents hold no database session). Copy-on-write, own channels only.
+            context = await _with_channel_sends(db, agent_type, context)
+            # V12/W-C worker hook: the compliance preflight outreach runs must carry (W1 OPEN(a)) —
+            # same "the worker owns the DB, the agent does not" reasoning as the channel counts.
+            context = await _with_compliance_preflight(db, agent_type, context)
+            # V9/B2(e) worker hook: the 7-day per-agent quality snapshot the orchestrator's ONE
+            # weekly line reads — same "the worker owns the DB, the agent does not" reasoning as
+            # the channel counts above.
+            context = await _with_agent_quality(db, agent_type, context)
+            # V15/4-05a worker hook (E2-H4 frozen): the stored memories relevant to this run's task
+            # — same "the worker owns the DB, the agent does not" reasoning as the hooks above; the
+            # base agent's `context_memories` seam renders them into every agent's prompt.
+            context = await _with_run_memories(
+                db, agent_type, context, query=_run_memory_query(task_dict)
+            )
+            # L2-03 seam: `tasks.attempts` — incremented by the claim — is the execution number this
+            # run is; it lands on `agent_runs.attempt` so a retried run is distinguishable from its
+            # predecessors (migration 0002's `ux_agent_runs_task_attempt` is only live once this is
+            # written). The frozen keyword is `attempt` (task_service.create_agent_run).
+            #
+            # WAVE 8: the ledger's JSON columns cannot hold a Decimal/date/UUID leaf, and the
+            # company context carries `owner_budget_usd` as a Decimal — the INSERT raised
+            # `TypeError: Object of type Decimal is not JSON serializable` on the LIVE stack.  The
+            # stored copy is made JSON-safe here and every converted path is LOGGED, so the ledger
+            # is storable without the runtime value (the agent still receives the original) being
+            # silently rewritten.
+            stored_context, converted_context = json_safe(context)
+            if converted_context:
+                logger.warning(
+                    "task %s: %d context value(s) are not JSON-encodable and are stored as text: %s",
+                    task_id,
+                    len(converted_context),
+                    converted_context[:10],
+                )
+            run = await create_agent_run(db, agent_type, task_id=task_id,
+                                         input_context=stored_context,
+                                         attempt=int(task.attempts or 0))
+            await db.commit()
+            run_id = run.id
+    except Exception as exc:  # noqa: BLE001 — a claimed row must never be left unsettled
+        logger.exception("task %s: the run could not be created; settling the claim", task_id)
+        return await _settle_pre_run_failure(
+            task_id=task_id, agent_type=agent_type, worker=me, exc=exc
         )
-        # L2-03 seam: `tasks.attempts` — incremented by the claim — is the execution number this
-        # run is; it lands on `agent_runs.attempt` so a retried run is distinguishable from its
-        # predecessors (migration 0002's `ux_agent_runs_task_attempt` is only live once this is
-        # written). The frozen keyword is `attempt` (task_service.create_agent_run).
-        run = await create_agent_run(db, agent_type, task_id=task_id, input_context=context,
-                                     attempt=int(task.attempts or 0))
-        await db.commit()
-        run_id = run.id
     # V26/L3 (F3) — the run row's id is the run's identity for the workspace seam.  Publish it
     # on the task dict the agent receives (the one carrier every dispatched run already reads:
     # `BasePolsiaAgent.set_run_context` → `deepseek_runtime.invoke(run_id=...)` →
@@ -2721,11 +2830,27 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         if run_status == "completed" and isinstance(result, dict):
             # V9/B2(e): the weekly quality drop's activity row — once per week, ledger-deduped.
             await _log_quality_drop(db, agent_type, result.get("agent_quality_drop"))
+        # WAVE 8: the SAME JSON-column rule as the input context — an agent payload that carries a
+        # Decimal/date/UUID leaf would make this INSERT fail AFTER the run really happened (and,
+        # for a paid run, after the money was spent), leaving the task claimed.  The stored copy is
+        # made JSON-safe; the runtime `result` (settlement, usage, replay decisions) is untouched,
+        # and every converted path is logged.
+        stored_output: Any = result if run_status == "completed" else None
+        if stored_output is not None:
+            stored_output, converted_output = json_safe(stored_output)
+            if converted_output:
+                logger.warning(
+                    "task %s: %d run-output value(s) are not JSON-encodable and are stored as "
+                    "text: %s",
+                    task_id,
+                    len(converted_output),
+                    converted_output[:10],
+                )
         run_row = await finish_agent_run(
             db,
             run_id,
             run_status,
-            output=result if run_status == "completed" else None,
+            output=stored_output,
             duration_secs=duration,
             error_message=error,
         )

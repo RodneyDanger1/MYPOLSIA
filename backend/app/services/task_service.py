@@ -2240,6 +2240,67 @@ def build_agent_values_cte():
     )
 
 
+#: The run-context key the worker resolves the email compliance preflight under.  A LITERAL on
+#: purpose, like the `tasks.metadata` wire keys above: the producer is
+#: `app.agents.email_outreach.compliance_send.PREFLIGHT_KEY` (= "compliance") and this module must
+#: not import the agent package at module load (the caller-contract pin).  The two spellings are
+#: asserted equal in `tests/unit/test_w8_failure_mode_truth.py`.
+COMPLIANCE_CONTEXT_KEY = "compliance"
+
+#: The preflight key whose value is THIRD-PARTY CONSENT DATA (every unsubscribed prospect's
+#: address), not the company's own content.
+SUPPRESSION_CONTEXT_KEY = "suppressed"
+
+#: What the PERSISTED copy of that list reads as.  A dict, deliberately: anything that tries to
+#: read it as a suppression list gets a mapping (or fails its own shape check) instead of reading
+#: as "nothing suppressed" — the safe direction.
+SUPPRESSION_REDACTED = {
+    "redacted": (
+        "third-party consent addresses are not persisted: the dispatch-time suppression list "
+        "lives in the run's in-memory context only"
+    ),
+    "count": 0,
+}
+
+
+def sanitize_persisted_context(context: Any) -> Any:
+    """`context` as it may be PERSISTED — the suppression list replaced by its count.
+
+    WHY (wave 8, PII at rest + export): the worker adds `compliance.suppressed` — the addresses of
+    every prospect stored `unsubscribed` — to the run context at dispatch, and `create_agent_run`
+    wrote that context verbatim into `agent_runs.input_context`.  Two consequences, both measured
+    by inspection of the writer and the export members:
+
+    * every email_outreach/customer_support run carried OTHER PEOPLE'S ADDRESSES (exactly the
+      people who asked not to be contacted) at rest, readable through the runs API and the DB;
+    * `agent_runs` is an EXPORT member (`GET /api/v1/data/export`), so those addresses shipped in
+      an archive whose MANIFEST declares `prospects` is NOT included — the consent list leaked
+      around the export scope.
+
+    The AGENT still receives the real list: this function is called on the PERSISTED copy only, and
+    returns a copy (never mutates the caller's context).  `count` keeps the provenance — "N
+    addresses suppressed at dispatch" — without the addresses.  A non-list value is left alone
+    (there is nothing to redact), and a context without the block is returned unchanged.
+    """
+    if not isinstance(context, dict):
+        return context
+    block = context.get(COMPLIANCE_CONTEXT_KEY)
+    if not isinstance(block, dict):
+        return context
+    suppressed = block.get(SUPPRESSION_CONTEXT_KEY)
+    if not isinstance(suppressed, list | tuple):
+        return context
+    try:
+        count = len(suppressed)
+    except TypeError:  # pragma: no cover - len on list/tuple cannot fail; defensive only
+        return context
+    sanitized_block = dict(block)
+    sanitized_block[SUPPRESSION_CONTEXT_KEY] = {**SUPPRESSION_REDACTED, "count": count}
+    sanitized = dict(context)
+    sanitized[COMPLIANCE_CONTEXT_KEY] = sanitized_block
+    return sanitized
+
+
 async def create_agent_run(
     db: AsyncSession,
     agent_type: str,
@@ -2264,13 +2325,17 @@ async def create_agent_run(
     the caller that HOLDS the claimed task passes `attempt=task.attempts` — the claim
     incremented it, so the number is stable.  It stays `None` when the caller has no
     task, which the partial unique `ux_agent_runs_task_attempt` permits.
+
+    WAVE 8: `input_context` is PERSISTED through `sanitize_persisted_context` — the agent receives
+    the caller's context unchanged, but the stored copy carries no third-party consent addresses
+    (see that function's docstring for the export/at-rest leak it closes).
     """
     run = AgentRun(
         agent_type=agent_type,
         task_id=task_id,
         run_type=run_type,
         status="running",
-        input_context=input_context,
+        input_context=sanitize_persisted_context(input_context),
         cli_session_id=cli_session_id,
         tokens_input=tokens_input,
         tokens_output=tokens_output,
@@ -2363,6 +2428,20 @@ async def finish_agent_run(
         cost is readable as "unmeasured AT THE CLOSE, superseded by the settle";
       * the closed run's `raw_log` note is preserved and the supersession appended (never replaced).
     An ordinary settle (running -> terminal) writes none of this.
+
+    WAVE 8 (W8-LD-04) — A SUPPLIED FIELD IS NOT LICENCE TO ERASE THE FIRST CLOSE.  Two holes were
+    measured on the wave-7 bytes, both reachable from the shipped settle path (`_execute_agent_task`
+    passes `error_message` for every failed run, and `usage_json` is a public parameter of this
+    function):
+      * `error_message` ASSIGNED `raw_log`, so a late FAILED settle deleted the reaper's
+        `E_RUN_STALE` sentence — the usage block still described the close, so the two records of
+        one row disagreed;
+      * `usage_json` ASSIGNED the bag, so a late settle carrying its own usage deleted
+        `interrupted`/`in_flight` BEFORE `_annotate_superseded_close` could annotate them (the
+        annotation then had nothing left to mark).
+    A superseded close therefore APPENDS to `raw_log` and MERGES the supplied usage bag over the
+    row's own (the settle's keys still win — the same rule `_apply_run_usage` follows).  An
+    ordinary settle keeps the shipped assign semantics byte-for-byte.
     """
     result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
     run = result.scalar_one_or_none()
@@ -2370,13 +2449,19 @@ async def finish_agent_run(
         return None
     previous_status = str(run.status or "")
     superseded_close = previous_status in RUN_TERMINAL_STATUSES and previous_status != str(status)
+    # W8-LD-04: captured BEFORE any write, so a late settle can append to the earlier close's
+    # record instead of replacing it.  `raw_log` is the column the stale-run reaper writes to.
+    previous_raw_log = run.raw_log if isinstance(run.raw_log, str) else ""
     run.status = status
     if output is not None:
         run.output = output
     if duration_secs is not None:
         run.duration_secs = duration_secs
     if error_message is not None:
-        run.raw_log = error_message
+        if superseded_close and previous_raw_log.strip():
+            run.raw_log = f"{previous_raw_log.strip()}\n{error_message}"
+        else:
+            run.raw_log = error_message
     if cli_session_id is not None:
         run.cli_session_id = cli_session_id
     if tokens_input is not None:
@@ -2386,7 +2471,14 @@ async def finish_agent_run(
     if cost_usd is not None:
         run.cost_usd = _as_column_decimal(cost_usd)
     if usage_json is not None:
-        run.usage_json = usage_json
+        if superseded_close and isinstance(run.usage_json, dict):
+            # MERGE, never assign: keys the settle supplies WIN, keys it does not (the reaper's
+            # `interrupted`, a live `in_flight` snapshot) are the earlier writer's record and stay.
+            merged_usage = dict(run.usage_json)
+            merged_usage.update(usage_json)
+            run.usage_json = merged_usage
+        else:
+            run.usage_json = usage_json
     if superseded_close:
         _annotate_superseded_close(
             run, previous_status=previous_status, settled_status=str(status)

@@ -36,19 +36,55 @@ from app.core.errors import E_INTEGRATION, ERROR_HINTS, PolsiaError
 
 
 def _resolve_taint(taint: RunTaint | None) -> RunTaint | None:
-    """The taint a side-effect request must carry: the explicit one, else the RUN's.
+    """The taint a side-effect request must carry: the RUN's verdict MERGED with an explicit one.
 
     RD4 item 3 / audit L2-F05 — the consumer half of the taint chain.  `context_assembler.assemble()`
     publishes the run's taint on the `RUN_TAINT` contextvar (set from the real content the prompt
     carried, through `flag_injection_heuristics`); every agent call site below would otherwise have
     to accept and thread a `taint=` argument.  Reading it here means all six callers
     (ads_management, code_generation, customer_support, email_outreach, finance, social_media)
-    inherit it with no per-agent edit, an explicit `taint=` still WINS (callers that know better,
-    and every existing test, keep their behaviour), and a run that assembled no context at all
-    (no taint published) is `None` — "not known to be tainted", which the firewall treats exactly
-    as it did before this change.
+    inherit it with no per-agent edit, and a run that assembled no context at all (no taint
+    published) is `None` — "not known to be tainted", which the firewall treats exactly as it did
+    before this change.
+
+    W7-S2 (wave 8) — TAINT IS STICKY.  This used to return the explicit verdict unchecked, so a
+    caller that passed the `RunTaint(tainted=False)` it built from its own narrow scan (the shape
+    the approved-payload seam uses) ERASED the taint the rest of the run's context had already
+    produced: measured live as `{"allowed": true, "reason": "permitted"}` for an injected run.
+    The seam is a confused-deputy hazard, and an explicit verdict is not evidence about content
+    the caller never saw.  The contract now:
+
+    * `None` (every shipped caller's normal argument) → the run's verdict, unchanged;
+    * explicit verdict, no published verdict → the explicit verdict, unchanged (nothing to merge);
+    * BOTH → `tainted = published.tainted or explicit.tainted`, and the provenance (flagged
+      blocks, sources) is the UNION, so an escalation can add evidence but never subtract the
+      run's own.  A clean explicit verdict beside a clean run verdict resolves to the explicit
+      verdict (it may carry newer metadata); a clean explicit verdict beside a TAINTED run
+      resolves to the run's verdict — sticky, fail-closed.
+
+    The caller keeps the ability to ESCALATE (explicit tainted on a clean run) and the ability to
+    re-read the run's verdict; it no longer has the ability to de-escalate.  Nothing is mutated:
+    a merged result is a NEW `RunTaint`, so neither the published object nor the caller's object
+    changes identity or contents.
     """
-    return taint if taint is not None else current_run_taint()
+    published = current_run_taint()
+    if taint is None:
+        return published
+    if published is None or not published.tainted:
+        return taint
+    if not taint.tainted:
+        # Sticky: the run is tainted and the explicit verdict is clean — the run's evidence wins.
+        return RunTaint(
+            tainted=True,
+            flagged_blocks=list(published.flagged_blocks),
+            sources=list(published.sources),
+        )
+    # Both tainted: keep every piece of provenance (stable order, no duplicates).
+    return RunTaint(
+        tainted=True,
+        flagged_blocks=list(dict.fromkeys([*published.flagged_blocks, *taint.flagged_blocks])),
+        sources=list(dict.fromkeys([*published.sources, *taint.sources])),
+    )
 
 
 def _resolve_approval(explicit_secret: bytes, explicit_token: str) -> tuple[bytes, str]:
@@ -177,8 +213,8 @@ def request_side_effect(
     unknown" — the firewall refuses a configured cap whose count is unknown rather than assuming
     zero sends.
 
-    `taint` is the run's taint when the caller passes it explicitly, else whatever
-    `context_assembler.assemble()` published for THIS run (`_resolve_taint`).
+    `taint` is MERGED with the run's published taint (`_resolve_taint`, W7-S2: taint is sticky — an
+    explicit verdict can escalate but never clear the run's verdict); `None` reads the run's verdict.
 
     `approval_secret`/`approval_token` resolve the same way (`_resolve_approval`): an explicit
     argument wins, else the run's published `RunApproval` (D1/T02).  With neither, both stay
@@ -321,8 +357,8 @@ def evaluate_side_effect(
 
     `taint` (RD4 item 3): this path used to build its `ActionRequest` with NO taint at all, so the
     customer_support refund escalation — the caller that reaches `evaluate_side_effect` — could
-    never see the run's taint.  It now resolves like `request_side_effect`: explicit argument first,
-    else the run's published taint.
+    never see the run's taint.  It now resolves like `request_side_effect`: the explicit argument is
+    MERGED with the run's published taint (W7-S2 — sticky, so it can escalate but not clear).
 
     Used where an agent must *record* what policy says rather than perform the action — e.g.
     customer_support proposing a refund: money never moves from the support agent (its capability
