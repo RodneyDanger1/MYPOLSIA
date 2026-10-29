@@ -34,7 +34,9 @@ NOW = int(time.time())
 
 
 def _sign(body: bytes, *, secret: str = SECRET, ts: int | None = None) -> str:
-    stamp = NOW if ts is None else ts
+    # Sign at CALL time, not module import: a slow/ordered full gate can reach this test minutes
+    # after collection, and a fixed NOW makes a valid signature look stale outside the 300 s window.
+    stamp = int(time.time()) if ts is None else ts
     digest = hmac.new(
         secret.encode("utf-8"), f"{stamp}.".encode() + body, hashlib.sha256
     ).hexdigest()

@@ -170,11 +170,14 @@ def secret_store_paths() -> tuple[Path, ...]:
     opens or returns a value.
     """
     candidates: list[str] = [str(backend_root() / ".env")]
-    for env_name, setting_name, default in (
-        ("DEEPSEEK_KEY_FILE", "deepseek_key_file", "data/deepseek_api_key.json"),
-        ("POLSIA_SECRETS_FILE", "secrets_file", "data/secrets.json"),
+    # SV-W4-05 (wave 5): the two setting names are now REAL Settings fields, read directly.  The
+    # old loop read them as `getattr(settings, setting_name, "")` over a variable name, which
+    # could never be checked by a census and could never be configured while the field was absent.
+    for env_name, value, default in (
+        ("DEEPSEEK_KEY_FILE", settings.deepseek_key_file, "data/deepseek_api_key.json"),
+        ("POLSIA_SECRETS_FILE", settings.secrets_file, "data/secrets.json"),
     ):
-        raw = os.environ.get(env_name) or getattr(settings, setting_name, "") or default
+        raw = os.environ.get(env_name) or value or default
         candidates.append(str(raw))
     resolved = [str(_absolute(raw)) for raw in candidates]
     return tuple(Path(item) for item in dict.fromkeys(resolved))

@@ -49,6 +49,7 @@ from app.core.errors import (
     E_RATE_LIMITED,
     E_RUN_CANCELLED,
     E_SANDBOX_BLOCKED,
+    E_VALIDATION,
     PolsiaError,
 )
 
@@ -866,6 +867,21 @@ def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
     NOTE (still true): the token is bearer-style — anyone holding it AND the secret's cooperation
     can approve that fingerprint.  Delivery to the owner is the operator's channel.
     """
+    if issued_to != "operator":
+        # W5-S1 (sentinel): the signature covers the issuer, but every verifier and the
+        # ledger hardcode the operator scope — a non-operator mint produces a token that
+        # NO verifier can accept. Refuse by name instead of handing out a dead bearer.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"approval tokens are verifiable only for the 'operator' scope, not "
+            f"{issued_to!r}: a token minted for any other issuer can never be accepted",
+            how_to_fix=(
+                "mint approvals through POST /api/v1/approvals (or call issue_approval with "
+                "issued_to='operator'); the issuer is part of the signed message and the "
+                "verifiers only recognise the operator scope"
+            ),
+            context={"requested_issued_to": issued_to},
+        )
     jti = secrets.token_hex(JTI_HEX_CHARS // 2)
     exp = int(time.time()) + ttl_s
     sig = hmac.new(secret, _signed_message(action_fingerprint, exp, jti, issued_to),
