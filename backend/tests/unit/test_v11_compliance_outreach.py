@@ -43,7 +43,7 @@ import app.config as app_config
 import app.models  # noqa: F401  (registers every table on Base.metadata)
 from app.agents.email_outreach.agent import EmailOutreachAgent
 from app.core.database import Base
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_POLICY_DENIED, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.models.outreach import Prospect
 from app.services.email_compliance import (
@@ -263,7 +263,7 @@ async def test_missing_sender_identity_refuses_by_name_and_names_the_fields(file
 
 
 async def test_a_suppressed_address_in_the_preflight_is_refused_without_a_provider_call(monkeypatch):
-    _arm(monkeypatch, "postgresql+asyncpg://polsia:polsia_password@127.0.0.1:1/polsia")
+    _arm(monkeypatch, "postgresql+asyncpg://meridian:meridian_password@127.0.0.1:1/meridian")
     """Mode 1 leg (b): the worker-resolved preflight suppresses an address -> E_POLICY_DENIED.
 
     The preflight is used when the context carries it; nothing here can reach a database (the
@@ -291,7 +291,7 @@ async def test_a_worker_resolved_preflight_sends_without_any_database(monkeypatc
     `database_url` is deliberately unusable, so a send here proves mode 1 does not touch the DB.
     """
     fake = _FakeSendGrid().install(monkeypatch)
-    _arm(monkeypatch, "postgresql+asyncpg://polsia:polsia_password@127.0.0.1:1/polsia")
+    _arm(monkeypatch, "postgresql+asyncpg://meridian:meridian_password@127.0.0.1:1/meridian")
     preflight = {
         "company": {"sender_legal_name": LEGAL_NAME, "sender_postal_address": POSTAL_ADDRESS,
                     "website_url": WEBSITE},
@@ -309,7 +309,7 @@ async def test_a_worker_resolved_preflight_sends_without_any_database(monkeypatc
 
 
 async def test_a_broken_preflight_refuses_by_name_instead_of_sending_non_compliant_mail(monkeypatch):
-    _arm(monkeypatch, "postgresql+asyncpg://polsia:polsia_password@127.0.0.1:1/polsia")
+    _arm(monkeypatch, "postgresql+asyncpg://meridian:meridian_password@127.0.0.1:1/meridian")
     """A preflight that cannot produce a footer (no identity fields) refuses — never a bare send."""
     fake = _FakeSendGrid().install(monkeypatch)
     out = _run(_stub_collection(EmailOutreachAgent(), _send_payload()),
@@ -401,7 +401,7 @@ async def test_the_unsubscribe_token_is_purpose_bound_and_stable():
 
     from app.services.email_compliance import verify_unsubscribe_token
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         verify_unsubscribe_token("garbage")
     assert refusal.value.code == E_VALIDATION
 

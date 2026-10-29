@@ -334,7 +334,7 @@ async def test_get_or_create_daily_report_row_count(async_db_session):
 
 
 # --------------------------------------------------------------------------- #
-# 9. log_activity publishes exactly once, to a channel containing polsia:activity
+# 9. log_activity publishes exactly once, to a channel containing meridian:activity
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_log_activity_publishes_once_and_serialises_iso(async_db_session, mock_redis):
@@ -344,7 +344,7 @@ async def test_log_activity_publishes_once_and_serialises_iso(async_db_session, 
                        summary="s", level="success")
     assert mock_redis.publish.call_count == 1
     channel, payload = mock_redis.publish.call_args[0]
-    assert "polsia:activity" in channel
+    assert "meridian:activity" in channel
     import json
 
     body = json.loads(payload)

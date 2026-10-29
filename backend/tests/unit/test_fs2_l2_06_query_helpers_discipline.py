@@ -2,7 +2,7 @@
 
 RED before the fix (lane-2 `probe_lane2.py` part D): pointed at an unopenable database, the
 seven raw `db.execute` read sites escaped as `OperationalError` while `fetch_scalar` raised
-`PolsiaError(E_DB)` — `deps.refusal_guard` translates only `PolsiaError`, so the raw sites
+`MeridianError(E_DB)` — `deps.refusal_guard` translates only `MeridianError`, so the raw sites
 reached the client as FastAPI's bare, codeless 500.  Each site now goes through
 `query_helpers.fetch_scalar`/`fetch_scalars`, which is this test's pin.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.services import (
     company_service,
     memory_service,
@@ -47,7 +47,7 @@ async def test_converted_reads_refuse_e_db(tmp_path, label, call):
     engine, factory = _broken_factory(tmp_path)
     try:
         async with factory() as db:  # one session per call: a failed execute poisons a session
-            with pytest.raises(PolsiaError) as excinfo:
+            with pytest.raises(MeridianError) as excinfo:
                 await call(db)
     finally:
         await engine.dispose()

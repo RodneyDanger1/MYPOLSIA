@@ -32,7 +32,7 @@ import subprocess
 import pytest
 
 from app.agents import tool_registry
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 RUN = "run-abc123"
 
@@ -217,7 +217,7 @@ def test_cleanup_of_an_absent_run_reports_removed_false(workspace):
 
 @pytest.mark.parametrize("run_id", ["..", "../x", "a/b", ".", "x" * 65])
 def test_cleanup_refuses_a_hostile_run_id(workspace, run_id):
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         tool_registry.cleanup_run_workspace(run_id)
     assert excinfo.value.code == E_VALIDATION
 
@@ -229,7 +229,7 @@ def test_cleanup_never_follows_a_junction_out_of_the_runs_tree(workspace, tmp_pa
     runs_dir = workspace / tool_registry.RUN_WORKSPACE_SUBDIR
     _escape_link(runs_dir, outside)  # runs/escape -> outside
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         tool_registry.cleanup_run_workspace("escape")
 
     assert excinfo.value.code == E_VALIDATION

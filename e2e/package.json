@@ -1,5 +1,5 @@
 {
-  "name": "polsia-e2e",
+  "name": "meridian-e2e",
   "private": true,
   "scripts": {
     "test": "playwright test",

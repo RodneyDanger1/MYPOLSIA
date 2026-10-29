@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_STORAGE, E_VALIDATION, MeridianError
 
 #: `settings.code_workspace_dir`'s default (the same value `tool_registry` uses).
 CODE_WORKSPACE_DEFAULT = "data/workspace"
@@ -237,7 +237,7 @@ def workspace_root(root: str | Path | None = None) -> Path:
     try:
         resolved = candidate.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: the code workspace {str(candidate)!r} cannot be resolved "
             f"({type(exc).__name__}: {exc})",
@@ -245,7 +245,7 @@ def workspace_root(root: str | Path | None = None) -> Path:
             context={"workspace": str(candidate)},
         ) from exc
     if resolved.exists() and not resolved.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: the code workspace is {str(resolved)!r}, which exists but is not a "
             "directory — no artifact can be served from it",
@@ -267,7 +267,7 @@ def runs_root(root: str | Path | None = None) -> Path:
     try:
         resolved = candidate.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: the runs directory {str(candidate)!r} cannot be resolved "
             f"({type(exc).__name__}: {exc})",
@@ -275,7 +275,7 @@ def runs_root(root: str | Path | None = None) -> Path:
             context={"runs_dir": str(candidate)},
         ) from exc
     if resolved != base and base not in resolved.parents:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: the runs directory resolves outside the code workspace "
             f"({str(resolved)!r}) — a link cannot be used to serve files from elsewhere",
@@ -283,7 +283,7 @@ def runs_root(root: str | Path | None = None) -> Path:
             context={"runs_dir": str(resolved), "workspace": str(base)},
         )
     if candidate.is_symlink():
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: the runs directory {str(candidate)!r} is a symbolic link — artifacts "
             "are only ever served from the configured workspace itself",
@@ -291,7 +291,7 @@ def runs_root(root: str | Path | None = None) -> Path:
             context={"runs_dir": str(candidate)},
         )
     if resolved.exists() and not resolved.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"artifacts: {str(resolved)!r} exists but is not a directory",
             how_to_fix="remove the file at that path, or repoint CODE_WORKSPACE_DIR",
@@ -311,7 +311,7 @@ def validate_run_id(run_id: object) -> str:
     look-alikes cannot pass, so a hostile id can never name a directory outside `runs/`.
     """
     if not isinstance(run_id, str) or not run_id.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: run_id must be a non-blank string (got {type(run_id).__name__})",
             how_to_fix="pass the numeric run id from GET /api/v1/runs",
@@ -319,7 +319,7 @@ def validate_run_id(run_id: object) -> str:
         )
     name = run_id.strip()
     if not RUN_ID_PATTERN.fullmatch(name):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: run_id {run_id!r} is not a safe run id",
             how_to_fix="pass 1-64 letters, digits, '_' or '-' (no separators, dots or '..')",
@@ -337,7 +337,7 @@ def relative_parts(path: object) -> list[str]:
     backslash is accepted as a separator and normalised, exactly as `code_write` accepts it.
     """
     if not isinstance(path, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: 'path' must be a string (got {type(path).__name__})",
             how_to_fix="pass the artifact's path as returned by GET /api/v1/artifacts/{run_id}",
@@ -345,14 +345,14 @@ def relative_parts(path: object) -> list[str]:
         )
     text = path.strip()
     if not text:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "artifacts: a non-empty relative 'path' is required",
             how_to_fix="pass the artifact's path as returned by GET /api/v1/artifacts/{run_id}",
             context={"field": "path"},
         )
     if any(ord(ch) < 32 for ch in text):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "artifacts: 'path' contains control characters (including NUL)",
             how_to_fix="pass a plain relative path",
@@ -360,7 +360,7 @@ def relative_parts(path: object) -> list[str]:
         )
     normalized = text.replace("\\", "/")
     if normalized.startswith("/"):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: absolute paths are refused ({path!r}) — only paths inside the run "
             "workspace are served",
@@ -368,7 +368,7 @@ def relative_parts(path: object) -> list[str]:
             context={"field": "path", "path": text[:200]},
         )
     if _DRIVE_PREFIX.match(normalized):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: absolute (drive-letter) paths are refused ({path!r}) — only paths "
             "inside the run workspace are served",
@@ -377,7 +377,7 @@ def relative_parts(path: object) -> list[str]:
         )
     parts = [part for part in normalized.split("/") if part not in ("", ".")]
     if any(part == ".." for part in parts):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: '..' path traversal is refused ({path!r}) — a path can never leave the "
             "run workspace",
@@ -385,7 +385,7 @@ def relative_parts(path: object) -> list[str]:
             context={"field": "path", "path": text[:200]},
         )
     if not parts:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {path!r} names no file",
             how_to_fix="pass the artifact's path as returned by GET /api/v1/artifacts/{run_id}",
@@ -395,7 +395,7 @@ def relative_parts(path: object) -> list[str]:
     if too_long or len(normalized) > MAX_PATH_CHARS:
         # A component over NAME_MAX cannot name a real file, and leaving it unbounded lets an
         # `OSError: File name too long` escape from `exists()`/`stat()` as an UNNAMED 500.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: 'path' is too long (max {MAX_PATH_CHARS} chars, "
             f"{MAX_PATH_COMPONENT_CHARS} per component)",
@@ -426,7 +426,7 @@ def workspace_exists(run_id: object, root: str | Path | None = None) -> bool:
     try:
         return (runs / name).exists()
     except OSError as exc:  # a path the OS cannot even stat
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: run workspace {name!r} cannot be read ({type(exc).__name__}: {exc})",
             how_to_fix="check that the code workspace directory is readable by this process",
@@ -447,14 +447,14 @@ def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
     try:
         exists = candidate.exists()
     except OSError as exc:  # a path the OS cannot even stat
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: run workspace {name!r} cannot be read ({type(exc).__name__}: {exc})",
             how_to_fix="check that the code workspace directory is readable by this process",
             context={"run_id": name},
         ) from exc
     if not exists:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"artifacts: run {name} has no workspace — nothing was written for it",
             how_to_fix=(
@@ -470,7 +470,7 @@ def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
     try:
         resolved = candidate.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: run workspace {name!r} cannot be resolved "
             f"({type(exc).__name__}: {exc})",
@@ -478,7 +478,7 @@ def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
             context={"run_id": name},
         ) from exc
     if resolved != runs and runs not in resolved.parents:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: run workspace {name!r} resolves outside the runs directory — a link "
             "or junction cannot be used to serve files from elsewhere",
@@ -486,7 +486,7 @@ def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
             context={"run_id": name, "resolved": str(resolved)},
         )
     if not resolved.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {name!r} exists in the runs directory but is not a directory",
             how_to_fix="remove the conflicting file, or pass a real run id",
@@ -512,14 +512,14 @@ def resolve_artifact(
     try:
         resolved = candidate.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: path {path!r} cannot be resolved ({type(exc).__name__}: {exc})",
             how_to_fix="pass a plain relative path inside the run workspace",
             context={"run_id": name, "path": str(path)[:200]},
         ) from exc
     if resolved != directory and directory not in resolved.parents:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: path {path!r} escapes the run workspace — absolute paths, '..' and "
             "symlink escapes are refused",
@@ -534,7 +534,7 @@ def resolve_artifact(
     except OSError as exc:
         # `Path.exists()` only swallows a short errno list; ENAMETOOLONG/EACCES propagate.  They
         # are filesystem faults, so they are the NAMED E_STORAGE refusal, never an unnamed 500.
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: {relative!r} in run {name} cannot be inspected "
             f"({type(exc).__name__}: {exc.strerror or exc})",
@@ -542,14 +542,14 @@ def resolve_artifact(
             context={"run_id": name, "path": relative[:200]},
         ) from exc
     if not exists:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"artifacts: no file {relative!r} exists in run {name}'s workspace",
             how_to_fix="list the run's artifacts first (GET /api/v1/artifacts/{run_id})",
             context={"run_id": name, "path": relative},
         )
     if is_link:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {relative!r} is a symbolic link — artifacts are served as regular "
             "files only, and a link is never followed",
@@ -557,7 +557,7 @@ def resolve_artifact(
             context={"run_id": name, "path": relative},
         )
     if not is_file:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {relative!r} is not a regular file (it is a directory or a device)",
             how_to_fix="pass the path of a file; the listing shows which entries are files",
@@ -574,7 +574,7 @@ def _stat(path: Path, *, run_id: str, relative: str) -> os.stat_result:
     try:
         return path.stat()
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: {relative!r} in run {run_id} cannot be read "
             f"({type(exc).__name__}: {exc})",
@@ -657,7 +657,7 @@ def _walk(
             if truncated and (not collect or len(files) >= limit):
                 break
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: run {run_id}'s workspace cannot be read ({type(exc).__name__}: {exc})",
             how_to_fix="check that the code workspace directory is readable by this process",
@@ -695,7 +695,7 @@ def list_runs(root: str | Path | None = None, *, limit: int = MAX_RUNS) -> Artif
             reverse=True,
         )
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: the runs directory cannot be listed ({type(exc).__name__}: {exc})",
             how_to_fix="check that the code workspace directory is readable by this process",
@@ -790,7 +790,7 @@ def read_artifact_text(
     artifact = resolve_artifact(run_id, path, root)
     stat = _stat(artifact.absolute, run_id=artifact.run_id, relative=artifact.path)
     if stat.st_size > max_bytes:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {artifact.path!r} is {stat.st_size} bytes, over the {max_bytes}-byte "
             "cap for an inline preview",
@@ -805,7 +805,7 @@ def read_artifact_text(
     try:
         data = artifact.absolute.read_bytes()
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: {artifact.path!r} in run {artifact.run_id} cannot be read "
             f"({type(exc).__name__}: {exc})",
@@ -813,7 +813,7 @@ def read_artifact_text(
             context={"run_id": artifact.run_id, "path": artifact.path},
         ) from exc
     if b"\x00" in data:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {artifact.path!r} contains a NUL byte — it is binary, not text",
             how_to_fix="download it instead (GET /api/v1/artifacts/{run_id}/download)",
@@ -822,7 +822,7 @@ def read_artifact_text(
     try:
         text = data.decode(TEXT_ENCODING)
     except UnicodeDecodeError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {artifact.path!r} is not valid {TEXT_ENCODING} text "
             f"({exc.reason} at byte {exc.start})",
@@ -854,7 +854,7 @@ def read_artifact_bytes(
     artifact = resolve_artifact(run_id, path, root)
     stat = _stat(artifact.absolute, run_id=artifact.run_id, relative=artifact.path)
     if stat.st_size > max_bytes:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"artifacts: {artifact.path!r} is {stat.st_size} bytes, over the {max_bytes}-byte "
             "cap for one download",
@@ -872,7 +872,7 @@ def read_artifact_bytes(
     try:
         data = artifact.absolute.read_bytes()
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"artifacts: {artifact.path!r} in run {artifact.run_id} cannot be read "
             f"({type(exc).__name__}: {exc})",

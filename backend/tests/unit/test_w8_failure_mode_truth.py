@@ -42,7 +42,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import utcnow
-from app.core.errors import E_CONFIG, E_INTEGRATION, PolsiaError
+from app.core.errors import E_CONFIG, E_INTEGRATION, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.models.report import ActivityLog
 from app.models.task import AgentRun
@@ -308,7 +308,7 @@ async def test_a_provider_refusal_leaves_the_invoice_exactly_as_it_was(
     await db.commit()
     invoice_id = invoice.id
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await invoice_service.send_invoice(db, invoice_id)
     assert excinfo.value.code == E_INTEGRATION
     assert len(calls) == 1, "the provider WAS reached; the refusal is its answer"
@@ -426,7 +426,7 @@ async def test_the_persisted_preflight_cannot_be_replayed_as_a_live_one(
 
     context, _address = _run_context_with_suppression()
     stored_block = dict(sanitize_persisted_context(context)[COMPLIANCE_CONTEXT_KEY])
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await send_compliant_email(
             None,
             to="someone@example.com",
@@ -551,7 +551,7 @@ def test_the_migration_chain_installs_and_reverses_the_evidence_rule(tmp_path, m
 # ── 5b. the same revision rendered offline (`--sql`, no connection) ───────────────────────────
 
 
-_PG_OFFLINE_URL = "postgresql+asyncpg://polsia:polsia_password@localhost:5432/polsia"
+_PG_OFFLINE_URL = "postgresql+asyncpg://meridian:meridian_password@localhost:5432/meridian"
 
 
 def _offline_cfg(url: str):

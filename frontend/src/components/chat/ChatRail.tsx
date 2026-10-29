@@ -19,7 +19,7 @@ import { Button } from "@/components/ui";
  * row grammar follows ActivityFeed (white card, 1px hairline, mono-caps kicker, serif body,
  * mono timestamp); every line of copy is ours and only rendered when the data backs it.
  *
- * The transcript renders what the wire sent: owner right / polsia left, `relativeTime` visible
+ * The transcript renders what the wire sent: owner right / meridian left, `relativeTime` visible
  * with `absoluteStamp` in the `title`, and the shared honest placeholders (a null timestamp is
  * "date unknown", never "Invalid Date"). A refusal from the 201 body renders the
  * `ApiError.display` convention — code + message + fix hint. Everything else (skeleton, named
@@ -35,7 +35,7 @@ function refusalDisplay(refusal: ChatRefusal): string {
     : `${refusal.code}: ${refusal.message}`;
 }
 
-const ROLE_LABEL: Record<string, string> = { owner: "You", polsia: "Meridian" };
+const ROLE_LABEL: Record<string, string> = { owner: "You", meridian: "Meridian" };
 
 /** F-46 — one stored instruction that is NOT the live gate says so, at the row it belongs to.
  *

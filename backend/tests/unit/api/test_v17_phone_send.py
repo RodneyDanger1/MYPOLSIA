@@ -140,7 +140,7 @@ async def test_a_refused_attempts_audit_row_is_committed_before_the_refusal_rais
     import app.models  # noqa: F401  — registers every table on Base.metadata
     from app.api.v1 import phone
     from app.core.database import Base
-    from app.core.errors import E_SANDBOX_BLOCKED, PolsiaError
+    from app.core.errors import E_SANDBOX_BLOCKED, MeridianError
     from app.models.report import ActivityLog
 
     engine = create_async_engine(
@@ -150,7 +150,7 @@ async def test_a_refused_attempts_audit_row_is_committed_before_the_refusal_rais
         await conn.run_sync(Base.metadata.create_all)
     Session = async_sessionmaker(engine, expire_on_commit=False)
 
-    refusal = PolsiaError(E_SANDBOX_BLOCKED, "drill refusal")
+    refusal = MeridianError(E_SANDBOX_BLOCKED, "drill refusal")
     async with Session() as writer:
         await phone._audit_send_attempt(writer, {"to": "11", "body": "x" * 7}, None, refusal)
         await writer.rollback()  # exactly what get_db does when the route raises

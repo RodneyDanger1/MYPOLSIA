@@ -4,7 +4,7 @@ Why this module exists (original-vs-ours, engine side — GAP-LEDGER row E10):
 
 * Original evidence: the task detail modal carries an outlined ``[⟳ REPEAT]`` control on a
   Completed task (``agent2-code/cap-06.md``); tasks "run on the nightly cycle, or you can run
-  them right away" (<https://help.polsia.com/create-a-task>, fetched 2026-10-15).
+  them right away" (<https://help.meridian.com/create-a-task>, fetched 2026-10-15).
 * Ours today: ``/api/v1/tasks`` exposes list / get / create / status-patch
   (``app/api/v1/tasks.py:72/:86/:113/:131``) — a completed task has no re-run seam, so the
   card's REPEAT has nothing to call.
@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, NoReturn
 
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.task import TaskStatus
 
 #: Only a COMPLETED task may be repeated (cap-06.md shows REPEAT on Completed).
@@ -54,7 +54,7 @@ _STATUS_VALUES = tuple(member.value for member in TaskStatus)
 
 
 def _refuse(field: str, value: object, expected: str, *, how_to_fix: str = "") -> NoReturn:
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"task repeat refused: {field} {value!r} is invalid: {expected}",
         how_to_fix=how_to_fix or ERROR_HINTS[E_VALIDATION],
@@ -96,7 +96,7 @@ def repeat_spec(source: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(status, str) or status not in _STATUS_VALUES:
         _refuse("status", status, f"one of the task statuses ({', '.join(_STATUS_VALUES)})")
     if status != REPEATABLE_STATUS:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"task {task_id} is {status!r} — only a completed task can be repeated",
             how_to_fix=_ALTERNATIVE.get(status, "check the task's status before repeating"),

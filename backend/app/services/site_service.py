@@ -94,7 +94,7 @@ from urllib.parse import quote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_STORAGE, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.services.company_service import get_company
 from app.services.copy_claims import PRIVATE, Finding, blocking, census_profile
@@ -171,7 +171,7 @@ def derive_slug(title: str | None, *, fallback: str) -> str:
 def validate_slug(slug: str) -> str:
     """The slug VERBATIM when it matches the frozen contract, else the named `E_VALIDATION`."""
     if not isinstance(slug, str) or not SLUG_PATTERN.fullmatch(slug):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site slug {slug!r} is not a valid slug",
             how_to_fix=(
@@ -814,7 +814,7 @@ def validate_template(template: str | None) -> str:
     """The preset VERBATIM when it is one of the frozen ids, else the named `E_VALIDATION`."""
     value = _clean(template) or DEFAULT_TEMPLATE
     if value not in TEMPLATES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site template {template!r} is not one of: {', '.join(TEMPLATES)}",
             how_to_fix=f"choose one of the template presets ({', '.join(TEMPLATES)}); omit it for "
@@ -837,7 +837,7 @@ def validate_custom_domain(domain: str | None) -> str | None:
     if domain is None:
         return None
     if not isinstance(domain, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"custom domain {domain!r} is not a hostname string",
             how_to_fix="send a bare hostname such as example.com, or null for none",
@@ -878,7 +878,7 @@ def validate_custom_domain(domain: str | None) -> str | None:
                     break
 
     if reason:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"custom domain {domain!r} is not a bare hostname ({reason})",
             how_to_fix="enter a bare hostname such as example.com — no scheme, path, port, spaces "
@@ -898,7 +898,7 @@ def _normalise_base_url(base_url: str | None) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site base url {base_url!r} is not an absolute http(s) URL",
             how_to_fix="supply the request's own base URL (http://host/), with no query or fragment",
@@ -919,7 +919,7 @@ def render_sitemap(base_url: str, slug: str, pages: Sequence[str] = PAGES) -> st
     validated = validate_slug(slug)
     for page in pages:
         if page not in PAGES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"sitemap page {page!r} is not one of the generated pages",
                 how_to_fix=f"list only {', '.join(PAGES)}",
@@ -1226,7 +1226,7 @@ def render_pages(
     }
     if base_url is not None:
         if slug is None:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "a sitemap needs the site's slug",
                 how_to_fix="pass the validated slug alongside base_url",
@@ -1269,7 +1269,7 @@ def _load_meta(slug: str, root: Path | None) -> dict[str, Any]:
     sites_root = _resolve_root(root)
     path = _meta_path(validated, sites_root)
     if not path.is_file():
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"no site exists for slug {validated!r}",
             how_to_fix="list the sites (GET /api/v1/sites) and use a slug it returns, or create one",
@@ -1280,7 +1280,7 @@ def _load_meta(slug: str, root: Path | None) -> dict[str, Any]:
         if not isinstance(meta, dict):
             raise ValueError("meta.json is not a JSON object")
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"site {validated!r} has an unreadable meta.json ({type(exc).__name__})",
             how_to_fix="re-create the site (POST /api/v1/sites with a new slug); the files are intact",
@@ -1319,7 +1319,7 @@ def read_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         # A meta.json this module did not write (e.g. `"bytes": "lots"`) is not a site the API can
         # honestly describe: the same named refusal as an unreadable file, never a raw 500.
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"site {validated!r} has an unreadable meta.json ({type(exc).__name__})",
             how_to_fix="re-create the site (POST /api/v1/sites with a new slug); the files are intact",
@@ -1375,7 +1375,7 @@ def record_deploy(
     except OSError as exc:
         with contextlib.suppress(OSError):  # best-effort cleanup of the temp file
             temp.unlink(missing_ok=True)
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not record the deploy state for site {slug!r}: {type(exc).__name__}: {exc}",
             how_to_fix=f"make sure the sites directory is writable ({site_dir}) and retry",
@@ -1398,7 +1398,7 @@ def _resolve_site_directory(slug: str, *, root: Path | None) -> tuple[str, Path]
     sites_root = _resolve_root(root)
     directory = sites_root / validated
     if directory.is_symlink():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site directory for slug {validated!r} is a symbolic link; refusing to follow it",
             how_to_fix="remove the link and let Meridian own the site directory, or pick another slug",
@@ -1408,14 +1408,14 @@ def _resolve_site_directory(slug: str, *, root: Path | None) -> tuple[str, Path]
         resolved_root = sites_root.resolve()
         resolved = directory.resolve()
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site path for slug {validated!r} could not be resolved ({type(exc).__name__})",
             how_to_fix="check the sites directory and retry",
             context={"slug": validated, "path": str(directory)},
         ) from exc
     if resolved.parent != resolved_root or resolved.name != validated:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site path for slug {validated!r} resolves outside the sites directory",
             how_to_fix="use a slug the sites directory owns; a site path is never followed elsewhere",
@@ -1470,7 +1470,7 @@ def _write_text_atomic(path: Path, content: str) -> int:
     except OSError as exc:
         with contextlib.suppress(OSError):  # best-effort cleanup of the temp file
             temp.unlink(missing_ok=True)
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not write the site file {path.name!r}: {type(exc).__name__}: {exc}",
             how_to_fix=f"make sure the site directory is writable ({path.parent}) and retry",
@@ -1492,7 +1492,7 @@ def delete_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
     """
     validated, directory = _resolve_site_directory(slug, root=root)
     if not (directory / "meta.json").is_file():
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"no site exists for slug {validated!r}",
             how_to_fix="list the sites (GET /api/v1/sites) and use a slug it returns",
@@ -1504,7 +1504,7 @@ def delete_site(slug: str, *, root: Path | None = None) -> dict[str, Any]:
         # readable and retryable instead of vanishing from the list while its files remain.
         _remove_tree(directory, defer=frozenset({"meta.json"}))
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not delete site {validated!r}: {type(exc).__name__}: {exc}",
             how_to_fix=f"make sure the site directory is writable ({directory}) and retry",
@@ -1534,7 +1534,7 @@ async def regenerate_site(
     """
     company = await get_company(db)
     if company is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "no company profile exists, so there is nothing to rebuild a site from",
             how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
@@ -1542,7 +1542,7 @@ async def regenerate_site(
         )
     fields = _profile_fields(company)
     if not fields["name"]:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the company profile has no name, so the page has no author to name",
             how_to_fix="set the company name in settings (PUT /api/v1/config) and retry",
@@ -1629,7 +1629,7 @@ def list_sites(*, slug: str | None = None, root: Path | None = None) -> list[dic
             continue
         try:
             rows.append(read_site(directory.name, root=sites_root))
-        except PolsiaError:
+        except MeridianError:
             continue  # corrupt meta.json: not a site this list can honestly describe
     rows.sort(key=lambda row: row["slug"])
     rows.sort(key=lambda row: row["created_at"], reverse=True)
@@ -1663,7 +1663,7 @@ async def generate_site(
     """
     company = await get_company(db)
     if company is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "no company profile exists, so there is nothing to build a site from",
             how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
@@ -1671,7 +1671,7 @@ async def generate_site(
         )
     fields = _profile_fields(company)
     if not fields["name"]:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the company profile has no name, so the page has no author to name",
             how_to_fix="set the company name in settings (PUT /api/v1/config) and retry",
@@ -1680,7 +1680,7 @@ async def generate_site(
 
     page_title = _clean(title) or fields["name"]
     if len(page_title) > MAX_TITLE:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site title is {len(page_title)} characters; the limit is {MAX_TITLE}",
             how_to_fix=f"shorten the title to {MAX_TITLE} characters or fewer",
@@ -1688,7 +1688,7 @@ async def generate_site(
         )
     page_tagline = _clean(tagline)
     if len(page_tagline) > MAX_TAGLINE:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site tagline is {len(page_tagline)} characters; the limit is {MAX_TAGLINE}",
             how_to_fix=f"shorten the tagline to {MAX_TAGLINE} characters or fewer",
@@ -1705,7 +1705,7 @@ async def generate_site(
     sites_root.mkdir(parents=True, exist_ok=True)
     site_dir = sites_root / slug_text
     if site_dir.exists():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site slug {slug_text!r} already exists",
             how_to_fix="choose a different slug or title; an existing site is never overwritten",
@@ -1724,14 +1724,14 @@ async def generate_site(
     try:
         site_dir.mkdir(parents=False, exist_ok=False)
     except FileExistsError as exc:  # reached only by a concurrent create of the same slug
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site slug {slug_text!r} already exists",
             how_to_fix="choose a different slug or title; an existing site is never overwritten",
             context={"slug": slug_text, "reason": "collision"},
         ) from exc
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not create the site directory {slug_text!r}: {type(exc).__name__}: {exc}",
             how_to_fix=f"make sure the sites directory is writable ({sites_root}) and retry",
@@ -1765,7 +1765,7 @@ async def generate_site(
             site_dir / "meta.json",
             json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         )
-    except PolsiaError:
+    except MeridianError:
         # A create that cannot finish leaves NOTHING behind: `generate_site` refuses an existing
         # directory as a slug collision and `delete_site` refuses a directory with no
         # `meta.json`, so a half-written one would reserve this slug forever.  Only the directory

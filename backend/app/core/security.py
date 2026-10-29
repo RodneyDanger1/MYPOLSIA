@@ -6,7 +6,7 @@ import secrets
 from fastapi import Header
 
 from app.config import settings
-from app.core.errors import E_AUTH, PolsiaError
+from app.core.errors import E_AUTH, MeridianError
 
 
 def _matches(provided: str | None) -> bool:
@@ -42,7 +42,7 @@ async def verify_api_key(
         # on, `http_status_for(E_AUTH)` is 401, and the app adds the WWW-Authenticate challenge back
         # (main.py). This path used to raise a bare HTTPException, which made a wrong key the one
         # failure that could not name itself — an audit found E_AUTH had no raise site anywhere.
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the X-API-Key header is missing or does not match the configured key",
         )
@@ -57,7 +57,7 @@ async def check_api_key(x_api_key: str | None) -> None:
     parity suite and as the second supported form of the key check.
     """
     if not _matches(x_api_key):
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the X-API-Key header is missing or does not match the configured key",
         )

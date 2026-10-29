@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import app.config as app_config
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 from celery_app.tasks import maintenance
 
 PAUSED_PHRASE = "company paused by owner"
@@ -152,7 +152,7 @@ def test_the_creation_funnel_refuses_by_name_and_writes_no_row(queue_db):
                 dedupe_key="f2feed2:paused-funnel",
             )
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         queue_db.run(_create())
 
     assert excinfo.value.code == E_POLICY_DENIED

@@ -8,7 +8,7 @@ Removes every `[e2e-fixture]`-tagged row this suite can create, from BOTH stores
     the resolved store and the delete verifiably lands; otherwise the rows are KEPT and this script
     exits non-zero.  `CHROMA_PERSIST_DIR` / `CHROMA_COLLECTION` must point at the store the BACKEND
     writes to (when unset, both this script and the backend default to /app/data/chroma +
-    polsia_memory, which on this host is `C:/app/data/chroma`);
+    meridian_memory, which on this host is `C:/app/data/chroma`);
   * tag-scoped predicates only — the pre-existing untagged rows (e.g. "Manual ads_management run")
     cannot match, so nothing a human created is ever deleted;
   * idempotent: run it twice; the second run deletes 0.  Two-pass proof (no stack needed):
@@ -69,7 +69,7 @@ def _default_chroma_dir() -> str:
 
 
 CHROMA_DIR = os.environ.get("CHROMA_PERSIST_DIR") or _default_chroma_dir()
-CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "polsia_memory")
+CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "meridian_memory")
 
 # R-W4-2 restart marker + liveness probes (see the module docstring; policy: e2e/_restart-guard.sh).
 # The marker is resolved once, the same way as run-suite.sh/_guard.ts resolve it: explicit

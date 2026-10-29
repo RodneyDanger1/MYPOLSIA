@@ -118,19 +118,19 @@ def default_fields(**overrides: bytes) -> dict[str, bytes]:
         "Date: Tue, 27 Jul 2021 15:53:29 +0000\r\n"
         "Message-ID: <w9.sendgrid.message.0001@mail.example.com>\r\n"
         "Subject: order #9001 arrived cracked\r\n"
-        "To: support@polsia.example\r\n"
+        "To: support@meridian.example\r\n"
     )
     fields: dict[str, bytes] = {
         "headers": headers.encode(),
         "dkim": b"{@sendgrid.com : pass}",
-        "to": b"support@polsia.example",
+        "to": b"support@meridian.example",
         "from": b"Customer Name <customer@example.com>",
         "subject": b"order #9001 arrived cracked",
         "text": BODY_MARKER.encode(),
         "html": b"<div>The widget arrived cracked</div>",
         "sender_ip": b"209.85.223.169",
         "envelope": json.dumps(
-            {"to": ["support@polsia.example"], "from": "customer@example.com"}
+            {"to": ["support@meridian.example"], "from": "customer@example.com"}
         ).encode(),
         "attachments": b"1",
         "charsets": json.dumps({"text": "UTF-8", "html": "UTF-8", "subject": "UTF-8"}).encode(),
@@ -285,7 +285,7 @@ async def test_the_raw_format_email_field_supplies_the_body_and_the_message_id(
     mime = (
         "MIME-Version: 1.0\r\n"
         "From: Raw Sender <raw@example.com>\r\n"
-        "To: support@polsia.example\r\n"
+        "To: support@meridian.example\r\n"
         "Message-ID: <w9.raw.only.0002@example.com>\r\n"
         "Subject: raw format delivery\r\n"
         "Content-Type: text/plain; charset=UTF-8\r\n"
@@ -295,11 +295,11 @@ async def test_the_raw_format_email_field_supplies_the_body_and_the_message_id(
     fields = {
         "dkim": b"{@sendgrid.com : pass}",
         "email": mime.encode(),
-        "to": b"support@polsia.example",
+        "to": b"support@meridian.example",
         "from": b"Raw Sender <raw@example.com>",
         "subject": b"raw format delivery",
         "envelope": json.dumps(
-            {"to": ["support@polsia.example"], "from": "raw@example.com"}
+            {"to": ["support@meridian.example"], "from": "raw@example.com"}
         ).encode(),
         "sender_ip": b"209.85.223.169",
         "SPF": b"pass",
@@ -631,7 +631,7 @@ async def test_a_multipart_missing_a_required_field_is_a_named_422(
     if mutation == "no-from":
         # no `from` field, no `From:` header, no envelope from — nothing names a sender
         fields.pop("from")
-        fields["envelope"] = b'{"to":["support@polsia.example"],"from":""}'
+        fields["envelope"] = b'{"to":["support@meridian.example"],"from":""}'
         fields["headers"] = fields["headers"].replace(
             b"From: Customer Name <customer@example.com>\r\n", b""
         )
@@ -662,7 +662,7 @@ async def test_the_from_header_is_the_fallback_when_the_form_field_is_absent(
     """The vendor's `from` field is itself extracted from the `From:` header — both are honoured."""
     fields = default_fields()
     fields.pop("from")
-    fields["envelope"] = b'{"to":["support@polsia.example"],"from":"bounce@example.com"}'
+    fields["envelope"] = b'{"to":["support@meridian.example"],"from":"bounce@example.com"}'
     body = multipart_body(fields)
     response = await api_client.post(INBOUND_PATH, content=body, headers=signed_headers(body))
     assert response.status_code == 201, response.text[:600]
@@ -844,7 +844,7 @@ def test_the_digest_provider_id_is_stable_and_bounded() -> None:
 
     fields = {
         "from": b"Customer <customer@example.com>",
-        "to": b"support@polsia.example",
+        "to": b"support@meridian.example",
         "subject": b"s",
         "dkim": b"{@sendgrid.com : pass}",
         "headers": b"From: customer@example.com\r\n",

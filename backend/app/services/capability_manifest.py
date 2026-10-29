@@ -38,7 +38,7 @@ from typing import Any
 
 from app.agents.policy_firewall import AGENT_CAPABILITIES, AgentCapability
 from app.agents.tool_registry import TOOL_SPECS, tools_for
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 
 #: Headers the prompt blocks render — also the markers tests assert on.
 CAPABILITY_BLOCK_HEADER = "CAPABILITY MANIFEST"
@@ -100,7 +100,7 @@ def routable_agent_types() -> tuple[str, ...]:
 def _tool_entry(name: str, spec: dict | None) -> dict[str, str]:
     """One `{name, description}` row (H-C1 shape); a dangling name refuses BY NAME."""
     if spec is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"capability manifest: a firewall allowlist names tool {name!r}, but the tool "
             "registry ships no spec for it — the allowlist and the registry disagree",

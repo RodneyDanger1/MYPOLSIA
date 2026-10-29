@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, MeridianError
 from app.services import secret_store
 
 #: A clearly fake key.  Distinctive enough that "does it leak?" tests are meaningful;
@@ -76,7 +76,7 @@ def test_env_is_the_fallback_and_stored_wins_over_env(
 
 def test_blank_values_are_refused_and_nothing_is_written(key_file: Path) -> None:
     for blank in ("", "   ", "\t\n"):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             secret_store.set_deepseek_api_key(blank)
         assert excinfo.value.code == E_VALIDATION
     assert not key_file.exists()
@@ -133,7 +133,7 @@ def test_a_failed_replace_keeps_the_previous_value(
 
     monkeypatch.setattr(secret_store.os, "replace", _explode)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.set_deepseek_api_key("sk-rd9-second-value-should-not-land")
     assert excinfo.value.code == E_STORAGE
 
@@ -173,7 +173,7 @@ def test_a_corrupt_file_is_a_named_storage_refusal_not_a_silent_env_fallback(
     key_file.write_text("this is not json", encoding="utf-8")
     monkeypatch.setenv(secret_store.DEEPSEEK_ENV_VAR, FAKE_ENV_KEY)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.get_deepseek_api_key()
     assert excinfo.value.code == E_STORAGE
     # Reporting "env" here would blame the wrong credential; the store refuses instead.

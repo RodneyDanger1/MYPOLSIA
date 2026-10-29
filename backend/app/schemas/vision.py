@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 
 #: The only keys a describe body may carry.  An unknown key is refused by name so a typo
 #: (`attachmentId`) cannot silently become "neither id supplied" or, worse, be ignored.
@@ -79,8 +79,8 @@ class VisionDescriptionOut(BaseModel):
     created_at: datetime | None
 
 
-def _refuse(message: str, how_to_fix: str, **context: Any) -> PolsiaError:
-    return PolsiaError(E_VALIDATION, message, how_to_fix=how_to_fix, context=context)
+def _refuse(message: str, how_to_fix: str, **context: Any) -> MeridianError:
+    return MeridianError(E_VALIDATION, message, how_to_fix=how_to_fix, context=context)
 
 
 def parse_describe_body(payload: Any) -> VisionDescribeRequest:

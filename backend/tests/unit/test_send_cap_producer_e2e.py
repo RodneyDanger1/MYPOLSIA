@@ -34,7 +34,7 @@ import app.config as app_config
 from app.agents import integrations
 from app.agents.email_outreach.agent import EmailOutreachAgent
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.models.social import SocialPost
 from app.services import outreach_service, social_service
@@ -157,7 +157,7 @@ async def test_twitter_cap_fires_against_rows_the_real_producer_wrote(async_db_s
     agent2 = _stub_collection(SocialMediaAgent(), {"action": "post", "posts": [
         {"platform": "twitter", "content": "one too many"},
     ]})
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "12/12" in excinfo.value.message and "twitter" in excinfo.value.message
@@ -182,7 +182,7 @@ async def test_twitter_hour_cap_fires_from_fresh_rows(async_db_session, monkeypa
     agent = _stub_collection(SocialMediaAgent(), {"action": "post", "posts": [
         {"platform": "twitter", "content": "over the hour"},
     ]})
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "post"}, {"channel_sends": snapshot})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "hourly cap" in excinfo.value.message and "3/3" in excinfo.value.message
@@ -229,7 +229,7 @@ async def test_email_cap_fires_when_every_real_send_carries_the_providers_own_id
 
     # the 16th send: the existing RateCaps enforcement refuses it before any provider call
     agent = _stub_collection(EmailOutreachAgent(), _email_payload(99))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "send"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "15/15" in excinfo.value.message and "email" in excinfo.value.message

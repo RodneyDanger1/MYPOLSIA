@@ -5,7 +5,7 @@ provides MACRO context ONLY — annual US inflation, the monthly US CPI index, a
 FX rates — each section carrying its exact source URL and its own fetched_at timestamp.
 
 The three keyless sources (all curl-probed from the build box on 2026-10-14; raw excerpts in
-`polsia-work/build/ui-reverse/wave-v9/b7-economics/raw/`):
+`meridian-work/build/ui-reverse/wave-v9/b7-economics/raw/`):
 
   * World Bank API v2, indicator FP.CPI.TOTL.ZG (annual US inflation, %) — a two-element
     `[meta, rows]` array; rows arrive newest-first; **the newest year's value can be null**

@@ -34,7 +34,7 @@ from app.schemas.task import LAST_ATTEMPT_ERROR_KEY, LAST_ATTEMPT_ERROR_WIRE_CHA
 
 def _retired(**overrides) -> dict:
     record = {
-        "message": "PolsiaError: E_AGENT_BAD_OUTPUT: the reply exceeded 280 chars",
+        "message": "MeridianError: E_AGENT_BAD_OUTPUT: the reply exceeded 280 chars",
         "attempts": 2,
         "retired_at": "2026-10-29T00:51:57.351322+00:00",
         "retired_by": "update_task_status",
@@ -74,7 +74,7 @@ async def test_the_task_detail_serves_the_retired_failure_as_history(
     assert response.status_code == 200, response.text
     body = response.json()
     record = body["last_attempt_error"]
-    assert record["message"].startswith("PolsiaError: E_AGENT_BAD_OUTPUT"), record
+    assert record["message"].startswith("MeridianError: E_AGENT_BAD_OUTPUT"), record
     assert record["attempts"] == 2, record
     assert record["retired_on_status"] == "completed", record
     assert record["retired_by"] == "update_task_status", record

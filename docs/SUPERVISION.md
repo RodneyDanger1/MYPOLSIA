@@ -23,8 +23,8 @@ blank lines or unrelated functions.
   sent (the `external and sandbox_mode` leg of `::decide`).
 - **review — outbound comms and listings, bounded by the per-channel send caps.**  The day and hour
   cap DENYs live in `app/agents/policy_firewall.py::decide` and surface as `E_RATE_LIMITED`
-  (`POLSIA-E117`) through `::enforce`; a configured cap whose counter has no local source refuses by
-  name (`cap_unknown`, `POLSIA-E114`) via `app/agents/policy_firewall.py::_cap_count_unknown`;
+  (`MERIDIAN-E117`) through `::enforce`; a configured cap whose counter has no local source refuses by
+  name (`cap_unknown`, `MERIDIAN-E114`) via `app/agents/policy_firewall.py::_cap_count_unknown`;
   counters come from the shipped send tables via `app/services/channel_service.py`
   (`::channel_caps`, `::remaining_under_cap`) and are readable at `GET /api/v1/channels/caps`
   (`app/api/v1/channels.py::channel_caps`).

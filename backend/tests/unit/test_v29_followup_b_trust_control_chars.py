@@ -9,7 +9,7 @@ MEASURED DEFECT (live V29 stack, docker logs 2026-10-20)
 The chain: `trust_service._link_target` accepts the string (`urllib.parse` is permissive), the
 service even performs the DoH A/AAAA lookups, and then `_fetch_headers` builds an `httpx.Request`
 — which refuses the character BEFORE any request is sent.  `refusal_guard` translates only
-`PolsiaError`, so the caller-supplied junk leaks a 500 (and burns two DNS lookups).
+`MeridianError`, so the caller-supplied junk leaks a 500 (and burns two DNS lookups).
 
 TWO LAYERS, ONE FIX
 -------------------
@@ -24,7 +24,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.services import trust_service
 
 LINK_PATH = "/api/v1/trust/link"
@@ -88,7 +88,7 @@ def test_check_link_refuses_a_control_character_at_the_service_boundary(monkeypa
     _stub_dns(monkeypatch)
     _no_http(monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         trust_service.check_link(CONTROL_URL)
 
     assert caught.value.code == E_VALIDATION

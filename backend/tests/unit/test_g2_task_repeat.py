@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.task import TaskStatus
 from app.services.task_repeat import REPEATABLE_STATUS, repeat_spec, repeatable
 
@@ -93,7 +93,7 @@ def test_repeatable_helper_matches_the_contract() -> None:
 
 def test_non_completed_states_refuse_by_name_with_the_one_alternative() -> None:
     for status, keyword in _ALTERNATIVE_KEYWORDS.items():
-        with pytest.raises(PolsiaError) as refusal:
+        with pytest.raises(MeridianError) as refusal:
             repeat_spec(_completed(status=status))
         assert refusal.value.code == E_VALIDATION, status
         assert refusal.value.how_to_fix, status
@@ -112,7 +112,7 @@ def test_malformed_source_refuses_by_name() -> None:
         _completed(status=None),
         _completed(status="mystery_state"),
     ):
-        with pytest.raises(PolsiaError) as refusal:
+        with pytest.raises(MeridianError) as refusal:
             repeat_spec(bad)
         assert refusal.value.code == E_VALIDATION
         assert refusal.value.how_to_fix

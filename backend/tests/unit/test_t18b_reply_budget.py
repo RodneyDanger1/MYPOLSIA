@@ -1,7 +1,7 @@
 """T18b (FU-2) — the customer_support per-run reply budget of 10 (D22, dossier §8).
 
 The live product documents "One run answers up to 10 unanswered emails and uses one credit"
-(`polsia-behavior-dossier.md` §8).  W2 R-W2-1 established (and this lane re-verified BEFORE
+(`meridian-behavior-dossier.md` §8).  W2 R-W2-1 established (and this lane re-verified BEFORE
 editing — raw evidence `wave-W5/raw/fu2_verify_greps.txt`) that NO per-run counter existed
 anywhere: greps for `per_run|PER_RUN|per-run` over the CS agent, `side_effects.py`,
 `policy_firewall.py`, `config.py` and `agent_tasks.py` return nothing, and the only bound in the
@@ -49,7 +49,7 @@ class _FirewallSpy:
             allowed=False,
             sandboxed=True,
             requires_approval=False,
-            policy_code="POLSIA-E114",
+            policy_code="MERIDIAN-E114",
             e_code="E_SANDBOX_BLOCKED",
             reason="test double: sandbox refusal",
             audit={"sandbox": True},

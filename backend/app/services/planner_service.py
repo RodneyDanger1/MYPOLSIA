@@ -7,7 +7,7 @@ Implements plan §9 B1 (rules a-e) behind the frozen contract in `app.schemas.pl
     the V8/C5 `RESEARCH_FETCH_BUDGET` is checked post-hoc with the SAME `research_budget_violation`
     helper, and an over-budget run records ONE honest `research_budget_exceeded` activity row —
     tier (a), code-gap #11: recorded, never silently overrun).  The MODEL step is the new
-    `company_planner` agent through `BasePolsiaAgent.collect_structured` — the same callable
+    `company_planner` agent through `BaseMeridianAgent.collect_structured` — the same callable
     every agent uses to reach the model.  Python then enforces the who-pays pre-gate
     (422 `E_VALIDATION`), computes the rubric + gates, and strips uncited claims.  propose
     writes ONE activity row — the column-free ledger this wave's dunning plan establishes
@@ -62,7 +62,7 @@ from app.core.errors import (
     E_TASK_CLAIMED,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.company import CompanyConfig
 from app.models.report import ActivityLog
@@ -338,7 +338,7 @@ def require_who_pays(idea: dict[str, Any], index: int) -> None:
     if not str(idea.get("channel") or "").strip():
         missing.append("channel")
     if missing:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"planner candidate #{index} ({idea.get('name') or 'unnamed'}) is missing who-pays "
             f"prerequisites: {', '.join(missing)}",
@@ -360,7 +360,7 @@ def _dispatch_gate(agent_type: str) -> None:
     (kill switch freeze/throttle, the owner's `dispatch_paused` switch, and the spawn-level
     safety preflight over the CLI binary/auth facts a dispatch would actually need).
 
-    MEASURED before this call existed: with `POLSIA_KILL_SWITCH=freeze`, `_proposal_sync` still
+    MEASURED before this call existed: with `MERIDIAN_KILL_SWITCH=freeze`, `_proposal_sync` still
     constructed and ran `CompanyPlannerAgent` — the freeze only happened to be caught by the
     separate per-step budget gate (`_gate_planner_budget`, which maps a freeze to `BudgetStop`),
     and the safety legs were never asked at all.  So "the fleet gates run before anything is
@@ -384,7 +384,7 @@ def _dispatch_gate(agent_type: str) -> None:
     problems = dispatch_preflight(agent_type)
     if not problems:
         return
-    raise PolsiaError(
+    raise MeridianError(
         E_POLICY_DENIED,
         f"planner step refused for {agent_type!r} before dispatch: {'; '.join(problems)}",
         how_to_fix=ERROR_HINTS.get(E_POLICY_DENIED, ""),
@@ -473,7 +473,7 @@ async def _gate_planner_budget(db: AsyncSession, agent_type: str, *, step: str) 
             agent_spent_usd=float(truth.per_agent.get(agent_type, Decimal("0"))),
         )
     except BudgetStop as exc:
-        raise PolsiaError(
+        raise MeridianError(
             exc.code,
             f"planner {step} refused before dispatch: {exc.message}",
             how_to_fix=ERROR_HINTS.get(exc.code, ""),
@@ -491,7 +491,7 @@ async def _run_planner_step(fn, *args: Any, step: str) -> dict[str, Any]:
         async with asyncio.timeout(PLANNER_STEP_TIMEOUT_SECONDS):
             return await asyncio.to_thread(fn, *args)
     except TimeoutError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_TIMEOUT,
             f"the planner {step} step exceeded the {PLANNER_STEP_TIMEOUT_SECONDS:g}s bound",
             how_to_fix=(
@@ -571,7 +571,7 @@ async def propose(db: AsyncSession) -> dict[str, Any]:
     """
     global _PROPOSE_IN_FLIGHT
     if _PROPOSE_LOCK.locked() or _PROPOSE_IN_FLIGHT:
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_CLAIMED,
             "a planner proposal is already running; a concurrent second run would double "
             "the model spend for a duplicate answer",
@@ -590,7 +590,7 @@ async def _propose_once(db: AsyncSession) -> dict[str, Any]:
     """The body of `propose` (see its docstring for the guards) — fetch, model, rubric, ledger."""
     company = await get_company(db)
     if company is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             "the planner has no company to plan for: no company_config row exists",
             how_to_fix="seed the company first (make seed or PUT /api/v1/config), then propose",
@@ -621,7 +621,7 @@ async def _propose_once(db: AsyncSession) -> dict[str, Any]:
     raw_ideas = draft.get("ideas") if isinstance(draft, dict) else None
     ideas = [idea for idea in (raw_ideas or []) if isinstance(idea, dict)]
     if not (MIN_CANDIDATES <= len(ideas) <= MAX_CANDIDATES):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the planner proposed {len(ideas)} candidate(s); the contract is "
             f"{MIN_CANDIDATES}-{MAX_CANDIDATES}",
@@ -660,7 +660,7 @@ async def confirm(db: AsyncSession, candidate_id: str) -> bool:
     """Write the chosen candidate into `company_config.confirmed_idea` (and nothing else)."""
     company = await get_company(db)
     if company is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             "the planner has no company to confirm an idea for: no company_config row exists",
             how_to_fix="seed the company first (make seed or PUT /api/v1/config)",
@@ -675,7 +675,7 @@ async def confirm(db: AsyncSession, candidate_id: str) -> bool:
         what="the latest planner proposal",
     )
     if latest is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             "there is no planner proposal on record to confirm",
             how_to_fix="call POST /api/v1/planner/propose first, then confirm one of its ids",
@@ -691,7 +691,7 @@ async def confirm(db: AsyncSession, candidate_id: str) -> bool:
         None,
     )
     if match is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"candidate id {candidate_id!r} is not in the latest proposal",
             how_to_fix=(

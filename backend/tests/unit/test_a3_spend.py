@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.database import utcnow
-from app.core.errors import E_BUDGET_EXCEEDED, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, MeridianError
 from app.core.timeutil import today_in
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, StripeEvent
@@ -292,7 +292,7 @@ async def test_the_gate_refuses_a_finished_run_with_no_cost(async_db_session):
     async_db_session.add_all([_run(cost="3.0000", finished=True), _run(cost=None, finished=True)])
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service._gate_planner_budget(
             async_db_session, "company_planner", step="propose"
         )
@@ -343,7 +343,7 @@ async def test_a_day_of_only_unpriced_runs_is_unknown_not_zero(async_db_session)
     assert truth.total is None
     assert truth.per_agent == {}, "no fabricated $0.00 per-agent entry"
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service._gate_planner_budget(
             async_db_session, "company_planner", step="propose"
         )
@@ -416,7 +416,7 @@ async def test_the_propose_route_refuses_before_any_agent_work(
     async_db_session.add(_run(cost=None, finished=True))
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service.propose(async_db_session)
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED

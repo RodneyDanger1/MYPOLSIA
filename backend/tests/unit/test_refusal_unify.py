@@ -1,7 +1,7 @@
 """RD4 item 4 (D5) — one wire shape for a refusal: coded `HTTPException`s reach the envelope.
 
 Audit §2.3: the envelope `{"ok": false, "error": {code, message, how_to_fix, context}}`
-(`errors.to_http_detail`) was emitted by the app's `PolsiaError` handler, while a CODED
+(`errors.to_http_detail`) was emitted by the app's `MeridianError` handler, while a CODED
 `HTTPException` detail — what `refusal_guard()` (deps.py) and the direct raises in tasks.py put on
 the wire — was serialized by FastAPI's default handler as `{"detail": {...}}`.  The frontend's
 `isRefusal` parses the envelope only, so those fully-named refusals surfaced as raw JSON.
@@ -9,7 +9,7 @@ the wire — was serialized by FastAPI's default handler as `{"detail": {...}}`.
 Pinned here, through the REAL app:
   * a coded detail (task 404, stripe event without id) → the envelope;
   * a codeless detail (plain string, validation array, route miss) → UNCHANGED;
-  * the `PolsiaError` path (auth) → unchanged, envelope + challenge, no double-wrap.
+  * the `MeridianError` path (auth) → unchanged, envelope + challenge, no double-wrap.
 
 RED leg (measured this session; lane receipt build/RD4-unwired/RECEIPT.md): neutralising the
 `StarletteHTTPException` handler registration makes `test_a_coded_http_exception_is_wrapped...` fail
@@ -163,7 +163,7 @@ async def test_a_validation_error_keeps_its_detail_array(api_client, auth_header
 
 
 @pytest.mark.asyncio
-async def test_the_polsiaerror_path_is_not_double_wrapped(api_client):
+async def test_the_meridianerror_path_is_not_double_wrapped(api_client):
     """The named-refusal path keeps its own handler: envelope + challenge, no nesting."""
     resp = await api_client.get("/api/v1/config", headers={"X-API-Key": "definitely-wrong"})
 

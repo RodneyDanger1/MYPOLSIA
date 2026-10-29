@@ -31,7 +31,7 @@ import pytest
 
 from app.agents import tool_registry
 from app.config import settings
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import artifact_service as artifacts
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -82,9 +82,9 @@ def _link_dir(link: Path, target: Path) -> None:
     pytest.fail("could not create a directory link; the escape proof cannot run on this host")
 
 
-def _refusal(call) -> PolsiaError:
-    """Run `call`, assert it refuses with a `PolsiaError`, and return it."""
-    with pytest.raises(PolsiaError) as caught:
+def _refusal(call) -> MeridianError:
+    """Run `call`, assert it refuses with a `MeridianError`, and return it."""
+    with pytest.raises(MeridianError) as caught:
         call()
     return caught.value
 

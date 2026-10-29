@@ -11,7 +11,7 @@ the ONLY authority.  There is NO prose scan — the trial's `status: ok` runs ea
 `notes` caveats, so a keyword rule would relabel genuine completions `[partial]` and fake a verdict.
 `refused` raises the named `E_VALIDATION` (the task is FAILED, never completed); `partial` writes the
 structured verdict (`payload_status` + `verdict`) and prefixes the visible `summary` once; `ok` is
-untouched.  It is applied in `BasePolsiaAgent.timed_run`, the seam every run passes through.
+untouched.  It is applied in `BaseMeridianAgent.timed_run`, the seam every run passes through.
 
 RED leg (forge receipt): with `apply_run_verdict` removed from `timed_run`, the direct-seam tests
 fail by name (no `payload_status`, unlabelled summary, a refused run returned instead of raising).
@@ -21,14 +21,14 @@ from __future__ import annotations
 import pytest
 
 from app.agents import crew_factory
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.run_verdict import (
     PARTIAL_SUMMARY_PREFIX,
     PAYLOAD_STATUS_KEY,
     VERDICT_KEY,
     apply_run_verdict,
 )
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 PARTIAL_PAYLOAD = {
     "summary": "Research run: supplier prices are quote-only; the positioning analysis is complete.",
@@ -43,7 +43,7 @@ REFUSED_PAYLOAD = {
 }
 
 
-class _StubAgent(BasePolsiaAgent):
+class _StubAgent(BaseMeridianAgent):
     """A shipped-shaped agent whose `run()` returns an exact payload (no model, no network).
 
     The DEFAULT payload is the partial one so the class itself is a valid no-arg agent class for
@@ -58,7 +58,7 @@ class _StubAgent(BasePolsiaAgent):
         super().__init__()
         self._payload = dict(payload if payload is not None else type(self).default_payload)
 
-    def run(self, task, context):  # noqa: ANN001 - the frozen BasePolsiaAgent seam
+    def run(self, task, context):  # noqa: ANN001 - the frozen BaseMeridianAgent seam
         return dict(self._payload)
 
 
@@ -99,7 +99,7 @@ def test_a_partial_run_is_verdict_labelled_on_the_direct_timed_run_seam():
 
 
 def test_a_refused_run_raises_the_named_refusal_on_the_direct_timed_run_seam():
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _StubAgent(REFUSED_PAYLOAD).timed_run({"title": "t"}, {})
 
     assert excinfo.value.code == E_VALIDATION
@@ -119,7 +119,7 @@ def test_the_planner_proposal_step_cannot_consume_a_refused_run(monkeypatch):
         planner_service, "CompanyPlannerAgent", lambda: _StubAgent(REFUSED_PAYLOAD)
     )
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         planner_service._proposal_sync({"name": "Copper & Pine"}, {"competitors": []})
 
     assert excinfo.value.code == E_VALIDATION

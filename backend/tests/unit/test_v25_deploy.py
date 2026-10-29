@@ -34,7 +34,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import deploy_service, site_service
 
 API_KEY = "rnd_v25_test_key_do_not_leak"
@@ -93,7 +93,7 @@ def live(monkeypatch, async_db_session, mock_redis):
     """The ALLOWING policy state for a live deploy (see the OLD -> NEW note above)."""
     from app.config import settings as app_settings
 
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(app_settings, "sandbox_mode", False)
     monkeypatch.setattr(app_settings, "approval_secret", APPROVAL_SECRET.decode())
     return {"db": async_db_session, "approval_token": _approval_token()}
@@ -193,7 +193,7 @@ async def test_no_api_key_is_the_named_config_refusal_in_both_modes(
     recorder = Recorder()
     _write_site(tmp_path)
     for dry_run in (True, False):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             await deploy_service.deploy_site(
                 "landing-page", dry_run=dry_run, root=tmp_path, transport=recorder.transport
             )
@@ -213,7 +213,7 @@ async def test_a_key_without_a_service_id_is_the_named_config_refusal(
     monkeypatch.setattr(settings, "render_service_id", "")
     recorder = Recorder()
     _write_site(tmp_path)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site("landing-page", root=tmp_path, transport=recorder.transport)
     assert excinfo.value.code == E_CONFIG
     assert deploy_service.RENDER_SERVICE_ID_ENV in excinfo.value.message
@@ -230,7 +230,7 @@ async def test_the_secret_never_appears_in_a_refusal(
     recorder = Recorder()
     recorder.responder = boom
     _write_site(tmp_path)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -245,7 +245,7 @@ async def test_an_unknown_slug_on_a_deploy_request_is_the_named_validation_refus
     configured, tmp_path: Path
 ) -> None:
     recorder = Recorder()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site("never-built", root=tmp_path, transport=recorder.transport)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["slug"] == "never-built"
@@ -302,7 +302,7 @@ async def test_a_2xx_without_a_deploy_id_is_never_success(configured, live, tmp_
     recorder.responder = lambda request: httpx.Response(201, json={"status": "created"})
     site_dir = _write_site(tmp_path)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -323,7 +323,7 @@ async def test_an_upstream_5xx_is_retold_as_the_named_upstream_refusal(
     recorder.responder = lambda request: httpx.Response(503, text="render is down")
     site_dir = _write_site(tmp_path)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -345,7 +345,7 @@ async def test_a_timeout_is_the_named_upstream_refusal_and_is_recorded_as_unknow
     recorder.responder = slow
     site_dir = _write_site(tmp_path)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -364,7 +364,7 @@ async def test_a_rejected_credential_is_the_named_config_refusal(
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(401, json={"message": "invalid token"})
     _write_site(tmp_path)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -379,7 +379,7 @@ async def test_an_unknown_service_id_is_the_named_config_refusal(
     recorder = Recorder()
     recorder.responder = lambda request: httpx.Response(404, json={"message": "service not found"})
     _write_site(tmp_path)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await deploy_service.deploy_site(
             "landing-page", dry_run=False, root=tmp_path, transport=recorder.transport, **live
         )
@@ -420,7 +420,7 @@ def test_deploy_state_is_null_for_a_site_that_never_deployed(configured, tmp_pat
 
 
 def test_deploy_state_of_an_unknown_slug_is_the_named_not_found(tmp_path: Path) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deploy_service.deploy_state("not-there", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
     assert excinfo.value.context["slug"] == "not-there"

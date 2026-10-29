@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from app.agents import policy_firewall as pf
 from app.agents import tool_registry
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import ActionClass, ActionRequest, Decision, decide
 
 #: V20/L2: `phone_read` joined the registry (read-only, codes structurally absent).
@@ -43,8 +43,8 @@ READ_MACRO_FX_AGENTS = ("business_planning", "finance")
 NO_TOOL_AGENTS = ("ads_management",)
 
 
-def _probe(agent_type: str) -> BasePolsiaAgent:
-    class _Probe(BasePolsiaAgent):
+def _probe(agent_type: str) -> BaseMeridianAgent:
+    class _Probe(BaseMeridianAgent):
         def run(self, task, context):
             return {"summary": "probe"}
 

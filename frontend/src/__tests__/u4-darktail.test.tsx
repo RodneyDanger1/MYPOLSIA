@@ -132,7 +132,7 @@ describe("u4-darktail — useAgentStatus stays alive and its comment tells the t
     const source = readSource("src/hooks/useAgentStatus.ts");
     expect(source).not.toContain("exactly one consumer");
     expect(source).toContain("AgentsRoster");
-    expect(source).toContain("PolsiaStatusCard");
+    expect(source).toContain("MeridianStatusCard");
   });
 });
 

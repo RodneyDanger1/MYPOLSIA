@@ -93,7 +93,7 @@ from typing import Any, Literal
 import httpx
 
 from app.config import settings
-from app.core.errors import E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, ERROR_HINTS, MeridianError
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ def _stored_key(path: Path) -> str | None:
         try:
             observed = _observed_identity(path)  # re-stat under the lock (double-check basis)
         except OSError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"could not stat the stored DeepSeek key file: {type(exc).__name__}: {exc}",
                 how_to_fix=_STORAGE_HINT,
@@ -274,7 +274,7 @@ def _stored_key(path: Path) -> str | None:
                 except ValueError as exc:
                     # The key file exists but is not the JSON this module wrote — refuse
                     # loudly instead of falling back to env (see module docstring).
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_STORAGE,
                         f"the stored DeepSeek key file is not valid JSON: {type(exc).__name__}",
                         how_to_fix=(
@@ -287,7 +287,7 @@ def _stored_key(path: Path) -> str | None:
                     # Valid JSON of the wrong shape (a list, a bare string/number) was not
                     # written by this module; treating it as "nothing stored" would silently
                     # fall back to env and blame the wrong credential (module docstring).
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_STORAGE,
                         "the stored DeepSeek key file is not a JSON object "
                         f"(found {type(document).__name__})",
@@ -303,7 +303,7 @@ def _stored_key(path: Path) -> str | None:
                     # fallback below applies (documented "CORRUPT vs EMPTY").
                     value = None
                 elif not isinstance(candidate, str):
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_STORAGE,
                         "the stored DeepSeek key file carries a non-string value "
                         f"(found {type(candidate).__name__})",
@@ -317,7 +317,7 @@ def _stored_key(path: Path) -> str | None:
                     value = candidate.strip()
                 # else: blank string -> no usable stored value; env fallback applies.
         except OSError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"could not read the stored DeepSeek key file: {type(exc).__name__}: {exc}",
                 how_to_fix=_STORAGE_HINT,
@@ -425,7 +425,7 @@ def set_deepseek_api_key(value: str) -> None:
     """Persist `value` (stripped) durably and invalidate the cache. Blank is refused."""
     cleaned = (value or "").strip()
     if not cleaned:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the DeepSeek API key must not be blank",
             how_to_fix="paste the key from https://platform.deepseek.com/api_keys before saving",
@@ -464,7 +464,7 @@ def set_deepseek_api_key(value: str) -> None:
         # cache is updated only after the replace succeeded.
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not store the DeepSeek API key: {type(exc).__name__}: {exc}",
             how_to_fix=(
@@ -486,7 +486,7 @@ def clear_deepseek_api_key() -> None:
             # env/None; if the file is (re)created meanwhile, the mismatch refreshes.
             _FILE_CACHE[str(path)] = (_ABSENT_IDENTITY, None)
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not remove the stored DeepSeek key file: {type(exc).__name__}: {exc}",
             how_to_fix=_STORAGE_HINT,
@@ -623,7 +623,7 @@ async def verify_deepseek_key(candidate: str | None = None) -> dict[str, Any]:
 # read-through implementation cannot serve a rotated value from a stale cache — the class of
 # bug `_FILE_CACHE` needed its identity dance to avoid.  Names are environment-style
 # (`^[A-Z][A-Z0-9_]{0,63}$`) so a caller can never address a path, a dotted key or a blank.
-SECRETS_FILE_ENV_VAR = "POLSIA_SECRETS_FILE"
+SECRETS_FILE_ENV_VAR = "MERIDIAN_SECRETS_FILE"
 DEFAULT_SECRETS_FILE = "data/secrets.json"
 _SECRET_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
@@ -634,7 +634,7 @@ def _anchored_default_secrets_file() -> Path:
 
 
 def _resolve_secrets_file() -> Path:
-    """The active generic secret store: explicit `POLSIA_SECRETS_FILE` > `settings.secrets_file`
+    """The active generic secret store: explicit `MERIDIAN_SECRETS_FILE` > `settings.secrets_file`
     (the same variable, readable from `.env`) > the repo-anchored default.
 
     SV-W4-05 (wave 5): the middle branch used to be a blind `getattr(settings, "secrets_file", "")`
@@ -650,7 +650,7 @@ def _checked_secret_name(name: Any) -> str:
     """The environment-style name, or a NAMED `E_VALIDATION` — never a coerced string."""
     text = name.strip() if isinstance(name, str) else ""
     if not _SECRET_NAME_RE.match(text):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"secret name {name!r} is not a valid environment-style name "
             "(expected ^[A-Z][A-Z0-9_]{0,63}$)",
@@ -667,7 +667,7 @@ def _read_secrets_document(path: Path) -> dict[str, Any]:
             return {}
         raw_document = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not read the secret store file: {type(exc).__name__}: {exc}",
             how_to_fix=_STORAGE_HINT,
@@ -676,14 +676,14 @@ def _read_secrets_document(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(raw_document)
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the secret store file is not valid JSON: {type(exc).__name__}",
             how_to_fix=f"delete the file and re-enter the secret ({path})",
             context={"path": str(path)},
         ) from exc
     if not isinstance(document, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             "the secret store file is not a JSON object "
             f"(found {type(document).__name__})",
@@ -710,7 +710,7 @@ def _store_secrets_document(path: Path, document: dict[str, Any]) -> None:
     except OSError as exc:
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not store the secret: {type(exc).__name__}: {exc}",
             how_to_fix=(
@@ -749,7 +749,7 @@ def get_secret(name: str) -> str | None:
     document = _read_secrets_document(_resolve_secrets_file())
     candidate = document.get(key)
     if candidate is not None and not isinstance(candidate, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the secret store carries a non-string value for {key} "
             f"(found {type(candidate).__name__})",
@@ -768,7 +768,7 @@ def set_secret(name: str, value: str) -> None:
     key = _checked_secret_name(name)
     cleaned = value.strip() if isinstance(value, str) else ""
     if not cleaned:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the secret {key} must not be blank",
             how_to_fix=f"pass the real value for {key} before saving",
@@ -797,7 +797,7 @@ def clear_secret(name: str) -> None:
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
-                raise PolsiaError(
+                raise MeridianError(
                     E_STORAGE,
                     f"could not remove the secret store file: {type(exc).__name__}: {exc}",
                     how_to_fix=_STORAGE_HINT,

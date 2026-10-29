@@ -32,7 +32,7 @@ import pytest
 
 from app.agents import integrations, tool_registry
 from app.core import security
-from app.core.errors import E_AUTH, PolsiaError
+from app.core.errors import E_AUTH, MeridianError
 from app.models.company import CompanyConfig
 from app.services import trust_service
 from app.services.site_package_service import render_site_package
@@ -111,7 +111,7 @@ def _stub_pinned_hops(monkeypatch, *, allow: int) -> list[str]:
 
     def stubbed(host: str, port: int) -> list[str]:
         if len(allowed_ports) >= allow:
-            raise PolsiaError(
+            raise MeridianError(
                 trust_service.E_EGRESS_BLOCKED,
                 f"stub floor: hop {len(allowed_ports) + 1} on {host!r}:{port} is outside the "
                 "stub's allowance",
@@ -129,7 +129,7 @@ def _stub_pinned_hops(monkeypatch, *, allow: int) -> list[str]:
 @pytest.mark.asyncio
 async def test_u2_01_non_ascii_provided_key_names_e_auth_not_typeerror(monkeypatch):
     monkeypatch.setattr(security.settings, "api_key", "test-key")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await security.verify_api_key("test-key\u00ff")  # uvicorn decodes header bytes as latin-1
     assert excinfo.value.code == E_AUTH
 
@@ -138,7 +138,7 @@ async def test_u2_01_non_ascii_provided_key_names_e_auth_not_typeerror(monkeypat
 async def test_u2_01_non_ascii_configured_key_compares_by_bytes_and_still_auths(monkeypatch):
     monkeypatch.setattr(security.settings, "api_key", "cl\u00e9-\U0001f511")
     assert await security.verify_api_key("cl\u00e9-\U0001f511") == "cl\u00e9-\U0001f511"
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await security.verify_api_key("cl\u00e9")
     assert excinfo.value.code == E_AUTH
     assert security.api_key_matches("cl\u00e9-\U0001f511") is True
@@ -149,7 +149,7 @@ async def test_u2_01_inline_and_ws_matchers_share_the_guarded_path(monkeypatch):
     monkeypatch.setattr(security.settings, "api_key", "test-key")
     assert security.api_key_matches("test-key\u00ff") is False
     assert security.api_key_matches("\u65e5\u672c\u8a9e") is False
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await security.check_api_key("\u00e9\u00e9\u00e9")
     assert excinfo.value.code == E_AUTH
 

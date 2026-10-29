@@ -1,7 +1,7 @@
 """Seat C1 (wave B2) — the API-surface truth defects.
 
 Four items, each with a RED leg measured at HEAD `af76c44` (transcripts in
-`polsia-work/build/wave-b2/raw/C1/`):
+`meridian-work/build/wave-b2/raw/C1/`):
 
   * **F-46** — the owner's API key rode `?key=` on `/ws/activity`, and uvicorn 0.41.0 logs
     `get_path_with_query_string(scope)` for every handshake (`websockets_impl.py:271` accepted,
@@ -400,22 +400,22 @@ async def test_the_export_filename_and_the_manifest_share_one_utc_clock(
     assert resp.status_code == 200, resp.text
 
     disposition = resp.headers["content-disposition"]
-    assert 'filename="polsia-data-export-2026-01-01.zip"' in disposition, disposition
+    assert 'filename="meridian-data-export-2026-01-01.zip"' in disposition, disposition
 
     manifest = json.loads(zipfile.ZipFile(io.BytesIO(resp.content)).read("MANIFEST.json"))
     assert manifest["exported_at"].startswith("2026-01-01"), manifest["exported_at"]
-    assert manifest["exported_at"][:10] == disposition.split("polsia-data-export-")[1][:10]
+    assert manifest["exported_at"][:10] == disposition.split("meridian-data-export-")[1][:10]
 
 
 def test_the_export_filename_is_the_utc_date_of_the_stamp_it_is_given():
     """The pure boundary pin: the local wall clock of an aware stamp is NOT the filename date."""
     local_midnight_ish = datetime(2025, 12, 31, 20, 0, tzinfo=timezone(timedelta(hours=-6)))
     assert local_midnight_ish.astimezone(UTC).date().isoformat() == "2026-01-01"
-    assert data_module._export_filename(local_midnight_ish) == "polsia-data-export-2026-01-01.zip"
+    assert data_module._export_filename(local_midnight_ish) == "meridian-data-export-2026-01-01.zip"
 
     assert data_module._export_filename(
         datetime(2025, 12, 31, 23, 59, 59, tzinfo=UTC)
-    ) == "polsia-data-export-2025-12-31.zip"
+    ) == "meridian-data-export-2025-12-31.zip"
     assert data_module._export_filename(
         datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
-    ) == "polsia-data-export-2026-01-01.zip"
+    ) == "meridian-data-export-2026-01-01.zip"

@@ -60,7 +60,7 @@ from app.core.errors import (
     E_VALIDATION,
     ERROR_HINTS,
     HTTP_STATUS_BY_CODE,
-    PolsiaError,
+    MeridianError,
     http_status_for,
     to_http_detail,
 )
@@ -269,7 +269,7 @@ async def test_a14_a_db_refusal_BEFORE_the_route_is_a_named_503(
     monkeypatch.setitem(
         application.dependency_overrides,
         get_db,
-        _raising_dependency(PolsiaError(E_DB, "planted: the database is unreachable")),
+        _raising_dependency(MeridianError(E_DB, "planted: the database is unreachable")),
     )
     resp = await api_client.get("/api/v1/tasks", headers=auth_headers)
     refusal_of(resp, status=503, code=E_DB)
@@ -281,7 +281,7 @@ async def test_a15_a_db_refusal_INSIDE_the_route_is_the_same_named_503(
     import app.api.v1.tasks as tasks_route
 
     async def _broken(*_args, **_kwargs):  # noqa: ANN002, ANN003
-        raise PolsiaError(E_DB, "planted: the read failed mid-route")
+        raise MeridianError(E_DB, "planted: the read failed mid-route")
 
     monkeypatch.setattr(tasks_route, "list_tasks", _broken)
     resp = await api_client.get("/api/v1/tasks", headers=auth_headers)
@@ -297,7 +297,7 @@ async def test_a16_both_db_paths_answer_the_SAME_wire(api_client, auth_headers, 
     monkeypatch.setitem(
         application.dependency_overrides,
         get_db,
-        _raising_dependency(PolsiaError(E_DB, "same refusal, before the route")),
+        _raising_dependency(MeridianError(E_DB, "same refusal, before the route")),
     )
     before = await api_client.get("/api/v1/tasks", headers=auth_headers)
     monkeypatch.setitem(application.dependency_overrides, get_db, pre_route_override)
@@ -305,7 +305,7 @@ async def test_a16_both_db_paths_answer_the_SAME_wire(api_client, auth_headers, 
     import app.api.v1.tasks as tasks_route
 
     async def _broken(*_args, **_kwargs):  # noqa: ANN002, ANN003
-        raise PolsiaError(E_DB, "same refusal, inside the route")
+        raise MeridianError(E_DB, "same refusal, inside the route")
 
     monkeypatch.setattr(tasks_route, "list_tasks", _broken)
     inside = await api_client.get("/api/v1/tasks", headers=auth_headers)
@@ -382,7 +382,7 @@ async def test_a21_a_bounded_planner_step_that_expired_is_a_named_504(
     from app.services import planner_service
 
     async def _hung(_db):  # noqa: ANN001
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_TIMEOUT,
             "planted: the planner step exceeded its deadline",
             how_to_fix=ERROR_HINTS[E_CLI_TIMEOUT],
@@ -458,7 +458,7 @@ def test_a23b_the_configuration_refusals_are_not_unmapped_500s():
 
 def test_a24_the_envelope_helper_matches_what_the_handlers_emit():
     """`to_http_detail` fills the hint fallback — an empty `how_to_fix` must never ship."""
-    refusal = PolsiaError(E_EGRESS_BLOCKED, "the address is not routable")
+    refusal = MeridianError(E_EGRESS_BLOCKED, "the address is not routable")
     detail = to_http_detail(refusal)
     assert set(detail) == {"ok", "error"}
     assert detail["error"]["how_to_fix"] == ERROR_HINTS[E_EGRESS_BLOCKED]

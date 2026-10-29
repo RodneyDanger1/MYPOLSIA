@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from app.agents import claude_cli, policy_firewall
-from app.core.errors import E_POLICY_DENIED, E_STORAGE, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_STORAGE, MeridianError
 
 FILE_TOOLS = ("Read", "Edit", "Write")
 
@@ -160,7 +160,7 @@ def test_an_uncreatable_run_workspace_is_a_named_refusal_not_an_inherited_cwd(
         argv=["claude", "-p", "hi"], cwd=str(blocker / "runs" / "cli-w1"), timeout_s=5
     )
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.invoke(inv)
     assert caught.value.code == E_STORAGE
     assert caught.value.how_to_fix
@@ -169,13 +169,13 @@ def test_an_uncreatable_run_workspace_is_a_named_refusal_not_an_inherited_cwd(
 
 # ── 3. explicit overrides cannot re-introduce a credential ─────────────────────────────────
 def test_the_child_environment_refuses_a_credential_shaped_override() -> None:
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.child_environment(extra_env={"SENDGRID_API_KEY": "SG.w1-probe"})
     assert caught.value.code == E_POLICY_DENIED
     assert "SENDGRID_API_KEY" in caught.value.message
     assert caught.value.how_to_fix
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.child_environment(env_overrides={"DEEPSEEK_API_KEY": "sk-w1-probe"})
     assert caught.value.code == E_POLICY_DENIED
 
@@ -188,7 +188,7 @@ def test_invoke_refuses_a_credential_override_before_any_spawn(monkeypatch, tmp_
     inv = claude_cli.build_invocation(prompt="probe", workspace_root=tmp_path)
     inv.env_overrides["ANTHROPIC_API_KEY"] = "sk-ant-w1-probe"
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.invoke(inv)
     assert caught.value.code == E_POLICY_DENIED
     assert "ANTHROPIC_API_KEY" in caught.value.message
@@ -200,7 +200,7 @@ def test_no_whitelisted_variable_is_credential_shaped() -> None:
 
 
 def test_an_add_dir_that_holds_a_credential_store_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.build_invocation(
             prompt="probe",
             add_dirs=(str(claude_cli.backend_root()),),
@@ -224,7 +224,7 @@ def test_a_workspace_root_inside_the_credential_tree_is_refused(
     )
     monkeypatch.setenv(claude_cli.CLI_WORKSPACE_ROOT_ENV, str(root))
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.build_invocation(prompt="probe")
     assert caught.value.code == E_POLICY_DENIED
     assert "credential" in caught.value.message.lower()

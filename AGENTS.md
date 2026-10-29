@@ -10,7 +10,7 @@ code conventions (fixtures, SQLite-compat rules, model imports, how to add an ag
 ## Ground rules (the ones the code already enforces)
 
 - **No fake success, ever.** A capability that does not exist returns a NAMED `E_*` refusal with a
-  `howToFix` (`app/core/errors.py`, `PolsiaError`) — never an empty list for "could not read", never
+  `howToFix` (`app/core/errors.py`, `MeridianError`) — never an empty list for "could not read", never
   a `0` for "unknown", never a success reported before the work that would prove it. Why: this
   repository's defect history is almost entirely work that looked correct and was not.
 - **Numbers are measured or they say unknown.** Gate counts come from the JUnit XML (below) — never
@@ -79,9 +79,9 @@ the failure (`git status --short`, `git diff`) — another owner's half-written 
   commands with output · RED leg · acceptance · not-done · requests — and §6 (not done) is never
   empty. Why: an empty §6 means the author did not look.
 - **Receipts live OUTSIDE the repository**, in the lane directory the delegator gives you as an
-  absolute path (this workspace: `C:\Users\Riley\Desktop\polsia-work\build\<lane>\` — `PLAN.md`,
+  absolute path (this workspace: `C:\Users\Riley\Desktop\meridian-work\build\<lane>\` — `PLAN.md`,
   `raw/`, `RECEIPT.md`). Never create a campaign directory inside the repo. Why: scratch inside the
-  deliverable is how a stray `polsia-work/` once appeared in a tree.
+  deliverable is how a stray `meridian-work/` once appeared in a tree.
 - **Flush to disk as you go.** Write each finding, signature and command output into the receipt as
   you produce it. Why: an interrupted lane keeps only what it already wrote.
 - **Back up exact bytes** of every file you edit into your own lane dir before the edit, with sha256

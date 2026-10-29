@@ -181,10 +181,10 @@ async def test_remember_run_never_raises_on_a_dead_vector_store(
 ) -> None:
     """A chroma outage is a RECORDED failure (`{"ok": False, "error": {...}}`), not a killed run —
     the worker's artifact step reports, the run itself stays completed."""
-    from app.core.errors import E_STORAGE, PolsiaError
+    from app.core.errors import E_STORAGE, MeridianError
 
     async def broken_store(*args: Any, **kwargs: Any) -> Any:
-        raise PolsiaError(E_STORAGE, "vector store down", how_to_fix="restart chroma")
+        raise MeridianError(E_STORAGE, "vector store down", how_to_fix="restart chroma")
 
     monkeypatch.setattr(memory_service, "store_memory", broken_store)
 

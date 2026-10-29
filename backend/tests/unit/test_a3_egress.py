@@ -17,7 +17,7 @@ from typing import Any, Literal
 import httpx
 import pytest
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import trust_service
 
 PUBLIC_V4 = "93.184.216.34"
@@ -242,7 +242,7 @@ def test_resolve_egress_refuses_rfc6598_shared_space(
     Alibaba Cloud's metadata service lives at 100.100.100.200; a blacklist of `is_private`-style
     flags approved it.
     """
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress(address, 443)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
@@ -257,7 +257,7 @@ def test_resolve_egress_refuses_the_whole_answer_when_one_address_is_shared(
     """Fail closed: one bad address in a mixed answer refuses the host (no partial list)."""
     _doh_stub(monkeypatch, a=(PUBLIC_V4, SHARED), aaaa=())
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress("mixed.example.com", 443)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
@@ -282,7 +282,7 @@ def test_resolve_egress_refuses_the_whole_answer_when_one_address_is_shared(
 def test_resolve_egress_refuses_every_non_public_family(
     monkeypatch: pytest.MonkeyPatch, address: str
 ):
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress(address, 443)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
@@ -321,7 +321,7 @@ def test_resolve_egress_refuses_a_name_the_resolver_cannot_answer(
 ):
     _doh_stub(monkeypatch, a=(), aaaa=(), status=status)
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress("gone.example.com", 443)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
@@ -336,7 +336,7 @@ def test_resolve_egress_refuses_a_port_outside_80_and_443(
     monkeypatch: pytest.MonkeyPatch, port: int
 ):
     """Only the web ports are egress (A2A1-02): Redis/SSH/Docker are not fetchable."""
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress("example.com", port)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
@@ -362,7 +362,7 @@ def test_a_redirect_may_not_change_the_port(monkeypatch: pytest.MonkeyPatch):
         ),
     )
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link("https://example.com/")
 
     assert refused.value.code == E_VALIDATION
@@ -432,7 +432,7 @@ def test_pinned_http_get_refuses_past_max_bytes_instead_of_truncating(
 
     _client_stub(monkeypatch, lambda request: httpx.Response(200, content=body_chunks()))
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.pinned_http_get("https://example.com/big", timeout=5.0, max_bytes=250)
 
     assert refused.value.code == E_UPSTREAM
@@ -459,7 +459,7 @@ def test_pinned_http_get_refuses_a_shared_host_before_any_request(
     _doh_stub(monkeypatch)
     seen = _client_stub(monkeypatch, lambda request: httpx.Response(200, request=request))
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.pinned_http_get(
             f"http://{SHARED}/latest/meta-data/iam/security-credentials/",
             timeout=5.0, max_bytes=4096,
@@ -522,7 +522,7 @@ def test_pinned_http_get_refuses_an_unusable_request(
 ):
     _doh_stub(monkeypatch)
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.pinned_http_get(url, **kwargs)
 
     assert refused.value.code == E_VALIDATION

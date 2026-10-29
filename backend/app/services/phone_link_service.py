@@ -18,7 +18,7 @@ THE FIVE RULES THIS MODULE ENCODES
        SQLite layer itself, not by discipline.  The store belongs to the Phone Link app.
     2. **Refuse by name, never fabricate.**  An absent mount, a half-mounted directory (a missing
        `*.db`), a drifted schema (a column this build reads no longer exists) and a locked file all
-       raise `PolsiaError(E_PHONE_UNAVAILABLE)` with the drift/detail in `context`.  There is NO
+       raise `MeridianError(E_PHONE_UNAVAILABLE)` with the drift/detail in `context`.  There is NO
        empty-inbox degradation: an empty list here means "the store really has no rows".
     3. **Timestamps are converted, never passed through.**  The store stores FILETIME (100 ns ticks
        since 1601).  `filetime_to_local` returns the machine-LOCAL wall clock as ISO-8601 WITH its
@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.core.errors import E_PHONE_UNAVAILABLE, PolsiaError
+from app.core.errors import E_PHONE_UNAVAILABLE, MeridianError
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +152,9 @@ REQUIRED_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
 
 def _unavailable(
     message: str, *, how_to_fix: str = "", **context: Any
-) -> PolsiaError:
+) -> MeridianError:
     """The one refusal this module raises.  `context` carries the machine-readable detail."""
-    return PolsiaError(
+    return MeridianError(
         E_PHONE_UNAVAILABLE,
         message,
         how_to_fix=how_to_fix
@@ -200,7 +200,7 @@ def store_status() -> str:
     """
     try:
         root = resolve_store_dir()
-    except PolsiaError:
+    except MeridianError:
         return "unavailable"
     if not root.is_dir():
         return "unavailable"
@@ -246,7 +246,7 @@ def _connect(db_name: str) -> sqlite3.Connection:
     """Open one store database read-only, or refuse by name (absent / half-mount / drift / lock)."""
     try:
         root = resolve_store_dir()
-    except PolsiaError:
+    except MeridianError:
         raise
     path = root / db_name
     if not path.exists():

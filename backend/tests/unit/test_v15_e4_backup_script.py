@@ -91,8 +91,8 @@ def _run(
         "BACKUP_VOLUMES": " ".join(volume_names),
         "BACKUP_RETENTION_DAYS": retention_days,
         "BACKUP_INTERVAL_SECONDS": "86400",
-        "POSTGRES_USER": "polsia",
-        "POSTGRES_DB": "polsia",
+        "POSTGRES_USER": "meridian",
+        "POSTGRES_DB": "meridian",
         "PGHOST": "fake-postgres",
     }
     proc = subprocess.run(
@@ -109,7 +109,7 @@ def test_once_writes_the_dump_and_every_volume_archive(sh_path: str, tmp_path: P
     proc, backups = _run(tmp_path, sh_path, ["alpha", "beta", "gamma", "delta"])
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    dumps = sorted(backups.glob("polsia-*.sql"))
+    dumps = sorted(backups.glob("meridian-*.sql"))
     assert len(dumps) == 1
     assert MARKER in dumps[0].read_text(encoding="utf-8")
     for name in ("alpha", "beta", "gamma", "delta"):
@@ -126,14 +126,14 @@ def test_once_prunes_backups_older_than_the_retention_window(sh_path: str, tmp_p
         sh_path,
         ["alpha"],
         retention_days="2",
-        stale_files={"polsia-1999-01-01.sql": 5.0, "old_archive.tgz": 5.0},
+        stale_files={"meridian-1999-01-01.sql": 5.0, "old_archive.tgz": 5.0},
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert not (backups / "polsia-1999-01-01.sql").exists()
+    assert not (backups / "meridian-1999-01-01.sql").exists()
     assert not (backups / "old_archive.tgz").exists()
     assert "pruned" in proc.stdout
-    fresh = sorted(backups.glob("polsia-*.sql"))
+    fresh = sorted(backups.glob("meridian-*.sql"))
     assert len(fresh) == 1, "the fresh dump must survive the prune"
     assert (backups / "alpha.tgz").is_file()
 
@@ -153,7 +153,7 @@ def test_once_refuses_empty_or_missing_volume_mounts_by_name(sh_path: str, tmp_p
     assert not (backups / "ghost.tgz").exists()
     assert "empty" in proc.stdout and "EMPTY" in proc.stdout
     assert "ghost" in proc.stdout
-    assert len(list(backups.glob("polsia-*.sql"))) == 1, (
+    assert len(list(backups.glob("meridian-*.sql"))) == 1, (
         "the dump leg is independent — a refused volume must not veto the database dump"
     )
 
@@ -162,7 +162,7 @@ def test_failed_pg_dump_writes_no_dump_and_no_partial(sh_path: str, tmp_path: Pa
     proc, backups = _run(tmp_path, sh_path, ["alpha"], pg_dump_body=PG_DUMP_FAIL)
 
     assert proc.returncode == 1
-    assert not list(backups.glob("polsia-*.sql"))
+    assert not list(backups.glob("meridian-*.sql"))
     assert not list(backups.glob("*.part")), "the temp .part must be removed on failure"
     assert "ERROR" in proc.stdout
     assert (backups / "alpha.tgz").is_file(), "the honest volume leg still runs"
@@ -193,8 +193,8 @@ def test_loop_stops_cleanly_on_sigterm(sh_path: str, tmp_path: Path) -> None:
         "VOLUMES_ROOT": volumes_root.as_posix(),
         "BACKUP_VOLUMES": "alpha",
         "BACKUP_INTERVAL_SECONDS": "600",
-        "POSTGRES_USER": "polsia",
-        "POSTGRES_DB": "polsia",
+        "POSTGRES_USER": "meridian",
+        "POSTGRES_DB": "meridian",
         "PGHOST": "fake-postgres",
     }
     try:
@@ -209,10 +209,10 @@ def test_loop_stops_cleanly_on_sigterm(sh_path: str, tmp_path: Path) -> None:
             )
             deadline = time.time() + 30
             while time.time() < deadline:
-                if list(backups.glob("polsia-*.sql")):
+                if list(backups.glob("meridian-*.sql")):
                     break
                 time.sleep(0.2)
-            if list(backups.glob("polsia-*.sql")) and proc.poll() is None:
+            if list(backups.glob("meridian-*.sql")) and proc.poll() is None:
                 break
             # Known MSYS2 fork/exec flake ("child_copy: cygheap read copy failed ... Win32 error
             # 299"): the runtime can refuse to spawn a child under ASLR/AV pressure and the loop
@@ -223,7 +223,7 @@ def test_loop_stops_cleanly_on_sigterm(sh_path: str, tmp_path: Path) -> None:
             output = proc.communicate(timeout=10)[0] or ""
             assert attempt < 2, f"the loop never stayed up while its first cycle ran\n{output}"
             time.sleep(1.0)
-        assert list(backups.glob("polsia-*.sql")), "the first cycle must run at startup"
+        assert list(backups.glob("meridian-*.sql")), "the first cycle must run at startup"
         # SIGTERM as a REAL POSIX signal: Python's send_signal(SIGTERM) on Windows is
         # TerminateProcess (no trap runs), so the signal is delivered by MSYS `kill` — the same
         # runtime as the loop — exactly like `docker stop` sends SIGTERM to the entrypoint.

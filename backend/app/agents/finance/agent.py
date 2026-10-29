@@ -26,11 +26,11 @@ import json
 from typing import Any
 
 from app.agents import integrations
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import request_side_effect, side_effect_receipt
 from app.config import settings
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.core.timeutil import today_utc
 from app.schemas.agent_outputs import FinanceOutput
 from app.services.cost_basis_service import cost_basis_from_context
@@ -90,7 +90,7 @@ def failed_payments_extra_context(task: dict[str, Any]) -> str | None:
     if records is None:
         return None
     if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "task metadata.failed_payments is not a list of objects; the finance agent cannot "
             "read a malformed attachment (it has no Stripe access to re-fetch it)",
@@ -153,7 +153,7 @@ def revenue_facts_extra_context(task: dict[str, Any]) -> str | None:
     if envelope is None:
         return None
     if not isinstance(envelope, dict) or not isinstance(envelope.get("ok"), bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "task metadata.revenue_facts is not the revenue-reader envelope; the finance agent "
             "cannot read a malformed attachment (it has no Stripe access to re-fetch it)",
@@ -175,7 +175,7 @@ def revenue_facts_extra_context(task: dict[str, Any]) -> str | None:
         return wrap_untrusted(source="stripe", content_id="revenue_facts:refused", text=text)
     result = envelope.get("result")
     if not isinstance(result, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "task metadata.revenue_facts carries ok=true but no result object",
             how_to_fix="attach the envelope verbatim from integrations.read_revenue_facts",
@@ -234,7 +234,7 @@ Rules:
   and in sandbox mode it records the request as a labelled draft instead of sending it."""
 
 
-class FinanceAgent(BasePolsiaAgent):
+class FinanceAgent(BaseMeridianAgent):
     agent_type = "finance"
     description = "Monitors Stripe revenue, expenses and alerts"
     output_schema = FinanceOutput

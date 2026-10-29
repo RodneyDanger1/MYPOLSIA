@@ -3,7 +3,7 @@
 Written BEFORE `app/services/trust_service.py` and `app/api/v1/trust.py` exist, so pytest
 collection fails with `ModuleNotFoundError: No module named 'app.services.trust_service'` until
 they land (raw output preserved in
-`polsia-work/build/ui-reverse/wave-v29/l6-trust/red/T6.1-service.txt` and `red/T6.2-routes.txt`).
+`meridian-work/build/ui-reverse/wave-v29/l6-trust/red/T6.1-service.txt` and `red/T6.2-routes.txt`).
 
 What is pinned, and why each one exists:
 
@@ -42,7 +42,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import trust_service
 
 AUTH = {"X-API-Key": "test-key"}
@@ -112,7 +112,7 @@ def _wayback_stub(
     available: bool = False,
     url: str | None = None,
     timestamp: str | None = None,
-    error: PolsiaError | None = None,
+    error: MeridianError | None = None,
     calls: list[str] | None = None,
 ):
     def fake(target: str) -> dict[str, Any]:
@@ -155,14 +155,14 @@ async def trust_client(monkeypatch: pytest.MonkeyPatch):
     app = FastAPI()
     app.include_router(trust.router, prefix="/api/v1")
 
-    async def _polsia_handler(request, exc: PolsiaError):
+    async def _meridian_handler(request, exc: MeridianError):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
             headers={"X-Meridian-Error-Code": exc.code},
         )
 
-    app.add_exception_handler(PolsiaError, _polsia_handler)
+    app.add_exception_handler(MeridianError, _meridian_handler)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -203,7 +203,7 @@ def test_malformed_host_is_refused_before_any_lookup(monkeypatch: pytest.MonkeyP
 
     for bad in ("https://example.com", "example.com/path", "example.com:443", "user@example.com",
                 "example", "", "   ", "127.0.0.1"):
-        with pytest.raises(PolsiaError) as refused:
+        with pytest.raises(MeridianError) as refused:
             trust_service.check_domain(bad)
         assert refused.value.code == E_VALIDATION
         assert refused.value.context.get("field") == "host"
@@ -247,7 +247,7 @@ def test_other_dns_rcodes_are_named_too(monkeypatch: pytest.MonkeyPatch):
 
 def test_a_broken_dns_leg_is_reported_on_the_result(monkeypatch: pytest.MonkeyPatch):
     def boom(host: str, rrtype: str) -> dict[str, Any]:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             "domain_health: the DNS resolver answered HTTP 503",
             how_to_fix="retry; Cloudflare DoH is temporarily unavailable",
@@ -414,7 +414,7 @@ def test_non_public_literal_addresses_are_refused_before_any_request(
     _wayback_stub(monkeypatch)
     calls = _transport(monkeypatch, lambda request: httpx.Response(200, request=request))
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link(url)
 
     assert refused.value.code == E_VALIDATION
@@ -428,7 +428,7 @@ def test_a_localhost_name_resolving_to_loopback_is_refused(monkeypatch: pytest.M
     _wayback_stub(monkeypatch)
     calls = _transport(monkeypatch, lambda request: httpx.Response(200, request=request))
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link("http://localhost:80/")
 
     assert refused.value.code == E_VALIDATION
@@ -442,7 +442,7 @@ def test_ports_outside_80_and_443_are_refused(monkeypatch: pytest.MonkeyPatch, u
     _doh_stub(monkeypatch)
     calls = _transport(monkeypatch, lambda request: httpx.Response(200, request=request))
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link(url)
 
     assert refused.value.code == E_VALIDATION
@@ -460,7 +460,7 @@ def test_a_redirect_to_a_private_address_is_refused(monkeypatch: pytest.MonkeyPa
 
     calls = _transport(monkeypatch, handler)
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link("https://example.com/")
 
     assert refused.value.code == E_VALIDATION
@@ -477,7 +477,7 @@ def test_a_redirect_to_a_non_http_scheme_is_refused(monkeypatch: pytest.MonkeyPa
                                        request=request),
     )
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link("https://example.com/")
 
     assert refused.value.code == E_VALIDATION
@@ -486,7 +486,7 @@ def test_a_redirect_to_a_non_http_scheme_is_refused(monkeypatch: pytest.MonkeyPa
 def test_a_malformed_link_is_refused(monkeypatch: pytest.MonkeyPatch):
     for bad in ("example.com", "ftp://example.com/x", "https://user:pw@example.com/", "",
                 "https://example.com/" + "a" * 2048):
-        with pytest.raises(PolsiaError) as refused:
+        with pytest.raises(MeridianError) as refused:
             trust_service.check_link(bad)
         assert refused.value.code == E_VALIDATION
         assert refused.value.context.get("field") == "url"
@@ -495,7 +495,7 @@ def test_a_malformed_link_is_refused(monkeypatch: pytest.MonkeyPatch):
 def test_an_unresolvable_link_host_is_an_upstream_failure(monkeypatch: pytest.MonkeyPatch):
     _doh_stub(monkeypatch, a=(), aaaa=(), status=3)
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.check_link("https://gone.example.com/")
 
     assert refused.value.code == E_UPSTREAM
@@ -539,7 +539,7 @@ def test_an_archive_outage_degrades_to_null_and_keeps_the_live_status(
     _doh_stub(monkeypatch)
     _wayback_stub(
         monkeypatch,
-        error=PolsiaError(E_UPSTREAM, "link_status: the Wayback API answered HTTP 500"),
+        error=MeridianError(E_UPSTREAM, "link_status: the Wayback API answered HTTP 500"),
     )
     _transport(monkeypatch, lambda request: httpx.Response(200, request=request))
 

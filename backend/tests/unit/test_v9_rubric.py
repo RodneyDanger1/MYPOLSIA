@@ -2,7 +2,7 @@
 
 RED-FIRST leg (OATH): written before `app/services/planner_service.py` exists; the import
 below fails with ModuleNotFoundError until the service lands.  Raw pytest legs live in
-`polsia-work/build/ui-reverse/wave-v9/b1-planner/` (see RECEIPT.md).
+`meridian-work/build/ui-reverse/wave-v9/b1-planner/` (see RECEIPT.md).
 
 The rubric is COMPUTED IN PYTHON (plan §9 B1 rule b): the model emits structured signals
 (demand_grade / competition_level / fleet_fit / days_to_first_dollar / price_band /

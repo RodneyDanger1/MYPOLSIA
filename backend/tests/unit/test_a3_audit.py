@@ -2,7 +2,7 @@
 
 RED-FIRST (OATH): every test below was written and RUN against the base tree (`a66a235`) before
 the code it pins existed.  The measured red legs live in
-`polsia-work/build/wave-a3/raw/S4/red-before.xml`; the green run in `green.xml`.  The five defects:
+`meridian-work/build/wave-a3/raw/S4/red-before.xml`; the green run in `green.xml`.  The five defects:
 
 * **F-47** an audit `flush()` that fails leaves the REQUEST session needing a rollback, so
   `get_db`'s commit raises AFTER the SMS left — one real send, one bare 500, and the owner's retry

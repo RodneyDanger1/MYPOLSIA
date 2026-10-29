@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 
 
 # ── F15b — the three newest modules are routed ──────────────────────────────────────────────
@@ -45,7 +45,7 @@ def test_f23_malformed_catalog_row_refuses_at_load_and_ops_clear_the_cache(tmp_p
     monkeypatch.setattr(pricing, "CATALOG_PATH", catalog)
     pricing.load_catalog.cache_clear()
     try:
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             pricing.load_catalog()
         assert excinfo.value.code == E_CONFIG
         assert "service" in excinfo.value.message

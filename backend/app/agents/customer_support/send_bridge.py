@@ -25,7 +25,7 @@ Mirrors `email_outreach/compliance_send.py` exactly (handoff H1, frozen in E2's 
    disappears entirely once mode 1 is wired.
 
 Neither mode can reach `integrations.send_email` without a complete footer and a suppression
-check, and every refusal propagates as the `PolsiaError` it is (E_CONFIG naming the missing
+check, and every refusal propagates as the `MeridianError` it is (E_CONFIG naming the missing
 identity fields, E_POLICY_DENIED for an opt-out, E_DB when the database itself cannot be read) —
 the agent turns that into a named `refusals[]` entry, never a silent send.
 """
@@ -58,8 +58,8 @@ def send_cs_reply(
 ) -> dict[str, Any]:
     """Send one support reply through the guarded sender; return its result verbatim.
 
-    Raises the guarded sender's own `PolsiaError` refusals unchanged (a caller must not be able
-    to mistake a refusal for a delivery), and wraps a non-`PolsiaError` database failure as the
+    Raises the guarded sender's own `MeridianError` refusals unchanged (a caller must not be able
+    to mistake a refusal for a delivery), and wraps a non-`MeridianError` database failure as the
     named `E_DB` refusal it is — never as a plausible-looking `{"ok": False}` the caller might
     retry blind.
     """
@@ -76,10 +76,10 @@ def send_cs_reply(
                 )
             )
         return _run_coroutine_sync(_send_on_own_session(to=to, subject=subject, body=body))
-    except Exception as exc:  # noqa: BLE001 — translated below; PolsiaError re-raised as itself
-        from app.core.errors import PolsiaError
+    except Exception as exc:  # noqa: BLE001 — translated below; MeridianError re-raised as itself
+        from app.core.errors import MeridianError
 
-        if isinstance(exc, PolsiaError):
+        if isinstance(exc, MeridianError):
             raise
         raise db_refusal("customer_support compliance check", exc) from exc
 

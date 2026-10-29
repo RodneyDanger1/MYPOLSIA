@@ -4,7 +4,7 @@ Two fixture decisions the tests depend on, both measured:
 
 * **FILE-backed SQLite, never `sqlite+aiosqlite:///:memory:`.**  The root conftest's in-memory
   engine is a `StaticPool`: every session hands out THE SAME connection (measured:
-  `polsia-work/build/E-queue/stray/probe_pool_loop.py` → `pool class: StaticPool`,
+  `meridian-work/build/E-queue/stray/probe_pool_loop.py` → `pool class: StaticPool`,
   `count on loop1: 1`, `count on loop2: 1`).  Two sessions therefore cannot represent two
   writers — a claim/heartbeat race would be sequenced on one connection and pass for the wrong
   reason.  A file-backed engine (pool: `NullPool`, one connection per session) plus the app's

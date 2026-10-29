@@ -32,7 +32,7 @@ import pytest
 from sqlalchemy import select
 
 from app.agents.policy_firewall import fingerprint, reset_run_approval
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 from app.models.task import AgentRun
 from celery_app.tasks import agent_tasks
 
@@ -250,7 +250,7 @@ async def test_a_genuine_unpriced_run_beside_a_settled_zero_still_refuses_by_nam
     assert truth.total is None, "a day with one unmeasured run is still UNMEASURED"
     assert truth.finished_unpriced == 1
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service._gate_planner_budget(
             async_db_session, "company_planner", step="propose"
         )
@@ -364,7 +364,7 @@ def test_a_FAILED_replay_that_declares_zero_still_settles_the_measured_zero(queu
     """
     import app.agents.crew_factory as crew_factory  # noqa: F401 — the replay path is exercised below
 
-    failure = PolsiaError(
+    failure = MeridianError(
         "E_INTEGRATION", "the approved action could not be performed — the provider refused it"
     )
     async def _failed_replay(**kwargs):
@@ -393,7 +393,7 @@ def test_a_refusal_that_DECLARES_zero_provider_calls_is_settled_too(queue_db, mo
     from app.agents import accounting
 
     def _refuse(*args, **kwargs):
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             "dispatch refused for social_media: kill switch active",
             how_to_fix="clear the kill switch",
@@ -428,7 +428,7 @@ def test_the_real_dispatch_preflight_refusal_declares_zero_calls(monkeypatch):
         ]
     )
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         crew_factory.run_agent_for_task("social_media", {"id": 1, "title": "t"}, {})
 
     assert excinfo.value.code == E_POLICY_DENIED

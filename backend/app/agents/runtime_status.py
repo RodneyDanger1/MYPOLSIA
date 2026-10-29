@@ -55,7 +55,7 @@ def _deepseek_key_source(configured: bool) -> str:
 
 def cli_model_id() -> str:
     """The model the Claude CLI path would be asked for; honest "not pinned" when none is set."""
-    pinned = str(os.getenv("POLSIA_CLAUDE_MODEL") or "").strip()
+    pinned = str(os.getenv("MERIDIAN_CLAUDE_MODEL") or "").strip()
     return pinned or "the CLI's own default (not pinned by this deployment)"
 
 

@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.services.ads_service as ads
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 INDEX_NAME = "uq_ad_campaigns_platform_external_id"
 
@@ -61,7 +61,7 @@ async def test_the_partial_unique_is_real_and_the_no_provider_id_legs_stay_legal
 
             await ads.create_campaign(db, "google_ads", "First", external_id="g-9")
             await db.commit()
-            with pytest.raises(PolsiaError) as excinfo:
+            with pytest.raises(MeridianError) as excinfo:
                 async with db.begin_nested():  # savepoint: keep the session usable after the refusal
                     await ads.create_campaign(db, "google_ads", "Second", external_id="g-9")
             assert excinfo.value.code == E_VALIDATION

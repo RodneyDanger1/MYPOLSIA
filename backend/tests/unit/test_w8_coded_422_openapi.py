@@ -8,17 +8,17 @@ Wave 7 measured the contradiction live on the rebuilt app
     GET /api/v1/support/inbox?status=bogus   -> 422  {"ok": false, "error": {"code": "E_VALIDATION", …}}
     GET /api/v1/support/inbox?limit=0        -> 422  {"detail": [{loc, msg, type, …}]}
 
-The envelope comes from `main.polsia_error_handler` / `main.coded_http_exception_handler`
+The envelope comes from `main.meridian_error_handler` / `main.coded_http_exception_handler`
 (`errors.HTTP_STATUS_BY_CODE[E_VALIDATION] == 422`); the array comes from FastAPI's
 `RequestValidationError` path.  The schema declared only the array on all 111 operations that declare
-422, so `app/core/openapi_errors.py` now declares `anyOf(HTTPValidationError, PolsiaErrorEnvelope)` on
+422, so `app/core/openapi_errors.py` now declares `anyOf(HTTPValidationError, MeridianErrorEnvelope)` on
 the 109 operations whose handler path can reach a 422-mapped named refusal (`E_VALIDATION`,
 `E_AGENT_UNKNOWN`) and leaves the framework array on the two that cannot.
 
 ARITHMETIC (the pin, old -> new)
 --------------------------------
   wave 7 schema:  111 x 422 = 111 x $ref HTTPValidationError                    (one shape declared)
-  wave 8 schema:  111 x 422 = 109 x anyOf(HTTPValidationError, PolsiaErrorEnvelope)
+  wave 8 schema:  111 x 422 = 109 x anyOf(HTTPValidationError, MeridianErrorEnvelope)
                              +  2 x $ref HTTPValidationError                    (GET /pricing, POST /ws/ticket)
   other statuses: identical per operation (the proof in
                   `systems-validator/raw/w8/prove-422.txt` shows an empty response-key diff)
@@ -50,7 +50,7 @@ import re
 import pytest
 from fastapi.routing import APIRoute
 
-from app.core.openapi_errors import CODED_422_OPERATIONS, PolsiaErrorEnvelope
+from app.core.openapi_errors import CODED_422_OPERATIONS, MeridianErrorEnvelope
 from app.main import create_app
 
 #: backend/ (this file lives in backend/tests/unit/).
@@ -68,7 +68,7 @@ EXPECTED_CODED = 109
 #: their `app.*` import closure.  Named here so an exclusion can never be silent.
 ARRAY_ONLY = frozenset({("GET", "/api/v1/pricing"), ("POST", "/api/v1/ws/ticket")})
 
-ENVELOPE_REF = "#/components/schemas/PolsiaErrorEnvelope"
+ENVELOPE_REF = "#/components/schemas/MeridianErrorEnvelope"
 ARRAY_REF = "#/components/schemas/HTTPValidationError"
 
 
@@ -131,7 +131,7 @@ def _imports_of(path: pathlib.Path) -> set[str]:
 
 
 def _raises_422(path: pathlib.Path) -> bool:
-    """Does this module raise a 422-mapped code through PolsiaError/named_refusal/"raise"?"""
+    """Does this module raise a 422-mapped code through MeridianError/named_refusal/"raise"?"""
     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise) and node.exc is not None:
@@ -140,7 +140,7 @@ def _raises_422(path: pathlib.Path) -> bool:
                     return True
         if isinstance(node, ast.Call):
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-            if name in ("named_refusal", "PolsiaError"):
+            if name in ("named_refusal", "MeridianError"):
                 for arg in node.args[:2]:
                     for sub in ast.walk(arg):
                         if isinstance(sub, ast.Name) and sub.id in VALIDATION_CODES:
@@ -214,7 +214,7 @@ def test_422_stays_declared_and_the_two_shapes_add_up(operations: dict) -> None:
     assert array == set(ARRAY_ONLY), sorted(array)
     assert len(one_of) == EXPECTED_CODED, len(one_of)
     assert len(one_of) + len(array) == len(declaring) == 111
-    assert all(_shapes(operations[target]) == "anyOf:HTTPValidationError,PolsiaErrorEnvelope"
+    assert all(_shapes(operations[target]) == "anyOf:HTTPValidationError,MeridianErrorEnvelope"
                for target in one_of)
 
 
@@ -313,7 +313,7 @@ def test_multi_method_paths_are_uniform(operations: dict) -> None:
 def test_the_components_every_422_ref_points_at_still_exist(schema: dict) -> None:
     """`oneOf` names two components; the 2 array-only operations keep FastAPI's definitions alive."""
     components = schema["components"]["schemas"]
-    for name in ("HTTPValidationError", "ValidationError", "PolsiaErrorEnvelope", "PolsiaErrorDetail"):
+    for name in ("HTTPValidationError", "ValidationError", "MeridianErrorEnvelope", "MeridianErrorDetail"):
         assert name in components, sorted(components)
     referenced = {
         ref.rsplit("/", 1)[-1]
@@ -343,7 +343,7 @@ async def test_the_three_422_wire_shapes_are_real(api_client, auth_headers) -> N
     assert coded_body["error"]["code"] == "E_AGENT_UNKNOWN"
     assert "detail" not in coded_body, "the framework array must not be mixed into a plain refusal"
     assert coded.headers.get("x-meridian-error-code") == "E_AGENT_UNKNOWN"
-    PolsiaErrorEnvelope.model_validate(coded_body)  # the declared component accepts the wire
+    MeridianErrorEnvelope.model_validate(coded_body)  # the declared component accepts the wire
 
     # 2. a framework validation error -> the array, uncoded (the documented exception)
     array = await api_client.get("/api/v1/ads/campaigns", headers=auth_headers, params={"limit": 0})

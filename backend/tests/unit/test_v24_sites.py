@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.services import site_service
 
@@ -176,7 +176,7 @@ def test_a_title_with_no_slug_material_falls_back_to_the_company_name() -> None:
     ["", "a", "A", "has space", "has/slash", "dot.dot", "x" * 49, "über", "under_score"],
 )
 def test_an_invalid_slug_is_the_named_validation_refusal(slug: str) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.validate_slug(slug)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["slug"] == slug
@@ -227,7 +227,7 @@ def test_a_directory_without_meta_json_is_not_listed(tmp_path: Path) -> None:
 
 
 def test_an_unknown_slug_is_the_named_not_found_refusal(tmp_path: Path) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.read_site("not-there", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
     assert excinfo.value.context["slug"] == "not-there"
@@ -245,7 +245,7 @@ def test_a_corrupt_meta_json_is_skipped_by_the_list_and_named_by_the_single_read
     # A corrupt entry cannot be listed (the list would be describing a site it cannot read)...
     assert [row["slug"] for row in site_service.list_sites(root=tmp_path)] == ["good-site"]
     # ...and asking for it by name is the same named refusal as asking for a missing one.
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.read_site("broken-site", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
     assert "unreadable" in excinfo.value.message
@@ -258,7 +258,7 @@ def test_a_non_numeric_bytes_field_is_a_named_refusal_not_a_500(tmp_path: Path) 
         json.dumps({"slug": "bad-bytes", "title": "x", "created_at": "2026-01-01", "bytes": "lots"}),
         encoding="utf-8",
     )
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.read_site("bad-bytes", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
 
@@ -330,7 +330,7 @@ async def test_a_slug_collision_is_named_every_time(async_db_session, tmp_path: 
     async_db_session.add(_company())
     await async_db_session.commit()
     await site_service.generate_site(async_db_session, slug="taken", root=tmp_path)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.generate_site(async_db_session, slug="taken", root=tmp_path)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["slug"] == "taken"
@@ -341,7 +341,7 @@ async def test_a_slug_collision_is_named_every_time(async_db_session, tmp_path: 
 async def test_generation_refuses_by_name_without_a_company(async_db_session, tmp_path: Path) -> None:
     from app.core.errors import E_CONFIG
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.generate_site(async_db_session, title="x", root=tmp_path)
     assert excinfo.value.code == E_CONFIG
 

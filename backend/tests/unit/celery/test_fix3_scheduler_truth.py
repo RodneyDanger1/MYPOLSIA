@@ -287,7 +287,7 @@ def test_a_deepseek_token_cost_is_measured_into_the_day_and_tightens_the_gate(
 ):
     """Envelope -> RunUsage -> worker writer -> `agent_runs.cost_usd` -> day_spend -> D3 deny."""
     from app.agents import accounting, claude_cli, deepseek_runtime, pricing
-    from app.agents.base_agent import BasePolsiaAgent
+    from app.agents.base_agent import BaseMeridianAgent
     from celery_app.tasks._common import assert_budget_allows, day_spend_by_agent
     from celery_app.tasks.agent_tasks import _apply_run_usage
 
@@ -319,7 +319,7 @@ def test_a_deepseek_token_cost_is_measured_into_the_day_and_tightens_the_gate(
     # the gate ALLOWS on a day with no measured spend...
     queue_db.run(assert_budget_allows("finance"))
 
-    class _Probe(BasePolsiaAgent):
+    class _Probe(BaseMeridianAgent):
         agent_type = "finance"
 
         def run(self, task, context):  # pragma: no cover

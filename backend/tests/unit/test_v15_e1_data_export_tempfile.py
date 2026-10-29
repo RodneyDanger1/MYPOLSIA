@@ -65,7 +65,7 @@ async def test_export_route_returns_a_file_backed_response_and_cleans_up(async_d
 
     path = Path(resp.path)
     assert path.exists(), "the FileResponse path must be a REAL file while the response is live"
-    assert path.name.startswith("polsia-data-export-") and path.suffix == ".zip", path.name
+    assert path.name.startswith("meridian-data-export-") and path.suffix == ".zip", path.name
     assert resp.media_type == "application/zip"
     assert resp.headers["X-Meridian-Row-Count"] == str(sum(counts.values()))
     assert "attachment; filename=" in resp.headers["Content-Disposition"]

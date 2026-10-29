@@ -39,7 +39,7 @@ from sqlalchemy import func, select
 from sqlalchemy import text as sqltext
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.errors import E_DB, E_VALIDATION, PolsiaError
+from app.core.errors import E_DB, E_VALIDATION, MeridianError
 from app.models.invoice import Invoice, InvoiceStatus
 from tests.unit.test_r26_ads_sweep import head_db  # noqa: F401  (fixture registration)
 
@@ -101,7 +101,7 @@ async def test_money_guard_refuses_non_finite_and_passes_the_rest_through():
     from app.services.finance_service import money
 
     for bad in (float("nan"), float("inf"), float("-inf"), Decimal("NaN"), Decimal("Infinity")):
-        with pytest.raises(PolsiaError) as ei:
+        with pytest.raises(MeridianError) as ei:
             money(bad)
         assert ei.value.code == E_VALIDATION
         assert ei.value.how_to_fix

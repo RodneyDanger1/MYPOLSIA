@@ -39,7 +39,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import utcnow
-from app.core.errors import E_DB, E_TASK_CLAIMED, E_TASK_NOT_RUNNABLE, PolsiaError
+from app.core.errors import E_DB, E_TASK_CLAIMED, E_TASK_NOT_RUNNABLE, MeridianError
 from app.models.task import AgentRun, Task
 from app.services.task_service import (
     claim_task,
@@ -90,7 +90,7 @@ class DispatchProbe:
                 self.status_at_read.append(str(row.status))
                 try:
                     claimed = await claim_task(db, worker="probe-worker-1", task_id=task_id)
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     self.claim_refusals.append(exc.code)
                     return
                 assert claimed is not None
@@ -633,17 +633,17 @@ async def test_the_run_check_and_the_claim_agree_on_every_schedule_window(async_
             agent_type="finance",
             scheduled_date=scheduled,
         )
-        runnable_refusal: PolsiaError | None = None
+        runnable_refusal: MeridianError | None = None
         try:
             await get_runnable_task(async_db_session, task.id)
-        except PolsiaError as exc:
+        except MeridianError as exc:
             runnable_refusal = exc
-        claim_refusal: PolsiaError | None = None
+        claim_refusal: MeridianError | None = None
         try:
             await claim_task(
                 async_db_session, worker=f"worker-{name}", task_id=task.id, lease_seconds=30
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             claim_refusal = exc
         assert (runnable_refusal is None) == (claim_refusal is None), (
             f"{name}: the run check answered {runnable_refusal and runnable_refusal.code} while "
@@ -660,7 +660,7 @@ async def test_a_future_scheduled_row_is_refused_with_the_window_named(async_db_
         agent_type="finance",
         scheduled_date=scheduled,
     )
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await get_runnable_task(async_db_session, task.id)
     refusal = excinfo.value
     assert refusal.code == E_TASK_NOT_RUNNABLE
@@ -699,7 +699,7 @@ async def test_a_pause_release_does_not_revive_a_cancelled_row(async_db_session)
     )
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await release_claim(async_db_session, task_id, "worker-A", release_kind="paused")
     assert excinfo.value.code == E_TASK_CLAIMED, (
         "a release that matched the cancelled row would have put it back in the queue"

@@ -1,7 +1,7 @@
 """FS1 contract-hardening pins (fixer seat 1): L1-01 · L1-02 · L1-10 · L1-11.
 
 Every leg here was RED before its fix (the applied-fix RED legs are recorded in
-`polsia-work/build/full-sweep/fix-1/RECEIPT.md`):
+`meridian-work/build/full-sweep/fix-1/RECEIPT.md`):
 
 * L1-01 — `PUT /api/v1/config {"timezone": "Not/AZone"}` and `{"daily_cycle_hour": 99}` answered
   **200 with the value echoed back**, and the runtime refused the stored value later by name

@@ -35,7 +35,7 @@ def company_tz(tz_name: str | None = None) -> ZoneInfo:
     to say (T4).
     """
     from app.config import settings
-    from app.core.errors import E_CONFIG, PolsiaError
+    from app.core.errors import E_CONFIG, MeridianError
 
     name = tz_name or settings.company_timezone or "UTC"
     try:
@@ -48,7 +48,7 @@ def company_tz(tz_name: str | None = None) -> ZoneInfo:
         # it now (`schemas.company._known_zone`).  All three are the SAME named refusal: a
         # malformed zone is E_CONFIG, never an uncoded 500 at request time.
         # malformed = named refusal (A-T4/R13); unset = documented UTC default
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"COMPANY_TIMEZONE {name!r} is not a known timezone",
             how_to_fix=(
@@ -97,7 +97,7 @@ def utc_day_bounds(day: date) -> tuple[datetime, datetime]:
     """[start, end) for a UTC calendar day (used when no company row exists).
 
     ZERO PRODUCTION CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/grep_utc_day_bounds.txt).  The only caller is
+    meridian-work/build/R25-deadhelpers/raw/grep_utc_day_bounds.txt).  The only caller is
     tests/redteam/test_spec_invariants.py:95, which uses this as the naive-UTC CONTROL
     against `day_bounds` (the local-day trap it demonstrates).  No app/, celery_app/ or
     scripts/ code calls it: every real "today" window goes through `day_bounds` /

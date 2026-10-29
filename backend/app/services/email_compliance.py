@@ -48,7 +48,7 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.outreach import Prospect
 from app.services.query_helpers import fetch_scalars
@@ -80,7 +80,7 @@ SendTimeSuppressionResolver = Callable[[str], bool]
 #: available (a direct caller, or a worker whose preflight producer failed); the send then takes
 #: the documented marker-only path and says so in the log.
 _SEND_TIME_RESOLVER: contextvars.ContextVar[SendTimeSuppressionResolver | None] = (
-    contextvars.ContextVar("polsia_send_time_suppression_resolver", default=None)
+    contextvars.ContextVar("meridian_send_time_suppression_resolver", default=None)
 )
 
 
@@ -121,7 +121,7 @@ async def suppression_status_at_send_time(engine: Any, address: str) -> bool:
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     if engine is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the send-time suppression resolver has no database engine to read",
             how_to_fix=(
@@ -231,7 +231,7 @@ UNSUBSCRIBE_PATH: Final[str] = "/api/v1/outreach/unsubscribe"
 #: Purpose-separation for the opt-out signature: one secret must never sign two meanings, so a
 #: token minted here cannot verify anywhere else.  Bumping the version retires every
 #: outstanding link on purpose — the reply-to-opt-out clause stays as the eternal fallback.
-_UNSUBSCRIBE_PURPOSE: Final[bytes] = b"polsia-outreach-unsubscribe:v1"
+_UNSUBSCRIBE_PURPOSE: Final[bytes] = b"meridian-outreach-unsubscribe:v1"
 
 #: The pinned refusal message (plan §9 B3): the sender identity is the 0008 pair.
 SENDER_UNCONFIGURED_MESSAGE: Final[str] = "sender identity not configured"
@@ -251,7 +251,7 @@ def _unsubscribe_secret(secret: str | None = None) -> str:
     """
     value = (secret if secret is not None else (settings.approval_secret or "")).strip()
     if not value:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "no unsubscribe signing secret configured: the one-click opt-out link cannot be minted",
             how_to_fix=(
@@ -276,7 +276,7 @@ def unsubscribe_token(address: str, *, secret: str | None = None) -> str:
     """
     normalized = (address or "").strip().lower()
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"{address!r} is not a usable address to unsubscribe",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -294,8 +294,8 @@ def verify_unsubscribe_token(token: str, *, secret: str | None = None) -> str:
     Malformed, truncated, forged and empty tokens are ONE refusal shape: a prober learns nothing
     from the difference, and no state changes on any of them.
     """
-    def invalid(detail: str) -> PolsiaError:
-        return PolsiaError(
+    def invalid(detail: str) -> MeridianError:
+        return MeridianError(
             E_VALIDATION,
             "the unsubscribe link is not valid: its token is malformed or was not signed here",
             how_to_fix=(
@@ -338,7 +338,7 @@ def _opt_out_url_or_none(website_url: str, address: str) -> str | None:
     """
     try:
         return unsubscribe_url(website_url, address)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         logger.warning(
             "code=opt_out_link_skipped: %s (the footer carries the reply-based opt-out instead)",
             exc.message,
@@ -403,7 +403,7 @@ def footer_for_company(
         if not value
     ]
     if missing:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             SENDER_UNCONFIGURED_MESSAGE,
             how_to_fix=_SENDER_HOW_TO_FIX,
@@ -461,7 +461,7 @@ async def send_compliant_email(
 
     address = (to or "").strip()
     if not address:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "outreach refuses an empty recipient address",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -501,7 +501,7 @@ async def send_compliant_email(
     ]
     if suppressed_rows:
         first = suppressed_rows[0]
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             f"outreach to {address!r} is suppressed: prospect status is 'unsubscribed'",
             how_to_fix=(
@@ -545,7 +545,7 @@ def _session_free_send(
     """
     identity = preflight.get("company") if isinstance(preflight, dict) else None
     if identity is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             SENDER_UNCONFIGURED_MESSAGE,
             how_to_fix=_SENDER_HOW_TO_FIX,
@@ -576,7 +576,7 @@ def _session_free_send(
             # it by name.
             matched = False
     if matched:
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             f"outreach to {address!r} is suppressed: prospect status is 'unsubscribed'",
             how_to_fix=(
@@ -586,7 +586,7 @@ def _session_free_send(
             context={"status": "unsubscribed", "source": "run context suppression list"},
         )
     if not isinstance(raw_suppressed, list | tuple):
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the run context suppression list ('suppressed') is malformed: expected a list of "
             f"addresses, got {type(raw_suppressed).__name__} — refusing rather than sending with "
@@ -606,7 +606,7 @@ def _session_free_send(
     # the session-free path requires the producer to assert a send-time verification for THIS
     # send; otherwise it refuses by name (fail closed).
     if preflight.get("send_time_verified") is not True:
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             "the session-free send path cannot re-verify suppression at send time: the "
             "run-context preflight is a snapshot and this call holds no database session",
@@ -625,12 +625,12 @@ def _session_free_send(
     if effective_resolver is not None:
         try:
             suppressed_now = effective_resolver(address)
-        except PolsiaError:
+        except MeridianError:
             # A resolver that refuses by name is already the honest answer (E_DB when the
             # database cannot be read, E_CONFIG when it has no engine): no send, no guessing.
             raise
         except Exception as exc:  # noqa: BLE001 — an unreadable suppression list is E_DB, never a send
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 f"the per-send compliance re-verification failed for {address!r} "
                 f"({type(exc).__name__}: {exc}); refusing to send with the suppression check "
@@ -642,7 +642,7 @@ def _session_free_send(
                 context={"to": address, "source": "send_time_reverification"},
             ) from exc
         if suppressed_now:
-            raise PolsiaError(
+            raise MeridianError(
                 E_POLICY_DENIED,
                 f"outreach to {address!r} is suppressed: the prospect opted out AFTER this run "
                 "was dispatched (per-send re-verification)",

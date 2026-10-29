@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.services import site_service
 from app.services.company_service import get_company
@@ -108,7 +108,7 @@ def test_a_second_delete_is_the_named_not_found(tmp_path: Path) -> None:
     _write_legacy_site(tmp_path, "route-site", "2026-01-01T00:00:00+00:00")
     site_service.delete_site("route-site", root=tmp_path)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.delete_site("route-site", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
     assert excinfo.value.context["slug"] == "route-site"
@@ -120,7 +120,7 @@ def test_delete_refuses_a_slug_that_is_not_a_plain_name(tmp_path: Path, bad: str
     sites.mkdir()
     (tmp_path / "outside").mkdir()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.delete_site(bad, root=sites)
     assert excinfo.value.code == E_VALIDATION
     # Nothing outside the sites root was touched.
@@ -137,7 +137,7 @@ def test_delete_refuses_a_linked_directory_that_resolves_outside_the_sites_root(
     (outside / "keep.txt").write_text("keep", encoding="utf-8")
     _link_directory(sites / "evil", outside)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.delete_site("evil", root=sites)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["slug"] == "evil"
@@ -290,7 +290,7 @@ async def test_regenerating_an_unknown_slug_is_the_named_not_found(
     async_db_session.add(_company())
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.regenerate_site(async_db_session, "no-such-site", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND
     assert excinfo.value.context["slug"] == "no-such-site"
@@ -302,7 +302,7 @@ async def test_regenerating_without_a_company_profile_is_the_named_config_refusa
 ) -> None:
     _write_legacy_site(tmp_path, "legacy-site", "2026-01-01T00:00:00+00:00")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.regenerate_site(
             async_db_session, "legacy-site", root=tmp_path, base_url="http://test/"
         )

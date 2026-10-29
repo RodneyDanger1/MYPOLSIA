@@ -14,7 +14,7 @@ Contract pinned here (the envelope consumers' rule: None means "unmeasured", a m
     the integer they are; NaN/inf are unmeasured;
   * measured values and measured zeros pass through untouched.
 
-Every test drives `BasePolsiaAgent._finish_call` on a claude-CLI-shaped `InvokeResult` — the same
+Every test drives `BaseMeridianAgent._finish_call` on a claude-CLI-shaped `InvokeResult` — the same
 real-consumer pattern as `test_rd13_deepseek_edges.py`'s D3 tests (the mock CLI and the raw CLI
 envelope are the producers this guard exists for).
 """
@@ -25,11 +25,11 @@ import json
 import pytest
 
 from app.agents import claude_cli
-from app.agents.base_agent import BasePolsiaAgent
-from app.core.errors import E_CLI_EXIT, PolsiaError
+from app.agents.base_agent import BaseMeridianAgent
+from app.core.errors import E_CLI_EXIT, MeridianError
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -223,7 +223,7 @@ def test_junk_usage_in_a_failure_envelope_still_raises_the_named_failure():
     env = _success_env(subtype="error_max_tokens", is_error=True, result="truncated")
     env["usage"]["input_tokens"] = "n/a"
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _Agent()._finish_call(_invoke_result(env, exit_code=1), 1, transport="argv")
 
     assert excinfo.value.code == E_CLI_EXIT

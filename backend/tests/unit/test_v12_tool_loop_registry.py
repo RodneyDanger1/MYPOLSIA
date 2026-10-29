@@ -77,7 +77,7 @@ def _run(server: _Scripted, *, allowed_tools, agent_type: str):
 def test_the_real_agents_invocation_is_the_signal_this_loop_reads():
     """base_agent is the PRODUCER of the activation signal — pin producer and consumer together.
 
-    `BasePolsiaAgent._real_call` passes the registry's `tools_for(agent_type)` into
+    `BaseMeridianAgent._real_call` passes the registry's `tools_for(agent_type)` into
     `allowed_tools` (the DeepSeek-bound argv), and this runtime reads exactly that flag. If either
     side changes its mind about the seam, this test fails rather than the live feature quietly
     going dark.

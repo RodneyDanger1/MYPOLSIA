@@ -203,4 +203,4 @@ async def test_n_published_rows_drive_the_day_cap(async_db_session, monkeypatch)
     assert snapshot["twitter"]["today"] == 12, "the snapshot shape the worker context carries"
     at_cap = decide(_req(sends_today=snapshot["twitter"]["today"]), caps=_CAPS, sandbox_mode=False)
     assert at_cap.decision is Decision.DENY, "N sends at an N cap must deny"
-    assert at_cap.code == "POLSIA-E117"
+    assert at_cap.code == "MERIDIAN-E117"

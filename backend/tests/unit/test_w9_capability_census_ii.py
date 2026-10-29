@@ -37,7 +37,7 @@ from app.agents import integrations, tool_registry
 from app.agents import policy_firewall as pf
 from app.agents.crew_factory import AGENT_MAP, get_agent_class
 from app.config import settings
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.schemas import agent_outputs
 from app.schemas.agent_outputs import EmailDraft
 from app.services import (
@@ -244,7 +244,7 @@ def unconfigured(monkeypatch):
 
 
 def _refusal_shape(payload: object) -> tuple[bool, str, str]:
-    """`(is_success, code, how_to_fix)` from an adapter answer (dict or a raised PolsiaError)."""
+    """`(is_success, code, how_to_fix)` from an adapter answer (dict or a raised MeridianError)."""
     if isinstance(payload, dict):
         error = payload.get("error") or {}
         return bool(payload.get("ok")), str(error.get("code") or ""), str(
@@ -262,7 +262,7 @@ def test_an_unconfigured_channel_refuses_by_name_and_never_reports_success(chann
     """
     try:
         payload = _MUTATING_CALLS[channel]()
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # A raised refusal is acceptable ONLY if it is named and explains the fix.
         assert exc.code.startswith("E_"), f"{channel}: unnamed failure {exc.code!r}"
         assert str(exc.message).strip(), f"{channel}: empty refusal message"
@@ -340,12 +340,12 @@ def test_the_direct_agent_construction_seams_are_exactly_the_documented_ones():
 def test_a_direct_planner_seam_passes_the_fleet_gates_before_constructing(monkeypatch, attr, agent_type):
     """W9/CAPABILITY-AUDITOR — the planner seams skipped `dispatch_preflight` entirely.
 
-    MEASURED (before the fix): with `POLSIA_KILL_SWITCH=freeze`, `planner_service._proposal_sync`
+    MEASURED (before the fix): with `MERIDIAN_KILL_SWITCH=freeze`, `planner_service._proposal_sync`
     still constructed `CompanyPlannerAgent` and ran it — the fleet freeze was enforced only by the
     separate budget gate, and the spawn-level safety legs (CLI binary/auth facts) were never asked
     at all.  Now the SAME `crew_factory.dispatch_preflight` runs before the class exists.
     """
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
     built: list[str] = []
 
     class _Exploding:
@@ -363,7 +363,7 @@ def test_a_direct_planner_seam_passes_the_fleet_gates_before_constructing(monkey
         monkeypatch.setattr(planner_service, "CompanyPlannerAgent", _Exploding)
         call = lambda: planner_service._proposal_sync({"name": "Co"}, {})  # noqa: E731
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         call()
     assert excinfo.value.code == "E_POLICY_DENIED", (
         f"expected the named fleet refusal, got {excinfo.value.code!r}: {excinfo.value.message}"
@@ -465,7 +465,7 @@ def test_every_run_fact_the_decisions_read_has_a_publisher():
     """The publisher side: a read that nothing publishes is a dead decision leg.
 
     MEASURED (wave 9): the taint is published by the prompt assembler and by
-    `BasePolsiaAgent.timed_run` (the seam every run passes through), while the approval material
+    `BaseMeridianAgent.timed_run` (the seam every run passes through), while the approval material
     and the channel-send snapshot are published by the WORKER before it starts the run — because
     only the worker holds the task row's token and the day's counts.  The census asserts each
     fact still has its publisher; it does not dictate which module that is.
@@ -474,7 +474,7 @@ def test_every_run_fact_the_decisions_read_has_a_publisher():
     base = (APP / "agents" / "base_agent.py").read_text(encoding="utf-8")
     worker = (CELERY / "tasks" / "agent_tasks.py").read_text(encoding="utf-8")
     assert "set_run_taint(" in assembler, "the prompt assembler no longer publishes the run taint"
-    assert "set_run_taint(" in base, "BasePolsiaAgent no longer publishes the run taint"
+    assert "set_run_taint(" in base, "BaseMeridianAgent no longer publishes the run taint"
     for publisher in ("set_run_approval(", "set_run_channel_sends("):
         assert publisher in worker, f"the worker no longer calls {publisher}"
 

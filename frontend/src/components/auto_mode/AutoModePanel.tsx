@@ -10,7 +10,7 @@ import { useAutoMode, type AutoModeSession } from "./useAutoMode";
 
 /**
  * Dashboard → left rail: the AUTO MODE panel (wave V7 / V7-T14), mounted directly under
- * `PolsiaStatusCard`.
+ * `MeridianStatusCard`.
  *
  * The wire surface is `GET/POST/DELETE /api/v1/auto-mode` (`auto_mode.py` :56-127) — consumed
  * verbatim: POST `{duration_hours}` → 201 `{started, session}`; GET → `{active, session|null}`;

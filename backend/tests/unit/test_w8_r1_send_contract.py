@@ -32,7 +32,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.core.errors import E_CONFIG, E_DB, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CONFIG, E_DB, E_POLICY_DENIED, MeridianError
 from app.models.outreach import Prospect
 from app.services import email_compliance as compliance
 from app.services import outreach_service
@@ -159,7 +159,7 @@ async def test_r05_a_producer_failure_leaves_the_key_absent_and_is_logged(monkey
 
     class _DeadSession:
         async def execute(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
-            raise PolsiaError(E_DB, "planted: the database went away")
+            raise MeridianError(E_DB, "planted: the database went away")
 
     with caplog.at_level(logging.WARNING):
         enriched = await _with_compliance_preflight(_DeadSession(), "email_outreach", {"k": 1})
@@ -183,7 +183,7 @@ async def test_r06_a_stale_preflight_without_the_assertion_refuses_before_the_pr
     preflight = await outreach_service.compliance_preflight(async_db_session)
     assert preflight["send_time_verified"] is False
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await compliance.send_compliant_email(
             None, to=ADDRESS, subject="hello", body="body", preflight=_preflight_from_producer(preflight)
         )
@@ -200,7 +200,7 @@ async def test_r07_a_crafted_truthy_marker_is_not_a_verification(crafted, async_
     preflight = await outreach_service.compliance_preflight(async_db_session)
     crafted_preflight = {**preflight, "send_time_verified": crafted}
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await compliance.send_compliant_email(
             None, to=ADDRESS, subject="s", body="b", preflight=crafted_preflight
         )
@@ -217,7 +217,7 @@ async def test_r08_a_malformed_suppression_list_refuses_even_with_the_assertion(
     preflight = await outreach_service.compliance_preflight(async_db_session)
     crafted = {**preflight, "suppressed": ADDRESS, "send_time_verified": True}
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await compliance.send_compliant_email(None, to=OTHER, subject="s", body="b", preflight=crafted)
 
     assert caught.value.code == E_CONFIG
@@ -231,7 +231,7 @@ async def test_r09_the_snapshot_itself_still_suppresses_an_opted_out_address(
     await _seed_prospect(async_db_session, status="unsubscribed")
     preflight = await outreach_service.compliance_preflight(async_db_session)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await compliance.send_compliant_email(
             None, to=ADDRESS, subject="s", body="b", preflight={**preflight, "send_time_verified": True}
         )
@@ -339,7 +339,7 @@ def test_r11_mode2_without_a_preflight_re_reads_the_db_and_refuses_a_suppressed_
     _path, url = file_database
     _seed_in_file(url, status="unsubscribed")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         send_outreach_email(to=ADDRESS, subject="s", body="b", context=None)
 
     assert caught.value.code == E_POLICY_DENIED
@@ -377,7 +377,7 @@ async def test_r12b_cs_mode1_refuses_a_stale_snapshot(async_db_session, provider
     from app.agents.customer_support.send_bridge import send_cs_reply
 
     preflight = await outreach_service.compliance_preflight(async_db_session)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         send_cs_reply(to=ADDRESS, subject="s", body="b", context={"compliance": preflight})
     assert caught.value.code == E_POLICY_DENIED
     assert provider.calls == []
@@ -389,7 +389,7 @@ def test_r12c_cs_mode2_refuses_a_suppressed_address(file_database, provider):
     _path, url = file_database
     _seed_in_file(url, status="unsubscribed")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         send_cs_reply(to=ADDRESS, subject="s", body="b", context=None)
     assert caught.value.code == E_POLICY_DENIED
     assert provider.calls == []
@@ -424,7 +424,7 @@ async def test_r13_an_opt_out_after_dispatch_must_not_still_receive_mail(
     prospect.status = "unsubscribed"
     await async_db_session.flush()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         send_outreach_email(to=ADDRESS, subject="s", body="b", context=context)
     assert caught.value.code == E_POLICY_DENIED, (
         "an opt-out that landed after dispatch is a POLICY refusal, not a database error — the "
@@ -477,7 +477,7 @@ async def test_r13c_a_failing_send_time_read_refuses_instead_of_sending(async_db
     context = {"compliance": {**preflight, "send_time_verified": True}}
     token = compliance.set_send_time_resolver(_raising_resolver)
     try:
-        with pytest.raises(PolsiaError) as caught:
+        with pytest.raises(MeridianError) as caught:
             send_outreach_email(to=ADDRESS, subject="s", body="b", context=context)
     finally:
         compliance.reset_send_time_resolver(token)

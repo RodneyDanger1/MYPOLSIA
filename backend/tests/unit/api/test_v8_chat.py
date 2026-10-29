@@ -112,7 +112,7 @@ async def test_money_refusal_names_the_code_and_files_nothing(api_client, auth_h
     assert tasks == [], "a refused money request must never queue a task"
     activity = (await async_db_session.execute(select(ActivityLog))).scalars().all()
     assert [row.action for row in activity] == ["chat_message"]
-    assert activity[0].agent_type == "polsia"
+    assert activity[0].agent_type == "meridian"
 
 
 @pytest.mark.asyncio
@@ -261,12 +261,12 @@ async def test_history_shape_is_the_frozen_one(api_client, auth_headers):
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["total"], int)
-    assert body["total"] == 4, "two exchanges persist owner + polsia rows each"
+    assert body["total"] == 4, "two exchanges persist owner + meridian rows each"
     items = body["items"]
     assert len(items) == 4
     for item in items:
         assert set(item) == {"role", "content", "created_at", "task_id"}
-    assert [item["role"] for item in items] == ["owner", "polsia", "owner", "polsia"]
+    assert [item["role"] for item in items] == ["owner", "meridian", "owner", "meridian"]
     assert items[0]["content"] == "status"
     assert items[0]["task_id"] is None
 

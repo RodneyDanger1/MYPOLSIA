@@ -5,7 +5,7 @@ MEASURED DEFECT
 `POST /api/v1/ops/run-workspace-cleanup {"workspace_root": "C:\\\\x\\u0000y"}` passed the route's
 own body validation (a non-blank STRING) and then failed inside the retention resolver:
 
-    PolsiaError E_CONFIG: run workspace cleanup: the workspace root '...' cannot be resolved \
+    MeridianError E_CONFIG: run workspace cleanup: the workspace root '...' cannot be resolved \
     (ValueError: stat: embedded null character in path)
 
 `E_CONFIG` maps to **503** — "this service cannot take the work right now" — which blames the

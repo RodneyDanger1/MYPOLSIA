@@ -5,7 +5,7 @@ Three promises, each pinned by a test:
   1. POSIX: the spawned CLI runs in its OWN session (`start_new_session`), and
      `_kill_process_tree` kills the whole process GROUP with SIGKILL — the old code documented
      "kill the group" but only ever called `proc.kill()` on POSIX (pytest.ini L3-02).
-  2. Spill files: every `polsia-sysprompt-*.txt` is registered in `_SPILL_TMP_FILES`, and the
+  2. Spill files: every `meridian-sysprompt-*.txt` is registered in `_SPILL_TMP_FILES`, and the
      atexit net removes whatever a normal crash left behind (a hard force-kill still cannot run
      handlers — named residual, L3-03).
   3. The normal path still removes the file in `finally` and deregisters it.
@@ -123,12 +123,12 @@ def test_spill_file_crash_net_removes_and_cleans_up(monkeypatch, tmp_path):
 
     # The normal path: the spill file was written, used as argv[1], then removed + deregistered.
     spill = captured["argv"][2]  # type: ignore[index]
-    assert str(spill).endswith(".txt") and "polsia-sysprompt-" in str(spill)
+    assert str(spill).endswith(".txt") and "meridian-sysprompt-" in str(spill)
     assert not os.path.exists(str(spill)), "finally must remove the spill file"
     assert str(spill) not in claude_cli._SPILL_TMP_FILES, "and deregister it"
 
     # The crash net: a leaked path the finally never reached is removed by the atexit function.
-    leaked = tmp_path / "polsia-sysprompt-leaked.txt"
+    leaked = tmp_path / "meridian-sysprompt-leaked.txt"
     leaked.write_text("x")
     claude_cli._SPILL_TMP_FILES.add(str(leaked))
     try:

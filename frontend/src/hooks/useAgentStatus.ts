@@ -16,7 +16,7 @@ type ReadReason = "mount" | "tick" | "visible";
  *    a slow reply can never overwrite fresher data.
  *  - The interval stays per-hook, not a shared global poller: the unit suite pins the exact call
  *    count per tick, and each subscriber polls through its own hook instance — live consumers are
- *    `AgentsRoster` (Agents page) and `PolsiaStatusCard` (dashboard); `AgentStatusGrid` is the
+ *    `AgentsRoster` (Agents page) and `MeridianStatusCard` (dashboard); `AgentStatusGrid` is the
  *    dead, labelled U1 leftover (see its why-comment). A shared poller would add coordination
  *    risk for no measured gain at this subscriber count — revisit only if that changes.
  *  - V26/F1 — visibility gates the INTERVAL, never the mount. A tab opened in the background used

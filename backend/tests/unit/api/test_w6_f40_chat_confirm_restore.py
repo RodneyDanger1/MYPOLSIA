@@ -241,5 +241,5 @@ async def test_the_stored_reply_states_the_reload_truth(api_client, auth_headers
     assert "once it expires this stored message cannot queue anything" in text
     # ...and the exact sentence is what PERSISTS (a reload reads the stored row, not the 201 body).
     body = (await api_client.get("/api/v1/chat", headers=auth_headers)).json()
-    stored_reply = [item for item in body["items"] if item["role"] == "polsia"][-1]
+    stored_reply = [item for item in body["items"] if item["role"] == "meridian"][-1]
     assert stored_reply["content"] == text

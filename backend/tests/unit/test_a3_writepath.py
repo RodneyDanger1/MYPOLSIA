@@ -36,8 +36,8 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime
-from app.agents.base_agent import BasePolsiaAgent
-from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+from app.agents.base_agent import BaseMeridianAgent
+from app.core.errors import E_CLI_TIMEOUT, MeridianError
 from celery_app.tasks import _common
 
 #: Clearly fake, ASCII-only (httpx encodes header values as ASCII) — house pattern.
@@ -53,7 +53,7 @@ FETCH_ARGS = '{"url": "https://example.test/page"}'
 FETCH_RESULT = "Fetched https://example.test — 12 chars of text."
 
 
-class _ResearchAgent(BasePolsiaAgent):
+class _ResearchAgent(BaseMeridianAgent):
     """A real subclass whose `run()` is not used: only the invoke seam is exercised."""
 
     agent_type = "competitor_research"
@@ -313,7 +313,7 @@ def test_a_record_without_a_persisted_result_is_refused_not_re_sent(registry):
     server = _Scripted(_completion(None, finish="tool_calls",
                                    tool_calls=[_tool_call("c1", "web_fetch", FETCH_ARGS)]))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _inv(), replay=recorded)
 
     assert excinfo.value.code == deepseek_runtime.E_ACTION_REPLAY_UNAVAILABLE
@@ -336,7 +336,7 @@ def test_a_tampered_record_is_refused_rather_than_replayed(registry):
     server = _Scripted(_completion(None, finish="tool_calls",
                                    tool_calls=[_tool_call("c1", "web_fetch", FETCH_ARGS)]))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _inv(), replay=recorded)
 
     assert excinfo.value.code == deepseek_runtime.E_ACTION_REPLAY_UNAVAILABLE
@@ -351,7 +351,7 @@ def test_a_started_record_fails_closed_instead_of_re_executing(registry):
     server = _Scripted(_completion(None, finish="tool_calls",
                                    tool_calls=[_tool_call("c1", "web_fetch", FETCH_ARGS)]))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _inv(), replay=recorded)
 
     assert excinfo.value.code == deepseek_runtime.E_ACTION_REPLAY_UNAVAILABLE
@@ -422,7 +422,7 @@ class _WorkerToolRun:
         if self.fail:
             # The run FAILED after the effect: a failed run stores no output, so the refusal's
             # context is the only carrier the worker can persist.
-            raise PolsiaError(E_CLI_TIMEOUT, "test-only transport failure",
+            raise MeridianError(E_CLI_TIMEOUT, "test-only transport failure",
                               context={"actions": journal})
         return {"summary": "used the fetch", "actions": journal}
 
@@ -479,7 +479,7 @@ def test_a_completed_run_records_its_actions_on_the_task_row(queue_db, monkeypat
 
 def test_actions_from_outcome_reads_the_failure_context_and_ignores_junk():
     record = {"call_key": "web_fetch|abc", "tool": "web_fetch", "status": "executed"}
-    failure = PolsiaError(E_CLI_TIMEOUT, "boom", context={"actions": [record, "not-a-record"]})
+    failure = MeridianError(E_CLI_TIMEOUT, "boom", context={"actions": [record, "not-a-record"]})
 
     assert _common.actions_from_outcome({}, failure) == [record]
     assert _common.actions_from_outcome({"actions": [record]}, None) == [record]
@@ -723,7 +723,7 @@ def test_a_refused_hand_off_re_arms_the_rows_instead_of_terminalising_them(queue
 
     monkeypatch.setattr(celery, "group", _RefusedGroup)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _common.run_async(_common.enqueue_created(ids, label="a3 sweep"))
 
     assert excinfo.value.code == "E_REDIS"

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.competitor_research.agent import RESEARCH_FETCH_BUDGET
 from app.agents.policy_firewall import wrap_untrusted
 from app.schemas.planner import PlannerProposalDraft
@@ -69,7 +69,7 @@ ROLE = _ROLE + f"""
 Research budget: your research was fetched for you under the fleet's research budget — at most {RESEARCH_FETCH_BUDGET} research fetches (a search or a fetch each counts as one). Cite from the research block's recorded fetches only; never ask for or attempt fetches of your own."""
 
 
-class CompanyPlannerAgent(BasePolsiaAgent):
+class CompanyPlannerAgent(BaseMeridianAgent):
     agent_type = "company_planner"
     description = "Proposes sourced, who-pays business candidates for the owner to gate and confirm"
     output_schema = PlannerProposalDraft

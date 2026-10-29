@@ -10,7 +10,7 @@ that defines the TOCTOU window — the insert path under test is the production 
 |---|---|---|
 | L3-05 | a no-op `{"enabled": true}` re-armed a pending due instant | `test_a_no_op_enable_*` |
 | L3-09 | daily-report check-then-insert race | `test_daily_report_*` |
-| L3-07 | one non-`PolsiaError` aborts the whole dunning tick | `test_one_invoice_raising_*` |
+| L3-07 | one non-`MeridianError` aborts the whole dunning tick | `test_one_invoice_raising_*` |
 | L3-06 | `GET /memory?q=` skipped the documented `E_VALIDATION` | `test_empty_query_*` |
 | L3-08 | ads helpers: delete-vs-DEBT assessment | `test_ads_helpers_*` |
 """
@@ -199,7 +199,7 @@ def _seed_invoice(queue_db, *, number: str) -> int:
 @pytest.fixture
 def dunning_mail(monkeypatch):
     """The provider edge only (the V9 suite's `mail_seam` boundary).  `explode_on` makes the
-    send raise a NON-`PolsiaError`, the exact class `_dun_one` did not catch."""
+    send raise a NON-`MeridianError`, the exact class `_dun_one` did not catch."""
     from app.agents import integrations
     from app.config import settings
     from app.services import invoice_service

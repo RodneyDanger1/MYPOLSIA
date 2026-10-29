@@ -7,12 +7,12 @@ worst possible outcomes, so every failure path in this application raises one of
 instead of returning something plausible.
 
 Usage:
-    raise PolsiaError(E_CLI_TIMEOUT, "claude CLI exceeded 300s", how_to_fix="...")
+    raise MeridianError(E_CLI_TIMEOUT, "claude CLI exceeded 300s", how_to_fix="...")
 
     try:
         ...
     except SomeThirdPartyError as exc:
-        raise PolsiaError(E_INTEGRATION, f"Stripe call failed: {exc}",
+        raise MeridianError(E_INTEGRATION, f"Stripe call failed: {exc}",
                           how_to_fix="check STRIPE_SECRET_KEY / network") from exc
 """
 from __future__ import annotations
@@ -95,7 +95,7 @@ E_ACTION_REPLAY_UNAVAILABLE = "E_ACTION_REPLAY_UNAVAILABLE"
 E_INTERNAL = "E_INTERNAL"
 
 
-class PolsiaError(Exception):
+class MeridianError(Exception):
     """A failure that names itself and says how to fix it.
 
     `code` is always an `E_*` constant; `how_to_fix` is required for anything a human
@@ -132,7 +132,7 @@ def refusal(code: str, message: str, **context: Any) -> dict[str, Any]:
     Returns `{"ok": False, "error": {...}}` — never a fake success, never an empty
     list pretending to be an answer.
     """
-    return {"ok": False, **PolsiaError(code, message, context=context).as_dict()}
+    return {"ok": False, **MeridianError(code, message, context=context).as_dict()}
 
 
 ERROR_HINTS: dict[str, str] = {
@@ -176,7 +176,7 @@ ERROR_HINTS: dict[str, str] = {
 # THIS TABLE IS THE SINGLE SOURCE OF TRUTH for code -> status.  `deps.STATUS_BY_CODE` is an ALIAS
 # of it (it used to be a second literal table; the two disagreed for nine codes — E_DB, E_STORAGE,
 # the four E_CLI_*, E_INTEGRATION, E_AGENT_BAD_OUTPUT, E_PROMPT_TOO_LARGE — so the same
-# `PolsiaError` answered 502/503/504/413 when raised inside a route and a codeless 500 when raised
+# `MeridianError` answered 502/503/504/413 when raised inside a route and a codeless 500 when raised
 # before it; measured in build/R27-social-outreach/raw/status_table_diff.txt + probe_edb_paths.txt,
 # consolidated here by lane R29).
 HTTP_STATUS_BY_CODE: dict[str, int] = {
@@ -233,7 +233,7 @@ def http_status_for(code: str) -> int:
     return HTTP_STATUS_BY_CODE.get(code, 500)
 
 
-def to_http_detail(exc: PolsiaError) -> dict[str, Any]:
+def to_http_detail(exc: MeridianError) -> dict[str, Any]:
     """The body an API client sees for a named refusal."""
     hint = exc.how_to_fix or ERROR_HINTS.get(exc.code, "")
     return {"ok": False, "error": {

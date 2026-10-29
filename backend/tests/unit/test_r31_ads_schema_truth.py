@@ -1,6 +1,6 @@
 """R31 — ads schema truth: the ORM now writes the schema both migrations ship.
 
-R26 (`polsia-work/build/R26-ads/RECEIPT.md` §F1/§F2) proved two cross-file defects with named
+R26 (`meridian-work/build/R26-ads/RECEIPT.md` §F1/§F2) proved two cross-file defects with named
 `xfail` proofs; this lane fixes them and converts the proofs into pins:
 
 F2  `app/models/ads.py` mapped `ctr/cpc/roas` as plain WRITABLE Floats while BOTH engines hold them

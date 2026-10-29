@@ -134,7 +134,7 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_STORAGE,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.timeutil import iso_utc
 from app.models.ads import AdCampaign, AdMetric
@@ -281,7 +281,7 @@ EXPORT_REDACTION_MARK = "[redacted: credential]"
 #: The action fingerprint the owner mints for.  The digest binds the constant to the frozen
 #: member set: adding/removing a member changes the string, so a token minted before the change
 #: fails verification instead of approving a wider wipe than it named.
-DATA_WIPE_ACTION_FINGERPRINT = "polsia-data-wipe:v1:" + hashlib.sha256(
+DATA_WIPE_ACTION_FINGERPRINT = "meridian-data-wipe:v1:" + hashlib.sha256(
     "|".join(sorted(MEMBER_MODELS)).encode("utf-8")
 ).hexdigest()[:12]
 
@@ -297,7 +297,7 @@ logger = logging.getLogger(__name__)
 
 #: The export archive is a temp file in the system scratch dir (U2-10): named so an operator can
 #: see whose file it is, `.zip` so tooling knows the format, removed after the response is sent.
-EXPORT_TEMP_PREFIX = "polsia-data-export-"
+EXPORT_TEMP_PREFIX = "meridian-data-export-"
 EXPORT_TEMP_SUFFIX = ".zip"
 
 #: F-48: rows per server-side cursor page, and how often the CSV text buffer is flushed into the
@@ -487,7 +487,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
     # `datetime.now()` or the local `date` again.
     exported_at = _export_stamp()
     manifest = {
-        "product": "polsia",
+        "product": "meridian",
         "export_version": 1,
         "exported_at": iso_utc(exported_at),
         "members": manifest_members,
@@ -514,7 +514,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
     try:
         fd, raw_path = tempfile.mkstemp(prefix=EXPORT_TEMP_PREFIX, suffix=EXPORT_TEMP_SUFFIX)
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the export ZIP temp file could not be created in the system scratch dir "
             f"({type(exc).__name__}: {exc})",
@@ -531,7 +531,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
                 written = await _write_member(db, model, table=table, archive=archive)
                 if written != declared[table]:
                     _remove_export_tempfile(path)
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_DB,
                         f"{table} export refused: manifest declares {declared[table]} row(s) but "
                         f"{written} were written",
@@ -540,7 +540,7 @@ async def _build_export(db: AsyncSession) -> tuple[Path, int, datetime]:
                     )
     except OSError as exc:
         _remove_export_tempfile(path)
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the export ZIP could not be written to {path} ({type(exc).__name__}: {exc})",
             how_to_fix=f"check that {path.parent} is writable and the disk has room, then "
@@ -568,7 +568,7 @@ def _export_filename(exported_at: datetime) -> str:
     at 02:00Z on the 2nd was named `...-01.zip` and its manifest said the 2nd).  One clock, always
     UTC, whatever the host's zone.
     """
-    return f"polsia-data-export-{exported_at.astimezone(UTC).strftime('%Y-%m-%d')}.zip"
+    return f"meridian-data-export-{exported_at.astimezone(UTC).strftime('%Y-%m-%d')}.zip"
 
 
 def _remove_export_tempfile(path: Path) -> None:
@@ -637,7 +637,7 @@ def _read_consumed() -> list[dict[str, Any]]:
         if not isinstance(consumed, list):
             raise ValueError("consumed is not a list")
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the data-wipe single-use marker file is unreadable ({type(exc).__name__}), so a "
             "confirm token's single-use property cannot be checked",
@@ -660,7 +660,7 @@ def _persist_consumed(consumed: list[dict[str, Any]]) -> None:
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, path)
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"could not persist the data-wipe consumed-token record ({type(exc).__name__}) — "
             "refusing to wipe, because the token's single-use property could not be made durable",
@@ -680,7 +680,7 @@ def _verify_wipe_token(secret: bytes, token: str) -> str:
     """
     exp_part, _, sig_part = token.partition(".")
     if not exp_part or not sig_part or "." in sig_part:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the confirm_token is not a Meridian approval token (expected '{expiry}.{signature}')",
             how_to_fix="mint one via POST /api/v1/approvals with the action_fingerprint from "
@@ -690,14 +690,14 @@ def _verify_wipe_token(secret: bytes, token: str) -> str:
     try:
         exp = int(exp_part)
     except ValueError:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the confirm_token is not a Meridian approval token (its expiry is not an integer)",
             how_to_fix="pass the confirm_token value exactly as POST /api/v1/approvals returned it",
             context={"reason": "malformed"},
         ) from None
     if int(time.time()) > exp:
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             "the confirm token expired — nothing was deleted",
             how_to_fix="run DELETE /api/v1/data?dry_run=true and mint a fresh token "
@@ -709,7 +709,7 @@ def _verify_wipe_token(secret: bytes, token: str) -> str:
             },
         )
     if not verify_approval(secret, token, action_fingerprint=DATA_WIPE_ACTION_FINGERPRINT):
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             "the confirm token failed verification: it was not minted by this server for the "
             "data-wipe action, or APPROVAL_SECRET changed since it was minted — nothing was "
@@ -782,7 +782,7 @@ def _store_entries(root: Path, label: str) -> list[Path]:
         if not root.exists():
             return []
         if root.is_symlink() or _is_junction(root):
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"the {label} store root {str(root)!r} is a link/junction — refusing to wipe "
                 "through it",
@@ -790,7 +790,7 @@ def _store_entries(root: Path, label: str) -> list[Path]:
                 context={"store": label, "path": str(root)},
             )
         if not root.is_dir():
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"the {label} store root {str(root)!r} exists but is not a directory",
                 how_to_fix="fix the store path in settings, then retry the wipe",
@@ -799,7 +799,7 @@ def _store_entries(root: Path, label: str) -> list[Path]:
         with os.scandir(root) as scanned:
             return [Path(entry.path) for entry in scanned]
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the {label} store {str(root)!r} could not be read ({type(exc).__name__}: {exc})",
             how_to_fix="check the directory permissions, then retry the wipe",
@@ -832,7 +832,7 @@ def _remove_store_entry(entry: Path) -> None:
 
 
 def _export_temp_entries() -> list[Path]:
-    """The wiped export's own scratch archives (`polsia-data-export-*.zip`, U2-10's prefix).
+    """The wiped export's own scratch archives (`meridian-data-export-*.zip`, U2-10's prefix).
 
     They are owner data (a full copy of the exported tables) and a crashed export leaves one
     behind, so the wipe removes them too.  Only THIS product's exact prefix+suffix matches.
@@ -850,7 +850,7 @@ def _export_temp_entries() -> list[Path]:
                 and entry.is_file()
             ]
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the export temp directory {str(root)!r} could not be read "
             f"({type(exc).__name__}: {exc})",
@@ -878,7 +878,7 @@ def _wipe_file_stores(*, remove: bool) -> dict[str, int]:
             try:
                 _remove_store_entry(entry)
             except OSError as exc:
-                raise PolsiaError(
+                raise MeridianError(
                     E_STORAGE,
                     f"the data wipe could not remove {str(entry)!r} from the {label} store "
                     f"({type(exc).__name__}: {exc}); {removed} entr(ies) of this store were "
@@ -901,7 +901,7 @@ def _wipe_file_stores(*, remove: bool) -> dict[str, int]:
         try:
             entry.unlink()
         except OSError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"the data wipe could not remove the export temp archive {str(entry)!r} "
                 f"({type(exc).__name__}: {exc}); {removed_temp} archive(s) were already removed — "
@@ -947,7 +947,7 @@ async def delete_data_route(
 
         secret = configured_approval_secret()
         if not secret:
-            raise PolsiaError(
+            raise MeridianError(
                 E_CONFIG,
                 "the data-wipe confirm channel is not configured: APPROVAL_SECRET is unset, so "
                 "no token could ever verify",
@@ -956,7 +956,7 @@ async def delete_data_route(
                 context={"action_fingerprint": DATA_WIPE_ACTION_FINGERPRINT},
             )
         if not confirm_token:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "DELETE /api/v1/data deletes every member table and requires a single-use "
                 "confirm token; none was supplied",
@@ -970,7 +970,7 @@ async def delete_data_route(
         consumed = _read_consumed()
         for entry in consumed:
             if entry.get("fingerprint") == DATA_WIPE_ACTION_FINGERPRINT and entry.get("sig") == sig:
-                raise PolsiaError(
+                raise MeridianError(
                     E_POLICY_DENIED,
                     "this confirm token was already used — it authorized the wipe recorded at "
                     f"{entry.get('consumed_at', 'an earlier time')}; a confirm token is single-use",
@@ -989,7 +989,7 @@ async def delete_data_route(
             total_before = sum(counts_before.values())
             if total_before == 0 and sum(files_before.values()) == 0:
                 await db.rollback()
-                raise PolsiaError(
+                raise MeridianError(
                     E_VALIDATION,
                     "there is nothing to delete: every member table and every file store is "
                     "already empty — the confirm token was NOT consumed",
@@ -1051,7 +1051,7 @@ async def delete_data_route(
             await db.commit()
         except SQLAlchemyError as exc:
             await db.rollback()
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 f"the data wipe failed mid-transaction ({exc.__class__.__name__}); the "
                 "transaction was rolled back — the confirm token is consumed (fail-closed)",

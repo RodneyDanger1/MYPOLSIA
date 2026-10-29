@@ -7,7 +7,7 @@ other lane edits it.
 
 Semantics carried by the columns:
 
-* `role` is the speaker: `owner` (the human) or `polsia` (the product's reply).  Escalated to
+* `role` is the speaker: `owner` (the human) or `meridian` (the product's reply).  Escalated to
   `Enum(ChatRole, native_enum=False, create_constraint=True, name="ck_chat_messages_role")` so the
   value set exists in ONE place and renders `VARCHAR(50) ... CONSTRAINT ck_chat_messages_role
   CHECK (...)` on every backend (the `tasks.status` doctrine, D2 / T03);
@@ -36,7 +36,7 @@ class ChatRole(enum.StrEnum):
     """The `chat_messages.role` value set — the two speakers of the conversation."""
 
     OWNER = "owner"
-    POLSIA = "polsia"
+    MERIDIAN = "meridian"
 
 
 def chat_role_values(enum_cls: type[enum.Enum] = ChatRole) -> list[str]:

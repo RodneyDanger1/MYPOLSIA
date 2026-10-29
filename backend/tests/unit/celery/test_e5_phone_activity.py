@@ -12,7 +12,7 @@ RED-FIRST.  The amendment's P-03 acceptance names exactly three properties, and 
 The tick is a MAINTENANCE task: it runs on the beat, it must be idempotent, and an absent store
 must be a NAMED no-op (`E_PHONE_UNAVAILABLE` in the result + zero rows), never a crash-loop or a
 fabricated event.  The durable activity row is the feed's source of truth (`log_activity`) and the
-Redis publish is the live nudge on `polsia:activity` — both are asserted, because "publishes into
+Redis publish is the live nudge on `meridian:activity` — both are asserted, because "publishes into
 the existing activity pub/sub" is the whole point of the item.
 """
 from __future__ import annotations
@@ -99,7 +99,7 @@ def test_tick_publishes_every_new_event_once(queue_db, phone_store, state_path, 
 
     # The pub/sub edge: one publish per event, on the SHIPPED channel.
     assert quiet_redis.publish.await_count == EXPECTED_EVENTS
-    assert quiet_redis.publish.await_args.args[0] == "polsia:activity"
+    assert quiet_redis.publish.await_args.args[0] == "meridian:activity"
 
 
 def test_tick_twice_publishes_nothing_the_second_time(queue_db, phone_store, state_path, quiet_redis):

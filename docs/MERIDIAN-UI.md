@@ -1,18 +1,18 @@
-# MYPOLSIA — UI & User Guide (chapter)
+# Meridian — UI & User Guide (chapter)
 
 **Scope.** Every App Router page, its controls and states, what works vs refuses **by name**, the owner's first-run path, a feature catalog, and two honest 60-item lists.
 
 **Method.** Three evidence classes, never blended: **[live]** driven at `http://localhost:3000` (Next.js) against `http://127.0.0.1:8000` (FastAPI, `API_KEY=dev-key`, SQLite demo DB, `SANDBOX_MODE=true`) on 2026-10-29 14:13–14:50 America/Chicago, headless Chromium 1440×1100 + `curl`, shots in `shots/`; **[code]** read from the cited `path:line`; **[not exercised]** exists in code but deliberately not run.
 
-No write landed in the demo DB except refused ones (`E_CONFIG`, `E_SANDBOX_BLOCKED`, `E_VALIDATION`, `E_AGENT_UNKNOWN`) and one read-only retention **dry run**. No repo file was touched; artefacts live in `polsia-work/build/swarm-2026-10-28/guide/`.
+No write landed in the demo DB except refused ones (`E_CONFIG`, `E_SANDBOX_BLOCKED`, `E_VALIDATION`, `E_AGENT_UNKNOWN`) and one read-only retention **dry run**. No repo file was touched; artefacts live in `meridian-work/build/swarm-2026-10-28/guide/`.
 
-**Brand note.** The repo has renamed the product **MYPOLSIA → Meridian** (see `MERIDIAN-GUIDE.md` §0). The running build still mixes both: the header reads **`Polsia · AI Business Agent`** (`frontend/src/components/layout/Topbar.tsx:44-47`) while the chat signs **`MERIDIAN`**, Settings says "the services **Meridian** calls", `/sites` says "**Meridian** stores the hostname", a memory response header is `X-Meridian-Total`, and `backend/app/config.py:18` defaults `app_name="Meridian"` — yet exports are `polsia-data-export-*.zip`. Strings below are verbatim, so both spellings appear.
+**Brand note.** The repo has renamed the product **Meridian → Meridian** (see `MERIDIAN-GUIDE.md` §0). The running build still mixes both: the header reads **`Meridian · AI Business Agent`** (`frontend/src/components/layout/Topbar.tsx:44-47`) while the chat signs **`MERIDIAN`**, Settings says "the services **Meridian** calls", `/sites` says "**Meridian** stores the hostname", a memory response header is `X-Meridian-Total`, and `backend/app/config.py:18` defaults `app_name="Meridian"` — yet exports are `meridian-data-export-*.zip`. Strings below are verbatim, so both spellings appear.
 
 ---
 
 ## 1. Shell and navigation
 
-Three bands plus the body (`frontend/src/app/layout.tsx:22-45`): **Topbar** (`Polsia · AI BUSINESS AGENT` → `/dashboard`, bell, **EDIT**, **MENU ▾**); **Activity strip** (one line per event, `LOG` opens a dialog log with *Export log* → `polsia-activity.log`; `components/shell/ActivityStrip.tsx:4-26,83`); **Sandbox banner** — `SANDBOX MODE ON — External actions are drafted, not sent; flip SANDBOX_MODE in .env and restart to go live.` **[live, every page]**. No sidebar: navigation lives in MENU (19 destinations, `components/layout/nav-items.ts:43-85`) and Ctrl+K, which lists all 19 routes plus newest 50 tasks / 50 runs / 20 reports (`CommandPalette.tsx`).
+Three bands plus the body (`frontend/src/app/layout.tsx:22-45`): **Topbar** (`Meridian · AI BUSINESS AGENT` → `/dashboard`, bell, **EDIT**, **MENU ▾**); **Activity strip** (one line per event, `LOG` opens a dialog log with *Export log* → `meridian-activity.log`; `components/shell/ActivityStrip.tsx:4-26,83`); **Sandbox banner** — `SANDBOX MODE ON — External actions are drafted, not sent; flip SANDBOX_MODE in .env and restart to go live.` **[live, every page]**. No sidebar: navigation lives in MENU (19 destinations, `components/layout/nav-items.ts:43-85`) and Ctrl+K, which lists all 19 routes plus newest 50 tasks / 50 runs / 20 reports (`CommandPalette.tsx`).
 
 **Bell [live]** reads `GET /notifications` (*No notifications in the last 48 hours… items appear when a task completes, fails, waits for your approval, or a stalled run is requeued*). **EDIT [live]** opens *Edit Dashboard* — per-widget show/hide, in-column reorder, *Restore default layout* — persisted **browser-local only** and says so (`DashboardEditorSheet.tsx`; `Topbar.tsx:26-34`).
 
@@ -119,7 +119,7 @@ Columns `▸ TO DO` and `✓ DONE` always, plus `✗ NOT DONE` and an unknown-st
 
 ### 3.11 Ops — `shots/ops.png`, `ops-dryrun.png`
 
-`GOD MODE · OWNER COCKPIT · LIVE EVERY 10 S WHILE THIS TAB IS VISIBLE` + `REFRESH`, then: **Live runs** (`0 RUNS IN THE LEDGER`; legend *a dash with "never recorded" is missing history, while "none" means tools were available and the model called none*); **Pending approvals** (`0 WAITING`); **Kill switches** (`AUTO MODE OFF`, `DISPATCH PAUSE RUNNING`, `SANDBOX ON`, plus *the `POLSIA_KILL_SWITCH` grade is not exposed by any API route — so no grade is shown rather than guessed*); **Agent triggers** (nine rows; *creates a new manual task row … it does not re-run an existing task*); **Run artifacts** (`0 RUN WORKSPACES`, *a measured zero … not a failed read*); **Retention** (*newest 20 … older than 72 h … 04:15 UTC*). **Exercised [live, changes nothing]:** `DRY RUN` → `WOULD REMOVE 0`, `KEPT 0`.
+`GOD MODE · OWNER COCKPIT · LIVE EVERY 10 S WHILE THIS TAB IS VISIBLE` + `REFRESH`, then: **Live runs** (`0 RUNS IN THE LEDGER`; legend *a dash with "never recorded" is missing history, while "none" means tools were available and the model called none*); **Pending approvals** (`0 WAITING`); **Kill switches** (`AUTO MODE OFF`, `DISPATCH PAUSE RUNNING`, `SANDBOX ON`, plus *the `MERIDIAN_KILL_SWITCH` grade is not exposed by any API route — so no grade is shown rather than guessed*); **Agent triggers** (nine rows; *creates a new manual task row … it does not re-run an existing task*); **Run artifacts** (`0 RUN WORKSPACES`, *a measured zero … not a failed read*); **Retention** (*newest 20 … older than 72 h … 04:15 UTC*). **Exercised [live, changes nothing]:** `DRY RUN` → `WOULD REMOVE 0`, `KEPT 0`.
 
 ### 3.12 Capabilities
 
@@ -166,7 +166,7 @@ Read-only, derived live from the policy firewall + tool registry: `10 AGENTS · 
 
 **Tasks** — board, create dialog (≤4 images ≤5 MB), one-write status control limited to the server matrix, run, attachments, artifacts. **Agents** — nine with mandates, counts, tool grants, dispatch creating a *new* task, plus the capability map. **Phone** — the richest read surface (threads, 100-message window, media, calls, codes, ZIP export, gated composer). **Finance** — human rate, a planning template where each cell names its missing input, revenue/expenses/Stripe events, macro context, AI spend + unit economics. **Sites** — 3 templates, regenerate/delete, preview-vs-live deploy, DNS/TLS badge. **Memory** — semantic search (20/page, 120 s cold-start tolerance), stored rows with tags, delete-by-id. **Ops** — runs, approvals, switches, triggers, artifacts, retention.
 
-**Settings** — 4 tabs + 6 sections (§3.13). **Notifications** — bell over `GET /notifications`, last 48 h. **Search** — Ctrl+K: 19 routes + 50 tasks + 50 runs + 20 reports. **Exports** — `/data/export` (ZIP, 4,412 B live), `/runs/export?format=csv`, `/phone/export` (ZIP, 78,549 B live), site package ZIP, `polsia-activity.log`; no memory export exists. **API docs** — `/docs`, `/openapi.json` (428 kB); auth is one `X-API-Key`.
+**Settings** — 4 tabs + 6 sections (§3.13). **Notifications** — bell over `GET /notifications`, last 48 h. **Search** — Ctrl+K: 19 routes + 50 tasks + 50 runs + 20 reports. **Exports** — `/data/export` (ZIP, 4,412 B live), `/runs/export?format=csv`, `/phone/export` (ZIP, 78,549 B live), site package ZIP, `meridian-activity.log`; no memory export exists. **API docs** — `/docs`, `/openapi.json` (428 kB); auth is one `X-API-Key`.
 
 ---
 
@@ -312,7 +312,7 @@ Read-only, derived live from the policy firewall + tool registry: `10 AGENTS · 
 57. Chat will not answer from general knowledge — it says it does not guess.
 58. Nothing fabricates a zero: unmeasured renders `—` with a named reason.
 59. No next-run time is claimed for the report cycle (beat unobservable).
-60. No kill-switch grade is displayed (no route exposes `POLSIA_KILL_SWITCH`).
+60. No kill-switch grade is displayed (no route exposes `MERIDIAN_KILL_SWITCH`).
 
 ---
 
@@ -326,7 +326,7 @@ Read-only, derived live from the policy firewall + tool registry: `10 AGENTS · 
 
 - The frontend **went down ≈14:50** during the last pass (another lane restarting it): the Settings tab-panel images and the Edit-sheet shot come from code plus earlier captures. Every **[live]** claim predates the outage.
 - **Writes were not executed** except refused ones and the retention dry run; creation/send/dispatch/key-save paths are documented from code and screen copy, not a round trip.
-- Brand strings changed **between two captures 20 minutes apart** (`Polsia stores the hostname` → `Meridian stores the hostname`); quoted copy is build-specific. `SANDBOX_MODE=true` throughout, so no outbound path could be proven end-to-end.
+- Brand strings changed **between two captures 20 minutes apart** (`Meridian stores the hostname` → `Meridian stores the hostname`); quoted copy is build-specific. `SANDBOX_MODE=true` throughout, so no outbound path could be proven end-to-end.
 
 ### Done
 | Item | Evidence |
@@ -336,7 +336,7 @@ Read-only, derived live from the policy firewall + tool registry: `10 AGENTS · 
 | Chat $0 reads + CONFIRM gate proven closed | `guide/shots/chat.json`; responses quoted in §3.1 |
 | Refusals captured by code | `E_POLICY_DENIED` (201 body), `E_CONFIG` ×2, `E_AGENT_UNKNOWN` 422, `E_SANDBOX_BLOCKED` 403, `E_NOT_FOUND` ×2, `E_REDIS` 503 |
 | 60 can / 60 cannot | §6, §7 |
-| No repo modification | only `polsia-work/build/swarm-2026-10-28/guide/` written |
+| No repo modification | only `meridian-work/build/swarm-2026-10-28/guide/` written |
 
 ### Not done
 | Item | Reason |

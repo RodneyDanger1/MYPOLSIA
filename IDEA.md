@@ -1,1 +1,1 @@
-MYPOLSIA is a Polsia clone for me privately reverse engineered.
+Meridian is a Meridian clone for me privately reverse engineered.

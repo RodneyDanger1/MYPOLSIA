@@ -61,12 +61,12 @@ afterEach(() => {
 });
 
 const REPORTED = {
-  package_dir: "C:\\Meridian\\backend\\data\\exports\\site-polsia",
+  package_dir: "C:\\Meridian\\backend\\data\\exports\\site-meridian",
   files: [
-    "C:\\Meridian\\backend\\data\\exports\\site-polsia\\index.html",
-    "C:\\Meridian\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
+    "C:\\Meridian\\backend\\data\\exports\\site-meridian\\index.html",
+    "C:\\Meridian\\backend\\data\\exports\\site-meridian\\HOSTING-README.md",
   ],
-  slug: "polsia",
+  slug: "meridian",
 };
 
 describe("4-07 — site-package download", () => {
@@ -78,7 +78,7 @@ describe("4-07 — site-package download", () => {
       headers: {
         get: (name: string) => {
           if (name.toLowerCase() === "content-disposition") {
-            return 'attachment; filename="site-polsia.zip"';
+            return 'attachment; filename="site-meridian.zip"';
           }
           return null;
         },
@@ -98,11 +98,11 @@ describe("4-07 — site-package download", () => {
 
     await waitFor(() => expect(anchorClick).toHaveBeenCalledTimes(1));
     // The save name is the SERVER's, parsed out of the header — never invented client-side.
-    expect(clicked[0].download).toBe("site-polsia.zip");
+    expect(clicked[0].download).toBe("site-meridian.zip");
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(await screen.findByTestId("settings-site-download-done")).toHaveTextContent(
-      "Downloaded site-polsia.zip.",
+      "Downloaded site-meridian.zip.",
     );
   });
 
@@ -133,7 +133,7 @@ describe("4-07 — site-package download", () => {
       statusText: "OK",
       headers: {
         get: (name: string) =>
-          name.toLowerCase() === "content-disposition" ? "attachment; filename=site-polsia.zip" : null,
+          name.toLowerCase() === "content-disposition" ? "attachment; filename=site-meridian.zip" : null,
       },
       blob: () => Promise.resolve(new Blob(["zip-bytes"], { type: "application/zip" })),
       text: () => Promise.resolve(""),
@@ -143,7 +143,7 @@ describe("4-07 — site-package download", () => {
     fireEvent.click(screen.getByTestId("settings-site-download"));
 
     await waitFor(() => expect(anchorClick).toHaveBeenCalledTimes(1));
-    expect(clicked[0].download).toBe("site-polsia.zip");
+    expect(clicked[0].download).toBe("site-meridian.zip");
   });
 
   it("an unbuilt/unavailable package renders the server's named refusal — no blob, no anchor, no dead button", async () => {
@@ -208,7 +208,7 @@ describe("4-07 — site-package download", () => {
 
     await waitFor(() => expect(api.post).toHaveBeenCalledWith("/site/package"));
     const result = await screen.findByTestId("settings-site-result");
-    expect(result).toHaveTextContent("polsia");
+    expect(result).toHaveTextContent("meridian");
     expect(result).toHaveTextContent("index.html");
     expect(screen.queryByRole("progressbar")).toBeNull();
   });

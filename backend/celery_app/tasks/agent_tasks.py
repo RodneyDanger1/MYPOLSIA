@@ -42,7 +42,7 @@ from app.core.errors import (
     E_TASK_CLAIMED,
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.task import TaskStatus
 from celery_app.tasks._common import (
@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 #
 # `E_AGENT_BAD_OUTPUT` was in this set and is NOT infrastructure: it is the agent's own output
 # failing its output contract (F-23, live: `social_media` produced a twitter post > 280 chars,
-# `POLSIA-E110`, and the worker spent TWO more model calls re-asking the identical prompt before
+# `MERIDIAN-E110`, and the worker spent TWO more model calls re-asking the identical prompt before
 # the row was left wedged).  A schema validator is deterministic about the same instruction — the
 # measured retries all failed — so this code is terminal now: ONE attempt, the named failure on
 # the row, and the owner re-runs deliberately (possibly after a prompt change) if they want it.
@@ -263,7 +263,7 @@ def is_retryable(exc: BaseException | None) -> bool:
     """
     if exc is None:
         return True
-    if isinstance(exc, PolsiaError):
+    if isinstance(exc, MeridianError):
         declared = exc.context.get("retryable")
         if isinstance(declared, bool):
             return declared
@@ -703,7 +703,7 @@ async def _persist_run_artifacts(
             # activity row — instead of vanishing.
             report = {"ok": False, "memory": memory, "error": memory.get("error") or {}}
         return report
-    except PolsiaError as exc:
+    except MeridianError as exc:
         logger.warning("code=run_artifacts_refused: %s (%s)", agent_type, exc)
         return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
     except Exception as exc:  # noqa: BLE001 — a persistence bug is reported in the run output
@@ -1057,7 +1057,7 @@ def _approval_replay_plan(*, task_id: int, metadata: Any) -> dict[str, dict[str,
     markers = approval_replays(metadata)
     began = [fp for fp in parked if _send_may_have_happened(markers.get(fp))]
     if began:
-        raise PolsiaError(
+        raise MeridianError(
             E_ACTION_REPLAY_UNAVAILABLE,
             (
                 f"task {task_id}: the approved action(s) {began} already BEGAN on an earlier "
@@ -1073,7 +1073,7 @@ def _approval_replay_plan(*, task_id: int, metadata: Any) -> dict[str, dict[str,
     stored = approved_payloads(metadata)
     unreplayable = unreplayable_approvals(metadata)
     if unreplayable:
-        raise PolsiaError(
+        raise MeridianError(
             E_ACTION_REPLAY_UNAVAILABLE,
             (
                 f"task {task_id}: the parked approval(s) {unreplayable} carry no stored payload, "
@@ -1094,7 +1094,7 @@ def _approval_replay_plan(*, task_id: int, metadata: Any) -> dict[str, dict[str,
     for fp in parked:
         record = dict(stored[fp])
         if record.get("agent_type") not in _REPLAYABLE_AGENT_TYPES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_ACTION_REPLAY_UNAVAILABLE,
                 (
                     f"task {task_id}: this worker has no replay leg for agent "
@@ -1109,7 +1109,7 @@ def _approval_replay_plan(*, task_id: int, metadata: Any) -> dict[str, dict[str,
         try:
             ActionClass(str(record.get("class") or ""))
         except ValueError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_ACTION_REPLAY_UNAVAILABLE,
                 f"task {task_id}: the stored approval {fp} names an unknown action class "
                 f"{record.get('class')!r}",
@@ -1135,7 +1135,7 @@ async def _stamp_replay_started(task_id: int, fingerprints: list[str], *, worker
     async with get_session_factory()() as db:
         row = await get_task(db, task_id)
         if row is None:
-            raise PolsiaError(
+            raise MeridianError(
                 E_NOT_FOUND,
                 f"task {task_id} vanished before its approved payload could be replayed",
                 context={"task_id": task_id},
@@ -1176,7 +1176,7 @@ async def _refuse_spent_approval(
     parked = parked_approval_fingerprints(metadata)
     terminal = not parked
     message = (
-        f"{E_POLICY_DENIED}: POLSIA-E121 approval replay — the token minted for {fingerprint} was "
+        f"{E_POLICY_DENIED}: MERIDIAN-E121 approval replay — the token minted for {fingerprint} was "
         "already spent by an earlier attempt (one approval authorises ONE attempt), so nothing was "
         "dispatched"
     )
@@ -1205,7 +1205,7 @@ async def _refuse_spent_approval(
                 "task_id": task_id,
                 "action_fingerprint": fingerprint,
                 "jti": jti,
-                "policy_code": "POLSIA-E121",
+                "policy_code": "MERIDIAN-E121",
                 "reason": "already_used",
                 "approval_replay": True,
                 "fresh_token_required": True,
@@ -1227,7 +1227,7 @@ async def _refuse_spent_approval(
         "task_status": "rejected" if terminal else "awaiting_approval",
         "reason": E_POLICY_DENIED,
         "error": message,
-        "policy_code": "POLSIA-E121",
+        "policy_code": "MERIDIAN-E121",
         "approval_replay": True,
         "approval_fingerprint": fingerprint,
         "dag_dependents": blocked,
@@ -1256,7 +1256,7 @@ async def _spend_approval_before_dispatch(
     for — then spends it through the ledger, whose UNIQUE `token_id` is the cross-process guarantee.
     Returns `(spent, refusal_outcome)`.
 
-      * `already_used` -> the dispatch is REFUSED by name (`POLSIA-E121`) and `_refuse_spent_approval`
+      * `already_used` -> the dispatch is REFUSED by name (`MERIDIAN-E121`) and `_refuse_spent_approval`
         lands the row (`awaiting_approval` with a fresh token required, or `rejected` when nothing is
         parked).  The effect is never reached.
       * a ledger write that fails for any other reason -> the named `E_DB`: the same refusal, and the
@@ -1320,7 +1320,7 @@ async def _spend_approval_before_dispatch(
                 action_fingerprint=fingerprint,
                 consumed_by=f"task:{task_id}",
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code != E_DB:
                 raise
             logger.error(
@@ -1330,7 +1330,7 @@ async def _spend_approval_before_dispatch(
             released = True
             try:
                 await release_claim(db, task_id, me)
-            except PolsiaError as release_exc:
+            except MeridianError as release_exc:
                 # W5-S2: the claim may already belong to another worker (the row was taken
                 # over while this delivery was in flight). Losing the release must NOT lose the
                 # named E_DB envelope, the rearm stamp or the refusal activity: nothing was
@@ -1401,7 +1401,7 @@ async def _spend_approval_before_dispatch(
         )
         return False, None
     logger.warning(
-        "task %s: approval replay refused (POLSIA-E121 already_used) for %s — nothing dispatched",
+        "task %s: approval replay refused (MERIDIAN-E121 already_used) for %s — nothing dispatched",
         task_id, fingerprint[:16],
     )
     return False, await _refuse_spent_approval(
@@ -1517,7 +1517,7 @@ async def _perform_approved_action(
             "refund": provider.get("result") if provider.get("ok") else None,
         }
         return (bool(provider.get("ok")), {"refunds": [out]}, provider)
-    raise PolsiaError(
+    raise MeridianError(
         E_ACTION_REPLAY_UNAVAILABLE,
         f"no approved-action performer for agent {agent_type!r}",
         how_to_fix="perform the approved action from its run output; nothing is re-sent automatically",
@@ -1563,7 +1563,7 @@ async def _replay_approved_actions(
     receipts: list[dict[str, Any]] = []
     performed_keys: dict[str, list[dict[str, Any]]] = {}
     outcomes: dict[str, dict[str, Any]] = {}
-    blocked: list[PolsiaError] = []
+    blocked: list[MeridianError] = []
     counts_by_channel = (context or {}).get("channel_sends") or {}
     for fp, record in approved.items():
         payload = dict(record.get("payload") or {})
@@ -1600,7 +1600,7 @@ async def _replay_approved_actions(
                 approval_secret=secret,
                 approval_token=approval_token,
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             # A rate/kill/policy denial raises (the agent's own loop would not continue either):
             # nothing was sent, and the refusal is the run's own failure — an approved action that
             # cannot be performed must never be reported as done.
@@ -1632,7 +1632,7 @@ async def _replay_approved_actions(
             performed, items, provider = await _perform_approved_action(
                 agent_type, record, context=context
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             # A pre-send refusal from the guarded sender (unconfigured identity, opt-out, missing
             # credentials): nothing reached the provider, so the marker must NOT claim a send.
             # OR-02: the item was NOT performed — it stays parked (nothing was sent, so a later
@@ -1665,7 +1665,7 @@ async def _replay_approved_actions(
                 "error": f"{type(exc).__name__}: {exc}",
                 "at": now_utc().isoformat(),
             }
-            blocked.append(PolsiaError(
+            blocked.append(MeridianError(
                 E_INTEGRATION,
                 f"{agent_type}: the approved action raised {type(exc).__name__}: {exc}",
                 how_to_fix=(
@@ -1689,7 +1689,7 @@ async def _replay_approved_actions(
             "at": now_utc().isoformat(),
         }
         if not performed:
-            blocked.append(PolsiaError(
+            blocked.append(MeridianError(
                 E_INTEGRATION,
                 f"{agent_type}: the approved action could not be performed — "
                 f"{provider_error.get('message') or 'the provider refused it'}",
@@ -1781,7 +1781,7 @@ def run_agent_task(self, task_id: int) -> dict[str, Any]:
         )
         if failure is None:
             # Only the lease-lost path reaches "failed" without an exception.
-            failure = PolsiaError(
+            failure = MeridianError(
                 E_TASK_CLAIMED,
                 outcome.get("error") or f"task {task_id} failed without an exception",
                 how_to_fix="let the current claim owner finish; the lease expires if it dies",
@@ -1851,7 +1851,7 @@ async def _release_dag_dependents(task_id: int, *, agent_type: str) -> dict[str,
         return outcome
     try:
         await enqueue_created(ready, label=f"dag dependents of {task_id}")
-    except PolsiaError as exc:
+    except MeridianError as exc:
         if exc.code != E_REDIS:
             raise
         outcome.update(
@@ -2201,7 +2201,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 # With an explicit task_id the service RAISES instead, so this is unreachable today — but
                 # mypy cannot know that, and a future change to the service would otherwise turn this line
                 # into an AttributeError deep in the worker. Fail with the named refusal instead.
-                raise PolsiaError(
+                raise MeridianError(
                     E_TASK_NOT_RUNNABLE,
                     f"claim returned no task for {task_id}",
                     context={"task_id": task_id},
@@ -2235,7 +2235,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             # (T04) keys on `source`, and the approval channel (T02) keys on the supplied token.
             task_source = str(task.source or "")
             approval_token = approval_token_from_metadata(task.metadata_json)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         if exc.code in _SKIP_CLAIM_CODES:
             logger.info("run_agent_task(%s): skipped — %s", task_id, exc)
             return {"status": "skipped", "task_id": task_id, "reason": exc.code}
@@ -2421,7 +2421,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     if approval_token or parked_at_claim:
         try:
             replay = _approval_replay_plan(task_id=task_id, metadata=task_dict.get("metadata"))
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code != E_ACTION_REPLAY_UNAVAILABLE:
                 raise
             logger.warning("run_agent_task(%s): %s", task_id, exc)
@@ -2541,7 +2541,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         )
     # V26/L3 (F3) — the run row's id is the run's identity for the workspace seam.  Publish it
     # on the task dict the agent receives (the one carrier every dispatched run already reads:
-    # `BasePolsiaAgent.set_run_context` → `deepseek_runtime.invoke(run_id=...)` →
+    # `BaseMeridianAgent.set_run_context` → `deepseek_runtime.invoke(run_id=...)` →
     # `execute_tool(run_id=...)`), so the three code tools write under
     # `data/workspace/runs/<run_id>/` instead of the shared root.  A string on purpose: the id
     # becomes ONE path segment and the registry validates its charset before any path exists.
@@ -2564,7 +2564,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # cancellation leg) run INSIDE the agent, with no run object to read.
     #   * `context.get("channel_sends")` is None when the producer could not measure; publishing
     #     None keeps "unmeasured" distinguishable from a measured zero, which is what makes the
-    #     firewall refuse a configured cap it cannot verify (`cap_unknown`, POLSIA-E114) instead of
+    #     firewall refuse a configured cap it cannot verify (`cap_unknown`, MERIDIAN-E114) instead of
     #     reading a fabricated 0.
     #   * `begin_run_cancellation()` MUST run before `create_task(_heartbeat)` below: the task
     #     copies this context, and the loss is latched on the SHARED guard object, so every copy
@@ -2603,7 +2603,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 async with session_factory() as db:
                     await heartbeat_task(db, task_id, me)
                     await db.commit()
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 if exc.code in _SKIP_CLAIM_CODES or exc.code == E_NOT_FOUND:
                     # The service refuses to renew a claim this worker no longer holds
                     # (E_TASK_CLAIMED / E_TASK_NOT_RUNNABLE / E_NOT_FOUND) instead of silently
@@ -2729,7 +2729,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             async with session_factory() as guard_db:
                 await heartbeat_task(guard_db, task_id, me)
                 await guard_db.commit()
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code not in (*_SKIP_CLAIM_CODES, E_NOT_FOUND):
                 raise
             async with session_factory() as guard_db:
@@ -3103,7 +3103,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         # ("the token survives only while it still covers an owed fingerprint")
                         # predates the ledger; once the dispatch seam has spent it, keeping it
                         # would hand the retry a credential the ledger already refuses
-                        # (POLSIA-E121) — the retry needs a FRESH mint, which is exactly the
+                        # (MERIDIAN-E121) — the retry needs a FRESH mint, which is exactly the
                         # one-approval-one-attempt semantics.
                         approval_token=approval_token if not approval_spent else "",
                     )

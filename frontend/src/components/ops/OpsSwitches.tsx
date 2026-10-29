@@ -15,7 +15,7 @@ import { api } from "@/lib/api";
  *                      (`crew_factory.dispatch_preflight`, `agent_tasks`' pre-claim gate)
  *   GET /ops/sandbox   `{sandbox_mode}` — external actions are drafted, never sent
  *
- * HONESTY LIMIT, stated in the card: the `POLSIA_KILL_SWITCH` environment grade ("throttle" /
+ * HONESTY LIMIT, stated in the card: the `MERIDIAN_KILL_SWITCH` environment grade ("throttle" /
  * "freeze") is enforced inside the worker (`policy_firewall.kill_grade_from_env`) but NO API route
  * exposes its value, so this surface shows no grade for it rather than inventing one. The two
  * switches that ARE readable are shown with their real source.
@@ -203,7 +203,7 @@ export function OpsSwitches({ tick, onRetry }: { tick: number; onRetry: () => vo
 
       <p className="mt-2 text-xs text-ink-muted">
         Read from <code>GET /auto-mode</code>, <code>GET /config</code> (dispatch_paused) and{" "}
-        <code>GET /ops/sandbox</code>. The <code>POLSIA_KILL_SWITCH</code> environment grade
+        <code>GET /ops/sandbox</code>. The <code>MERIDIAN_KILL_SWITCH</code> environment grade
         (throttle/freeze) is enforced inside the worker, but no API route exposes its value — so no
         grade is shown here rather than guessed.
       </p>

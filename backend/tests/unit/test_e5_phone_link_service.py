@@ -20,7 +20,7 @@ from datetime import datetime
 
 import pytest
 
-from app.core.errors import E_PHONE_UNAVAILABLE, PolsiaError
+from app.core.errors import E_PHONE_UNAVAILABLE, MeridianError
 from app.services import phone_link_service as phone_service
 from tests.fixtures.phone_store import (
     CODE_VALUE,
@@ -58,7 +58,7 @@ def test_absent_store_refuses_by_name(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "phone_link_db_dir", str(tmp_path / "no-such-mount"))
 
     assert phone_service.store_status() == "unavailable"
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         phone_service.summary(today=NOW.date())
     assert excinfo.value.code == E_PHONE_UNAVAILABLE
     assert excinfo.value.how_to_fix, "a refusal without a fix hint is a dead end for the operator"
@@ -229,7 +229,7 @@ def test_changed_schema_refuses_by_name(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "phone_link_db_dir", str(root))
 
     assert phone_service.store_status() == "ok", "the directory itself is fine"
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         phone_service.summary(today=NOW.date())
     assert excinfo.value.code == E_PHONE_UNAVAILABLE
     assert "body" in str(excinfo.value.context), (
@@ -258,7 +258,7 @@ def test_a_missing_database_file_inside_a_present_directory_refuses(tmp_path, mo
     (root / "phone.db").unlink()
     monkeypatch.setattr(settings, "phone_link_db_dir", str(root))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         phone_service.summary(today=NOW.date())
     assert excinfo.value.code == E_PHONE_UNAVAILABLE
 

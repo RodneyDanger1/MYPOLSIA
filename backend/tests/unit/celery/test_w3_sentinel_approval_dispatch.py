@@ -12,7 +12,7 @@ WHAT LANDS HERE
     and the approvals route passes the minted fingerprint;
   * `_spend_approval_before_dispatch` SPENDS the token (ledger UNIQUE `token_id`) BEFORE the run row
     exists and BEFORE any provider is reachable; `already_used` refuses the dispatch by name
-    (`POLSIA-E121`) and the row re-parks asking for a fresh mint; a ledger write that fails for any
+    (`MERIDIAN-E121`) and the row re-parks asking for a fresh mint; a ledger write that fails for any
     other reason is the named `E_DB` (fail closed — the action is not dispatched);
   * ONE APPROVAL = ONE ATTEMPT: a spent token is never restored by the OR-02 settlement, so a retry
     needs a fresh mint (the fail-safe direction the deploy seam ratified).
@@ -40,7 +40,7 @@ from app.agents.policy_firewall import (
     reset_run_approval,
 )
 from app.config import settings
-from app.core.errors import E_DB, E_INTEGRATION, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_DB, E_INTEGRATION, E_POLICY_DENIED, MeridianError
 from app.models.task import TaskStatus
 from celery_app.tasks import agent_tasks
 
@@ -48,7 +48,7 @@ SECRET = "w3-sentinel-dispatch-secret"
 BODY_A = "the approved body sent once per approval"
 BODY_B = "a second approved body"
 #: The named policy code a REPLAY carries (the ledger's own refusal, not "approval required").
-POLSIA_E121 = "POLSIA-E121"
+MERIDIAN_E121 = "MERIDIAN-E121"
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ def test_the_same_token_on_another_row_naming_the_same_action_is_refused(queue_d
 
     assert second["status"] == "skipped", second
     assert second["reason"] == E_POLICY_DENIED, second
-    assert second["policy_code"] == "POLSIA-E121", second
+    assert second["policy_code"] == "MERIDIAN-E121", second
     assert second["approval_replay"] is True, second
     assert second["task_status"] == "awaiting_approval", second
     assert provider.sends_to("first@example.com") == 1, (
@@ -270,7 +270,7 @@ def test_the_same_token_on_another_row_naming_the_same_action_is_refused(queue_d
     assert len(_ledger(queue_db)) == 1, "a replay must not write a second ledger row"
     assert "approval_replay_refused" in _activity_actions(queue_db)
     row = queue_db.row(second_task)
-    assert POLSIA_E121 in (row["error_message"] or "")
+    assert MERIDIAN_E121 in (row["error_message"] or "")
     after = _metadata(queue_db, second_task)
     assert "approval_token" not in after, "a spent token must not ride a later re-arm"
     assert agent_tasks.APPROVAL_TOKEN_FINGERPRINT_KEY not in after
@@ -326,7 +326,7 @@ def test_a_redelivery_carrying_a_spent_token_parks_the_row_for_a_fresh_mint(
     replay = queue_db.run(agent_tasks._execute_agent_task(task_id))
 
     assert replay["status"] == "skipped", replay
-    assert replay["policy_code"] == "POLSIA-E121", replay
+    assert replay["policy_code"] == "MERIDIAN-E121", replay
     assert replay["task_status"] == "awaiting_approval", replay
     assert provider.sends_to("first@example.com") == 1, provider.calls
     assert queue_db.row(task_id)["status"] == "awaiting_approval"
@@ -418,7 +418,7 @@ def test_a_ledger_write_failure_refuses_the_dispatch_and_requeues_the_row(queue_
     _attach(queue_db, task_id, token, fp)
 
     def _refuse_ledger(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise PolsiaError(E_DB, "the consumed_approvals table is unwritable (probe)")
+        raise MeridianError(E_DB, "the consumed_approvals table is unwritable (probe)")
 
     monkeypatch.setattr("app.agents.policy_firewall.consume_approval", _refuse_ledger)
 
@@ -474,7 +474,7 @@ def test_a_foreign_claim_is_described_truthfully_never_requeued_by_this_delivery
     _attach(queue_db, task_id, token, fp)
 
     def _refuse_ledger(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise PolsiaError(E_DB, "the consumed_approvals table is unwritable (probe)")
+        raise MeridianError(E_DB, "the consumed_approvals table is unwritable (probe)")
 
     monkeypatch.setattr("app.agents.policy_firewall.consume_approval", _refuse_ledger)
 
@@ -523,7 +523,7 @@ def test_a_foreign_claim_is_described_truthfully_never_requeued_by_this_delivery
 def test_a_spent_token_is_not_restored_to_a_requeued_row(queue_db, monkeypatch):
     _configure_secret(monkeypatch)
     provider = _install_provider(
-        monkeypatch, Provider(fail_first=PolsiaError(E_INTEGRATION, "provider answered 503"))
+        monkeypatch, Provider(fail_first=MeridianError(E_INTEGRATION, "provider answered 503"))
     )
     _install_model(monkeypatch)
     metadata, (fp,) = _parked_metadata(("first", "first@example.com"))

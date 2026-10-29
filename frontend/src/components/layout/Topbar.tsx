@@ -26,7 +26,7 @@ import { NotificationsBell } from "@/components/layout/NotificationsPanel";
  * EDIT is real as of wave V12-G1: it opens the Edit Dashboard sheet
  * (`components/dashboard/DashboardEditorSheet.tsx`) — per-widget show/hide,
  * within-column reorder, and Restore default layout, the controls the live
- * editor documents (help.polsia.com/add-dashboard-capabilities, fetched
+ * editor documents (help.meridian.com/add-dashboard-capabilities, fetched
  * 2026-10-15). The layout persists browser-local (`dashboardLayout.ts`); no
  * server API stores a dashboard layout yet, the sheet states that in its own
  * copy, and server persistence is HANDOFF H1 of

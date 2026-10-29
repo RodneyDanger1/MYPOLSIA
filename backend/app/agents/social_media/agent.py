@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents import integrations
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import (
     assert_not_reporting_real_side_effect,
@@ -38,7 +38,7 @@ from app.agents.side_effects import (
     side_effect_receipt,
 )
 from app.config import settings
-from app.core.errors import E_RATE_LIMITED, E_VALIDATION, PolsiaError
+from app.core.errors import E_RATE_LIMITED, E_VALIDATION, MeridianError
 from app.schemas.agent_outputs import TWITTER_MAX_CHARS, SocialMediaOutput
 
 #: How many `notes` entries the envelope accepts (`AgentEnvelope.notes`, max_length=20).  The
@@ -94,7 +94,7 @@ output is recorded as a labelled draft, not as something that went out. Never cl
 published unless the runtime reports that it was."""
 
 
-class SocialMediaAgent(BasePolsiaAgent):
+class SocialMediaAgent(BaseMeridianAgent):
     agent_type = "social_media"
     description = "Drafts and posts tweets, monitors engagement"
     output_schema = SocialMediaOutput
@@ -211,7 +211,7 @@ class SocialMediaAgent(BasePolsiaAgent):
                 sends_today=sends_today_now,
                 sends_this_hour=sends_hour_now,
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             # A cap denial with NOTHING performed this run stays fatal (the run should not have
             # been dispatched into a capped channel); a cap denial AFTER this run performed a
             # real send is recorded and the item stays a draft — see `capped_item_refusal` for

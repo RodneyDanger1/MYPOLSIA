@@ -27,7 +27,7 @@ import pytest
 from sqlalchemy import select
 
 import app.config as app_config
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CONFIG, E_POLICY_DENIED, MeridianError
 from app.models.company import CompanyConfig
 from app.models.outreach import Prospect
 from app.services.company_service import get_company
@@ -142,13 +142,13 @@ async def test_footer_refuses_by_name_when_sender_identity_is_unconfigured(
     db.add(CompanyConfig(name="Acme Robotics"))     # 0008 fields default to ''
     await db.commit()
 
-    with pytest.raises(PolsiaError) as unconfigured:
+    with pytest.raises(MeridianError) as unconfigured:
         footer_for_company(await get_company(db))
     assert unconfigured.value.code == E_CONFIG
     assert "sender identity not configured" in unconfigured.value.message
     assert unconfigured.value.how_to_fix
 
-    with pytest.raises(PolsiaError) as no_company:  # no row at all: the same refusal
+    with pytest.raises(MeridianError) as no_company:  # no row at all: the same refusal
         footer_for_company(None)
     assert no_company.value.code == E_CONFIG
     assert "sender identity not configured" in no_company.value.message
@@ -169,7 +169,7 @@ async def test_send_path_refuses_a_real_send_while_sender_identity_is_unset(
     fake = _FakeSendGrid().install(monkeypatch)
     db = async_db_session
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         await send_compliant_email(
             db, to="prospect@example.com", subject="hello", body="first touch"
         )
@@ -215,7 +215,7 @@ async def test_send_path_suppresses_unsubscribed_prospects(
     db.add(Prospect(email="opted-out@example.com", status="unsubscribed"))
     await db.commit()
 
-    with pytest.raises(PolsiaError) as suppressed:
+    with pytest.raises(MeridianError) as suppressed:
         await send_compliant_email(
             db, to="opted-out@example.com", subject="hello", body="still here?"
         )

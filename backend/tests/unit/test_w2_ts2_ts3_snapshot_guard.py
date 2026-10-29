@@ -25,7 +25,7 @@ from datetime import date, datetime
 import pytest
 from sqlalchemy import func, select
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.finance import ExpenseRecord, RevenueSnapshot
 from app.services import finance_service
 from app.services.finance_service import persist_finance_run, upsert_revenue_snapshot
@@ -51,7 +51,7 @@ def frozen_today(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_date_only_call_is_refused_by_name_and_writes_nothing(async_db_session) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await upsert_revenue_snapshot(async_db_session, snapshot_date=DAY)
 
     error = excinfo.value
@@ -64,7 +64,7 @@ async def test_a_date_only_call_is_refused_by_name_and_writes_nothing(async_db_s
 
 @pytest.mark.asyncio
 async def test_a_call_whose_every_value_is_none_is_refused_too(async_db_session) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await upsert_revenue_snapshot(
             async_db_session, snapshot_date=DAY, mrr_cents=None, arr_cents=None
         )
@@ -87,7 +87,7 @@ async def test_a_measured_zero_still_writes(async_db_session) -> None:
 
 @pytest.mark.asyncio
 async def test_a_future_snapshot_date_is_refused_by_name(async_db_session, frozen_today) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await upsert_revenue_snapshot(
             async_db_session, snapshot_date=NEXT_DAY, mrr_cents=1000
         )
@@ -134,14 +134,14 @@ async def test_the_boundary_accepts_a_date_that_is_today_in_either_calendar(
 @pytest.mark.asyncio
 async def test_a_datetime_or_string_date_is_refused_before_the_comparison(async_db_session) -> None:
     """A datetime is a `date` SUBCLASS; it would silently compare against a date and insert."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await upsert_revenue_snapshot(
             async_db_session, snapshot_date=datetime(2026, 10, 20, 12, 0), mrr_cents=1
         )
     assert excinfo.value.code == E_VALIDATION
     assert "must be a date" in excinfo.value.message
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await upsert_revenue_snapshot(async_db_session, snapshot_date="2026-10-20", mrr_cents=1)  # type: ignore[arg-type]
     assert excinfo.value.code == E_VALIDATION
     assert "must be a date" in excinfo.value.message

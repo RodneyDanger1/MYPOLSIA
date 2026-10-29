@@ -42,7 +42,7 @@ import type { Prospect } from "@/components/outreach/ProspectRow";
 
 const mockApiGet = api.get as jest.MockedFunction<typeof api.get>;
 
-const NOTIF_KEY = "polsia.topbar.notifications.lastSeenAt";
+const NOTIF_KEY = "meridian.topbar.notifications.lastSeenAt";
 
 function socialPost(overrides: Partial<SocialPost> & { id: number; content: string }): SocialPost {
   return {

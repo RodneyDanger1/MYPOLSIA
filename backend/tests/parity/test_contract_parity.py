@@ -326,7 +326,7 @@ REQUIRED_SCHEDULED_TASKS = {
     "celery_app.tasks.maintenance.cleanup_run_workspaces",
 }
 
-# Every field the parent froze for build wave 1 (see polsia-work/BUILD-BRIEF.md §3), plus
+# Every field the parent froze for build wave 1 (see meridian-work/BUILD-BRIEF.md §3), plus
 # `approval_secret` — the D1 approvals interface, added by wave-W2/T05 for the T02 seat to
 # consume (`settings.approval_secret`); frozen by D1.
 FROZEN_SETTINGS = {
@@ -387,13 +387,13 @@ def test_agent_map_has_exactly_the_documented_nine() -> None:
 def test_each_agent_is_importable_and_declares_its_type(agent_type: str) -> None:
     import importlib
 
-    from app.agents.base_agent import BasePolsiaAgent
+    from app.agents.base_agent import BaseMeridianAgent
     from app.agents.crew_factory import AGENT_MAP
 
     module_path, class_name = AGENT_MAP[agent_type]
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
-    assert inspect.isclass(cls) and issubclass(cls, BasePolsiaAgent)
+    assert inspect.isclass(cls) and issubclass(cls, BaseMeridianAgent)
     assert cls.agent_type == agent_type, "agent_type must match the registry key"
 
 
@@ -546,12 +546,12 @@ def test_named_refusal_shape_and_status_mapping() -> None:
         E_AUTH,
         E_TASK_CLAIMED,
         E_TASK_NOT_RUNNABLE,
-        PolsiaError,
+        MeridianError,
         http_status_for,
         to_http_detail,
     )
 
-    detail = to_http_detail(PolsiaError(E_TASK_NOT_RUNNABLE, "nope", how_to_fix="reset it"))
+    detail = to_http_detail(MeridianError(E_TASK_NOT_RUNNABLE, "nope", how_to_fix="reset it"))
     assert detail["ok"] is False
     assert detail["error"]["code"] == E_TASK_NOT_RUNNABLE
     assert detail["error"]["how_to_fix"] == "reset it"

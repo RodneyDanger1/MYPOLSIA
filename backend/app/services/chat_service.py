@@ -1,6 +1,6 @@
 """Chat backend service (wave V8, seat C1) — the DETERMINISTIC intent router.
 
-Design source (verbatim contract): plan `2026-10-14_142249-polsia-remaining-waves-v7-v10.md`
+Design source (verbatim contract): plan `2026-10-14_142249-meridian-remaining-waves-v7-v10.md`
 §7 C1 + `wave-v8/WAVE-PLAN.md` "Frozen interface — CHAT".  This module implements exactly that
 frozen shape; `app/api/v1/chat.py` is its wire form.
 
@@ -112,7 +112,7 @@ from app.core.errors import (
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.chat import ChatMessage, ChatRole
 from app.schemas.chat import (
@@ -786,7 +786,7 @@ async def _build_answer(db: AsyncSession, classification: Classification) -> tup
             # reply path.  The aggregate breaking its one-row contract is a database fault, so it
             # is refused BY NAME — the `run_service.count_runs` sibling pattern — and the chat
             # route's `refusal_guard` turns it into the same envelope every other route serves.
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 "dashboard summary statement returned no row",
                 how_to_fix=ERROR_HINTS[E_DB],
@@ -816,18 +816,18 @@ async def _write_exchange(
     (create_task does, for the token); everything else shares the request transaction.
     """
     db.add(ChatMessage(role="owner", content=owner_content, intent=owner_intent, task_id=None))
-    polsia_row = ChatMessage(role="polsia", content=reply_text, intent=reply_intent, task_id=None)
-    db.add(polsia_row)
+    meridian_row = ChatMessage(role="meridian", content=reply_text, intent=reply_intent, task_id=None)
+    db.add(meridian_row)
     await db.flush()
     await log_activity(
         db,
-        agent_type="polsia",
+        agent_type="meridian",
         action="chat_message",
         summary=activity_summary,
         level=activity_level,
         detail=activity_detail,
     )
-    return polsia_row
+    return meridian_row
 
 
 # ── the handlers ─────────────────────────────────────────────────────────────
@@ -960,20 +960,20 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
                 + ", ".join(agent_type for agent_type, _keywords in _AGENT_KEYWORDS)
                 + "."
             )
-        polsia_row = ChatMessage(
-            role="polsia",
+        meridian_row = ChatMessage(
+            role="meridian",
             content=reply_text,
             intent={"kind": "create_task", "agent_type": agent_type},
             task_id=None,
         )
-        db.add(polsia_row)
+        db.add(meridian_row)
         await db.flush()
         if superseded_ids:
             # The older card silently disappearing is a STATE CHANGE the owner can see happen, so
             # the ledger says it: the plan was retired, not confirmed and not lost silently.
             await log_activity(
                 db,
-                agent_type="polsia",
+                agent_type="meridian",
                 action="chat_message",
                 summary=(
                     f"Chat: superseded {len(superseded_ids)} earlier pending proposal(s) — only "
@@ -988,7 +988,7 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
             )
         await log_activity(
             db,
-            agent_type="polsia",
+            agent_type="meridian",
             action="chat_message",
             summary=f"Chat: proposed a task for the {agent_type} agent (awaiting confirm)",
             level="info",
@@ -1044,13 +1044,13 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
     )
 
 
-def _refuse_confirm(reason: str, detail: str, *, context: dict[str, Any] | None = None) -> PolsiaError:
+def _refuse_confirm(reason: str, detail: str, *, context: dict[str, Any] | None = None) -> MeridianError:
     """The named 409 for any token that cannot confirm (expired / used / invalid / foreign).
 
     `E_TASK_NOT_RUNNABLE` is the repo's 409 (`core/errors.HTTP_STATUS_BY_CODE`); the message
     and `how_to_fix` carry the precise cause — never a second task, never a silent success.
     """
-    return PolsiaError(
+    return MeridianError(
         E_TASK_NOT_RUNNABLE,
         detail,
         how_to_fix=(
@@ -1070,7 +1070,7 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
     """
     secret = configured_approval_secret()
     if not secret:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the chat confirm channel is not configured: APPROVAL_SECRET is unset, so no token "
             "can verify",
@@ -1080,7 +1080,7 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
     check = check_confirm_token(secret, confirm_token)
     if not check.ok:
         if check.reason == "malformed":
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "the confirm_token is not a Meridian chat confirmation token",
                 how_to_fix="send the confirm_token value exactly as it came back from "
@@ -1139,7 +1139,7 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
     plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
     agent_type = plan.get("agent_type") or DEFAULT_CHAT_AGENT
     if agent_type not in VALID_AGENT_TYPES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the pending plan names an unknown agent_type {agent_type!r}",
             how_to_fix="ask again with a valid agent (see crew_factory.AGENT_MAP)",
@@ -1159,14 +1159,14 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
     row.intent = {"kind": "create_task", "state": "consumed", "plan": plan}
     row.task_id = task.id
     db.add(ChatMessage(
-        role="polsia",
+        role="meridian",
         content=f"Filed task #{task.id} for the {agent_type} agent — it is queued.",
         intent={"kind": "create_task", "state": "queued", "agent_type": agent_type},
         task_id=task.id,
     ))
     await log_activity(
         db,
-        agent_type="polsia",
+        agent_type="meridian",
         action="chat_message",
         summary=f"Chat: confirmed — task #{task.id} for the {agent_type} agent queued",
         level="info",
@@ -1195,7 +1195,7 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
         # caller saw the id, the ledger keeps it, and the token stays consumed (no retry
         # path can create a second task).
         await db.commit()
-        raise PolsiaError(
+        raise MeridianError(
             E_REDIS,
             f"task #{task.id} was created but could not be handed to a worker",
             context={"task_id": task.id, "agent_type": agent_type},
@@ -1230,7 +1230,7 @@ async def list_history(db: AsyncSession, limit: int = 50) -> ChatHistoryResponse
         # Contract mirror of `run_service.count_runs` (V22 honesty sweep, W2/D9): `SELECT count(*)`
         # always yields one row, so a None means the driver broke its own contract — refuse by name
         # rather than serving a fabricated 0.
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "chat message count query returned no row",
             how_to_fix=ERROR_HINTS[E_DB],

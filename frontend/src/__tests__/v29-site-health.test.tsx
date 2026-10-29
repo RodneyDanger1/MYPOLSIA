@@ -1,7 +1,7 @@
 /**
  * WAVE V29 / lane L6 — the `/sites` health badge.
  *
- * RED leg (raw output in `polsia-work/build/ui-reverse/wave-v29/l6-trust/red/T6.3-badge.txt`):
+ * RED leg (raw output in `meridian-work/build/ui-reverse/wave-v29/l6-trust/red/T6.3-badge.txt`):
  * written BEFORE `src/components/sites/SiteHealthBadge.tsx` existed, so this suite failed on the
  * missing module — the honest RED state for a new surface.
  *

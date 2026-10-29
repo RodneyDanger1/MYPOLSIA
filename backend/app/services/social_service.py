@@ -26,7 +26,7 @@ from app.core.database import utcnow
 from app.core.errors import (
     E_DB,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.timeutil import dialect_name
 from app.models.social import SocialPost
@@ -142,11 +142,11 @@ async def record_published_posts(db: AsyncSession, result: dict[str, Any]) -> di
                 report["duplicates_skipped"] += 1
                 continue
             report["posts_written"] += 1
-    except PolsiaError as exc:
+    except MeridianError as exc:
         report["ok"] = False
         report["error"] = {"code": exc.code, "message": exc.message}
     except Exception as exc:  # noqa: BLE001 — the worker contract is a report, never a raise
-        refusal = PolsiaError(
+        refusal = MeridianError(
             E_DB,
             f"could not persist social posts: {type(exc).__name__}: {exc}",
             how_to_fix=ERROR_HINTS[E_DB],

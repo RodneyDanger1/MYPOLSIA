@@ -26,7 +26,7 @@ import pytest
 from sqlalchemy import select
 
 from app.agents import integrations
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.models.company import CompanyConfig
 from app.models.report import ActivityLog
 from app.models.task import Task
@@ -375,7 +375,7 @@ async def test_adapter_raise_is_swallowed_and_recorded_once(async_db_session, mo
 @pytest.mark.asyncio
 async def test_config_read_failure_is_recorded_and_swallowed(async_db_session, monkeypatch, mock_redis):
     async def exploding(_db: Any) -> Any:
-        raise PolsiaError(E_DB, "could not read company config", how_to_fix="check the database")
+        raise MeridianError(E_DB, "could not read company config", how_to_fix="check the database")
 
     monkeypatch.setattr(company_service, "get_company", exploding)
     _send_recorder(monkeypatch)
@@ -467,7 +467,7 @@ def test_a_requeued_attempt_emails_requeued_not_failed(
     queue_db, install_run_spy, monkeypatch, mock_redis
 ):
     """With BOTH toggles on, ONE email goes out for a requeued attempt — the requeued one."""
-    from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+    from app.core.errors import E_CLI_TIMEOUT, MeridianError
     from celery_app.tasks.agent_tasks import run_agent_task
 
     sent = _sent_recorder(monkeypatch)
@@ -475,9 +475,9 @@ def test_a_requeued_attempt_emails_requeued_not_failed(
         queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=True
     )
     task_id = queue_db.create_task(title="requeued mail")
-    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+    install_run_spy(error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure"))
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         run_agent_task(task_id)  # direct call: a retryable failure re-raises the original exc
 
     assert len(sent) == 1, "exactly one email for one requeued attempt — never two"
@@ -491,7 +491,7 @@ def test_a_requeued_attempt_emails_requeued_not_failed(
 def test_once_requeued_the_failed_toggle_fires_nothing(
     queue_db, install_run_spy, monkeypatch, mock_redis
 ):
-    from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+    from app.core.errors import E_CLI_TIMEOUT, MeridianError
     from celery_app.tasks.agent_tasks import run_agent_task
 
     sent = _sent_recorder(monkeypatch)
@@ -499,9 +499,9 @@ def test_once_requeued_the_failed_toggle_fires_nothing(
         queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=False
     )
     task_id = queue_db.create_task(title="requeued silent")
-    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+    install_run_spy(error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure"))
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         run_agent_task(task_id)
 
     assert sent == [], "the attempt was requeued; its own toggle is the only one that may route it"
@@ -511,7 +511,7 @@ def test_a_terminal_failure_still_emails_failed_exactly_once(
     queue_db, install_run_spy, monkeypatch, mock_redis
 ):
     """The contrast leg: NOT requeued ⇒ the old `failed` contract, unchanged."""
-    from app.core.errors import E_POLICY_DENIED, PolsiaError
+    from app.core.errors import E_POLICY_DENIED, MeridianError
     from celery_app.tasks.agent_tasks import run_agent_task
 
     sent = _sent_recorder(monkeypatch)
@@ -519,9 +519,9 @@ def test_a_terminal_failure_still_emails_failed_exactly_once(
         queue_db, notification_email=OWNER, notify_on_failed=True, notify_on_run_requeued=True
     )
     task_id = queue_db.create_task(title="terminal failure")
-    install_run_spy(error_factory=lambda: PolsiaError(E_POLICY_DENIED, "test-only terminal refusal"))
+    install_run_spy(error_factory=lambda: MeridianError(E_POLICY_DENIED, "test-only terminal refusal"))
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         run_agent_task(task_id)
 
     assert len(sent) == 1

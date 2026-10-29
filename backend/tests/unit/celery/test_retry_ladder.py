@@ -26,7 +26,7 @@ import json
 
 import pytest
 
-from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, MeridianError
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_invariant_5_a_retryable_failure_asks_for_a_retry_with_the_ladder_backof
 
     The task is called directly, so Celery's `retry()` takes its `called_directly` branch and
     re-raises the original exception (the same exception object the ladder passed in) — which is
-    also what pins that the ORIGINAL `PolsiaError` is what the worker would see.
+    also what pins that the ORIGINAL `MeridianError` is what the worker would see.
 
     RED leg: make the wrapper treat every failure as terminal (drop the
     `outcome.get("retryable") and attempts <= ...` condition) — no retry is requested and this
@@ -70,9 +70,9 @@ def test_invariant_5_a_retryable_failure_asks_for_a_retry_with_the_ladder_backof
     from celery_app.tasks.agent_tasks import retry_countdown, run_agent_task
 
     task_id = queue_db.create_task(title="ladder-retryable")
-    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+    install_run_spy(error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure"))
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         run_agent_task(task_id)
 
     assert raised.value.code == E_CLI_TIMEOUT, "the original failure must propagate"
@@ -100,10 +100,10 @@ def test_invariant_5_a_non_retryable_failure_is_terminal_and_never_asks_for_a_re
 
     task_id = queue_db.create_task(title="ladder-terminal")
     install_run_spy(
-        error_factory=lambda: PolsiaError(E_POLICY_DENIED, "test-only refusal: nothing was sent")
+        error_factory=lambda: MeridianError(E_POLICY_DENIED, "test-only refusal: nothing was sent")
     )
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         run_agent_task(task_id)
 
     assert raised.value.code == E_POLICY_DENIED
@@ -145,7 +145,7 @@ def test_invariant_5_the_ladder_retries_up_to_the_cap_and_then_goes_terminal(
     """
     task_id = queue_db.create_task(title="ladder-e2e")
     spy = install_run_spy(
-        error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure")
+        error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure")
     )
 
     result = eager_delivery(task_id)
@@ -200,7 +200,7 @@ class _ToolCallingRun:
             replay=deepseek_runtime.replay_index(prior),
             journal=journal,
         )
-        raise PolsiaError(E_CLI_TIMEOUT, "test-only transport failure",
+        raise MeridianError(E_CLI_TIMEOUT, "test-only transport failure",
                           context={"actions": journal})
 
 

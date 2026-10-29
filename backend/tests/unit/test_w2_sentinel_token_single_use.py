@@ -234,7 +234,7 @@ async def test_consume_or_refuse_names_the_replay_with_its_own_policy_code(async
     context = getattr(err, "context", {})
     assert context["reason"] == "already_used"
     assert context["approval_replay"] is True
-    assert context["policy_code"] == "POLSIA-E121", (
+    assert context["policy_code"] == "MERIDIAN-E121", (
         "a replay is its own control, not 'approval required' (E115) — an operator greps the "
         "difference between 'mint a token' and 'that token was already spent'"
     )

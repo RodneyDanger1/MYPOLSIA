@@ -33,12 +33,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.email_outreach.compliance_send import send_outreach_email
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import capped_item_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, MeridianError
 from app.schemas.agent_outputs import EmailOutreachOutput
 from app.services.email_lifecycle import (
     provider_accepted,
@@ -90,7 +90,7 @@ action is refused you will be told the reason; your output is then recorded as a
 never claim an email was delivered when the runtime did not report a real send."""
 
 
-class EmailOutreachAgent(BasePolsiaAgent):
+class EmailOutreachAgent(BaseMeridianAgent):
     agent_type = "email_outreach"
     description = "Finds prospects and sends cold emails"
     output_schema = EmailOutreachOutput
@@ -142,7 +142,7 @@ class EmailOutreachAgent(BasePolsiaAgent):
                     sends_today=sends_today_now,
                     sends_this_hour=sends_hour_now,
                 )
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 # A cap denial with nothing performed yet stays fatal; after this run performed a
                 # real send it is recorded and the email stays a draft (see
                 # `capped_item_refusal`). Anything that is not a cap denial re-raises unchanged.
@@ -169,7 +169,7 @@ class EmailOutreachAgent(BasePolsiaAgent):
                         body=str(email.get("body") or ""),
                         context=context,
                     )
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     # A refusal is never silent: nothing was sent, and the reason (E_CONFIG naming
                     # the missing identity fields, E_POLICY_DENIED for an opt-out, E_DB for an
                     # unreadable database) is NAMED on the run output in the same shape the

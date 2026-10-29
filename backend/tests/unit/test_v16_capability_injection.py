@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from app.agents import deepseek_runtime, tool_registry
 from app.agents import policy_firewall as pf
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 
 class _ProbeOutput(BaseModel):
@@ -37,8 +37,8 @@ class _ProbeOutput(BaseModel):
     status: str = "ok"
 
 
-def _probe(agent_type: str) -> BasePolsiaAgent:
-    class _Probe(BasePolsiaAgent):
+def _probe(agent_type: str) -> BaseMeridianAgent:
+    class _Probe(BaseMeridianAgent):
         output_schema = _ProbeOutput
 
         def run(self, task, context):

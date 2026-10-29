@@ -1,7 +1,7 @@
 """Meridian agent runtime — structured output extraction, validation and the repair ladder.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/structured_output.py`) and wired to
-`app.core.errors`: every failure keeps its stable `POLSIA-Exxx` code and gains the matching
+`app.core.errors`: every failure keeps its stable `MERIDIAN-Exxx` code and gains the matching
 `E_*` refusal code the API layer reports, so one failure has one name at every layer.
 
 This module is the single choke point between "the Claude CLI printed something" and "the
@@ -12,7 +12,7 @@ Documented behaviour encoded here (CLI-CONTRACT.md §2, D2/D3/D4):
 
   * the envelope is ALWAYS JSON on stdout — a failure inside the run still prints it, so
     `is_error`/`subtype` is the authority, not the exit code;
-  * `subtype: "success"` with no `structured_output` is a FAILURE (POLSIA-E106);
+  * `subtype: "success"` with no `structured_output` is a FAILURE (MERIDIAN-E106);
   * `error_max_turns` / `error_max_budget_usd` / `error_max_structured_output_retries` are
     distinct codes, never a generic "it failed";
   * text-level repairs (fenced block, trailing comma, smart quotes, scalar coercion) run before
@@ -37,7 +37,7 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 
 # ---------------------------------------------------------------------------
@@ -45,29 +45,29 @@ from app.core.errors import (
 # ---------------------------------------------------------------------------
 
 class FailureCode(StrEnum):
-    OK = "POLSIA-E000"
-    CLI_BINARY_MISSING = "POLSIA-E100"        # spawn failed: claude not found / not on PATH
-    CLI_AUTH_FAILED = "POLSIA-E101"           # envelope error w/ auth signal; api_error_status 401/403
-    CLI_TIMEOUT = "POLSIA-E102"               # our wall-clock process cap hit; SIGTERM -> exit 143
-    CLI_NONZERO_EXIT = "POLSIA-E103"          # exit != 0 and stdout has no parseable envelope
-    CLI_STDOUT_NOT_JSON = "POLSIA-E104"       # envelope parse failed
-    ENVELOPE_IS_ERROR = "POLSIA-E105"         # is_error true / subtype error_* (generic)
-    STRUCTURED_OUTPUT_MISSING = "POLSIA-E106" # subtype success but structured_output absent
-    MAX_TURNS = "POLSIA-E107"                 # subtype error_max_turns
-    BUDGET_EXCEEDED = "POLSIA-E108"           # subtype error_max_budget_usd, or our pre-dispatch cap
-    STRUCTURED_RETRIES_EXHAUSTED = "POLSIA-E109"   # error_max_structured_output_retries
-    SCHEMA_VALIDATION_FAILED = "POLSIA-E110"  # local validator (pydantic) rejected the payload
-    REFUSAL = "POLSIA-E111"                   # model refused (explicit marker or refusal text)
-    EMPTY_RESULT = "POLSIA-E112"              # result text empty/whitespace, nothing structured
-    PARTIAL_RESULT = "POLSIA-E113"            # parseable JSON but required fields missing (lenient path)
-    POLICY_BLOCKED = "POLSIA-E114"            # output-action firewall denied a side effect
-    INJECTION_FLAGGED = "POLSIA-E115"         # untrusted-content taint caused a review hold
-    DUPLICATE_SUPPRESSED = "POLSIA-E116"      # idempotency: work already done this cycle
-    # POLSIA-E117 is raised by the policy firewall (policy_firewall.PolicyDecision.e_code),
+    OK = "MERIDIAN-E000"
+    CLI_BINARY_MISSING = "MERIDIAN-E100"        # spawn failed: claude not found / not on PATH
+    CLI_AUTH_FAILED = "MERIDIAN-E101"           # envelope error w/ auth signal; api_error_status 401/403
+    CLI_TIMEOUT = "MERIDIAN-E102"               # our wall-clock process cap hit; SIGTERM -> exit 143
+    CLI_NONZERO_EXIT = "MERIDIAN-E103"          # exit != 0 and stdout has no parseable envelope
+    CLI_STDOUT_NOT_JSON = "MERIDIAN-E104"       # envelope parse failed
+    ENVELOPE_IS_ERROR = "MERIDIAN-E105"         # is_error true / subtype error_* (generic)
+    STRUCTURED_OUTPUT_MISSING = "MERIDIAN-E106" # subtype success but structured_output absent
+    MAX_TURNS = "MERIDIAN-E107"                 # subtype error_max_turns
+    BUDGET_EXCEEDED = "MERIDIAN-E108"           # subtype error_max_budget_usd, or our pre-dispatch cap
+    STRUCTURED_RETRIES_EXHAUSTED = "MERIDIAN-E109"   # error_max_structured_output_retries
+    SCHEMA_VALIDATION_FAILED = "MERIDIAN-E110"  # local validator (pydantic) rejected the payload
+    REFUSAL = "MERIDIAN-E111"                   # model refused (explicit marker or refusal text)
+    EMPTY_RESULT = "MERIDIAN-E112"              # result text empty/whitespace, nothing structured
+    PARTIAL_RESULT = "MERIDIAN-E113"            # parseable JSON but required fields missing (lenient path)
+    POLICY_BLOCKED = "MERIDIAN-E114"            # output-action firewall denied a side effect
+    INJECTION_FLAGGED = "MERIDIAN-E115"         # untrusted-content taint caused a review hold
+    DUPLICATE_SUPPRESSED = "MERIDIAN-E116"      # idempotency: work already done this cycle
+    # MERIDIAN-E117 is raised by the policy firewall (policy_firewall.PolicyDecision.e_code),
     # never by CLI-envelope classification — no classifier path emits this member (A2 census; T14)
-    RATE_CAPPED = "POLSIA-E117"               # channel cap hit
-    KILL_SWITCH = "POLSIA-E118"               # kill switch active
-    UNKNOWN = "POLSIA-E119"
+    RATE_CAPPED = "MERIDIAN-E117"               # channel cap hit
+    KILL_SWITCH = "MERIDIAN-E118"               # kill switch active
+    UNKNOWN = "MERIDIAN-E119"
 
 
 REMEDIATION: dict[FailureCode, str] = {
@@ -92,7 +92,7 @@ REMEDIATION: dict[FailureCode, str] = {
     FailureCode.UNKNOWN: "Unclassified: capture the full envelope + stderr and open a runtime bug.",
 }
 
-# One failure, one name at every layer: the POLSIA-Exxx taxonomy maps onto the frozen
+# One failure, one name at every layer: the MERIDIAN-Exxx taxonomy maps onto the frozen
 # `app.core.errors` codes the API boundary and the activity log speak.
 FAILURE_TO_E_CODE: dict[FailureCode, str] = {
     FailureCode.OK: "",
@@ -139,9 +139,9 @@ class OutputResolution:
     def e_code(self) -> str:
         return e_code_for(self.code)
 
-    def to_polsia_error(self, *, agent_type: str = "") -> PolsiaError:
+    def to_meridian_error(self, *, agent_type: str = "") -> MeridianError:
         """The named refusal for a failed resolution (never a success-shaped empty result)."""
-        return PolsiaError(
+        return MeridianError(
             self.e_code,
             f"{agent_type or 'agent'} failed: {self.code.value} {self.detail}".strip(),
             how_to_fix=self.hint or REMEDIATION.get(self.code, ""),

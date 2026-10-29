@@ -47,7 +47,7 @@ PANEL_VARIABLES = (
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
     """Point the ONE secret store at a scratch file and clear the panel's env variables."""
-    monkeypatch.setenv("POLSIA_SECRETS_FILE", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("MERIDIAN_SECRETS_FILE", str(tmp_path / "secrets.json"))
     for name in PANEL_VARIABLES:
         monkeypatch.delenv(name, raising=False)
 

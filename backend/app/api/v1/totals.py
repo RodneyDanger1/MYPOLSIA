@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 from app.services.query_helpers import fetch_scalar
 
 __all__ = ["TOTAL_HEADER", "declared_total"]
@@ -52,7 +52,7 @@ async def declared_total(
         stmt = stmt.where(*conditions)
     total = await fetch_scalar(db, stmt, what=what)
     if total is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"{what} count query returned no row",
             how_to_fix=ERROR_HINTS[E_DB],

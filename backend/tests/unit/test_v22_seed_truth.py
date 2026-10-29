@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_CONFIG, E_DB, PolsiaError
+from app.core.errors import E_CONFIG, E_DB, MeridianError
 from app.services import chat_service, email_compliance
 
 SEED_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "seed_company.py"
@@ -47,7 +47,7 @@ def test_the_seed_website_is_empty_so_compliance_refuses_by_name_instead_of_ship
 
     assert company.website_url == "", "a placeholder domain must never satisfy the compliance gate"
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         email_compliance.footer_for_company(company)
 
     error = excinfo.value
@@ -68,7 +68,7 @@ async def test_chat_history_total_of_none_refuses_by_name_not_a_fabricated_zero(
     monkeypatch.setattr(chat_service, "fetch_scalars", _no_rows)
     monkeypatch.setattr(chat_service, "fetch_scalar", _no_total)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await chat_service.list_history(None)
 
     error = excinfo.value

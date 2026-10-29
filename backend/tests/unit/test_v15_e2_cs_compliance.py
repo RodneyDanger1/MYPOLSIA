@@ -193,7 +193,7 @@ async def test_cs_reply_send_carries_the_can_spam_floor_and_the_provider_id(
 async def test_a_worker_resolved_preflight_sends_the_cs_reply_without_any_database(monkeypatch):
     """Mode 1: the preflight alone is enough — `database_url` is deliberately unusable here."""
     fake = _FakeSendGrid().install(monkeypatch)
-    _arm(monkeypatch, "postgresql+asyncpg://polsia:polsia_password@127.0.0.1:1/polsia")
+    _arm(monkeypatch, "postgresql+asyncpg://meridian:meridian_password@127.0.0.1:1/meridian")
 
     out = _run(_stub_collection(CustomerSupportAgent(), _reply_payload()),
                {"compliance": _preflight()})
@@ -210,7 +210,7 @@ async def test_a_worker_resolved_preflight_sends_the_cs_reply_without_any_databa
 async def test_a_suppressed_customer_refuses_the_cs_reply_by_name(monkeypatch):
     """The suppressed address in the preflight refuses E_POLICY_DENIED before any provider call."""
     fake = _FakeSendGrid().install(monkeypatch)
-    _arm(monkeypatch, "postgresql+asyncpg://polsia:polsia_password@127.0.0.1:1/polsia")
+    _arm(monkeypatch, "postgresql+asyncpg://meridian:meridian_password@127.0.0.1:1/meridian")
 
     out = _run(_stub_collection(CustomerSupportAgent(), _reply_payload()),
                {"compliance": _preflight(suppressed=["customer@example.com"])})

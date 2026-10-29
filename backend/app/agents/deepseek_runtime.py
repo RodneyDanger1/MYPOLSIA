@@ -112,7 +112,7 @@ from app.core.errors import (
     E_DEEPSEEK_KEY,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 
 logger = logging.getLogger(__name__)
@@ -404,7 +404,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
     if not images:
         return []
     if not isinstance(images, list | tuple):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"deepseek runtime: images must be a list, got {type(images).__name__}",
             how_to_fix="pass the task's image payloads from task_attachment_service.image_parts()",
@@ -414,7 +414,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
     total = 0
     for index, image in enumerate(images):
         if not isinstance(image, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} is {type(image).__name__}, expected an object "
                 "with mime and data_uri",
@@ -424,7 +424,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
         mime = str(image.get("mime") or "").strip().lower()
         data_uri = image.get("data_uri")
         if mime not in VISION_ALLOWED_MIME:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} has mime {mime!r}; only "
                 f"{', '.join(VISION_ALLOWED_MIME)} are accepted",
@@ -433,7 +433,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
             )
         prefix = f"data:{mime};base64,"
         if not isinstance(data_uri, str) or not data_uri.startswith(prefix):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} is not a {mime} base64 data URI",
                 how_to_fix="rebuild the payload with task_attachment_service.image_parts()",
@@ -441,7 +441,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
             )
         encoded = data_uri[len(prefix):]
         if not encoded:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} carries no base64 payload",
                 how_to_fix="re-upload the image; the stored file is empty",
@@ -452,14 +452,14 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
             # raw-byte count the cap is stated in.
             raw = base64.b64decode(encoded, validate=True)
         except Exception as exc:  # noqa: BLE001 - any decode failure is malformed input, named
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} is not valid base64 ({type(exc).__name__})",
                 how_to_fix="rebuild the payload with task_attachment_service.image_parts()",
                 context={"runtime": "deepseek", "image_index": index},
             ) from exc
         if len(raw) > VISION_MAX_IMAGE_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image #{index} is {len(raw)} bytes, over the "
                 f"{VISION_MAX_IMAGE_BYTES}-byte per-image limit",
@@ -469,7 +469,7 @@ def _image_parts(images: Any) -> list[dict[str, Any]]:
             )
         total += len(raw)
         if total > VISION_MAX_TOTAL_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: image attachments total {total} bytes, over the "
                 f"{VISION_MAX_TOTAL_BYTES}-byte per-request limit",
@@ -493,7 +493,7 @@ def _tool_registry():
     try:
         from app.agents import tool_registry
     except ImportError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "deepseek runtime: this run has tools enabled but app.agents.tool_registry is not "
             f"importable ({type(exc).__name__}: {exc})",
@@ -542,7 +542,7 @@ def _tool_specs_for(inv: claude_cli.Invocation, tools: list[dict] | None) -> lis
         return []
     specs = [spec for spec in (getattr(_tool_registry(), "TOOL_SPECS", None) or [])]
     if not specs:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "deepseek runtime: this run has tools enabled but tool_registry.TOOL_SPECS is empty "
             "or missing",
@@ -757,9 +757,9 @@ def replay_index(records: Any) -> dict[str, dict[str, Any] | None]:
     return index
 
 
-def _replay_refusal(detail: str, *, key: str, tool: str, url: str) -> PolsiaError:
+def _replay_refusal(detail: str, *, key: str, tool: str, url: str) -> MeridianError:
     """The named refusal §4.13 requires where a recorded call cannot be replayed."""
-    return PolsiaError(
+    return MeridianError(
         E_ACTION_REPLAY_UNAVAILABLE,
         f"{tool} ({key}): {detail}",
         how_to_fix=(
@@ -951,7 +951,7 @@ def _execute_tool_calls(
     registry = _tool_registry()
     for call in calls:
         if not isinstance(call, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_CLI_JSON,
                 "deepseek response message.tool_calls carries a non-object entry",
                 how_to_fix="check the requested model accepts chat completions; retry once, then report",
@@ -959,7 +959,7 @@ def _execute_tool_calls(
             )
         call_id = call.get("id")
         if not isinstance(call_id, str) or not call_id.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_CLI_JSON,
                 "deepseek response tool call carries no usable id (its result could not be "
                 "attributed to the call)",
@@ -968,7 +968,7 @@ def _execute_tool_calls(
             )
         function = call.get("function")
         if not isinstance(function, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_CLI_JSON,
                 "deepseek response tool call carries no function object",
                 how_to_fix="check the requested model accepts chat completions; retry once, then report",
@@ -976,7 +976,7 @@ def _execute_tool_calls(
             )
         name = function.get("name")
         if not isinstance(name, str) or not name.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_CLI_JSON,
                 "deepseek response tool call carries no function name",
                 how_to_fix="check the requested model accepts chat completions; retry once, then report",
@@ -1083,7 +1083,7 @@ def _post_completion(
     except httpx.TimeoutException:
         # Mirror claude_cli.invoke's TimeoutExpired branch exactly: a raised E_CLI_TIMEOUT is
         # what claude_cli.run_with_retries retries on the next attempt.
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_TIMEOUT,
             f"deepseek API exceeded {timeout_s}s (request aborted; the turn is unfinished)",
             # F-18: `timeout_s` is the SMALLER of this run's own deadline and the provider-wide
@@ -1112,7 +1112,7 @@ def _post_completion(
         # httpx raises a plain ValueError / InvalidURL for URL shapes it cannot build a request
         # from at all (`http://` with no host, a non-numeric port). That is a configuration fault
         # (RD13): name it instead of letting a raw httpx exception escape the runtime.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"deepseek request could not be sent: {type(exc).__name__}: {exc}",
             how_to_fix="check DEEPSEEK_BASE_URL (documented value: https://api.deepseek.com)",
@@ -1137,7 +1137,7 @@ def _post_completion(
     try:
         payload = response.json()
     except ValueError:
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_JSON,
             _redact(
                 f"deepseek API returned HTTP 200 with a non-JSON body: "
@@ -1148,7 +1148,7 @@ def _post_completion(
             context={"url": url, "runtime": "deepseek"},
         ) from None
     if not isinstance(payload, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_JSON,
             f"deepseek API returned HTTP 200 with a JSON {type(payload).__name__}, expected an object",
             how_to_fix="check for a proxy/portal in front of api.deepseek.com; retry once, then report",
@@ -1156,7 +1156,7 @@ def _post_completion(
         )
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_JSON,
             "deepseek response carries no choices[0] object (not the documented completion shape)",
             how_to_fix="check for a proxy/portal in front of api.deepseek.com; retry once, then report",
@@ -1200,7 +1200,7 @@ def plan_from_invocation(inv: claude_cli.Invocation) -> InvocationPlan:
         try:
             prompt = Path(inv.prompt_file).read_text(encoding="utf-8")
         except OSError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: prompt file {inv.prompt_file!r} is unreadable: {exc}",
                 how_to_fix="write the spill file the invocation references, or use transport='argv'",
@@ -1209,7 +1209,7 @@ def plan_from_invocation(inv: claude_cli.Invocation) -> InvocationPlan:
     else:
         prompt = _flag_arg(inv.argv, "-p") or ""
     if not prompt or not prompt.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "deepseek runtime: could not recover the prompt from the invocation "
             "(-p <prompt> / stdin / file-ref all empty)",
@@ -1223,13 +1223,13 @@ def plan_from_invocation(inv: claude_cli.Invocation) -> InvocationPlan:
         try:
             parsed = json.loads(raw_schema)
         except ValueError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"deepseek runtime: --json-schema payload is not JSON: {exc}",
                 how_to_fix=ERROR_HINTS[E_VALIDATION],
             ) from exc
         if not isinstance(parsed, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "deepseek runtime: --json-schema payload is not a JSON object",
                 how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -1360,7 +1360,7 @@ def _reasoning_effort() -> str:
     raw = str(_setting("deepseek_reasoning_effort", DEEPSEEK_DEFAULT_REASONING_EFFORT) or "").strip().lower()
     value = REASONING_EFFORT_ALIASES.get(raw, raw) or DEEPSEEK_DEFAULT_REASONING_EFFORT
     if value not in REASONING_EFFORT_CANONICAL:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"deepseek reasoning_effort {raw!r} is not one of {'|'.join(REASONING_EFFORT_CANONICAL)} "
             "(documented aliases: minimal, medium, xhigh, ultra)",
@@ -1420,7 +1420,7 @@ def _bounded_call_timeout(
     if remaining is None:
         return int(ceiling_s), httpx.Timeout(float(ceiling_s))
     if remaining <= 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_TIMEOUT,
             (
                 f"the run's wall-clock budget ({inv.run_budget_seconds or 0:.1f}s, derived from "
@@ -1464,7 +1464,7 @@ def _base_url() -> str:
 
     A value without a scheme (`api.deepseek.com` — a plausible copy/paste of the docs host) only
     fails deep inside httpx, as a raw `ValueError` that escapes `invoke` and the retry ladder
-    (which re-raises anything that is not `PolsiaError`/`E_CLI_TIMEOUT`) into the worker as an
+    (which re-raises anything that is not `MeridianError`/`E_CLI_TIMEOUT`) into the worker as an
     unhandled exception. A configuration fault must be a NAMED refusal at the boundary that reads
     the configuration, so the scheme and the host are checked here.
     """
@@ -1472,7 +1472,7 @@ def _base_url() -> str:
     value = value or DEEPSEEK_DEFAULT_BASE_URL
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"deepseek base url {value!r} is not a usable http(s) URL "
             f"(scheme {parsed.scheme!r}, host {parsed.netloc!r})",
@@ -1737,7 +1737,7 @@ def invoke(
     """
     key = (api_key if api_key is not None else _resolve_api_key() or "").strip() or ""
     if not key:
-        raise PolsiaError(
+        raise MeridianError(
             E_DEEPSEEK_KEY,
             "deepseek runtime: no API key is configured (neither stored in Settings nor in "
             "DEEPSEEK_API_KEY)",
@@ -1898,7 +1898,7 @@ def invoke(
                     # and re-asking the identical request would only repeat the same answer — so
                     # this is off-contract, refused by name (mirroring the tool-LESS null-content
                     # rule) instead of burning the loop's bounded turns.
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_CLI_JSON,
                         "deepseek response finished with finish_reason='tool_calls' but carries "
                         "no tool calls",
@@ -1957,7 +1957,7 @@ def invoke(
                     # proxy echoing it back is refused by name rather than guessed at. A
                     # `tool_calls` reply with null content lands here whenever this run had NO
                     # tools to call — the pre-loop contract, kept verbatim.
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_CLI_JSON,
                         "deepseek response choices[0].message.content is missing or not a string",
                         how_to_fix="check the requested model accepts chat completions; retry once, then report",
@@ -1965,7 +1965,7 @@ def invoke(
                     )
             content = content_raw
             break
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # RT-01 (P0) — a RAISED refusal is the retry ladder's OTHER branch: `claude_cli.
         # run_with_retries` retries a raised `E_CLI_TIMEOUT` exactly like a retryable envelope.
         # Until this handler existed the loop's evidence (tool names + the action journal) and the

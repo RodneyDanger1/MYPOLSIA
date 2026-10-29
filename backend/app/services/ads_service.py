@@ -43,7 +43,7 @@ from sqlalchemy import Text, cast, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import dialect_name
 from app.models.ads import AdCampaign, AdMetric
 from app.services.query_helpers import db_refusal, fetch_rows, fetch_scalar, fetch_scalars
@@ -91,7 +91,7 @@ async def create_campaign(
     clean_platform = (platform or "").strip()
     clean_name = (name or "").strip()
     if not clean_platform or not clean_name:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "ad campaign requires a non-empty platform and name",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -99,7 +99,7 @@ async def create_campaign(
         )
     status = values.get("status")
     if status is not None and status not in AD_CAMPAIGN_STATUSES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"ad campaign status {status!r} is not one of "
             f"{', '.join(AD_CAMPAIGN_STATUSES)} (ck_ad_campaigns_status)",
@@ -115,7 +115,7 @@ async def create_campaign(
         # unique/FK lands here too).  The caller sent values the schema cannot hold — that is
         # a validation answer, not an outage (`outreach_service.create_prospect` sets the same
         # precedent for its own unique key).
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"ad campaign {clean_name!r} was rejected by a database constraint",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -264,7 +264,7 @@ async def list_metrics(db: AsyncSession, campaign_id: int, limit: int = 90) -> l
     history.  The returned objects are DETACHED (read-only), like `report_service.get_daily_report`.
     """
     if await get_campaign(db, campaign_id) is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"ad campaign {campaign_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -533,7 +533,7 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
                 # and that flush would poison the whole run transaction without this scope.
                 async with db.begin_nested():
                     created = await create_campaign(db, platform, name, **values)
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 if exc.code == E_VALIDATION:
                     # T19 race rescue — the same savepoint + re-resolve shape the metrics path
                     # below ships (441-460).  With migration 0006's partial unique
@@ -708,11 +708,11 @@ async def record_ads_run(db: AsyncSession, result: dict[str, Any]) -> dict[str, 
             except SQLAlchemyError as exc:
                 raise db_refusal("ad metric insert", exc) from exc
             report["metrics_written"] += 1
-    except PolsiaError as exc:
+    except MeridianError as exc:
         report["ok"] = False
         report["error"] = {"code": exc.code, "message": exc.message}
     except Exception as exc:  # noqa: BLE001 — the worker contract is a report, never a raise
-        refusal = PolsiaError(
+        refusal = MeridianError(
             E_DB,
             f"could not persist ads run artifacts: {type(exc).__name__}: {exc}",
             how_to_fix=ERROR_HINTS[E_DB],

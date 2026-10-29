@@ -222,7 +222,7 @@ async def test_export_streams_a_zip_with_the_three_members(api_client, auth_head
     disposition = resp.headers["content-disposition"]
     assert "attachment" in disposition and ".zip" in disposition
     assert disposition == (
-        f'attachment; filename="polsia-phone-export-{today_utc().isoformat()}.zip"'
+        f'attachment; filename="meridian-phone-export-{today_utc().isoformat()}.zip"'
     ), "the filename carries the UTC day (V19: naive local dates made the same export vary by host)"
 
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:

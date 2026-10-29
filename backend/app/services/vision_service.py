@@ -72,7 +72,7 @@ from app.core.errors import (
     E_UPSTREAM,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.task import Task
 from app.models.vision import VisionDescriptionRow
@@ -131,8 +131,8 @@ def _scrub(text: str, secret: str) -> str:
     return text
 
 
-def _refuse(code: str, message: str, how_to_fix: str = "", **context: Any) -> PolsiaError:
-    return PolsiaError(
+def _refuse(code: str, message: str, how_to_fix: str = "", **context: Any) -> MeridianError:
+    return MeridianError(
         code, message, how_to_fix=how_to_fix or ERROR_HINTS.get(code, ""), context=context
     )
 
@@ -246,7 +246,7 @@ def _tokens_from(usage: Any) -> int | None:
     return prompt + completion
 
 
-def _upstream_from_runtime(exc: PolsiaError, key: str) -> PolsiaError:
+def _upstream_from_runtime(exc: MeridianError, key: str) -> MeridianError:
     """Translate a runtime RAISE into the route's `E_UPSTREAM` / `E_CONFIG` vocabulary."""
     if exc.code == E_DEEPSEEK_KEY:
         return _refuse(
@@ -289,7 +289,7 @@ def _call_model(parts: list[dict[str, Any]], key: str) -> VisionDescription:
             model=VISION_MODEL,
             images=parts,
         )
-    except PolsiaError as exc:
+    except MeridianError as exc:
         translated = _upstream_from_runtime(exc, key)
         if translated is exc:
             raise

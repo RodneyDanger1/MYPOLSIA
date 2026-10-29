@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_STORAGE, PolsiaError
+from app.core.errors import E_STORAGE, MeridianError
 from app.services import secret_store
 
 #: Clearly fake values; shaped like real keys so masking behaves as in production.
@@ -121,7 +121,7 @@ def test_rotation_into_corruption_is_observed_and_refused_by_name(key_file: Path
     st = key_file.stat()
     os.utime(key_file, ns=(st.st_mtime_ns + 5_000_000_000,) * 2)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.get_deepseek_api_key()
     assert excinfo.value.code == E_STORAGE
     assert str(key_file) in excinfo.value.how_to_fix

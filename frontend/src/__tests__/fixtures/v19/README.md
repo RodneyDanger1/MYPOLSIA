@@ -5,8 +5,8 @@ running stack at `http://127.0.0.1/api/v1/...`, captured 2026-10-18 (stack up, `
 from the repo `.env`, never printed). Captured by wave V19 / L4 (`l4-fe-contract`); the capture
 script and the raw status log live in the lane dir:
 
-    polsia-work/build/ui-reverse/wave-v19/l4-fe-contract/raw/fetch.sh
-    polsia-work/build/ui-reverse/wave-v19/l4-fe-contract/raw/fetch-log.txt
+    meridian-work/build/ui-reverse/wave-v19/l4-fe-contract/raw/fetch.sh
+    meridian-work/build/ui-reverse/wave-v19/l4-fe-contract/raw/fetch-log.txt
 
 Only `GET` was ever issued (no POST/PUT/PATCH/DELETE), and no fixture was edited afterwards — a
 parser that cannot read one moves, the fixture does not. They are consumed by

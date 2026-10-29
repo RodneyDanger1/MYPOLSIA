@@ -33,7 +33,7 @@ async def test_log_activity_publishes_to_redis(async_db_session, mock_redis):
     )
     mock_redis.publish.assert_called_once()
     call_args = mock_redis.publish.call_args
-    assert "polsia:activity" in call_args[0]
+    assert "meridian:activity" in call_args[0]
 
 
 @pytest.mark.asyncio

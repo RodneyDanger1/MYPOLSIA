@@ -38,7 +38,7 @@ import app.config as app_config
 from app.agents import integrations
 from app.agents.email_outreach.agent import EmailOutreachAgent
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_DB, E_RATE_LIMITED, E_VALIDATION, PolsiaError
+from app.core.errors import E_DB, E_RATE_LIMITED, E_VALIDATION, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.models.social import SocialPost
 from app.services import outreach_service, social_service
@@ -202,7 +202,7 @@ async def test_list_posts_limit_is_literal_and_one_returns_the_newest(async_db_s
 async def test_list_posts_read_failure_is_a_named_E_DB_refusal(async_db_session, monkeypatch):
     """A dead read must NEVER come back as `[]` (an empty list that reads like "no posts")."""
     _break_execute(monkeypatch, async_db_session)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await social_service.list_posts(async_db_session)
     assert excinfo.value.code == E_DB
     assert "could not read social posts" in excinfo.value.message
@@ -311,11 +311,11 @@ async def test_record_published_posts_dedupes_on_the_platform_id_pair(async_db_s
     assert await _count(db, SocialPost) == 4
 
 
-async def test_record_published_posts_reports_a_named_PolsiaError_without_raising(async_db_session,
+async def test_record_published_posts_reports_a_named_MeridianError_without_raising(async_db_session,
                                                                                    monkeypatch):
     db = async_db_session
     monkeypatch.setattr(social_service, "fetch_scalar",
-                       _Raiser(PolsiaError(E_DB, "the read refused by name")))
+                       _Raiser(MeridianError(E_DB, "the read refused by name")))
     report = await social_service.record_published_posts(
         db, {"posted": [{"platform": "twitter", "content": "x", "tweet_id": "tw-err"}]}
     )
@@ -364,7 +364,7 @@ async def test_twitter_rows_written_by_the_producer_drive_the_cap_to_refusal(asy
     agent = _stub_collection(SocialMediaAgent(), {"action": "post", "posts": [
         {"platform": "twitter", "content": "one too many"},
     ]})
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "post"}, {"channel_sends": snapshot})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "hourly cap" in excinfo.value.message and "3/3" in excinfo.value.message
@@ -395,7 +395,7 @@ async def test_list_prospects_empty_status_filter_and_limit(async_db_session):
 async def test_create_prospect_refuses_unusable_addresses(async_db_session):
     db = async_db_session
     for raw in ("", "   ", "no-at-sign", "@leading", "trailing@"):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             await outreach_service.create_prospect(db, raw)
         assert excinfo.value.code == E_VALIDATION
         assert f"prospect email {raw!r} is not a usable address" == excinfo.value.message
@@ -444,7 +444,7 @@ async def test_create_prospect_duplicate_is_a_validation_refusal_and_rollback_re
     await outreach_service.create_prospect(db, "dup@example.com")
     await db.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await outreach_service.create_prospect(db, "dup@example.com")
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.message == "prospect dup@example.com already exists"
@@ -463,7 +463,7 @@ async def test_create_prospect_duplicate_is_a_validation_refusal_and_rollback_re
 async def test_create_prospect_real_dbapi_failure_is_a_named_E_DB_refusal(async_db_session):
     """A non-IntegrityError flush failure is translated (`db_refusal`), never left to escape."""
     db = async_db_session
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await outreach_service.create_prospect(db, "dict@example.com", status={"not": "a string"})
     assert excinfo.value.code == E_DB
     assert "could not read prospect insert" in excinfo.value.message
@@ -607,7 +607,7 @@ async def test_record_sent_emails_re_raises_when_the_duplicate_row_vanishes(
         return None                                  # every SELECT misses (the initial one and the re-select)
 
     async def duplicate_refusal(db_: Any, address: str, **values: Any) -> Any:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION, f"prospect {address} already exists",
             how_to_fix="re-use the existing prospect row (prospects.email is unique)",
             context={"email": address},
@@ -661,12 +661,12 @@ async def test_record_sent_emails_continues_past_a_malformed_address_and_names_t
     assert (await db.execute(select(func.count()).select_from(Prospect))).scalar() == 2
 
 
-async def test_record_sent_emails_reports_a_named_PolsiaError_without_raising(
+async def test_record_sent_emails_reports_a_named_MeridianError_without_raising(
     async_db_session, monkeypatch,
 ):
     db = async_db_session
     monkeypatch.setattr(outreach_service, "fetch_scalar",
-                       _Raiser(PolsiaError(E_VALIDATION, "the read refused by name")))
+                       _Raiser(MeridianError(E_VALIDATION, "the read refused by name")))
     report = await outreach_service.record_sent_emails(
         db, {"emails": [_outreach_email(1, "sg-x")]})
     assert report["ok"] is False
@@ -716,7 +716,7 @@ async def test_email_rows_written_by_the_producer_drive_the_day_cap_to_refusal(
 
     # (c) the NEXT send: the existing cap refuses it by name; the provider is never reached
     agent2 = _stub_collection(EmailOutreachAgent(), _email_payload(100))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "send"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "daily cap for email: 50/50" in excinfo.value.message

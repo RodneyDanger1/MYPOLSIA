@@ -342,11 +342,11 @@ def upgrade() -> None:
     if _is_pg():
         op.execute(
             """
-            CREATE OR REPLACE FUNCTION polsia_activity_log_append_only() RETURNS trigger
+            CREATE OR REPLACE FUNCTION meridian_activity_log_append_only() RETURNS trigger
             LANGUAGE plpgsql AS $$
             BEGIN
                 RAISE EXCEPTION
-                  'activity_log is append-only: % is refused (polsia migration 0002)', TG_OP;
+                  'activity_log is append-only: % is refused (meridian migration 0002)', TG_OP;
             END;
             $$
             """
@@ -354,12 +354,12 @@ def upgrade() -> None:
         op.execute("DROP TRIGGER IF EXISTS trg_activity_log_no_update ON activity_log")
         op.execute(
             "CREATE TRIGGER trg_activity_log_no_update BEFORE UPDATE ON activity_log "
-            "FOR EACH ROW EXECUTE FUNCTION polsia_activity_log_append_only()"
+            "FOR EACH ROW EXECUTE FUNCTION meridian_activity_log_append_only()"
         )
         op.execute("DROP TRIGGER IF EXISTS trg_activity_log_no_truncate ON activity_log")
         op.execute(
             "CREATE TRIGGER trg_activity_log_no_truncate BEFORE TRUNCATE ON activity_log "
-            "FOR EACH STATEMENT EXECUTE FUNCTION polsia_activity_log_append_only()"
+            "FOR EACH STATEMENT EXECUTE FUNCTION meridian_activity_log_append_only()"
         )
     else:
         _skip(
@@ -374,7 +374,7 @@ def downgrade() -> None:
     if _is_pg():
         op.execute("DROP TRIGGER IF EXISTS trg_activity_log_no_truncate ON activity_log")
         op.execute("DROP TRIGGER IF EXISTS trg_activity_log_no_update ON activity_log")
-        op.execute("DROP FUNCTION IF EXISTS polsia_activity_log_append_only()")
+        op.execute("DROP FUNCTION IF EXISTS meridian_activity_log_append_only()")
     else:
         _skip("activity_log trigger downgrade (never created on SQLite)")
 

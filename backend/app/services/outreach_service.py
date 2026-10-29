@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
-from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import as_bound_instant, dialect_name
 from app.models.outreach import EmailLog, Prospect
 from app.models.support import SupportInboxItem
@@ -73,7 +73,7 @@ async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospe
     """
     address = normalize_address(email)
     if "@" not in address or address.startswith("@") or address.endswith("@"):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"prospect email {email!r} is not a usable address",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -84,7 +84,7 @@ async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospe
     try:
         await db.flush()
     except IntegrityError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"prospect {address} already exists",
             how_to_fix="re-use the existing prospect row (prospects.email is unique) "
@@ -124,7 +124,7 @@ async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Pros
         # The same refusal `create_prospect` raises, with the same message shape the RD30
         # callers match on ("is not a usable address") — an item-scoped skip, never a poisoned
         # session, and nothing flushed.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"prospect email {normalized!r} is not a usable address",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -163,7 +163,7 @@ async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Pros
     if again is not None:
         # The raced row is the natural key's row: it IS this mailbox, found exactly once.
         return again, False
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"prospect {normalized} already exists",
         how_to_fix="re-use the existing prospect row (prospects.email is unique) "
@@ -317,7 +317,7 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
             address = str(item.get("prospect_email") or "").strip()
             try:
                 prospect, created = await _find_or_create_prospect(db, address)
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 if exc.code != E_VALIDATION or "is not a usable address" not in exc.message:
                     # E_DB / a refused read / the vanished-duplicate race: batch-fatal, as ever —
                     # a session that may be poisoned must not be driven on.
@@ -414,7 +414,7 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                 raw_address = str(found_item.get("email") or "")
                 try:
                     prospect, created = await _find_or_create_prospect(db, raw_address)
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     if exc.code != E_VALIDATION or "is not a usable address" not in exc.message:
                         raise
                     logger.warning(
@@ -447,11 +447,11 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                         "code": E_VALIDATION,
                         "message": skipped_found[0]["message"],
                     }
-    except PolsiaError as exc:
+    except MeridianError as exc:
         report["ok"] = False
         report["error"] = {"code": exc.code, "message": exc.message}
     except Exception as exc:  # noqa: BLE001 — the worker contract is a report, never a raise
-        refusal = PolsiaError(
+        refusal = MeridianError(
             E_DB,
             f"could not persist sent emails: {type(exc).__name__}: {exc}",
             how_to_fix=ERROR_HINTS[E_DB],
@@ -516,7 +516,7 @@ async def unsubscribe_prospect(db: AsyncSession, address: str) -> dict[str, Any]
     """
     normalized = (address or "").strip().lower()
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cannot record an opt-out for {address!r}: it is not a usable address",
             how_to_fix=ERROR_HINTS[E_VALIDATION],

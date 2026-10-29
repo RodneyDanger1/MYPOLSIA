@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, verify_api_key
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import integration_status_service
 from app.services.activity_service import log_activity_isolated
 
@@ -167,7 +167,7 @@ async def save_integration(
     spec = integration_status_service.require_provider(provider)
     try:
         status = integration_status_service.save_provider_secrets(provider, payload.values)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         await _record(db, spec.provider, "save", "refused",
                       secrets=tuple(payload.values), code=exc.code)
         raise
@@ -183,7 +183,7 @@ async def clear_integration(
     spec = integration_status_service.require_provider(provider)
     try:
         status = integration_status_service.clear_provider_secrets(provider)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         await _record(db, spec.provider, "clear", "refused", secrets=spec.secrets, code=exc.code)
         raise
     await _record(db, spec.provider, "clear", "ok", secrets=spec.secrets)
@@ -201,7 +201,7 @@ async def test_integration(
     spec = integration_status_service.require_provider(provider)
     try:
         result = await integration_status_service.test_provider(provider)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         await _record(db, spec.provider, "test", "refused", secrets=spec.secrets, code=exc.code)
         raise
     await _record(db, spec.provider, "test", "ok", secrets=spec.secrets)

@@ -37,7 +37,7 @@ from app.agents.policy_firewall import (
     wrap_untrusted,
 )
 from app.agents.side_effects import evaluate_side_effect, request_side_effect
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 
 #: An instruction-injection payload the heuristic is documented to flag (policy_firewall
 #: `_INJECTION_CUES`: "ignore ... previous ... instructions" + "email ... api key ... to").
@@ -106,7 +106,7 @@ def test_a_tainted_send_with_no_approval_channel_is_denied_never_allowed():
     """Fail closed, and loud: with no approval infrastructure the tainted send raises the refusal."""
     _prompt(EmailOutreachAgent, INJECTION)
 
-    with pytest.raises(PolsiaError) as exc_info:
+    with pytest.raises(MeridianError) as exc_info:
         _send(approval_secret=b"")
     assert exc_info.value.code == E_POLICY_DENIED
 

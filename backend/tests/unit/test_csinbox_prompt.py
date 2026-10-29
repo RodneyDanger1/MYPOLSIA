@@ -32,7 +32,7 @@ from app.agents.policy_firewall import (
     reset_run_taint,
 )
 from app.agents.side_effects import request_side_effect
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, MeridianError
 
 CLEAN_BODY = "Hi — where is my order #1042? It was due Tuesday. Thanks, Ada."
 #: The documented cue pattern (tests/unit/test_taint_chain.py:44-47, policy_firewall._INJECTION_CUES).
@@ -166,7 +166,7 @@ def test_referenced_but_unattached_item_refuses_by_name_before_any_model_call():
         "title": "Check inbox and reply to customer emails",
         "metadata": {INBOX_ITEM_ID_KEY: "msg-404"},
     }
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         run_capture(task)
     assert excinfo.value.code == E_NOT_FOUND
     assert "msg-404" in excinfo.value.message
@@ -187,7 +187,7 @@ def test_referenced_but_unattached_item_refuses_by_name_before_any_model_call():
 def test_malformed_attached_item_refuses_by_name_before_any_model_call(item):
     task = {"id": 1203, "title": "Check inbox and reply to customer emails",
             "metadata": {INBOX_ITEM_KEY: item}}
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         run_capture(task)
     assert excinfo.value.code == E_VALIDATION
     assert "1203" in excinfo.value.message
@@ -203,7 +203,7 @@ def test_reference_attachment_mismatch_is_refused():
             INBOX_ITEM_ID_KEY: "msg-7",
         },
     }
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         run_capture(task)
     assert excinfo.value.code == E_VALIDATION
     assert "msg-7" in excinfo.value.message and "msg-6" in excinfo.value.message

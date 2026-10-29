@@ -25,7 +25,7 @@ from starlette.testclient import TestClient
 
 from app.api.v1 import ws as ws_module
 from app.config import settings
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 
 KEY = "w5-mint-limit-owner-key"
 
@@ -59,7 +59,7 @@ def _refusal(response) -> dict:
     """The repo's ONE wire refusal shape (`app/main.py`'s coded-HTTPException handler):
 
     `{"ok": false, "error": {"code", "message", "how_to_fix", "context"}}` â€” the same envelope a
-    `PolsiaError` produces via `errors.to_http_detail`, and the same one a 405 carries since
+    `MeridianError` produces via `errors.to_http_detail`, and the same one a 405 carries since
     SV-W4-02 (wave 5).
     """
     body = response.json()
@@ -105,7 +105,7 @@ def test_the_window_rolls_and_the_budget_comes_back(monkeypatch):
     ws_module._authorise_mint("operator-a", now=start)
     ws_module._authorise_mint("operator-a", now=start + 1)
 
-    with pytest.raises(PolsiaError) as excinfo:  # the named refusal IS the assertion
+    with pytest.raises(MeridianError) as excinfo:  # the named refusal IS the assertion
         ws_module._authorise_mint("operator-a", now=start + 2)
     assert getattr(excinfo.value, "code", None) == "E_RATE_LIMITED"
     assert excinfo.value.context["reason"] == "mint_rate"
@@ -121,7 +121,7 @@ def test_the_bounds_are_per_operator(monkeypatch):
     monkeypatch.setattr(settings, "ws_ticket_mint_window_seconds", 60.0)
     now = 2_000_000.0
     ws_module._authorise_mint("operator-a", now=now)
-    with pytest.raises(PolsiaError):  # exhausted budget for operator-a
+    with pytest.raises(MeridianError):  # exhausted budget for operator-a
         ws_module._authorise_mint("operator-a", now=now)
     ws_module._authorise_mint("operator-b", now=now)  # unaffected
     assert len(ws_module._mint_times["operator-b"]) == 1

@@ -138,7 +138,7 @@ function approvalRefusal(fingerprint = DEPLOY_FINGERPRINT): ApiError {
         how_to_fix: `mint a single-use approval token for fingerprint ${fingerprint}`,
         context: {
           decision: "require_approval",
-          policy_code: "POLSIA-E115",
+          policy_code: "MERIDIAN-E115",
           fingerprint,
           channel: "render",
         },
@@ -413,7 +413,7 @@ describe("/sites — the approval leg of a LIVE deploy", () => {
           how_to_fix: "run with SANDBOX_MODE=false to send real actions",
           context: {
             decision: "deny",
-            policy_code: "POLSIA-E114",
+            policy_code: "MERIDIAN-E114",
             sandbox: true,
             fingerprint: DEPLOY_FINGERPRINT,
           },
@@ -450,7 +450,7 @@ describe("/sites — the approval leg of a LIVE deploy", () => {
             "deploy_site: the live Render deploy of a site is refused by policy: approval required " +
             "but no approval channel configured",
           how_to_fix: "set APPROVAL_SECRET and restart the service",
-          context: { decision: "deny", policy_code: "POLSIA-E114" },
+          context: { decision: "deny", policy_code: "MERIDIAN-E114" },
         },
       },
     );

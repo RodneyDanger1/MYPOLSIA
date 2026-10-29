@@ -38,7 +38,7 @@ from app.core.errors import (
     E_RATE_LIMITED,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.outreach import EmailLog, Prospect
 from app.models.social import SocialPost
@@ -60,7 +60,7 @@ class _FirewallSpy:
             allowed=False,
             sandboxed=True,
             requires_approval=False,
-            policy_code="POLSIA-E114",
+            policy_code="MERIDIAN-E114",
             e_code=E_SANDBOX_BLOCKED,
             reason="test stub: sandbox refusal",
             audit={"sandbox": True},
@@ -81,7 +81,7 @@ class _DecisionSpy:
     def __call__(self, *args: Any, **kwargs: Any) -> PolicyDecision:
         self.calls.append((args, kwargs))
         return PolicyDecision(
-            Decision.REQUIRE_APPROVAL, "test stub: refund needs a human", "POLSIA-E115"
+            Decision.REQUIRE_APPROVAL, "test stub: refund needs a human", "MERIDIAN-E115"
         )
 
 
@@ -131,7 +131,7 @@ def test_social_over_daily_cap_is_refused_by_name(monkeypatch):
     message carries the observed counts. With the old `or 0` coercion this could never fire."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     agent = _stub_collection(SocialMediaAgent(), _social_payload())
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "post"}, {"channel_sends": {"twitter": {"today": 12, "hour": 3}}})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "12/12" in excinfo.value.message
@@ -161,7 +161,7 @@ def test_social_unknown_counts_refused_no_local_record(monkeypatch):
     pass-through: with `or 0` the None becomes a measured zero and nothing refuses."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     agent = _stub_collection(SocialMediaAgent(), _social_payload())
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "post"}, {})
     assert excinfo.value.code == E_POLICY_DENIED
     assert "no local record" in excinfo.value.message
@@ -257,7 +257,7 @@ def test_unknown_counts_refused_no_local_record_for_every_channel_agent(
     """Same end-to-end unknown-count refusal as the social test, for the other four files."""
     monkeypatch.setattr(app_config.settings, "sandbox_mode", False)
     agent = _stub_collection(agent_cls(), payload_factory())
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "t"}, {})
     assert excinfo.value.code == E_POLICY_DENIED
     assert "no local record" in excinfo.value.message

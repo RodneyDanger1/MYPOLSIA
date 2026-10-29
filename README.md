@@ -57,8 +57,8 @@ current tree's numbers. The current measured gate is:
 
 | Gate | Result | Evidence |
 |---|---|---|
-| Backend | **5,425 tests / 0 failed / 0 errors / 16 skipped** (`EXIT=0`) | `polsia-work/build/swarm-2026-10-28/raw/wave8-GATE.xml` |
-| Frontend (jest) | **152 suites / 1,331 tests passed** | `polsia-work/build/swarm-2026-10-28/raw/wave8-jest.log` |
+| Backend | **5,425 tests / 0 failed / 0 errors / 16 skipped** (`EXIT=0`) | `meridian-work/build/swarm-2026-10-28/raw/wave8-GATE.xml` |
+| Frontend (jest) | **152 suites / 1,331 tests passed** | `meridian-work/build/swarm-2026-10-28/raw/wave8-jest.log` |
 | ruff, both pins | clean (`backend/.venv` + `uvx ruff==0.8.4`) | wave-8 receipt |
 | mypy | 196 files clean (`app/ celery_app/`) | `Success: no issues found in 196 source files` |
 | Migration | **0020** (a `sent` email row needs a non-blank provider id + `sent_at`), applied live; 0 rows changed | wave-8 receipt |
@@ -214,7 +214,7 @@ Quick summary:
 ```bash
 # 1. Clone and configure
 git clone <repo>
-cd polsia
+cd meridian
 cp .env.example .env
 # Edit .env — at minimum set API_KEY and SANDBOX_MODE=true
 
@@ -269,7 +269,7 @@ Fill in the relevant sections of `.env` to activate each integration:
   (multipart + ECDSA/OAuth, wave 9) — there is no mail-poll (IMAP) setting. The send adapter's
   dedupe key is the provider's `X-Message-Id` header; that header is **not documented** by SendGrid,
   so an accepted send that omits it is recorded as a NAMED failed-send undercount (the attempt
-  carries a `polsia-<hex>` correlation id in the documented `custom_args`; using it as the dedupe
+  carries a `meridian-<hex>` correlation id in the documented `custom_args`; using it as the dedupe
   key is an open decision, not a silent fallback)
 - **Web search for competitor research** — no web-search key exists (the advertised-but-dead
   settings were removed, D14): under the CLI runtime `competitor_research`'s allowlist grants
@@ -337,11 +337,11 @@ quietly relaxed. Each one names its measurement.
   (`tests/unit/celery/test_cs_send_cap_producer.py` — CS replies persist through the same producer
   and are counted against the email channel's caps). Residuals, named not hidden: channels with
   no counting source — github, google_ads, meta_ads, stripe, render — have their configured caps refused
-  by name (`POLSIA-E114`, `cap_unknown`) instead of being read as zero sends; LinkedIn has no send
+  by name (`MERIDIAN-E114`, `cap_unknown`) instead of being read as zero sends; LinkedIn has no send
   adapter.)
 - **The advertised-but-dead settings list is closed (owner decision D14, 2026-10-13).** Eight
   settings no code path ever read were REMOVED — both references say they never existed: the
-  original upload (`polsia-src-dossier.md` §6: the same set was read by nothing there, and no mail-
+  original upload (`meridian-src-dossier.md` §6: the same set was read by nothing there, and no mail-
   poll or web-search variable was defined anywhere) and the live product (vendor-processed inbound
   email, no web-search provider, managed Meta-only ads, internal hosting, no batch/backlog knobs).
   Exactly one setting still has no reader, and it is deliberate and named:
@@ -406,7 +406,7 @@ Docker is not required to exercise the app end to end. This is the path that was
 
 ```bash
 cd backend
-export DATABASE_URL="sqlite+aiosqlite:///./polsia-dev.sqlite"
+export DATABASE_URL="sqlite+aiosqlite:///./meridian-dev.sqlite"
 ../.venv/Scripts/python.exe -m alembic upgrade head          # shipped migrations, indexes included
 CLAUDE_CLI_MOCK=true SANDBOX_MODE=true API_KEY=dev-key \
   ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -457,7 +457,7 @@ text — which is how a page that "renders" was shown to be rendering its failur
 ### Project layout
 
 ```
-polsia/
+meridian/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/          # 9 agent implementations
@@ -515,7 +515,7 @@ The stack's state lives in five named Docker volumes; `make backup` snapshots al
 | `redis_data` | the Redis AOF — the Celery broker's queue state |
 
 ```bash
-make backup                     # backups/polsia-<date>.sql + backups/<volume>.tgz (4 data volumes)
+make backup                     # backups/meridian-<date>.sql + backups/<volume>.tgz (4 data volumes)
 make restore SRC=backups        # prints the scratch-project drill steps; verifies the dump exists first
 make restore-drill SRC=backups  # EXECUTES the restore into a throwaway container and verifies it
 ```
@@ -530,7 +530,7 @@ and `tar tzf backups/backend_data.tgz` should list files.
 The `backup` compose service runs `scripts/backup.sh` in a `postgres:16-alpine` container on a
 24-hour loop (`BACKUP_INTERVAL_SECONDS`, default `86400`): one cycle immediately at startup, then
 one per interval. A cycle writes the same artifacts `make backup` does into the same gitignored
-`backups/` directory — `polsia-<UTC timestamp>.sql` via `pg_dump` over the compose network, plus
+`backups/` directory — `meridian-<UTC timestamp>.sql` via `pg_dump` over the compose network, plus
 one `<volume>.tgz` per data volume. Each data volume is mounted **read-only** straight into the
 container, so no docker socket and no docker CLI are needed there. The database dump is written to
 a `.part` file and only renamed once `pg_dump` exits 0; a missing or **empty** volume mount is
@@ -538,7 +538,7 @@ refused by name (the same guard `make backup` applies — an empty tar is a gree
 backup). SIGTERM ends the loop cleanly; the next start runs a fresh cycle immediately.
 
 - Cadence: `BACKUP_INTERVAL_SECONDS` (default `86400` = daily) — set in `docker-compose.yml`.
-- Retention: `BACKUP_RETENTION_DAYS` (default `14`) — older `polsia-*.sql` / `*.tgz` files are
+- Retention: `BACKUP_RETENTION_DAYS` (default `14`) — older `meridian-*.sql` / `*.tgz` files are
   pruned at the end of every cycle, and every prune is logged.
 - Inspect: `docker compose logs backup` (each cycle logs what it wrote, and every refusal by
   name) and `ls -la backups/` (the `.sql` should be non-trivial in size;
@@ -550,8 +550,8 @@ backup). SIGTERM ends the loop cleanly; the next start runs a fresh cycle immedi
 ### Restore drill (`make restore-drill` — executes; never the live stack)
 
 `scripts/restore.sh` proves the backup restores. It never touches the live compose project: it starts
-**one** throwaway `postgres:16-alpine` container named `polsia-restore-drill-pg` with **no published
-ports**, loads the newest `polsia-*.sql` into a fresh `polsia` database, verifies the result against a
+**one** throwaway `postgres:16-alpine` container named `meridian-restore-drill-pg` with **no published
+ports**, loads the newest `meridian-*.sql` into a fresh `meridian` database, verifies the result against a
 manifest parsed out of the dump itself (public table count + row counts for `activity_log`,
 `agent_runs`, `tasks`, `memory_entries`, `task_schedules`, `chat_messages`, `company_config`), extracts
 every volume archive into a temp dir and proves each listed member materialised, then **always** tears
@@ -563,9 +563,9 @@ make restore-drill SRC=backups   # execute it: exit 0 PASS, 1 FAIL, 2 refusal
 DRY=1 make restore-drill         # print the plan + exact commands; touches nothing
 ```
 
-Refusals are by name and exit 2: missing `--src`; no `polsia-*.sql`; no `*.tgz`; a missing canonical
+Refusals are by name and exit 2: missing `--src`; no `meridian-*.sql`; no `*.tgz`; a missing canonical
 volume archive; an unreadable/corrupt archive; a dump with no pg_dump header; docker absent; or a
-container named `polsia-restore-drill-pg` that already exists (it never reuses or replaces one — set
+container named `meridian-restore-drill-pg` that already exists (it never reuses or replaces one — set
 `RESTORE_PG_CONTAINER` for a second parallel drill). Both dump formats route correctly: plain-SQL
 artifacts (what `make backup` and the backup sidecar write) load through `psql -v ON_ERROR_STOP=1`;
 `PGDMP` custom-format artifacts through `pg_restore --no-owner --no-privileges`.
@@ -579,7 +579,7 @@ second stack proves the *app*. Never against the live project:
    `docker run --rm -v scratch_<volume>:/d -v "$(pwd)/backups":/b alpine sh -c "tar xzf /b/<volume>.tgz -C /d"`
    — once for `backend_data`, `chroma_data`, `celery_beat_data` and `redis_data`.
 3. Load the dump: `docker compose -p scratch up -d postgres`, then
-   `docker compose -p scratch exec -T postgres psql -U polsia polsia < backups/polsia-<date>.sql`.
+   `docker compose -p scratch exec -T postgres psql -U meridian meridian < backups/meridian-<date>.sql`.
 4. Boot it: `docker compose -p scratch up -d`.
 5. Smoke: `curl -fsS http://localhost/api/v1/health` returns `{"status":"ok"}`, and ONE dashboard
    page renders real restored rows (not the empty state).
@@ -632,7 +632,7 @@ reach the docs rather than merely that FastAPI would serve them on a port nobody
 
 V20 adds **two acceptance surfaces that are not smoke checks**, because neither is a GET on the public
 stack: the `phone_read` agent tool must be exercised **only through the firewalled `execute_tool` path**
-(an agent without the allowlist entry refused by name `POLSIA-E114`; the result must carry no code
+(an agent without the allowlist entry refused by name `MERIDIAN-E114`; the result must carry no code
 field; an absent store must answer `E_PHONE_UNAVAILABLE`, never an empty list), and the **Agents-page
 toolbox** must be read visually against `GET /api/v1/ops/capabilities` after the frontend rebuild
 (honest empty for a tool-less agent). Both are parent live-checks in

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.config import settings
 from app.schemas.agent_outputs import OrchestratorPlan
 
@@ -147,7 +147,7 @@ def weekly_quality_line(quality: Any) -> str | None:
     return None if drop is None else str(drop["line"])
 
 
-class OrchestratorAgent(BasePolsiaAgent):
+class OrchestratorAgent(BaseMeridianAgent):
     agent_type = "orchestrator"
     description = "Writes the morning plan and evening summary"
     output_schema = OrchestratorPlan

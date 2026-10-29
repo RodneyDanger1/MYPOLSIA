@@ -8,7 +8,7 @@ response for the same refusal just because it was raised a layer earlier").
 
 These legs run through the REAL ASGI stack (`api_client` → ASGITransport → the request
 middleware + both exception handlers), so what they measure is the production response
-plumbing, exactly like `test_r29_status_parity.py` does for the `PolsiaError` paths.
+plumbing, exactly like `test_r29_status_parity.py` does for the `MeridianError` paths.
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ async def test_webhook_coded_400_direct_raise_carries_the_code_header(api_client
 
 @pytest.mark.asyncio
 async def test_e_auth_from_the_router_dependency_still_carries_its_challenge(api_client):
-    """Control next to L1-04: the `PolsiaError` path keeps code + challenge headers."""
+    """Control next to L1-04: the `MeridianError` path keeps code + challenge headers."""
     resp = await api_client.get("/api/v1/config")  # no key
     assert resp.status_code == 401
     assert resp.headers.get("X-Meridian-Error-Code") == E_AUTH

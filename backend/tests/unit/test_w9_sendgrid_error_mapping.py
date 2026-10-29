@@ -435,9 +435,9 @@ def test_the_pinned_sdk_really_carries_a_message_level_custom_arg():
         "the pinned SDK no longer exposes Mail.add_custom_arg: the X-Message-Id fallback would "
         "have no anchor — re-measure the adapter"
     )
-    message.add_custom_arg(CustomArg(integrations.SENDGRID_CORRELATION_ARG, "polsia-contract"))
+    message.add_custom_arg(CustomArg(integrations.SENDGRID_CORRELATION_ARG, "meridian-contract"))
     body = message.get()
-    assert body["custom_args"] == {integrations.SENDGRID_CORRELATION_ARG: "polsia-contract"}
+    assert body["custom_args"] == {integrations.SENDGRID_CORRELATION_ARG: "meridian-contract"}
 
 
 def test_the_pinned_sdk_error_really_carries_status_and_the_documented_body():

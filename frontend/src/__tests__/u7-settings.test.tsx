@@ -335,10 +335,10 @@ describe("u7 auto mode panel (V7-T14)", () => {
 // F-03 — the stale "nothing exposes auto mode / night task" claim is gone
 // -------------------------------------------------------------------------------------------
 
-describe("F-03 — PolsiaStatusCard's false claim (source read)", () => {
+describe("F-03 — MeridianStatusCard's false claim (source read)", () => {
   it("no longer says no endpoint or config field exposes the auto-mode / night-task state", () => {
     const source = fs.readFileSync(
-      path.join(process.cwd(), "src", "components", "dashboard", "PolsiaStatusCard.tsx"),
+      path.join(process.cwd(), "src", "components", "dashboard", "MeridianStatusCard.tsx"),
       "utf8",
     );
     expect(source).not.toContain("no endpoint or config field exposes");

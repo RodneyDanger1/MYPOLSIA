@@ -64,16 +64,16 @@ def test_a_row_without_metadata_carries_none_never_a_fabricated_payload(
 def test_the_body_flows_from_the_task_row_into_the_prompt(queue_db, execute_body, monkeypatch):
     """The whole chain, real agent included: the prompt the model seam receives carries the body
     inside the inbox quarantine block; the cacheable prefix does not."""
-    from app.agents.base_agent import BasePolsiaAgent
+    from app.agents.base_agent import BaseMeridianAgent
 
     captured: list[dict] = []
-    original = BasePolsiaAgent.call_claude_structured
+    original = BaseMeridianAgent.call_claude_structured
 
     def recording(self, prompt, **kw):
         captured.append({"prompt": prompt, "system": kw.get("system_prompt_static", "")})
         return original(self, prompt, **kw)
 
-    monkeypatch.setattr(BasePolsiaAgent, "call_claude_structured", recording)
+    monkeypatch.setattr(BaseMeridianAgent, "call_claude_structured", recording)
     task_id = queue_db.create_task(
         title="Check inbox and reply to customer emails",
         agent_type="customer_support",

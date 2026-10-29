@@ -36,7 +36,7 @@ from app.agents.context_assembler import budgets_for_total, measure_tokens, untr
 from app.agents.orchestrator.agent import OrchestratorAgent
 from app.agents.policy_firewall import reset_run_taint, wrap_untrusted
 from app.config import settings
-from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, MeridianError
 
 SAFE_TEST_KEY = "sk-test-b1c-runtime"
 CLEAN_TASK = {"id": 1, "title": "Weekly numbers", "description": "Compile the weekly numbers."}
@@ -104,7 +104,7 @@ def test_the_invocations_own_deadline_bounds_the_provider_call():
     assert configured > 7, "the provider-wide default must still be the long value (no fixture cheat)"
 
     transport = _DeadlineTransport(cap=0.05)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(
             _invocation(7), client=httpx.Client(transport=transport), api_key=SAFE_TEST_KEY
         )
@@ -125,7 +125,7 @@ def test_a_seven_second_invocation_deadline_fires_in_about_seven_seconds():
     """
     transport = _DeadlineTransport(cap=7.0)
     started = time.monotonic()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(
             _invocation(7), client=httpx.Client(transport=transport), api_key=SAFE_TEST_KEY
         )
@@ -145,7 +145,7 @@ def test_an_agent_deadline_reaches_the_invocation_without_a_setting_change():
     assert inv.timeout_s == 7
 
     transport = _DeadlineTransport(cap=0.05)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(
             inv, client=httpx.Client(transport=transport), api_key=SAFE_TEST_KEY
         )

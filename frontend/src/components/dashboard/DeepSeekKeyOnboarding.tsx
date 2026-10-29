@@ -29,7 +29,7 @@ import { api, type DeepSeekKeyStatus } from "@/lib/api";
  * until the owner confirms it.
  */
 
-export const ONBOARDING_DISMISS_KEY = "polsia.deepseek_onboarding.dismissed";
+export const ONBOARDING_DISMISS_KEY = "meridian.deepseek_onboarding.dismissed";
 
 export function DeepSeekKeyOnboarding() {
   const [configured, setConfigured] = useState<boolean | null>(null);

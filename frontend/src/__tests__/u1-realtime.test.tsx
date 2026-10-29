@@ -446,7 +446,7 @@ describe("feed UI — honest badge + live grammar", () => {
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
     window.localStorage.setItem(
-      "polsia.dashboard.feed.lastSeenAt",
+      "meridian.dashboard.feed.lastSeenAt",
       String(midnight.getTime() - 1_000),
     );
     await mountFeed();

@@ -6,7 +6,7 @@ import pytest
 
 from app.agents import policy_firewall
 from app.agents.tool_registry import _RUNNERS, TOOL_SPECS, tools_for
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 
 NEW_TOOLS = ("research_fetch", "fx_convert", "signals_read", "domain_health", "link_status")
 
@@ -53,7 +53,7 @@ def test_signals_runner_passes_a_named_service_refusal(monkeypatch) -> None:
     from app.services import signals_service
 
     def boom(*, limit: int):
-        raise PolsiaError(E_UPSTREAM, "feed unavailable", how_to_fix="retry")
+        raise MeridianError(E_UPSTREAM, "feed unavailable", how_to_fix="retry")
 
     monkeypatch.setattr(signals_service, "read", boom)
     out = _RUNNERS["signals_read"](agent_type="social_media", arguments={"limit": 5})
@@ -77,7 +77,7 @@ def test_service_errors_become_named_refusals(monkeypatch, name, module, attr, a
     svc = importlib.import_module(f"app.services.{module}")
 
     def boom(*a, **k):
-        raise PolsiaError(E_UPSTREAM, "upstream down", how_to_fix="retry")
+        raise MeridianError(E_UPSTREAM, "upstream down", how_to_fix="retry")
 
     monkeypatch.setattr(svc, attr, boom)
     out = _RUNNERS[name](agent_type="competitor_research", arguments=args)

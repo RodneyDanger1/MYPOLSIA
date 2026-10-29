@@ -11,7 +11,7 @@ guard, which is a silent coercion for every one of these:
 * `"5000"` — a numeric STRING was parsed and accepted;
 * `2.5` — a fractional value was truncated to 2 and then floored to 1,000;
 * `float("inf")` — `int(inf)` raises `OverflowError`, which the guard did NOT catch, so the raw
-  exception escaped `fetch` and the tool runner (which catches only `PolsiaError`) would turn a
+  exception escaped `fetch` and the tool runner (which catches only `MeridianError`) would turn a
   caller mistake into an internal error instead of a named `E_VALIDATION`.
 
 The V30/A3 adversarial list expects `max_chars` string/bool to answer `E_VALIDATION`; these tests
@@ -24,7 +24,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.services import research_fetch_service as service
 
 URL = "https://example.com/article"
@@ -57,7 +57,7 @@ def _serve(monkeypatch) -> list[httpx.Request]:
 
 
 def _assert_refused_without_a_request(seen: list[httpx.Request], max_chars: object) -> None:
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         service.fetch(URL, max_chars=max_chars)  # type: ignore[arg-type]
 
     assert caught.value.code == E_VALIDATION, (

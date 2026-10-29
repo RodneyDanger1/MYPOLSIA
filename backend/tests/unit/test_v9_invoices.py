@@ -34,7 +34,7 @@ from app.core.errors import (
     E_NOT_FOUND,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.report import ActivityLog
@@ -60,21 +60,21 @@ async def _fake_footer(db) -> str:
 
 def _local_app(db_session):
     """A LOCAL app carrying ONLY the invoices router + the named-refusal handler (V9-D3: the
-    parent wires main.py, which is where the real app-level PolsiaError handler lives too)."""
+    parent wires main.py, which is where the real app-level MeridianError handler lives too)."""
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
 
     from app.api.deps import as_http_exception
     from app.api.v1.invoices import router
     from app.core.database import get_db
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
 
     application = FastAPI()
     application.include_router(router, prefix="/api/v1")
     application.dependency_overrides[get_db] = lambda: db_session
 
-    @application.exception_handler(PolsiaError)
-    async def _named_refusal(request: Request, exc: PolsiaError) -> JSONResponse:
+    @application.exception_handler(MeridianError)
+    async def _named_refusal(request: Request, exc: MeridianError) -> JSONResponse:
         http_exc = as_http_exception(exc)
         return JSONResponse(
             status_code=http_exc.status_code, content={"detail": http_exc.detail}, headers=http_exc.headers
@@ -201,7 +201,7 @@ async def test_number_allocation_refuses_by_name_when_every_attempt_collides(
         return first.number
 
     monkeypatch.setattr(invoice_service, "_next_number", always_taken)
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.create_invoice(async_db_session, issue_date=ISSUE)
     assert ei.value.code == E_DB
     assert "unique" in ei.value.message.lower()
@@ -219,7 +219,7 @@ async def test_draft_to_paid_is_refused_by_name(async_db_session, mock_redis):
     from app.services import invoice_service
 
     invoice = await invoice_service.create_invoice(async_db_session, issue_date=ISSUE)
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.transition_invoice(async_db_session, invoice, "paid")
     assert ei.value.code == E_VALIDATION
     assert "draft" in ei.value.message and "paid" in ei.value.message
@@ -238,7 +238,7 @@ async def test_paid_is_terminal_and_sets_paid_at(async_db_session, mock_redis):
     assert invoice.status is InvoiceStatus.PAID
     assert invoice.paid_at is not None, "entering paid records WHEN payment was recorded"
     for target in ("void", "overdue", "sent"):
-        with pytest.raises(PolsiaError) as ei:
+        with pytest.raises(MeridianError) as ei:
             await invoice_service.transition_invoice(async_db_session, invoice, target)
         assert ei.value.code == E_VALIDATION
         assert "paid" in ei.value.message
@@ -249,7 +249,7 @@ async def test_unknown_status_value_is_refused_by_name(async_db_session, mock_re
     from app.services import invoice_service
 
     invoice = await invoice_service.create_invoice(async_db_session, issue_date=ISSUE)
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.transition_invoice(async_db_session, invoice, "collected")
     assert ei.value.code == E_VALIDATION
     assert "collected" in ei.value.message
@@ -319,7 +319,7 @@ async def test_send_in_sandbox_is_refused_by_name_and_stays_draft(
         bill_to={"name": "ACME", "email": "billing@acme.example"},
         payment_link="https://buy.stripe.com/test_b4send",
     )
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.send_invoice(async_db_session, invoice.id)
     assert ei.value.code == E_SANDBOX_BLOCKED
     await async_db_session.refresh(invoice)
@@ -391,7 +391,7 @@ async def test_send_marks_sent_only_on_a_real_delivery_and_carries_the_footer(
     assert sends[0].detail["message_id"] == "sg-msg-1"
 
     # only a draft can be sent: a second send is refused by name
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.send_invoice(async_db_session, invoice.id)
     assert ei.value.code == E_VALIDATION
     assert "draft" in ei.value.message
@@ -407,7 +407,7 @@ async def test_send_without_a_bill_to_email_is_refused_by_name(
     monkeypatch.setattr(settings, "sandbox_mode", False)
     monkeypatch.setattr(invoice_service, "_compliance_footer", _fake_footer)
     invoice = await invoice_service.create_invoice(async_db_session, issue_date=ISSUE)
-    with pytest.raises(PolsiaError) as ei:
+    with pytest.raises(MeridianError) as ei:
         await invoice_service.send_invoice(async_db_session, invoice.id)
     assert ei.value.code == E_VALIDATION
     assert "email" in ei.value.message

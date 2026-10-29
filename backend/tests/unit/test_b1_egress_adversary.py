@@ -35,7 +35,7 @@ import httpx
 import pytest
 
 from app.agents import tool_registry
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 from app.services import trust_service
 
 PUBLIC_V4 = "93.184.216.34"          # example.com's well-known address
@@ -182,7 +182,7 @@ def test_resolve_egress_re_resolves_on_every_call_and_refuses_the_private_answer
 
     assert trust_service.resolve_egress("rebind.example.com", 443) == [PUBLIC_V4]
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress("rebind.example.com", 443)
 
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED

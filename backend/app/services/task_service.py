@@ -45,7 +45,7 @@ from app.core.errors import (
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.timeutil import as_bound_instant, day_window, dialect_name, today_in
 from app.models.task import AgentRun, Task, TaskStatus
@@ -232,7 +232,7 @@ def _resolve_lease(lease_seconds: int | None) -> int:
     """
     lease = int(lease_seconds) if lease_seconds is not None else int(settings.task_claim_lease_seconds)
     if lease <= 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"lease_seconds must be > 0, got {lease!r}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -278,7 +278,7 @@ async def create_task(
         )
     _require_valid_task_status(status)
     if metadata is not None and not isinstance(metadata, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"`metadata` must be a JSON object (or omitted), got {type(metadata).__name__}; "
             "refusing to store a non-object payload on the task (nothing was written)",
@@ -323,7 +323,7 @@ async def create_task(
     if existing is None:
         # Only reachable if a NULL-key insert raced or the conflicting row was
         # deleted in between; either way we must not report a fake success.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"dedupe_key {dedupe_key!r} conflicted but no row could be re-read",
             how_to_fix="retry create_task; if it persists, check the ix_tasks_dedupe_key unique index",
@@ -373,7 +373,7 @@ async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
     """
     task = await get_task(db, task_id)
     if task is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task {task_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -390,7 +390,7 @@ async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
     current_status = str(task.status or "")
     if current_status == TaskStatus.PENDING:
         scheduled = task.scheduled_date
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_NOT_RUNNABLE,
             f"task {task_id} is scheduled for "
             f"{scheduled.isoformat() if scheduled else 'an unset date'} and is not runnable yet",
@@ -405,7 +405,7 @@ async def get_runnable_task(db: AsyncSession, task_id: int) -> Task:
                 "scheduled_date": scheduled.isoformat() if scheduled else None,
             },
         )
-    raise PolsiaError(
+    raise MeridianError(
         E_TASK_NOT_RUNNABLE,
         f"task {task_id} is {current_status or 'unknown'!r}, not 'pending'; only a queued "
         "task can be run",
@@ -440,7 +440,7 @@ async def list_tasks(
     never a bare 500 — see the note on `get_task` above (R28).
     """
     if status is not None and status not in VALID_TASK_STATUSES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -463,7 +463,7 @@ def _require_valid_task_status(status: str) -> None:
     across all three, so a caller can never get two different spellings of the same typo.
     """
     if status not in VALID_TASK_STATUSES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"unknown task status {status!r}; valid: {', '.join(VALID_TASK_STATUSES)}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -812,7 +812,7 @@ async def transition_task_status(
     current = str(task.status or "")
     accepted = legal_task_status_targets(current)
     if current not in VALID_TASK_STATUSES:
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_NOT_RUNNABLE,
             f"task {task_id} carries an unrecognised status {current!r}; there is no transition "
             "out of it (nothing was written)",
@@ -824,7 +824,7 @@ async def transition_task_status(
         )
     accepted_text = ", ".join(accepted) if accepted else "none (terminal state)"
     if target.value == current:
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_NOT_RUNNABLE,
             f"task {task_id} is already {current!r}; a status write must name a DIFFERENT status "
             f"(nothing was written)",
@@ -840,7 +840,7 @@ async def transition_task_status(
             },
         )
     if target not in TASK_TRANSITIONS[TaskStatus(current)]:
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_NOT_RUNNABLE,
             f"illegal task transition {current!r} -> {target.value!r} for task {task_id}; from "
             f"{current!r} the accepted targets are: {accepted_text} (nothing was written)",
@@ -859,7 +859,7 @@ async def transition_task_status(
     if target is TaskStatus.COMPLETED and error_message is not None:
         # A-W4-01: the contradiction is refused at the door.  Same shape as the guards above:
         # named code, the task in context, nothing mutated (the row is still `current`).
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"a completed task cannot carry an error_message (task {task_id}); 'completed' ends "
             "the failure history this route would have to serve (nothing was written)",
@@ -988,7 +988,7 @@ async def attach_approval_token(
     own window rule decides when the row becomes claimable.
     """
     if not isinstance(token, str) or not token.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"refusing to attach an empty approval token to task {task_id}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -996,7 +996,7 @@ async def attach_approval_token(
         )
     task = await get_task(db, task_id)
     if task is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task {task_id} does not exist; there is nothing to attach the token to",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -1004,7 +1004,7 @@ async def attach_approval_token(
         )
     current_status = str(task.status or "")
     if current_status != TaskStatus.AWAITING_APPROVAL:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"task {task_id} is {current_status or 'unknown'!r}, not 'awaiting_approval'; an "
             "approval token can only be delivered to a task the approvals channel parked "
@@ -1021,7 +1021,7 @@ async def attach_approval_token(
         )
     existing = task.metadata_json
     if existing is not None and not isinstance(existing, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"task {task_id} carries a non-object metadata blob ({type(existing).__name__}); "
             "refusing to replace it — merging the token would destroy the existing payload",
@@ -1125,7 +1125,7 @@ async def claim_task(
     being re-run forever.
     """
     if not worker or not str(worker).strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "claim_task requires a non-empty worker id",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -1172,7 +1172,7 @@ async def claim_task(
 
     current = await get_task(db, task_id)
     if current is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task {task_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -1198,7 +1198,7 @@ async def claim_task(
         ).scalars().one_or_none()
         current = fresh or current
 
-    raise PolsiaError(
+    raise MeridianError(
         E_TASK_CLAIMED if current.claimed_by else E_TASK_NOT_RUNNABLE,
         f"task {task_id} cannot be claimed: status={str(current.status)!r}, "
         f"claimed_by={current.claimed_by!r}",
@@ -1368,20 +1368,20 @@ async def heartbeat_task(db: AsyncSession, task_id: int, worker: str) -> Task:
 
     current = await get_task(db, task_id)
     if current is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task {task_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
             context={"task_id": task_id, "worker": str(worker)},
         )
     if current.claimed_by is not None and current.claimed_by != str(worker):
-        raise PolsiaError(
+        raise MeridianError(
             E_TASK_CLAIMED,
             f"task {task_id} is claimed by {current.claimed_by!r}, not {worker!r}",
             how_to_fix=ERROR_HINTS[E_TASK_CLAIMED],
             context={"task_id": task_id, "worker": str(worker), "claimed_by": current.claimed_by},
         )
-    raise PolsiaError(
+    raise MeridianError(
         E_TASK_NOT_RUNNABLE,
         f"task {task_id} is {str(current.status)!r}; only an in_progress claim can be heartbeated",
         how_to_fix=ERROR_HINTS[E_TASK_NOT_RUNNABLE],
@@ -1450,13 +1450,13 @@ async def release_claim(
 
     current = await get_task(db, task_id)
     if current is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task {task_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
             context={"task_id": task_id, "worker": str(worker)},
         )
-    raise PolsiaError(
+    raise MeridianError(
         E_TASK_CLAIMED,
         f"task {task_id} is not an in_progress claim of {worker!r} "
         f"(status={str(current.status)!r}, claimed_by={current.claimed_by!r})",

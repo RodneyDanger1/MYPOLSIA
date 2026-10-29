@@ -79,8 +79,8 @@ def _run(db: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         "DATABASE_URL": f"sqlite+aiosqlite:///{db.as_posix()}",
         "CLAUDE_CLI_MOCK": "true",
         # V29 parent fix: never let this test touch the repo's real data/sites or data/trash.
-        "POLSIA_SITES_DIR": str(db.parent / "sites"),
-        "POLSIA_TRASH_DIR": str(db.parent / "trash"),
+        "MERIDIAN_SITES_DIR": str(db.parent / "sites"),
+        "MERIDIAN_TRASH_DIR": str(db.parent / "trash"),
     }
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
@@ -487,7 +487,7 @@ def test_apply_skips_a_tagged_parent_that_owns_an_untagged_child(db_path) -> Non
 
 def test_an_unproven_database_is_refused_and_nothing_is_created(tmp_path) -> None:
     """An empty file is not a Meridian database: exit 2, and the script writes nothing to it."""
-    db = tmp_path / "not_polsia.sqlite"
+    db = tmp_path / "not_meridian.sqlite"
     sqlite3.connect(db.as_posix()).close()
 
     result = _run(db)
@@ -505,12 +505,12 @@ def test_the_target_is_masked_and_a_remote_postgres_host_needs_an_explicit_flag(
     sys.path.insert(0, str(BACKEND))
     from scripts.cleanup_drill_data import Refusal, _check_remote, _masked
 
-    masked = _masked("postgresql+asyncpg://owner:hunter2@db.example.com:5432/polsia")
+    masked = _masked("postgresql+asyncpg://owner:hunter2@db.example.com:5432/meridian")
     assert "hunter2" not in masked and "owner" not in masked
     assert "db.example.com" in masked
 
     with pytest.raises(Refusal):
-        _check_remote("postgresql+asyncpg://u:p@db.example.com/polsia", allow_remote=False)
+        _check_remote("postgresql+asyncpg://u:p@db.example.com/meridian", allow_remote=False)
     # Local names and an explicit opt-in are allowed.
-    _check_remote("postgresql+asyncpg://u:p@localhost/polsia", allow_remote=False)
-    _check_remote("postgresql+asyncpg://u:p@db.example.com/polsia", allow_remote=True)
+    _check_remote("postgresql+asyncpg://u:p@localhost/meridian", allow_remote=False)
+    _check_remote("postgresql+asyncpg://u:p@db.example.com/meridian", allow_remote=True)

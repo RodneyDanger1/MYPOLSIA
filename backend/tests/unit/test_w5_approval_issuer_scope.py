@@ -8,13 +8,13 @@ honest behaviour is a named refusal; this pins it (and that the default path sti
 import pytest
 
 from app.agents import policy_firewall
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 SECRET = b"w5-s1-secret"
 
 
 def test_issue_approval_refuses_a_non_operator_issuer_by_name() -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         policy_firewall.issue_approval(
             SECRET, action_fingerprint="f" * 64, issued_to="sentinel-drill"
         )

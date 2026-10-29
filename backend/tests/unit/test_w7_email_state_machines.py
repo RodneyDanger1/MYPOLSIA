@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 
 from app.agents.policy_firewall import issue_approval
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, E_VALIDATION, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_VALIDATION, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.models.report import ActivityLog
 from app.models.support import SupportInboxItem
@@ -213,7 +213,7 @@ async def test_e4b_a_tampered_link_is_refused_and_changes_no_state(async_db_sess
     payload, signature = token.split(".")
     forged = f"{payload}.{'A' * len(signature)}"
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         compliance.verify_unsubscribe_token(forged)
     assert excinfo.value.code == E_VALIDATION
     count = await async_db_session.scalar(select(func.count()).select_from(Prospect))
@@ -225,7 +225,7 @@ async def test_e4b_a_tampered_link_is_refused_and_changes_no_state(async_db_sess
 async def test_e5_a_suppressed_prospect_is_refused_before_the_provider(async_db_session, provider):
     await _seed_prospect(async_db_session, status="unsubscribed")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await compliance.send_compliant_email(
             async_db_session, to=ADDRESS, subject="hello", body="body"
         )
@@ -247,7 +247,7 @@ async def test_e6_an_opt_out_during_a_run_beats_the_stale_preflight(async_db_ses
     await outreach_service.unsubscribe_prospect(async_db_session, ADDRESS)
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await compliance.send_compliant_email(
             None, to=ADDRESS, subject="hello", body="body", preflight=stale
         )
@@ -318,7 +318,7 @@ async def test_e11_a_legacy_mixed_case_duplicate_does_not_hide_the_opt_out(async
     async_db_session.add_all([subscribed, opted_out])
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await compliance.send_compliant_email(
             async_db_session, to="ada@example.com", subject="hello", body="body"
         )
@@ -330,7 +330,7 @@ async def test_e11_a_legacy_mixed_case_duplicate_does_not_hide_the_opt_out(async
 @pytest.mark.asyncio
 async def test_e9_an_approval_token_is_not_an_unsubscribe_token(async_db_session):
     approval = issue_approval(SECRET.encode(), action_fingerprint="send|email|" + ADDRESS).token
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         compliance.verify_unsubscribe_token(approval)
     assert excinfo.value.code == E_VALIDATION, "the opt-out route must never accept a bearable approval"
 
@@ -354,7 +354,7 @@ async def test_e10_the_worker_path_refuses_a_suppressed_address_before_the_provi
         "suppressed": [ADDRESS],
     }
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await compliance.send_compliant_email(
             None, to=ADDRESS, subject="hello", body="body", preflight=preflight
         )

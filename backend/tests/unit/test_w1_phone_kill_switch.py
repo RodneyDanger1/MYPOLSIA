@@ -1,7 +1,7 @@
 """W1 / AC-04 — the operator kill switch stops the DIRECT external-effect paths too.
 
 THE DEFECT (BUGS.json AC-04, P2): `phone_send_service.send()` checked only
-`settings.sandbox_mode`, so with `SANDBOX_MODE=false` an operator's `POLSIA_KILL_SWITCH=freeze`
+`settings.sandbox_mode`, so with `SANDBOX_MODE=false` an operator's `MERIDIAN_KILL_SWITCH=freeze`
 still let an SMS out.  The switch's own documented semantics are fleet-wide ("freeze denies ALL
 side effects; reads may continue"), and agent dispatch / the tool gate / every
 `request_side_effect` path honour it — the direct owner endpoints were the exception.
@@ -24,7 +24,7 @@ import pytest
 
 from app.agents import policy_firewall
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, E_SANDBOX_BLOCKED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_SANDBOX_BLOCKED, MeridianError
 from app.services import phone_send_service as phone
 
 E164 = "15551234567"
@@ -44,7 +44,7 @@ class _Transport:
 
 @pytest.fixture
 def running_fleet(monkeypatch):
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "kill_switch", "")
     return monkeypatch
 
@@ -66,15 +66,15 @@ async def test_phone_send_refuses_under_the_kill_switch(
     monkeypatch, transport, grade: str
 ) -> None:
     monkeypatch.setattr(settings, "sandbox_mode", False)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", grade)
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", grade)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await phone.send(E164, BODY)
 
     assert caught.value.code == E_POLICY_DENIED
     assert caught.value.context["kill_switch"] == grade
     assert "kill switch" in caught.value.message
-    assert "POLSIA_KILL_SWITCH" in caught.value.how_to_fix
+    assert "MERIDIAN_KILL_SWITCH" in caught.value.how_to_fix
     assert transport.calls == [], "no driver/bridge transport may run under a kill switch"
 
 
@@ -82,9 +82,9 @@ async def test_phone_send_refuses_under_the_kill_switch(
 async def test_the_kill_switch_beats_an_explicit_sandbox_false(monkeypatch, transport) -> None:
     """`sandbox=False` (the test seam) is a DEPLOYMENT flag, not a policy override."""
     monkeypatch.setattr(settings, "sandbox_mode", True)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await phone.send(E164, BODY, sandbox=False)
 
     assert caught.value.code == E_POLICY_DENIED
@@ -95,9 +95,9 @@ async def test_the_kill_switch_beats_an_explicit_sandbox_false(monkeypatch, tran
 async def test_the_kill_switch_wins_over_the_sandbox_refusal(monkeypatch, transport) -> None:
     """Both controls are armed: the operator's stop is the one reported (it is read first)."""
     monkeypatch.setattr(settings, "sandbox_mode", True)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await phone.send(E164, BODY)
 
     assert caught.value.code == E_POLICY_DENIED
@@ -109,7 +109,7 @@ async def test_the_kill_switch_wins_over_the_sandbox_refusal(monkeypatch, transp
 def test_the_settings_kill_switch_is_read_when_the_env_is_unset(running_fleet) -> None:
     running_fleet.setattr(settings, "kill_switch", "freeze")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         policy_firewall.require_external_effects_enabled("probe action")
 
     assert caught.value.code == E_POLICY_DENIED
@@ -127,7 +127,7 @@ async def test_the_sandbox_still_refuses_when_the_fleet_runs(
 ) -> None:
     running_fleet.setattr(settings, "sandbox_mode", True)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await phone.send(E164, BODY)
 
     assert caught.value.code == E_SANDBOX_BLOCKED
@@ -137,7 +137,7 @@ async def test_the_sandbox_still_refuses_when_the_fleet_runs(
 # ── the HTTP mapping the route consumes ───────────────────────────────────────────────────
 def test_the_kill_switch_refusal_is_http_403_with_the_code_header(running_fleet) -> None:
     running_fleet.setattr(settings, "kill_switch", "freeze")
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         policy_firewall.require_external_effects_enabled("phone send")
 
     http = phone.http_refusal(caught.value)

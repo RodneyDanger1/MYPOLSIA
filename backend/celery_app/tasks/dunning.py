@@ -55,7 +55,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.core.timeutil import company_tz, now_utc
 from app.models.finance import InvoiceDunningClaimResult
 from app.models.invoice import Invoice, InvoiceStatus
@@ -82,7 +82,7 @@ CLAIM_STATE_REFUSED = "refused"
 DUNNING_LOCAL_HOUR = 8
 #: The named-refusal record (warning level) — never silent about a refused tick.
 DUNNING_REFUSAL_ACTION = "invoice_dunning_refused"
-#: L3-07 (V18): the named-failure record (error level) for one step that raised a NON-`PolsiaError`.
+#: L3-07 (V18): the named-failure record (error level) for one step that raised a NON-`MeridianError`.
 #: The step's claim stays `pending` (at-most-once: the provider may have seen the message), but
 #: the failure is durable and named instead of aborting the remaining invoices.
 DUNNING_ERROR_ACTION = "invoice_dunning_error"
@@ -124,7 +124,7 @@ def compose_dunning_email(invoice: Invoice, step: DunningStep) -> tuple[str, str
     carries no way to pay is a dead end — refused, recorded, retried once the link exists.
     """
     if not invoice.payment_link:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"invoice {invoice.number} has no payment_link; a dunning email cannot carry a "
             f"payment route",
@@ -335,7 +335,7 @@ async def _dun_one(
     `consumed` is the tick's ONCE-read consumed-steps map (F16/V12-W-C); a direct call without
     it still reads the ledger for itself (the per-invoice fallback keeps single calls honest).
 
-    `errors` (L3-07/V18) is the tick's named-failure sink: a NON-`PolsiaError` raised inside the
+    `errors` (L3-07/V18) is the tick's named-failure sink: a NON-`MeridianError` raised inside the
     send step is recorded there (and in `invoice_dunning_error`) instead of escaping and killing
     the remaining invoices.  The step's claim stays `pending` — the at-most-once rule is
     unchanged: an unknown failure never re-sends.
@@ -388,7 +388,7 @@ async def _dun_one(
         try:
             subject, body = compose_dunning_email(invoice, step)
             result = await deliver_invoice_email(db, invoice, subject=subject, body=body)
-        except PolsiaError as exc:
+        except MeridianError as exc:
             # Release the claim (an APPEND, never an UPDATE — DT-05): a refusal consumes
             # nothing (the V9 rule), so the step stays owed and fires on a later tick once the
             # refusal's cause is gone.

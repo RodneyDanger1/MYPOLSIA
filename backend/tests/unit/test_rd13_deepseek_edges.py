@@ -32,14 +32,14 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime, structured_output
-from app.agents.base_agent import BasePolsiaAgent
-from app.core.errors import E_CLI_JSON, E_CLI_TIMEOUT, E_VALIDATION, PolsiaError
+from app.agents.base_agent import BaseMeridianAgent
+from app.core.errors import E_CLI_JSON, E_CLI_TIMEOUT, E_VALIDATION, MeridianError
 
 #: Clearly fake, shaped like the real thing (the raw value never rides a real request here).
 SAFE_TEST_KEY = "sk-rd13-fake-0000-A1B2C3D4"
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -125,7 +125,7 @@ SUMMARY_SCHEMA = {
     {"choices": [{"message": {"role": "assistant"}}]},    # no content key at all
 ])
 def test_choices_shape_variants_are_named_E_CLI_JSON_refusals(payload):
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(_ok_handler(payload)),
                                 api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
@@ -136,7 +136,7 @@ def test_content_parts_list_is_refused_by_name_not_guessed():
     `content` as string|null. A proxy echoing the list back is off-contract: refuse by name
     rather than guess which part was the answer."""
     payload = _completion([{"type": "text", "text": "hello"}])
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(_ok_handler(payload)),
                                 api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
@@ -150,7 +150,7 @@ def test_reasoning_only_message_never_surfaces_hidden_reasoning_as_the_answer():
     ):
         payload = _completion("")
         payload["choices"][0]["message"] = message
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             deepseek_runtime.invoke(_make_inv(), client=_client(_ok_handler(payload)),
                                     api_key=SAFE_TEST_KEY)
         assert excinfo.value.code == E_CLI_JSON  # no reasoning text may become `result`
@@ -173,7 +173,7 @@ def test_finish_reason_stop_is_a_success_and_tool_calls_with_text_still_is():
 def test_finish_reason_tool_calls_with_null_content_is_named_E_CLI_JSON():
     """This runtime never requests tools, so a bare tool-call reply is off-contract — named."""
     payload = _completion(None, finish="tool_calls")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(_ok_handler(payload)),
                                 api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
@@ -208,7 +208,7 @@ def test_incomplete_finish_reasons_are_named_failures_never_success(
     assert failure is structured_output.FailureCode.ENVELOPE_IS_ERROR
     assert subtype in detail
     assert agent._retryable(result) is retryable
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent._finish_call(result, 1, transport="http")
     assert subtype in str(excinfo.value)
 
@@ -348,7 +348,7 @@ def test_connect_timeout_raises_E_CLI_TIMEOUT_like_the_cli_wall_clock():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("connect timed out")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_TIMEOUT
 
@@ -408,7 +408,7 @@ def test_key_echoed_in_a_non_json_200_body_is_redacted():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=f"<html>key {SAFE_TEST_KEY} rejected</html>")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
     assert SAFE_TEST_KEY not in str(excinfo.value)
@@ -432,7 +432,7 @@ def test_misconfigured_base_url_is_a_named_E_VALIDATION_refusal(monkeypatch, bas
         calls.append(request)  # pragma: no cover - must never run
         return httpx.Response(200, json=_completion("ok"))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_VALIDATION
     assert "DEEPSEEK_BASE_URL" in excinfo.value.how_to_fix
@@ -443,7 +443,7 @@ def test_invalid_port_is_a_named_E_VALIDATION_refusal_not_a_raw_httpx_InvalidURL
     """`https://host:9a9/...` passes the scheme/host check and only fails inside httpx —
     the post-site catch turns that into the same named refusal."""
     _set_setting(monkeypatch, "deepseek_base_url", "https://api.deepseek.com:9a9")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(_ok_handler(_completion("ok"))),
                                 api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_VALIDATION

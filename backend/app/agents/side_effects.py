@@ -32,7 +32,7 @@ from app.agents.policy_firewall import (
     decide,
     enforce,
 )
-from app.core.errors import E_INTEGRATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_INTEGRATION, ERROR_HINTS, MeridianError
 
 
 def _resolve_taint(taint: RunTaint | None) -> RunTaint | None:
@@ -158,7 +158,7 @@ class SideEffectOutcome:
     allowed: bool
     sandboxed: bool
     requires_approval: bool
-    policy_code: str = ""            # POLSIA-Exxx
+    policy_code: str = ""            # MERIDIAN-Exxx
     e_code: str = ""                 # E_* ("" when allowed)
     reason: str = ""
     audit: dict = field(default_factory=dict)
@@ -401,7 +401,7 @@ def side_effect_receipt(outcome: SideEffectOutcome, *, action: str, ref: str = "
 
 
 def capped_item_refusal(
-    exc: PolsiaError,
+    exc: MeridianError,
     *,
     agent_type: str,
     action: str,
@@ -462,7 +462,7 @@ def assert_not_reporting_real_side_effect(payload: dict, *, agent_type: str, key
         return
     present = [k for k in keys if payload.get(k)]
     if present:
-        raise PolsiaError(
+        raise MeridianError(
             E_INTEGRATION,
             f"{agent_type}: payload claims real provider ids {present} while SANDBOX_MODE=true",
             how_to_fix="record a labelled draft (sandbox/drafted_not_sent) instead of a real id",

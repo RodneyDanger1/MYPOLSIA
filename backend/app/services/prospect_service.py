@@ -13,7 +13,7 @@ Rules this module is the ONE definition of:
   the same prospect — a duplicate that only collides after normalisation must not create a
   second row, and must not answer a 500 either.
 * **Every refusal is named.** A blank/unusable address, a duplicate, an unknown id and a value
-  the database's own CHECK rejects are all `PolsiaError`s with a code, a `how_to_fix` and a
+  the database's own CHECK rejects are all `MeridianError`s with a code, a `how_to_fix` and a
   structured `context` (the offending field is `context["field"]`). Nothing here raises a bare
   exception out of a route.
 * **The session survives a refused write.** A failed `flush()` poisons the SQLAlchemy session
@@ -42,7 +42,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.services.query_helpers import fetch_scalar, fetch_scalars
 
@@ -74,8 +74,8 @@ STATUS_VOCABULARY: tuple[str, ...] = (
 # ── named refusals ────────────────────────────────────────────────────────────────────────────
 
 
-def _refuse(field: str, value: object, expected: str, message: str | None = None) -> PolsiaError:
-    return PolsiaError(
+def _refuse(field: str, value: object, expected: str, message: str | None = None) -> MeridianError:
+    return MeridianError(
         E_VALIDATION,
         message or f"prospect {field} {value!r} is invalid: {expected}",
         how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -129,7 +129,7 @@ def _status_value(value: object) -> str:
     """
     text = str(value).strip()
     if not text:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "prospect status cannot be blank; omit it or pass null for 'unrecorded'",
             how_to_fix='omit status, pass null, or use a lifecycle word like "new"',
@@ -138,7 +138,7 @@ def _status_value(value: object) -> str:
     return text
 
 
-def _integrity_refusal(address: str, exc: SQLAlchemyError) -> PolsiaError:
+def _integrity_refusal(address: str, exc: SQLAlchemyError) -> MeridianError:
     """Translate a `prospects` IntegrityError by the constraint that actually fired.
 
     Order matters: a CHECK on `status` also mentions the table, so it is identified FIRST; the
@@ -152,7 +152,7 @@ def _integrity_refusal(address: str, exc: SQLAlchemyError) -> PolsiaError:
     detail = str(raw) if raw is not None else str(exc)
     lowered = detail.lower()
     if "ck_prospects_status" in lowered:
-        return PolsiaError(
+        return MeridianError(
             E_VALIDATION,
             f"prospect status is not accepted by the database's ck_prospects_status check: "
             f"{detail}",
@@ -166,7 +166,7 @@ def _integrity_refusal(address: str, exc: SQLAlchemyError) -> PolsiaError:
             },
         )
     if "email" in lowered and ("unique" in lowered or "duplicate" in lowered):
-        return PolsiaError(
+        return MeridianError(
             E_VALIDATION,
             f"prospect {address} already exists",
             how_to_fix=(
@@ -175,7 +175,7 @@ def _integrity_refusal(address: str, exc: SQLAlchemyError) -> PolsiaError:
             ),
             context={"field": "email", "value": address, "constraint": "prospects.email"},
         )
-    return PolsiaError(
+    return MeridianError(
         E_VALIDATION,
         f"the database refused the prospect write: {detail}",
         how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -243,7 +243,7 @@ async def list_prospects(
         count_stmt = count_stmt.where(*conditions)
     total = await fetch_scalar(db, count_stmt, what="prospects total")
     if total is None:  # `SELECT count(*)` always yields one row; no row is a broken driver
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "prospects total count query returned no row",
             how_to_fix=ERROR_HINTS[E_DB],
@@ -260,7 +260,7 @@ async def get_prospect(db: AsyncSession, prospect_id: int) -> Prospect:
         raise _refuse("prospect_id", prospect_id, "an integer id") from exc
     row = await db.get(Prospect, key)
     if row is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"prospect {key} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -382,13 +382,13 @@ async def delete_prospect(db: AsyncSession, prospect_id: int) -> Prospect:
         if not count:
             # A DELETE on this table has exactly one documented refusal (the FK above); any other
             # integrity refusal is still named, but it must not borrow that explanation.
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"the database refused the delete of prospect {key}: {str(exc.orig)[:200]}",
                 how_to_fix="inspect the rows that reference this prospect and retry",
                 context={"prospect_id": key, "constraint_detail": str(exc.orig)[:200]},
             ) from exc
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"prospect {key} has {count} outreach email(s) recorded, so it cannot be deleted "
             "(prospects is the parent of email_logs and the database refuses the delete)",

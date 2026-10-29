@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_NOT_FOUND, E_STORAGE, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_STORAGE, MeridianError
 from app.services import site_service
 
 #: A file name that sorts AFTER `meta.json` in any deterministic directory walk, so the walk
@@ -77,7 +77,7 @@ def test_a_failed_delete_keeps_the_site_readable_and_retryable(tmp_path) -> None
 
     handle = (site / LOCKED_NAME).open("rb")
     try:
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             site_service.delete_site("locked-site", root=root)
     finally:
         handle.close()

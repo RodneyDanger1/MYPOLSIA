@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
-from app.core.errors import E_BUDGET_EXCEEDED, E_DB, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, E_DB, MeridianError
 from app.core.timeutil import today_in
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord
@@ -466,7 +466,7 @@ async def test_a_finished_run_with_no_cost_refuses_the_gate(async_db_session):
     async_db_session.add(_run(cost=None, finished=True))
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service._gate_planner_budget(
             async_db_session, "company_planner", step="propose"
         )
@@ -522,7 +522,7 @@ async def test_six_unpriced_runs_beside_one_priced_run_never_read_as_the_priced_
         "the measured row is still named — it is outside the total, not hidden"
     )
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service._gate_planner_budget(
             async_db_session, "company_planner", step="propose"
         )
@@ -708,7 +708,7 @@ async def test_a_row_count_mismatch_refuses_with_e_db_and_leaves_no_archive(
     scratch = Path(tempfile.gettempdir())
     before = {p.name for p in scratch.glob(data_module.EXPORT_TEMP_PREFIX + "*")}
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await data_module._build_export(async_db_session)
 
     assert seen["agent_runs"], "the attack never reached the member it is about"

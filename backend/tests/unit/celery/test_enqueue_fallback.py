@@ -24,7 +24,7 @@ import json
 
 import pytest
 
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 
 
 def _dead_broker(monkeypatch) -> None:
@@ -61,7 +61,7 @@ def test_a_dead_broker_re_arms_the_sweep_row_and_names_the_refusal(queue_db, mon
 
     _dead_broker(monkeypatch)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         queue_db.run(_create_and_enqueue("customer_support", "D2 dead-broker sweep", bucket="d2-a"))
 
     assert excinfo.value.code == "E_REDIS", "the task must fail with the named refusal, not the raw error"
@@ -85,7 +85,7 @@ def test_a_dead_broker_re_arms_both_ads_stripe_rows(queue_db, monkeypatch):
 
     _dead_broker(monkeypatch)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         queue_db.run(_ads_stripe_sync())
 
     assert excinfo.value.code == "E_REDIS"
@@ -118,7 +118,7 @@ def test_the_group_handoff_re_arms_all_rows_on_a_dead_broker(queue_db, monkeypat
 
     monkeypatch.setattr(celery, "group", _DeadGroup)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         queue_db.run(enqueue_created(ids, label="morning cycle"))
 
     assert excinfo.value.code == "E_REDIS"

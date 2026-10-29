@@ -142,7 +142,7 @@ export type ApprovalGate = {
 };
 
 /** The named-refusal envelope on an `ApiError`: `detail` (HTTPException shape) or `error`
- *  (PolsiaError shape), per `lib/api`'s `refusalFrom`.  `null` when the error carries none. */
+ *  (MeridianError shape), per `lib/api`'s `refusalFrom`.  `null` when the error carries none. */
 function refusalEnvelope(error: unknown): Record<string, unknown> | null {
   const body = (error as { body?: unknown } | null)?.body;
   if (!body || typeof body !== "object") return null;

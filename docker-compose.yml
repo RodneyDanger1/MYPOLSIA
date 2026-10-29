@@ -2,13 +2,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-polsia}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polsia_password}
-      POSTGRES_DB: ${POSTGRES_DB:-polsia}
+      POSTGRES_USER: ${POSTGRES_USER:-meridian}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meridian_password}
+      POSTGRES_DB: ${POSTGRES_DB:-meridian}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polsia}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meridian}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -42,7 +42,7 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-polsia}:${POSTGRES_PASSWORD:-polsia_password}@postgres:5432/${POSTGRES_DB:-polsia}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-meridian}:${POSTGRES_PASSWORD:-meridian_password}@postgres:5432/${POSTGRES_DB:-meridian}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -110,7 +110,7 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-polsia}:${POSTGRES_PASSWORD:-polsia_password}@postgres:5432/${POSTGRES_DB:-polsia}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-meridian}:${POSTGRES_PASSWORD:-meridian_password}@postgres:5432/${POSTGRES_DB:-meridian}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -176,7 +176,7 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-polsia}:${POSTGRES_PASSWORD:-polsia_password}@postgres:5432/${POSTGRES_DB:-polsia}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-meridian}:${POSTGRES_PASSWORD:-meridian_password}@postgres:5432/${POSTGRES_DB:-meridian}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -276,7 +276,7 @@ services:
     environment:
       PGHOST: postgres
       # pg_dump's password; matches the postgres service's own default above
-      PGPASSWORD: ${POSTGRES_PASSWORD:-polsia_password}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-meridian_password}
       BACKUP_DIR: /backups
       BACKUP_INTERVAL_SECONDS: "86400"
       BACKUP_RETENTION_DAYS: "14"

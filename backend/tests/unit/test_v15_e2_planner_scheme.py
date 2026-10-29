@@ -18,7 +18,7 @@ import inspect
 
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.schemas.planner import PlannerClaim, is_http_url
 from app.services.planner_service import _fetched_urls, verify_claims
 
@@ -50,7 +50,7 @@ def test_predicate_accepts_only_absolute_http_s() -> None:
 @pytest.mark.parametrize("bad", BAD_URLS)
 def test_planner_claim_refuses_non_http_source_url_by_name(bad: str) -> None:
     """The wire model refuses a non-http(s) citation BY NAME (E_VALIDATION) — never ships it."""
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         PlannerClaim(
             claim="the market is growing",
             source_url=bad,

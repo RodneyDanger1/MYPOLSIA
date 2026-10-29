@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.core.errors import E_PHONE_UNAVAILABLE, PolsiaError
+from app.core.errors import E_PHONE_UNAVAILABLE, MeridianError
 from app.services import phone_send_service as service
 
 
@@ -104,12 +104,12 @@ async def test_the_missing_driver_refusal_names_every_candidate(
     fake_root.mkdir()
     monkeypatch.setattr(service, "BACKEND_ROOT", fake_root)
     monkeypatch.setattr(service, "DRIVER_PATH", fake_root / "gone.py")
-    monkeypatch.delenv("POLSIA_PHONE_SEND_DRIVER", raising=False)
+    monkeypatch.delenv("MERIDIAN_PHONE_SEND_DRIVER", raising=False)
     monkeypatch.setattr(settings, "sandbox_mode", False)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "kill_switch", "")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("+15550104477", "sentinel driver-path probe — must not send")
 
     err = caught.value
@@ -120,7 +120,7 @@ async def test_the_missing_driver_refusal_names_every_candidate(
         str(fake_root / "scripts" / service.DRIVER_FILENAME),
         str(tmp_path / "scripts" / service.DRIVER_FILENAME),
     ]
-    assert err.context["driver_path_env"] == "POLSIA_PHONE_SEND_DRIVER"
+    assert err.context["driver_path_env"] == "MERIDIAN_PHONE_SEND_DRIVER"
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_the_env_override_is_honoured_without_a_candidate_search(
     tmp_path: Path, monkeypatch
 ) -> None:
     override = tmp_path / "custom_driver.py"
-    monkeypatch.setenv("POLSIA_PHONE_SEND_DRIVER", str(override))
+    monkeypatch.setenv("MERIDIAN_PHONE_SEND_DRIVER", str(override))
 
     assert service.driver_executable() == override
 

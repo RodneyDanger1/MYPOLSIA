@@ -9,7 +9,7 @@ import { DeepSeekKeyOnboarding } from "@/components/dashboard/DeepSeekKeyOnboard
 import { MediaCard } from "@/components/dashboard/MediaCard";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
 import { PhoneCard } from "@/components/dashboard/PhoneCard";
-import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
+import { MeridianStatusCard } from "@/components/dashboard/MeridianStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { SignalsWidget } from "@/components/dashboard/SignalsWidget";
 import { TasksPreview } from "@/components/dashboard/TasksPreview";
@@ -62,7 +62,7 @@ export default function DashboardPage() {
           <WidgetStack
             area="left"
             widgets={{
-              status: <PolsiaStatusCard />,
+              status: <MeridianStatusCard />,
               auto_mode: <AutoModePanel />,
               business: <BusinessPanel />,
               website: <WebsiteCard />,

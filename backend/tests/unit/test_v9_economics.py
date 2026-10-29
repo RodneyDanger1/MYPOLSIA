@@ -2,7 +2,7 @@
 
 Written before `app/services/economics_service.py` and `app/api/v1/economics.py` exist: pytest
 collection fails with ModuleNotFoundError until they land (the OATH's RED leg; raw pytest output
-preserved in polsia-work/build/ui-reverse/wave-v9/b7-economics/RECEIPT.md).
+preserved in meridian-work/build/ui-reverse/wave-v9/b7-economics/RECEIPT.md).
 
 What is pinned (the brief's five behaviours + auth):
 
@@ -24,7 +24,7 @@ The HTTP layer is stubbed in the house idiom (`tests/unit/api/test_deepseek_key.
 client's constructor kwargs and every GET (URL + headers) — everything above the socket is the
 real service code path.  The router is NOT wired into main.py (V9-D3 — the parent wires it at
 settle), so this file builds a local app including the router DIRECTLY, mirroring
-`tests/unit/api/test_v9_planner.py`, with main.py's PolsiaError handler mirrored so the
+`tests/unit/api/test_v9_planner.py`, with main.py's MeridianError handler mirrored so the
 dependency-raised E_AUTH answers its documented 401 shape.
 """
 from __future__ import annotations
@@ -140,20 +140,20 @@ async def econ_client(monkeypatch: pytest.MonkeyPatch):
 
     from app.api.v1 import economics
     from app.config import settings
-    from app.core.errors import PolsiaError, http_status_for, to_http_detail
+    from app.core.errors import MeridianError, http_status_for, to_http_detail
 
     monkeypatch.setattr(settings, "api_key", "test-key")
     app = FastAPI()
     app.include_router(economics.router, prefix="/api/v1")
 
-    async def _polsia_handler(request, exc: PolsiaError):
+    async def _meridian_handler(request, exc: MeridianError):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
             headers={"X-Meridian-Error-Code": exc.code},
         )
 
-    app.add_exception_handler(PolsiaError, _polsia_handler)
+    app.add_exception_handler(MeridianError, _meridian_handler)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

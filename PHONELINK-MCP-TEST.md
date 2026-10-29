@@ -65,6 +65,6 @@ stores (no cloud, no third-party service, no phone-app installation):
 - **No send path in V16** — the read integration is read-only. A separate, explicitly sandboxed send
   driver (`POST /api/v1/phone/send`, CDP against paired Google Messages web) exists in the V17 tree and
   is off by default; it is not part of the MCP bridge and never fakes a send.
-Full spec: `PHONE-LINK-AMENDMENT.md` in the campaign records (`polsia-work/build/ui-reverse/wave-v15/PLAN/`).
+Full spec: `PHONE-LINK-AMENDMENT.md` in the campaign records (`meridian-work/build/ui-reverse/wave-v15/PLAN/`).
 The Hermes-side MCP remains the way HERMES sessions read the phone; the Meridian side is the app's own
 native read path because backend containers cannot call a Hermes MCP.

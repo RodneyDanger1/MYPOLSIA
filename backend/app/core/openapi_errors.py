@@ -7,7 +7,7 @@ Measured on the rebuilt wave-4 app (HEAD `7b81f56`, live `GET /openapi.json`): *
 422** (the single exception was `GET /attachments/{id}`, `404,502`).  Yet the same build really
 answers `401 E_AUTH`, `404 E_NOT_FOUND`, `503 E_CONFIG/E_STORAGE/E_DB` and `500 E_INTERNAL` — a
 client generator, a typed SDK or an operator reading `/docs` could not see any of it.  The audit
-that found this is `polsia-work/build/swarm-2026-10-28/systems-validator/VALIDATION-MATRIX.md`
+that found this is `meridian-work/build/swarm-2026-10-28/systems-validator/VALIDATION-MATRIX.md`
 §3.1; this module is the fix, and `app.main` calls it once while the app is assembled (before the
 schema is first generated).
 
@@ -52,7 +52,7 @@ DOCUMENTED EXCEPTIONS (pinned by `tests/unit/test_w5_openapi_error_responses.py`
   * 422 has TWO wire shapes and is declared as such (SV-W6-02, executed in wave 8 — the
     `CODED_422_OPERATIONS` section below).  On the 109 operations whose handler path can reach a
     422-mapped named refusal (`E_VALIDATION` / `E_AGENT_UNKNOWN` -> `errors.HTTP_STATUS_BY_CODE`)
-    the body is `anyOf(HTTPValidationError, PolsiaErrorEnvelope)`; on the two that cannot
+    the body is `anyOf(HTTPValidationError, MeridianErrorEnvelope)`; on the two that cannot
     (`GET /api/v1/pricing`, `POST /api/v1/ws/ticket`) it keeps FastAPI's automatic
     `$ref HTTPValidationError` array.  Runtime is untouched: both shapes are produced by exception
     handlers that never read this schema.
@@ -83,7 +83,7 @@ an operation only when a raise site is reachable from that operation's handler.
     dispatch runs it in the worker, where the refusal is stored on the run — not returned.
   * 429 — `POST /planner/propose` (the day-cap `accounting.authorize` gate),
     `POST /invoices/{invoice_id}/send` and `POST /sites/{slug}/deploy` (the firewall's send caps,
-    `POLSIA-E117`), and `POST /ws/ticket` (the ticket mint's own bound).  `POST /tasks`,
+    `MERIDIAN-E117`), and `POST /ws/ticket` (the ticket mint's own bound).  `POST /tasks`,
     `POST /chat/confirm` and `POST /auto-mode` enqueue work and do NOT spend in the request: the
     budget gate runs in the worker, so a 429 there would be a lie (the wave-5 census listed them;
     corrected here).
@@ -99,7 +99,7 @@ THE 422 DECLARATION (SV-W6-02, ACCEPTED BY THE LEAD IN WAVE 7 AND EXECUTED IN WA
 Measured live in wave 7 (`systems-validator/raw/w7/live-w7-422-shapes.txt`): ONE status, TWO bodies,
 on the SAME operation.  `GET /api/v1/support/inbox?status=bogus` answers the refusal envelope
 (`E_VALIDATION`, `X-Meridian-Error-Code: E_VALIDATION`) while `GET /api/v1/support/inbox?limit=0`
-answers FastAPI's `{"detail": [...]}` array.  The envelope comes from `main.polsia_error_handler`
+answers FastAPI's `{"detail": [...]}` array.  The envelope comes from `main.meridian_error_handler`
 (via `HTTP_STATUS_BY_CODE[E_VALIDATION] == 422`) and from `main.coded_http_exception_handler`; the
 array comes from the `RequestValidationError` path.  Declaring 422 as the array alone was therefore
 an untrue contract on every operation that can also reach a named refusal.
@@ -112,7 +112,7 @@ The set below is a CENSUS, not a wish-list.  Wave-8 re-measured it on the curren
 Method (direct-import over-approximation, and deliberately conservative): an operation is CODED when
 the module that DEFINES the handler, or one of its direct `app.*` imports (module-level
 `import`/`from … import`, no dynamic imports), raises `E_VALIDATION` / `E_AGENT_UNKNOWN` through
-`PolsiaError(...)` / `named_refusal(...)` / `raise`.  Two facts keep the set defensible:
+`MeridianError(...)` / `named_refusal(...)` / `raise`.  Two facts keep the set defensible:
 
   * the two exclusions are exact in the STRONG direction: `GET /api/v1/pricing` and
     `POST /api/v1/ws/ticket` have NO 422-mapped raise site anywhere in their transitive `app.*`
@@ -165,7 +165,7 @@ from app.core.security import verify_api_key
 logger = logging.getLogger(__name__)
 
 
-class PolsiaErrorDetail(BaseModel):
+class MeridianErrorDetail(BaseModel):
     """The `error` object of the product refusal envelope (`app/core/errors.to_http_detail`)."""
 
     code: str = Field(description="the named E_* code, e.g. E_AUTH / E_NOT_FOUND / E_INTERNAL")
@@ -176,16 +176,16 @@ class PolsiaErrorDetail(BaseModel):
     )
 
 
-class PolsiaErrorEnvelope(BaseModel):
+class MeridianErrorEnvelope(BaseModel):
     """The refusal envelope every named failure uses on the wire: `{"ok": false, "error": {...}}`."""
 
     ok: Literal[False] = Field(description="always false — the request failed")
-    error: PolsiaErrorDetail
+    error: MeridianErrorDetail
 
 
 def _envelope(description: str) -> dict[str, Any]:
     """One `responses=` entry carrying the envelope model (FastAPI turns it into a $ref)."""
-    return {"model": PolsiaErrorEnvelope, "description": description}
+    return {"model": MeridianErrorEnvelope, "description": description}
 
 
 #: Bodies that are NOT the envelope, declared without a model on purpose (a generic JSON object).
@@ -248,7 +248,7 @@ SHARED_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
 #: ── 422: ONE status, TWO bodies (SV-W6-02 — accepted by the Lead in wave 7, executed in wave 8) ──
 #: The operations whose handler path can reach a 422-mapped NAMED refusal.  `E_VALIDATION` and
 #: `E_AGENT_UNKNOWN` are the only codes `errors.HTTP_STATUS_BY_CODE` maps to 422, and both reach the
-#: wire through `main.polsia_error_handler` (a raised `PolsiaError`) or
+#: wire through `main.meridian_error_handler` (a raised `MeridianError`) or
 #: `main.coded_http_exception_handler` (a coded `HTTPException` detail -> the same envelope).  Those
 #: operations can answer the refusal envelope on 422, so the declaration must say so.
 #:
@@ -401,12 +401,12 @@ _CODED_422_ENTRY: dict[str, Any] = {
     ),
     "content": {"application/json": {"schema": {"anyOf": [
         {"$ref": "#/components/schemas/HTTPValidationError"},
-        {"$ref": "#/components/schemas/PolsiaErrorEnvelope"},
+        {"$ref": "#/components/schemas/MeridianErrorEnvelope"},
     ]}}},
 }
 
 #: Operation-specific refusals, each traced to the code that raises it (wave-6 census:
-#: `polsia-work/build/swarm-2026-10-28/systems-validator/raw/w6/domain-reach.txt`; each comment
+#: `meridian-work/build/swarm-2026-10-28/systems-validator/raw/w6/domain-reach.txt`; each comment
 #: names the raising seam).  The value is the set of DOMAIN statuses the operation can really emit,
 #: not a wish-list: every entry below was derived from a reachable `raise`/decision site.
 OPERATION_EXTRA_STATUSES: dict[tuple[str, str], tuple[int, ...]] = {
@@ -415,7 +415,7 @@ OPERATION_EXTRA_STATUSES: dict[tuple[str, str], tuple[int, ...]] = {
     ("DELETE", "/api/v1/data"): (403,),
     # deploy_service.deploy_site: `require_external_effects_enabled` -> E_POLICY_DENIED (403);
     # `_authorise_live_deploy` -> policy_firewall.enforce (sandbox 403 / kill switch 403 / render
-    # day cap POLSIA-E117 -> 429); Render failures -> E_UPSTREAM (502).
+    # day cap MERIDIAN-E117 -> 429); Render failures -> E_UPSTREAM (502).
     ("POST", "/api/v1/sites/{slug}/deploy"): (403, 429, 502),
     # invoice_service.deliver_invoice_email: request_side_effect (sandbox -> E_SANDBOX_BLOCKED 403,
     # email cap -> E_RATE_LIMITED 429) and the provider refusal -> E_INTEGRATION (502).
@@ -648,7 +648,7 @@ def declare_error_responses(app: FastAPI) -> int:
             # `route.response_fields` in `APIRoute.__init__`, keyed by the SAME key object the
             # route used.  Our entries are added AFTER that construction, so the schema generator
             # would otherwise find no field for the status and emit the description with NO
-            # content (measured: components had no PolsiaErrorEnvelope and every 401 body was
+            # content (measured: components had no MeridianErrorEnvelope and every 401 body was
             # empty).  Build the same field FastAPI builds under the SAME key: `get_openapi_path`
             # looks up `route.response_fields.get(additional_status_code)` with the key as it
             # appears in `route.responses` — an int 404 needs an int 404 field, a str "503" a str.
@@ -669,8 +669,8 @@ __all__ = [
     "DOMAIN_STATUS_EXCEPTIONS",
     "NO_UNAVAILABLE_OPERATION",
     "OPERATION_EXTRA_STATUSES",
-    "PolsiaErrorDetail",
-    "PolsiaErrorEnvelope",
+    "MeridianErrorDetail",
+    "MeridianErrorEnvelope",
     "SHARED_ERROR_RESPONSES",
     "UNAUTHENTICATED_OPERATIONS",
     "declare_error_responses",

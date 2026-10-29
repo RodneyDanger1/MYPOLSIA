@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
 from app.models.report import ActivityLog, DailyReport
@@ -438,7 +438,7 @@ async def build_day_digest(
             ),
             what=f"day digest recovery counts {day}",
         )
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # "A report that cannot see its data says so": the code travels, the counts do not.
         return DayDigest(
             day=day,

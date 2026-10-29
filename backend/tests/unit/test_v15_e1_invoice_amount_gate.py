@@ -34,7 +34,7 @@ from app.agents.policy_firewall import (
     reset_run_approval,
     set_run_approval,
 )
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 from app.models.invoice import InvoiceStatus
 from app.services import invoice_service
 
@@ -102,7 +102,7 @@ async def test_above_threshold_passes_the_exact_amount_and_engages_approval(
 ):
     invoice = await _draft(async_db_session, total=Decimal("120.00"))
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         await invoice_service.deliver_invoice_email(
             async_db_session, invoice, subject="Invoice", body="Here it is"
         )
@@ -163,7 +163,7 @@ async def test_null_total_falls_back_to_the_subtotal(
 ):
     invoice = await _draft(async_db_session, subtotal=Decimal("30.00"), total=None)
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         await invoice_service.deliver_invoice_email(
             async_db_session, invoice, subject="Invoice", body="Here it is"
         )
@@ -180,7 +180,7 @@ async def test_both_amounts_null_is_gated_at_the_threshold_never_zero(
 ):
     invoice = await _draft(async_db_session, subtotal=None, total=None)
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         await invoice_service.deliver_invoice_email(
             async_db_session, invoice, subject="Invoice", body="Here it is"
         )

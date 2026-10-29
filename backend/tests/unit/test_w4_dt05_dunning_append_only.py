@@ -37,7 +37,7 @@ TRIGGER = "trg_activity_log_no_update"
 TRIGGER_SQL = f"""
 CREATE TRIGGER {TRIGGER} BEFORE UPDATE ON activity_log
 BEGIN
-    SELECT RAISE(ABORT, 'activity_log is append-only: UPDATE is refused (polsia migration 0002)');
+    SELECT RAISE(ABORT, 'activity_log is append-only: UPDATE is refused (meridian migration 0002)');
 END;
 """
 

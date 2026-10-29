@@ -36,7 +36,7 @@ import subprocess
 from typing import Any
 
 from app.agents import accounting
-from app.agents.base_agent import BasePolsiaAgent, is_mock_mode
+from app.agents.base_agent import BaseMeridianAgent, is_mock_mode
 from app.agents.claude_cli import cli_path, safety_preflight
 from app.agents.policy_firewall import AGENT_CAPABILITIES, ActionClass, kill_grade_from_env
 from app.agents.run_verdict import (
@@ -46,7 +46,7 @@ from app.agents.run_verdict import (
     verdict_reason,
 )
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, ERROR_HINTS, PolsiaError
+from app.core.errors import E_POLICY_DENIED, ERROR_HINTS, MeridianError
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ def _probe_cli_auth() -> tuple[bool, str]:
 #: Fallback declaration of backends that do not spawn the claude CLI.  The authoritative signal is
 #: the provider seam's own predicate (`deepseek_runtime.available()` — a resolvable DeepSeek key,
 #: exactly what `base_agent._real_call` routes on); this tuple additionally honours a backend that
-#: declares itself through `POLSIA_MODEL_BACKEND` / `settings.model_backend`.  A value in NEITHER
+#: declares itself through `MERIDIAN_MODEL_BACKEND` / `settings.model_backend`.  A value in NEITHER
 #: place is treated as the claude-cli path — fail closed, because an unrecognised token must never
 #: silently disable the binary check.
 _NON_CLI_BACKENDS: tuple[str, ...] = ("deepseek", "api", "openai", "anthropic_api", "http")
@@ -182,7 +182,7 @@ def _spawn_facts() -> dict[str, Any]:
             "note": "CLAUDE_CLI_MOCK: no CLI process is spawned, so the CLI legs do not apply",
         }
     backend = _non_cli_backend() or str(
-        os.getenv("POLSIA_MODEL_BACKEND") or getattr(settings, "model_backend", "") or ""
+        os.getenv("MERIDIAN_MODEL_BACKEND") or getattr(settings, "model_backend", "") or ""
     ).strip().lower()
     if backend in _NON_CLI_BACKENDS:
         return {
@@ -337,7 +337,7 @@ def run_agent_for_task(
     # all) after the spend.
     problems.extend(task_capability_problems(agent_type, task_dict))
     if problems:
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             f"dispatch refused for {agent_type}: {'; '.join(problems)}",
             how_to_fix=ERROR_HINTS[E_POLICY_DENIED],
@@ -361,11 +361,11 @@ def run_agent_for_task(
                      accounting.PROVIDER_CALLS_SOURCE_KEY: "dispatch_preflight"},
         )
     agent = agent_class()
-    if not isinstance(agent, BasePolsiaAgent):
-        raise PolsiaError(
+    if not isinstance(agent, BaseMeridianAgent):
+        raise MeridianError(
             E_POLICY_DENIED,
-            f"agent class for {agent_type!r} is not a BasePolsiaAgent",
-            how_to_fix="check AGENT_MAP; every entry must be a BasePolsiaAgent subclass",
+            f"agent class for {agent_type!r} is not a BaseMeridianAgent",
+            how_to_fix="check AGENT_MAP; every entry must be a BaseMeridianAgent subclass",
             # Same zero-call declaration as the preflight refusal above: nothing was constructed
             # or called, so the failed run this refusal produces is a measured $0.0000 (F-W4-TM-1).
             context={"agent_type": agent_type, "class": type(agent).__name__,
@@ -382,7 +382,7 @@ def run_agent_for_task(
 
 #: The result key carrying the run's own `AgentEnvelope.status` at the TOP level of the stored
 #: output, so a consumer never has to parse prose to find it (F-07).  Defined ONCE in
-#: `app.agents.run_verdict` — the module that also enforces the rule at `BasePolsiaAgent.timed_run`,
+#: `app.agents.run_verdict` — the module that also enforces the rule at `BaseMeridianAgent.timed_run`,
 #: the seam every run passes through (this dispatch site alone could not cover the planner's direct
 #: `timed_run` calls).  Re-exported here because existing callers/tests import these names.
 #:
@@ -394,7 +394,7 @@ refusal_reason = verdict_reason
 def _record_run_verdict(agent_type: str, result: dict[str, Any]) -> None:
     """F-07: delegate to the ONE verdict rule (`app.agents.run_verdict.apply_run_verdict`).
 
-    `BasePolsiaAgent.timed_run` already applies it (so the planner seams are covered too); this
+    `BaseMeridianAgent.timed_run` already applies it (so the planner seams are covered too); this
     second, idempotent application is kept because `run_agent_for_task` is the seam the worker
     owns and its callers historically read this function's name.  `refused` raises the NAMED
     `E_VALIDATION` refusal (the task is recorded FAILED, never completed) — a second application

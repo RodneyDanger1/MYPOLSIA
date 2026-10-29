@@ -66,7 +66,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from app.agents import claude_cli, structured_output
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.structured_output import (
     FAILURE_TO_E_CODE,
     REMEDIATION,
@@ -94,11 +94,11 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "r21probe"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -468,10 +468,10 @@ def test_retries_exhausted_with_object_errors_keeps_the_run_alive():
     assert "summary" in detail and "required property missing" in detail
     assert env["subtype"] == "error_max_structured_output_retries"
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent._finish_call(result, 1, transport="argv")
     assert excinfo.value.code == E_AGENT_BAD_OUTPUT
-    assert "POLSIA-E109" in str(excinfo.value)
+    assert "MERIDIAN-E109" in str(excinfo.value)
     assert agent._retryable(result) is False
 
     assert resolve_output(stdout=stdout, exit_code=1).code is FailureCode.STRUCTURED_RETRIES_EXHAUSTED
@@ -730,7 +730,7 @@ def test_ladder_R0_success_never_claims_a_repair():
     resolution = run_repair_ladder(dispatch=dispatch, resolve_kwargs={"schema_name": "s"},
                                    policy=RepairPolicy())
     assert resolution.ok and resolution.used_repair is None
-    assert resolution.ladder_log == ["R0->POLSIA-E000"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E000"]
     assert state["overrides"] == [None]
     assert state["calls"] == 1
 
@@ -744,12 +744,12 @@ def test_ladder_R1_re_prompt_success_carries_the_correction_message():
                                                    "schema_name": "flag_agent"},
                                    policy=policy)
     assert resolution.ok and resolution.used_repair == "re_prompt"
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R1->POLSIA-E000"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R1->MERIDIAN-E000"]
     assert policy.ladder_log == resolution.ladder_log
     assert state["calls"] == 2
     correction = state["overrides"][1]
     assert state["overrides"][0] is None
-    assert "flag_agent" in correction and "POLSIA-E106" in correction
+    assert "flag_agent" in correction and "MERIDIAN-E106" in correction
     assert "Return ONLY a single JSON object" in correction
 
 
@@ -763,7 +763,7 @@ def test_ladder_R2_narrow_extraction_after_exhausted_reprompts():
                                                    "schema_name": "flag_agent"},
                                    policy=policy)
     assert resolution.ok and resolution.used_repair == "narrow_extraction"
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R1->POLSIA-E110", "R2->POLSIA-E000"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R1->MERIDIAN-E110", "R2->MERIDIAN-E000"]
     assert policy.ladder_log == resolution.ladder_log
     assert state["calls"] == 3
     narrow = state["overrides"][2]
@@ -777,7 +777,7 @@ def test_ladder_exhaustion_returns_a_named_failure_with_every_attempt_logged():
                                    policy=RepairPolicy())
     assert resolution.ok is False
     assert resolution.code is FailureCode.STRUCTURED_OUTPUT_MISSING
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R1->POLSIA-E106", "R2->POLSIA-E106"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R1->MERIDIAN-E106", "R2->MERIDIAN-E106"]
     assert state["calls"] == 3
     # the FINAL code is the last attempt's, not the first: named in the receipt as the contract
     assert resolution.detail == ""
@@ -790,7 +790,7 @@ def test_ladder_last_code_is_named_when_the_failure_class_changes_between_attemp
                                                    "schema_name": "s"},
                                    policy=RepairPolicy())
     assert resolution.code is FailureCode.EMPTY_RESULT        # WINNER = EMPTY_RESULT (documented)
-    assert resolution.ladder_log == ["R0->POLSIA-E110", "R1->POLSIA-E112"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E110", "R1->MERIDIAN-E112"]
     assert resolution.code is not FailureCode.SCHEMA_VALIDATION_FAILED
 
 
@@ -800,7 +800,7 @@ def test_ladder_zero_reprompts_still_allows_the_narrow_call():
     resolution = run_repair_ladder(dispatch=dispatch, resolve_kwargs={"schema_name": "s"},
                                    policy=RepairPolicy(max_cli_reprompts=0))
     assert resolution.ok and resolution.used_repair == "narrow_extraction"
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R2->POLSIA-E000"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R2->MERIDIAN-E000"]
     assert state["calls"] == 2      # no re-prompt was paid for; only the narrow extraction
 
 
@@ -809,7 +809,7 @@ def test_ladder_narrow_extraction_disabled_and_ineligible_codes():
     resolution = run_repair_ladder(dispatch=dispatch, resolve_kwargs={"schema_name": "s"},
                                    policy=RepairPolicy(allow_narrow_extraction=False))
     assert resolution.code is FailureCode.STRUCTURED_OUTPUT_MISSING
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R1->POLSIA-E106"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R1->MERIDIAN-E106"]
     assert state["calls"] == 2
 
     for stdout, exit_code, code in [("", 143, FailureCode.CLI_TIMEOUT),
@@ -831,8 +831,8 @@ def test_ladder_log_distinguishes_narrow_extraction_when_reprompts_2():
     resolution = run_repair_ladder(dispatch=dispatch, resolve_kwargs={"schema_name": "s"},
                                    policy=RepairPolicy(max_cli_reprompts=2))
     assert state["calls"] == 4          # R0, R1, R2 re-prompts + the narrow call
-    assert resolution.ladder_log == ["R0->POLSIA-E106", "R1->POLSIA-E106",
-                                     "R2->POLSIA-E106", "R2->POLSIA-E106"]
+    assert resolution.ladder_log == ["R0->MERIDIAN-E106", "R1->MERIDIAN-E106",
+                                     "R2->MERIDIAN-E106", "R2->MERIDIAN-E106"]
 
 
 def test_ladder_default_policy_comes_from_settings(monkeypatch):
@@ -911,7 +911,7 @@ def test_unmapped_and_empty_mappings_never_surface_an_empty_e_code():
     assert FAILURE_TO_E_CODE[FailureCode.DUPLICATE_SUPPRESSED] == ""
     assert e_code_for(FailureCode.OK) == E_AGENT_BAD_OUTPUT
     assert e_code_for(FailureCode.DUPLICATE_SUPPRESSED) == E_AGENT_BAD_OUTPUT
-    assert FailureCode.RATE_CAPPED.value == "POLSIA-E117"
+    assert FailureCode.RATE_CAPPED.value == "MERIDIAN-E117"
     assert e_code_for(FailureCode.RATE_CAPPED) == E_AGENT_BAD_OUTPUT   # firewall-owned member
 
 
@@ -922,34 +922,34 @@ def test_every_failure_member_has_a_remediation_row():
     assert all(REMEDIATION[c].strip() for c in REMEDIATION)
 
 
-def test_to_polsia_error_carries_the_code_detail_hint_and_context():
+def test_to_meridian_error_carries_the_code_detail_hint_and_context():
     resolution = OutputResolution(False, None, FailureCode.MAX_TURNS, detail="terminal_reason=x",
                                   used_repair="re_prompt", raw_result="y" * 900,
-                                  ladder_log=["R0->POLSIA-E107"], hint="")
-    error = resolution.to_polsia_error(agent_type="ads_agent")
-    assert isinstance(error, PolsiaError)
+                                  ladder_log=["R0->MERIDIAN-E107"], hint="")
+    error = resolution.to_meridian_error(agent_type="ads_agent")
+    assert isinstance(error, MeridianError)
     assert error.code == E_CLI_EXIT
-    assert "ads_agent failed: POLSIA-E107 terminal_reason=x" in str(error)
+    assert "ads_agent failed: MERIDIAN-E107 terminal_reason=x" in str(error)
     assert error.how_to_fix == REMEDIATION[FailureCode.MAX_TURNS]
     assert error.context == {
-        "failure_code": "POLSIA-E107",
+        "failure_code": "MERIDIAN-E107",
         "detail": "terminal_reason=x",
         "used_repair": "re_prompt",
-        "ladder": ["R0->POLSIA-E107"],
+        "ladder": ["R0->MERIDIAN-E107"],
         "raw_result": "y" * 500,
     }
 
 
-def test_to_polsia_error_prefers_an_explicit_hint_and_defaults_the_agent_name():
+def test_to_meridian_error_prefers_an_explicit_hint_and_defaults_the_agent_name():
     resolution = OutputResolution(False, None, FailureCode.UNKNOWN, hint="call the human")
-    assert resolution.to_polsia_error().how_to_fix == "call the human"
-    assert "agent failed: POLSIA-E119" in str(resolution.to_polsia_error())
+    assert resolution.to_meridian_error().how_to_fix == "call the human"
+    assert "agent failed: MERIDIAN-E119" in str(resolution.to_meridian_error())
     # a member with no REMEDIATION row yields an empty hint rather than a crash
-    assert OutputResolution(False, None, FailureCode.RATE_CAPPED).to_polsia_error().how_to_fix == ""
+    assert OutputResolution(False, None, FailureCode.RATE_CAPPED).to_meridian_error().how_to_fix == ""
 
 
-def test_to_polsia_error_on_an_OK_resolution_is_never_a_success_shaped_error():
-    error = OutputResolution(True, {"a": 1}, FailureCode.OK).to_polsia_error(agent_type="a")
+def test_to_meridian_error_on_an_OK_resolution_is_never_a_success_shaped_error():
+    error = OutputResolution(True, {"a": 1}, FailureCode.OK).to_meridian_error(agent_type="a")
     assert error.code == E_AGENT_BAD_OUTPUT      # never an empty code, never a fake success
 
 
@@ -986,9 +986,9 @@ def test_the_module_still_exports_the_frozen_surface():
                  "usage_from_envelope_raw"):
         assert name in structured_output.__all__
         assert hasattr(structured_output, name)
-    # every failure member keeps its stable POLSIA code (never renumbered)
-    assert [c.value for c in FailureCode][:4] == ["POLSIA-E000", "POLSIA-E100",
-                                                  "POLSIA-E101", "POLSIA-E102"]
+    # every failure member keeps its stable MERIDIAN code (never renumbered)
+    assert [c.value for c in FailureCode][:4] == ["MERIDIAN-E000", "MERIDIAN-E100",
+                                                  "MERIDIAN-E101", "MERIDIAN-E102"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1000,13 +1000,13 @@ def test_the_deepseek_envelope_shape_resolves_through_the_real_path():
     parsed = claude_cli.InvokeResult(
         stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False,
                            "result": '{"flagged": true}', "structured_output": {"flagged": True},
-                           "session_id": "polsia:1:test", "usage": {"input_tokens": 1}}),
+                           "session_id": "meridian:1:test", "usage": {"input_tokens": 1}}),
         stderr="", exit_code=0, wall_seconds=0.01, transport="http")
     envelope = extract_envelope(parsed.stdout)
     resolution = resolve_output(stdout=parsed.stdout, exit_code=parsed.exit_code,
                                 validator=_FlagModel.model_validate, schema_name="test")
     assert resolution.ok and resolution.used_repair is None
-    assert envelope["session_id"] == "polsia:1:test"
+    assert envelope["session_id"] == "meridian:1:test"
 
     prose = claude_cli.InvokeResult(
         stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False,

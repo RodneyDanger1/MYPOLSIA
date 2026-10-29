@@ -1,7 +1,7 @@
 """SV-W4-02 (wave 5): 404/405/422/500 must each have ONE documented wire shape.
 
 At the wave-4 HEAD the product had two shapes for a refusal:
-`{"ok": false, "error": {code,message,how_to_fix,context}}` for every named `PolsiaError`, and
+`{"ok": false, "error": {code,message,how_to_fix,context}}` for every named `MeridianError`, and
 `{"detail": "Not Found"}` / `{"detail": "Method Not Allowed"}` for the framework's own route miss
 and wrong verb (live-measured by `systems-validator`, `raw/w5/live-openapi-probe.txt`).  The
 dashboard's `isRefusal` parses the envelope only, so a 405 reached the owner unnamed.
@@ -76,7 +76,7 @@ def test_422_validation_keeps_the_framework_detail_array() -> None:
 
 
 def test_500_uncaught_exception_is_the_internal_envelope(monkeypatch) -> None:
-    """A dependency raising a non-PolsiaError exception becomes E_INTERNAL, not a bare 500.
+    """A dependency raising a non-MeridianError exception becomes E_INTERNAL, not a bare 500.
 
     The overrides are installed with monkeypatch so they are RESTORED: a bare dict assignment here
     leaked into the shared app and reddened a later hygiene guard in a full run (R-W5-LEAD-5).

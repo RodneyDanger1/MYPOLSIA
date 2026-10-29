@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.models.outreach import Prospect
 
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ async def test_service_normalises_before_the_unique_insert(async_db_session):
     assert row.email == "mixed@case.io"
     assert row.first_name == "Mixed"
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         await prospect_service.create_prospect(async_db_session, email="   ")
     assert refused.value.code == "E_VALIDATION"
     assert refused.value.context["field"] == "email"
@@ -342,7 +342,7 @@ async def test_service_maps_a_duplicate_integrity_error_to_the_named_refusal(asy
     await prospect_service.create_prospect(async_db_session, email="dup@example.com")
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         await prospect_service.create_prospect(async_db_session, email="DUP@example.com")
     assert refused.value.code == "E_VALIDATION"
     assert refused.value.context["field"] == "email"

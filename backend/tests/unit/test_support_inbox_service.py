@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.support import SupportInboxItem
 from app.models.task import Task
 from app.services.support_inbox_service import (
@@ -70,7 +70,7 @@ async def test_submit_stores_an_aware_received_at_dialect_bound(async_db_session
 @pytest.mark.parametrize("value", ["", "   "])
 async def test_blank_fields_are_named_refusals(async_db_session, field, value):
     payload = {**BASE_ITEM, field: value}
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await submit_item(async_db_session, **payload)
     assert excinfo.value.code == E_VALIDATION
     assert field in excinfo.value.message, "the refusal must name the field"
@@ -80,14 +80,14 @@ async def test_an_oversize_provider_id_is_refused_so_the_key_can_never_truncate(
     async_db_session,
 ):
     """`support-inbox-` + 240 chars <= 255 (tasks.dedupe_key); 241 must refuse by name."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await submit_item(async_db_session, **{**BASE_ITEM, "provider_message_id": "x" * 241})
     assert excinfo.value.code == E_VALIDATION
     assert "provider_message_id" in excinfo.value.message
 
 
 async def test_a_timezone_less_received_at_is_refused_not_assumed(async_db_session):
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await submit_item(
             async_db_session, **{**BASE_ITEM, "received_at": datetime(2026, 10, 13, 9, 0)}
         )
@@ -124,7 +124,7 @@ async def test_list_filters_by_status_and_refuses_an_unknown_one(async_db_sessio
     assert len(pending) == 2
     assert await list_items(async_db_session, status="dispatched") == []
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_items(async_db_session, status="delivered")
     assert excinfo.value.code == E_VALIDATION, "an unknown filter must refuse, not answer empty"
     assert "delivered" in excinfo.value.message

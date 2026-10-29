@@ -159,7 +159,7 @@ def test_the_docs_gate_walks_the_whole_corpus():
     expected = {
         "README.md",
         "COMPLETENESS.md",
-        "COMPARISON-POLSIA.md",
+        "COMPARISON-MERIDIAN.md",
         "CLAUDE.md",
         "USAGE.md",
         "NEXTSTEPS.md",

@@ -216,7 +216,7 @@ def test_e_run_cancelled_is_registered_with_a_hint_and_a_deliberate_409():
 
 
 def test_the_tool_gate_reports_the_cancellation_code_the_firewall_decided():
-    """RED: the outer code was `E_POLICY_DENIED` while the message named POLSIA-E120."""
+    """RED: the outer code was `E_POLICY_DENIED` while the message named MERIDIAN-E120."""
     pf.begin_run_cancellation()
     try:
         assert pf.cancel_run("claim lease lost (E_TASK_CLAIMED)") is True
@@ -230,7 +230,7 @@ def test_the_tool_gate_reports_the_cancellation_code_the_firewall_decided():
     assert payload["error"]["code"] == E_RUN_CANCELLED, (
         "the tool path and the side-effect path must answer the same outer code"
     )
-    assert payload["error"]["context"]["policy_code"] == "POLSIA-E120"
+    assert payload["error"]["context"]["policy_code"] == "MERIDIAN-E120"
     assert payload["error"]["how_to_fix"], "a named refusal always says how to proceed"
 
 
@@ -244,7 +244,7 @@ def test_every_other_gate_denial_keeps_the_generic_policy_code():
 
     assert payload["ok"] is False
     assert payload["error"]["code"] == E_POLICY_DENIED
-    assert payload["error"]["context"]["policy_code"] != "POLSIA-E120"
+    assert payload["error"]["context"]["policy_code"] != "MERIDIAN-E120"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════

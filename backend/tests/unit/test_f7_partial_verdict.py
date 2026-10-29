@@ -20,15 +20,15 @@ from __future__ import annotations
 import json
 
 from app.agents import crew_factory
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 
 def _install(monkeypatch, *, status: str, summary: str) -> None:
-    class StubAgent(BasePolsiaAgent):
+    class StubAgent(BaseMeridianAgent):
         agent_type = "business_planning"
         output_schema = None
 
-        def run(self, task, context):  # noqa: ANN001 - the frozen BasePolsiaAgent seam
+        def run(self, task, context):  # noqa: ANN001 - the frozen BaseMeridianAgent seam
             return {"summary": summary, "status": status, "notes": ["a page was unreachable"]}
 
     monkeypatch.setattr(crew_factory, "get_agent_class", lambda agent_type: StubAgent)

@@ -39,7 +39,7 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_RATE_LIMITED,
     E_SANDBOX_BLOCKED,
-    PolsiaError,
+    MeridianError,
 )
 from app.services import channel_service, deploy_service, site_service
 
@@ -106,7 +106,7 @@ def _token(slug: str = "landing-page") -> str:
 def configured(monkeypatch):
     monkeypatch.setenv(deploy_service.RENDER_API_KEY_ENV, API_KEY)
     monkeypatch.setenv(deploy_service.RENDER_SERVICE_ID_ENV, SERVICE_ID)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "kill_switch", "")
     return API_KEY
 
@@ -116,7 +116,7 @@ def live_policy(monkeypatch):
     """The ALLOWING policy state: sandbox off, an approval channel configured, kill switch at run."""
     monkeypatch.setattr(settings, "sandbox_mode", False)
     monkeypatch.setattr(settings, "approval_secret", APPROVAL_SECRET.decode())
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "kill_switch", "")
     return _token()
 
@@ -131,7 +131,7 @@ async def test_a_live_deploy_is_refused_while_the_sandbox_is_on(
     site_dir = _write_site(tmp_path)
     before = (site_dir / "meta.json").read_bytes()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -176,12 +176,12 @@ async def test_a_live_deploy_is_refused_under_the_kill_switch(
     # effect of SANDBOX_MODE.
     monkeypatch.setattr(settings, "sandbox_mode", False)
     monkeypatch.setattr(settings, "approval_secret", APPROVAL_SECRET.decode())
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", grade)
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", grade)
     recorder = Recorder()
     site_dir = _write_site(tmp_path)
     before = (site_dir / "meta.json").read_bytes()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -194,7 +194,7 @@ async def test_a_live_deploy_is_refused_under_the_kill_switch(
     assert caught.value.code == E_POLICY_DENIED
     assert caught.value.context["kill_switch"] == grade
     assert "kill switch" in caught.value.message
-    assert "POLSIA_KILL_SWITCH" in caught.value.how_to_fix
+    assert "MERIDIAN_KILL_SWITCH" in caught.value.how_to_fix
     assert recorder.requests == []
     assert (site_dir / "meta.json").read_bytes() == before
 
@@ -220,7 +220,7 @@ async def test_the_render_day_cap_refuses_the_fourth_deploy_of_the_day(
     site_dir = _write_site(tmp_path)
     before = (site_dir / "meta.json").read_bytes()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -245,7 +245,7 @@ async def test_a_live_deploy_without_an_approval_token_names_the_fingerprint_to_
     site_dir = _write_site(tmp_path)
     before = (site_dir / "meta.json").read_bytes()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -277,7 +277,7 @@ async def test_a_token_minted_for_another_site_does_not_verify(
     _write_site(tmp_path)
     _write_site(tmp_path, slug="another-site")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -326,7 +326,7 @@ async def test_a_live_deploy_without_a_session_is_the_named_config_refusal(
 ) -> None:
     recorder = Recorder()
     _write_site(tmp_path)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -387,7 +387,7 @@ async def test_the_deploy_route_answers_e_policy_denied_under_the_kill_switch(
     monkeypatch.setattr(sites_module, "log_activity_isolated", recording_audit)
     monkeypatch.setattr(site_service, "SITES_ROOT", tmp_path)
     monkeypatch.setattr(settings, "sandbox_mode", False)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
     _write_site(tmp_path)
 
     resp = await api_client.post(

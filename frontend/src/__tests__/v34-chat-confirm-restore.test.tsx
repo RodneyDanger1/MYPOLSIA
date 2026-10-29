@@ -49,7 +49,7 @@ const STORED_ROWS = {
       task_id: null,
     },
     {
-      role: "polsia",
+      role: "meridian",
       content: PROPOSAL_TEXT,
       created_at: ago(5 * MINUTE_MS),
       task_id: null,

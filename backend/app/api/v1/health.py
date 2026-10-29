@@ -29,7 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.schemas.common import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ async def ready(db: AsyncSession = Depends(get_db)) -> ReadyResponse:
         await db.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:
         logger.warning("readiness probe failed on the database (%s)", type(exc).__name__)
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "not ready: the database did not answer the readiness probe",
             how_to_fix="check that the database is running and reachable (DATABASE_URL), then "

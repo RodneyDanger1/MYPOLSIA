@@ -37,7 +37,7 @@ PROTOCOL
 
     The `/send` refusals mirror `services.phone_send_service`: E_AUTH, E_VALIDATION,
     E_PHONE_SEND_UNPAIRED, E_PHONE_UNAVAILABLE — so the backend maps them onto the SAME typed
-    `PolsiaError` codes it already ships.
+    `MeridianError` codes it already ships.
 
 RUN
     PHONE_SEND_BRIDGE_TOKEN="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')" \\
@@ -74,7 +74,7 @@ MAX_BODY_BYTES = 8 * 1024
 MAX_TOKEN_CHARS = 512
 TOKEN_ENV = "PHONE_SEND_BRIDGE_TOKEN"
 TOKEN_MIN_CHARS = 24
-TEMP_PREFIX = "polsia-phone-bridge-"
+TEMP_PREFIX = "meridian-phone-bridge-"
 
 E_AUTH = "E_AUTH"
 E_CONFIG = "E_CONFIG"
@@ -224,7 +224,7 @@ def token_from_env() -> str:
 
 
 def driver_path(options: Options) -> Path:
-    return options.driver or Path(os.environ.get("POLSIA_PHONE_SEND_DRIVER", "").strip() or DRIVER_PATH)
+    return options.driver or Path(os.environ.get("MERIDIAN_PHONE_SEND_DRIVER", "").strip() or DRIVER_PATH)
 
 
 def startup_lines(options: Options, token: str) -> list[str]:

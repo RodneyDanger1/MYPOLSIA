@@ -29,7 +29,7 @@ import { AdsWidget } from "@/components/dashboard/AdsWidget";
 import { BusinessPanel } from "@/components/dashboard/BusinessPanel";
 import { DailyReportPanel } from "@/components/dashboard/DailyReportPanel";
 import { OutreachWidget } from "@/components/dashboard/OutreachWidget";
-import { PolsiaStatusCard } from "@/components/dashboard/PolsiaStatusCard";
+import { MeridianStatusCard } from "@/components/dashboard/MeridianStatusCard";
 import { SocialWidget } from "@/components/dashboard/SocialWidget";
 import { TASKS_PREVIEW_LIMIT, TasksPreview } from "@/components/dashboard/TasksPreview";
 
@@ -365,13 +365,13 @@ describe("TasksPreview (Q-12)", () => {
   });
 });
 
-describe("PolsiaStatusCard", () => {
+describe("MeridianStatusCard", () => {
   afterEach(() => mockGet.mockReset());
 
   it("expresses the real run state from /agents/status", async () => {
     answerWith();
 
-    render(<PolsiaStatusCard />);
+    render(<MeridianStatusCard />);
 
     expect(await screen.findByText("Working")).toBeInTheDocument();
     expect(screen.getByText("1 of 2 agents running now")).toBeInTheDocument();
@@ -392,7 +392,7 @@ describe("PolsiaStatusCard", () => {
       ],
     });
 
-    render(<PolsiaStatusCard />);
+    render(<MeridianStatusCard />);
 
     expect(await screen.findByText("Idle")).toBeInTheDocument();
     expect(screen.getByText("No agent run in flight")).toBeInTheDocument();
@@ -402,7 +402,7 @@ describe("PolsiaStatusCard", () => {
   it("names a failed agent-status poll instead of showing a plausible idle card", async () => {
     answerWith({ "/agents/status": new Error("E_NETWORK: request timed out") });
 
-    render(<PolsiaStatusCard />);
+    render(<MeridianStatusCard />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not load agent status: E_NETWORK: request timed out",

@@ -25,7 +25,7 @@ from app.core.errors import (
     E_INTEGRATION,
     E_RATE_LIMITED,
     E_REDIS,
-    PolsiaError,
+    MeridianError,
 )
 
 # OLD (pre-D7) set, recorded for the receipt:
@@ -62,11 +62,11 @@ def test_the_retryable_set_is_exactly_the_pinned_one():
 def test_the_decision_function_refuses_a_cap_refusal_and_keeps_the_rest():
     from celery_app.tasks.agent_tasks import is_retryable
 
-    assert is_retryable(PolsiaError(E_RATE_LIMITED, "daily cap reached")) is False
+    assert is_retryable(MeridianError(E_RATE_LIMITED, "daily cap reached")) is False
     assert is_retryable(None) is True                      # no exception -> nothing failed
-    assert is_retryable(PolsiaError(E_CLI_TIMEOUT, "hang")) is True
-    assert is_retryable(PolsiaError(E_REDIS, "broker")) is True
-    assert is_retryable(PolsiaError("E_POLICY_DENIED", "no")) is False
+    assert is_retryable(MeridianError(E_CLI_TIMEOUT, "hang")) is True
+    assert is_retryable(MeridianError(E_REDIS, "broker")) is True
+    assert is_retryable(MeridianError("E_POLICY_DENIED", "no")) is False
     assert is_retryable(RuntimeError("driver")) is True     # unexpected failures stay transient
 
 
@@ -81,7 +81,7 @@ def test_a_cap_refused_run_is_not_redelivered(queue_db, eager_delivery, install_
     """One delivery, one agent call: the refusal is terminal for this run."""
     spy = install_run_spy(
         delegate=False,
-        error_factory=lambda: PolsiaError(E_RATE_LIMITED, "daily cap reached for twitter"),
+        error_factory=lambda: MeridianError(E_RATE_LIMITED, "daily cap reached for twitter"),
     )
     task_id = _task_id(queue_db)
 
@@ -105,7 +105,7 @@ def test_a_still_retryable_failure_IS_redelivered(queue_db, eager_delivery, inst
     """
     spy = install_run_spy(
         delegate=False,
-        error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "provider hang"),
+        error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "provider hang"),
     )
     task_id = _task_id(queue_db)
 

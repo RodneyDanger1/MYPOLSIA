@@ -50,7 +50,7 @@ from app.core.errors import (
     E_RUN_CANCELLED,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only (the runtime import is lazy, per CLAUDE.md:116)
@@ -67,10 +67,10 @@ logger = logging.getLogger(__name__)
 #: so the code the firewall denies with is the code the API answers with.  It used to be declared
 #: module-locally, which meant a status census could not see that the taxonomy already carried it.
 
-#: The POLSIA policy code a cancelled-run denial carries in `PolicyDecision.code` and the audit row.
+#: The MERIDIAN policy code a cancelled-run denial carries in `PolicyDecision.code` and the audit row.
 #: `PolicyDecision.e_code` maps it to `E_RUN_CANCELLED`; the registry's tool gate names it in its
 #: refusal's `policy_code` field (never inventing a code the gate cannot see).
-_CANCELLED_POLICY_CODE = "POLSIA-E120"
+_CANCELLED_POLICY_CODE = "MERIDIAN-E120"
 
 # ---------------------------------------------------------------------------
 # Action classes and decision objects
@@ -93,7 +93,7 @@ class Decision(StrEnum):
 class PolicyDecision:
     decision: Decision
     reason: str
-    code: str                            # POLSIA taxonomy code (stable, see structured_output)
+    code: str                            # MERIDIAN taxonomy code (stable, see structured_output)
     require_token: bool = False
     audit: dict = field(default_factory=dict)
     how_to_fix: str = ""                 # action-specific fix; falls back to ERROR_HINTS[code]
@@ -119,15 +119,15 @@ class PolicyDecision:
             return E_RUN_CANCELLED
         if self.sandboxed:
             return E_SANDBOX_BLOCKED
-        if self.code == "POLSIA-E117":
+        if self.code == "MERIDIAN-E117":
             return E_RATE_LIMITED
         return E_POLICY_DENIED
 
-    def to_polsia_error(self, *, agent_type: str, action: str = "") -> PolsiaError:
+    def to_meridian_error(self, *, agent_type: str, action: str = "") -> MeridianError:
         from app.core.errors import ERROR_HINTS
 
         code = self.e_code
-        return PolsiaError(
+        return MeridianError(
             code,
             f"{agent_type or 'agent'} action {action or self.audit.get('class', '')!r} refused: {self.reason}",
             how_to_fix=self.how_to_fix or ERROR_HINTS.get(code, ""),
@@ -380,7 +380,7 @@ def capability_for(agent_type: str) -> AgentCapability | None:
     adoption question instead of leaving it open.
 
     Historical note (R25 bounded scan, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt): exported in `__all__`
+    meridian-work/build/R25-deadhelpers/raw/scan_public_funcs.txt): exported in `__all__`
     but then called by nothing (production or tests); consumers read `AGENT_CAPABILITIES`
     directly.
     """
@@ -490,7 +490,7 @@ class RunTaint:
 #:
 #: It lives HERE (not in context_assembler) because this module is the taint's home and both the
 #: producer and the consumer already import it — no new import edge, no cycle.
-RUN_TAINT: ContextVar[RunTaint | None] = ContextVar("polsia_run_taint", default=None)
+RUN_TAINT: ContextVar[RunTaint | None] = ContextVar("meridian_run_taint", default=None)
 
 
 def set_run_taint(taint: RunTaint | None) -> None:
@@ -507,7 +507,7 @@ def reset_run_taint() -> None:
     """Clear the run taint (tests, or a caller that must not inherit a previous run's verdict).
 
     TEST-SUPPORT reset; NO PRODUCTION CALLER (R25 bounded scan, 2026-10-13; raw grep
-    evidence: polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — only tests
+    evidence: meridian-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — only tests
     call it (tests/unit/test_taint_chain.py, test_csinbox_prompt.py,
     test_extra_context_layer.py reset the contextvar between cases).  The production
     publish/read pair is `set_run_taint` (context_assembler.assemble) /
@@ -545,7 +545,7 @@ class RunApproval:
 #: whenever the caller supplied no explicit `approval_secret=`/`approval_token=`.  Each worker
 #: invocation SETS it and RESETS it in a `finally`, so one run's token cannot leak into the next
 #: run in the same worker process (the RUN_TAINT isolation argument).
-RUN_APPROVAL: ContextVar[RunApproval | None] = ContextVar("polsia_run_approval", default=None)
+RUN_APPROVAL: ContextVar[RunApproval | None] = ContextVar("meridian_run_approval", default=None)
 
 
 def set_run_approval(approval: RunApproval | None) -> None:
@@ -581,7 +581,7 @@ def reset_run_approval() -> None:
 #: rather than reading as zero sends (A2 finding F-04).  An absent snapshot (`None` whole) is
 #: "this run published no counts" — again unknown, never a fabricated zero.
 RUN_CHANNEL_SENDS: ContextVar[dict[str, dict[str, int | None]] | None] = ContextVar(
-    "polsia_run_channel_sends", default=None)
+    "meridian_run_channel_sends", default=None)
 
 
 def set_run_channel_sends(snapshot: dict[str, dict[str, int | None]] | None) -> None:
@@ -603,7 +603,7 @@ def reset_run_channel_sends() -> None:
 # Run-level cancellation: the contextvar the WORKER publishes and the gate refuses on
 # ---------------------------------------------------------------------------
 # `E_RUN_CANCELLED` is the shared `app.core.errors` constant (imported at the top of this
-# module); `_CANCELLED_POLICY_CODE` is this module's own POLSIA policy code, declared beside the
+# module); `_CANCELLED_POLICY_CODE` is this module's own MERIDIAN policy code, declared beside the
 # other codes.  The STATE and its verbs live here, in the run-scope section.
 
 
@@ -637,7 +637,7 @@ class RunCancellation:
 #: (the CLI path, every direct caller, and every unit test that does not open a run — all of which
 #: keep the pre-F-16 behaviour by construction).
 RUN_CANCELLED: ContextVar[RunCancellation | None] = ContextVar(
-    "polsia_run_cancelled", default=None)
+    "meridian_run_cancelled", default=None)
 
 
 def begin_run_cancellation() -> RunCancellation:
@@ -762,7 +762,7 @@ class RateCaps:
 #: taken; a replay is a DIFFERENT control — the approval was genuinely given and already spent —
 #: so it gets its own name rather than borrowing "approval required" (which would tell an operator
 #: to mint a token they already minted, with no hint that a reused token was the problem).
-_REPLAY_POLICY_CODE = "POLSIA-E121"
+_REPLAY_POLICY_CODE = "MERIDIAN-E121"
 
 #: Hex chars of the random `jti` nonce every NEWLY minted token carries (8 random bytes).
 JTI_HEX_CHARS = 16
@@ -871,7 +871,7 @@ def issue_approval(secret: bytes, *, action_fingerprint: str, ttl_s: int = 3600,
         # W5-S1 (sentinel): the signature covers the issuer, but every verifier and the
         # ledger hardcode the operator scope — a non-operator mint produces a token that
         # NO verifier can accept. Refuse by name instead of handing out a dead bearer.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"approval tokens are verifiable only for the 'operator' scope, not "
             f"{issued_to!r}: a token minted for any other issuer can never be accepted",
@@ -984,7 +984,7 @@ async def consume_approval(db: AsyncSession, secret: bytes, token: str, *,
         # THE single-use guarantee: the unique index refused a second spend of this token.
         return ApprovalConsumption(False, "already_used", token_id, parsed.jti)
     except SQLAlchemyError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"the approval token could not be recorded as spent ({type(exc).__name__}), so its "
             "single-use property cannot be proven — refusing the action",
@@ -1005,7 +1005,7 @@ async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str
     """Spend the token or raise the NAMED refusal that explains why this attempt cannot proceed.
 
     The four refusals are distinct on purpose and carry `reason` in `context`:
-      * `already_used` -> `POLSIA-E121` + `approval_replay: true` (a replay is its own control);
+      * `already_used` -> `MERIDIAN-E121` + `approval_replay: true` (a replay is its own control);
       * `expired`      -> the TTL ran out, nothing was attempted;
       * `invalid`      -> wrong fingerprint/secret/shape, nothing was spent;
       * a ledger fault -> the named `E_DB` from `consume_approval`.
@@ -1017,7 +1017,7 @@ async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str
     if spent.ok:
         return spent
     if spent.reason == "already_used":
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             f"{action_label} refused: this approval token was already used — an approval is "
             "spent by the one action it authorised, so a replay cannot authorise a second one",
@@ -1036,7 +1036,7 @@ async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str
             },
         )
     if spent.reason == "expired":
-        raise PolsiaError(
+        raise MeridianError(
             E_POLICY_DENIED,
             f"{action_label} refused: the approval token expired — nothing was attempted",
             how_to_fix=(
@@ -1045,12 +1045,12 @@ async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str
             ),
             context={
                 "decision": "deny",
-                "policy_code": "POLSIA-E115",
+                "policy_code": "MERIDIAN-E115",
                 "reason": "expired",
                 "fingerprint": action_fingerprint,
             },
         )
-    raise PolsiaError(
+    raise MeridianError(
         E_POLICY_DENIED,
         f"{action_label} refused: the approval token did not verify for this action (it was "
         "minted for a different action, or APPROVAL_SECRET changed) — nothing was spent",
@@ -1060,7 +1060,7 @@ async def consume_approval_or_refuse(db: AsyncSession, secret: bytes, token: str
         ),
         context={
             "decision": "deny",
-            "policy_code": "POLSIA-E115",
+            "policy_code": "MERIDIAN-E115",
             "reason": "invalid",
             "fingerprint": action_fingerprint,
         },
@@ -1099,7 +1099,7 @@ class ActionRequest:
     taint: RunTaint | None = None
     approval_token: str = ""
     # Counters are `int | None` on purpose: `None` = the caller supplied no count = UNKNOWN, and
-    # a configured cap is then refused BY NAME (POLSIA-E114, cap_unknown) instead of reading as
+    # a configured cap is then refused BY NAME (MERIDIAN-E114, cap_unknown) instead of reading as
     # "zero sends"; `0` = a MEASURED zero (a counting source was read and found none).
     # Collapsing the two is exactly how the caps came to never fire (A2 finding F-04).
     sends_today: int | None = None
@@ -1147,7 +1147,7 @@ def _cap_count_unknown(channel: str, window: str, cap_value: int, audit: dict) -
         Decision.DENY,
         f"{window} cap for '{channel}' cannot be verified: no local record of '{channel}' "
         f"sends exists (count unknown)",
-        "POLSIA-E114",
+        "MERIDIAN-E114",
         audit={**audit, "cap_window": window, "cap": cap_value, "cap_unknown": True},
         how_to_fix=f"record {channel} sends in a local table the snapshot can count, or remove "
                    f"this channel's cap in RateCaps; until then the safe answer is no",
@@ -1229,25 +1229,25 @@ def decide(
             ),
         )
     if kill_switch:
-        return PolicyDecision(Decision.DENY, "kill switch active", "POLSIA-E118", audit=audit)
+        return PolicyDecision(Decision.DENY, "kill switch active", "MERIDIAN-E118", audit=audit)
 
     if direct_caller:
         cap = DIRECT_CALLER_CAPABILITIES.get(direct_caller)
         if cap is None:
-            return PolicyDecision(Decision.DENY, f"unknown direct caller '{direct_caller}'", "POLSIA-E114", audit=audit)
+            return PolicyDecision(Decision.DENY, f"unknown direct caller '{direct_caller}'", "MERIDIAN-E114", audit=audit)
     else:
         cap = AGENT_CAPABILITIES.get(req.agent_type)
         if cap is None:
-            return PolicyDecision(Decision.DENY, f"unknown agent '{req.agent_type}'", "POLSIA-E114", audit=audit)
+            return PolicyDecision(Decision.DENY, f"unknown agent '{req.agent_type}'", "MERIDIAN-E114", audit=audit)
     if req.action_class not in cap.action_classes:
         return PolicyDecision(
             Decision.DENY,
             f"agent '{req.agent_type}' is not permitted action class '{req.action_class.value}'",
-            "POLSIA-E114", audit=audit)
+            "MERIDIAN-E114", audit=audit)
     if req.channel and req.channel not in cap.channels:
         return PolicyDecision(Decision.DENY,
                               f"agent '{req.agent_type}' may not touch channel '{req.channel}'",
-                              "POLSIA-E114", audit=audit)
+                              "MERIDIAN-E114", audit=audit)
 
     if req.tool:
         # V12/W-B — registry names first: when `req.tool` is one of the agent's `agent_tools`
@@ -1277,7 +1277,7 @@ def decide(
             allowed = any(_tool_match(req.tool, pat) for pat in usable_allow)
             denied = any(_tool_match(req.tool, pat) for pat in cap.denied_tools)
             if denied or not allowed:
-                return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "POLSIA-E114", audit=audit)
+                return PolicyDecision(Decision.DENY, f"tool '{req.tool}' not in allowlist", "MERIDIAN-E114", audit=audit)
 
     external = req.action_class in (ActionClass.EXTERNAL_REVERSIBLE, ActionClass.EXTERNAL_IRREVERSIBLE)
     # Sandbox BEFORE caps: the caps bound REAL sends, and a sandboxed run performs none. Checking
@@ -1288,7 +1288,7 @@ def decide(
         return PolicyDecision(
             Decision.DENY,
             "SANDBOX_MODE=true: external action recorded as a labelled draft, nothing sent",
-            "POLSIA-E114", audit={**audit, "sandbox": True})
+            "MERIDIAN-E114", audit={**audit, "sandbox": True})
 
     if req.channel:
         day_cap = caps.per_channel_day.get(req.channel)
@@ -1298,7 +1298,7 @@ def decide(
             if req.sends_today >= day_cap:
                 return PolicyDecision(Decision.DENY,
                                       f"daily cap for {req.channel}: {req.sends_today}/{day_cap}",
-                                      "POLSIA-E117", audit=audit)
+                                      "MERIDIAN-E117", audit=audit)
         hour_cap = caps.per_channel_hour.get(req.channel)
         if hour_cap is not None:
             if req.sends_this_hour is None:
@@ -1306,7 +1306,7 @@ def decide(
             if req.sends_this_hour >= hour_cap:
                 return PolicyDecision(Decision.DENY,
                                       f"hourly cap for {req.channel}: {req.sends_this_hour}/{hour_cap}",
-                                      "POLSIA-E117", audit=audit)
+                                      "MERIDIAN-E117", audit=audit)
 
     needs_approval = False
     reasons: list[str] = []
@@ -1333,17 +1333,17 @@ def decide(
         # no approval infrastructure at all for something that needs approval => deny, fail closed
         return PolicyDecision(Decision.DENY,
                               "approval required but no approval channel configured",
-                              "POLSIA-E114", audit={**audit, "reasons": reasons})
+                              "MERIDIAN-E114", audit={**audit, "reasons": reasons})
 
     if needs_approval:
         fp = audit["fingerprint"]
         if req.approval_token and verify_approval(approval_secret, req.approval_token, action_fingerprint=fp):
-            return PolicyDecision(Decision.ALLOW, "approved by token", "POLSIA-E000",
+            return PolicyDecision(Decision.ALLOW, "approved by token", "MERIDIAN-E000",
                                   audit={**audit, "reasons": reasons, "approved": True})
-        return PolicyDecision(Decision.REQUIRE_APPROVAL, "; ".join(reasons), "POLSIA-E115",
+        return PolicyDecision(Decision.REQUIRE_APPROVAL, "; ".join(reasons), "MERIDIAN-E115",
                               require_token=True, audit=audit)
 
-    return PolicyDecision(Decision.ALLOW, "permitted", "POLSIA-E000", audit=audit)
+    return PolicyDecision(Decision.ALLOW, "permitted", "MERIDIAN-E000", audit=audit)
 
 
 def _allow_rule_usable(pattern: str) -> bool:
@@ -1410,7 +1410,7 @@ def _tool_match(tool: str, pattern: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def kill_grade_from_env() -> str:
-    """The operator's kill grade, read at CALL time: `POLSIA_KILL_SWITCH` env, then settings.
+    """The operator's kill grade, read at CALL time: `MERIDIAN_KILL_SWITCH` env, then settings.
 
     Audit L2 (item RD4-1): the settings fallback read `settings.kill_switch`, a field `config.py`
     did not carry — so it was permanently `""` and an operator could set the switch in config and
@@ -1427,7 +1427,7 @@ def kill_grade_from_env() -> str:
 
     from app.config import settings
 
-    value = (os.getenv("POLSIA_KILL_SWITCH") or getattr(settings, "kill_switch", "") or "").strip().lower()
+    value = (os.getenv("MERIDIAN_KILL_SWITCH") or getattr(settings, "kill_switch", "") or "").strip().lower()
     if value in ("1", "freeze", "stop", "true"):
         return "freeze"
     if value in ("throttle", "reads"):
@@ -1457,11 +1457,11 @@ def require_external_effects_enabled(action: str) -> str:
         detail = "all side effects are denied; reads may continue"
     else:
         detail = "external side effects are paused; reads may continue"
-    raise PolsiaError(
+    raise MeridianError(
         E_POLICY_DENIED,
         f"{action} refused: the operator kill switch is {grade!r} — {detail}",
         how_to_fix=(
-            "set POLSIA_KILL_SWITCH=run (or unset it) when external effects should resume; the "
+            "set MERIDIAN_KILL_SWITCH=run (or unset it) when external effects should resume; the "
             "switch is read at call time, so no restart is needed"
         ),
         context={"kill_switch": grade, "action": action},
@@ -1499,7 +1499,7 @@ def enforce(
         direct_caller=direct_caller,
     )
     if decision.decision is Decision.DENY and not decision.sandboxed:
-        raise decision.to_polsia_error(agent_type=req.agent_type,
+        raise decision.to_meridian_error(agent_type=req.agent_type,
                                        action=req.payload.get("action") or req.action_class.value)
     return decision
 
@@ -1511,7 +1511,7 @@ def assert_sandboxed_side_effect_allowed(agent_type: str, action: str, *, decisi
     sandboxed run can never be reportable as a success that posted something.
 
     ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — nothing imports or
+    meridian-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — nothing imports or
     calls it (production or tests).  The wired form of this guard is
     `side_effects.assert_not_reporting_real_side_effect` (called at
     social_media/agent.py:167).  Removal vs adoption is an owner decision
@@ -1520,7 +1520,7 @@ def assert_sandboxed_side_effect_allowed(agent_type: str, action: str, *, decisi
     from app.config import settings
 
     if settings.sandbox_mode and decision.allowed:
-        raise PolsiaError(
+        raise MeridianError(
             E_SANDBOX_BLOCKED,
             f"{agent_type}: refusing to report a real '{action}' as done while SANDBOX_MODE=true",
             how_to_fix="the sandbox must record a labelled draft; check the firewall call order",

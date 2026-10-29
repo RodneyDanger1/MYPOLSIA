@@ -234,7 +234,7 @@ async def test_snapshot_failure_is_a_named_error_not_a_fake_answer(api_client, a
     """Break the DRIVER under the real translation layer: 503 + E_DB, never a 200 of nulls/zeros.
 
     The session's `execute` is failed like an outage; `query_helpers.fetch_scalar` (the real
-    translation layer, NOT mocked here) turns that into `PolsiaError(E_DB)` and the route's
+    translation layer, NOT mocked here) turns that into `MeridianError(E_DB)` and the route's
     `refusal_guard` into the coded 503 envelope — the full honest chain, endpoint to driver.
     """
     async def _explode(stmt):  # noqa: ANN001 - stands in for AsyncSession.execute during an outage

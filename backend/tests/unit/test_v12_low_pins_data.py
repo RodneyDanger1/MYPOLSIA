@@ -188,7 +188,7 @@ def test_f15_sqlite_for_update_does_not_exclude_a_second_consumer(queue_db):
     async def _seed():
         async with queue_db.factory() as db:
             row = ChatMessage(
-                role="polsia",
+                role="meridian",
                 content="seed",
                 intent={"kind": "create_task", "state": "pending", "plan": {}},
             )

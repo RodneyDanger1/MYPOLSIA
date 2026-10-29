@@ -178,7 +178,7 @@ def test_dispatched_items_are_skipped_while_a_new_item_still_attaches(queue_db, 
 def test_a_full_budget_attaches_nothing_and_loses_nothing(queue_db, monkeypatch):
     """D3: a denied tick must leave every item PENDING for the next one — never half-dispatch."""
     item_id = _submit(queue_db)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
 
     result, enqueued = _run_sweep(queue_db, monkeypatch)
 
@@ -191,7 +191,7 @@ def test_a_full_budget_attaches_nothing_and_loses_nothing(queue_db, monkeypatch)
 
 # ── THE CHAIN: submit -> sweep -> row -> real worker -> the assembled prompt ─────────────────
 def test_the_whole_chain_reaches_the_prompt_quarantined(queue_db, monkeypatch, execute_body):
-    from app.agents.base_agent import BasePolsiaAgent
+    from app.agents.base_agent import BaseMeridianAgent
 
     item_id = _submit(queue_db, provider_message_id="msg-chain-1")
     result, enqueued = _run_sweep(queue_db, monkeypatch)
@@ -199,13 +199,13 @@ def test_the_whole_chain_reaches_the_prompt_quarantined(queue_db, monkeypatch, e
     assert enqueued == [task_id]
 
     captured: list[dict] = []
-    original = BasePolsiaAgent.call_claude_structured
+    original = BaseMeridianAgent.call_claude_structured
 
     def recording(self, prompt, **kw):
         captured.append({"prompt": prompt, "system": kw.get("system_prompt_static", "")})
         return original(self, prompt, **kw)
 
-    monkeypatch.setattr(BasePolsiaAgent, "call_claude_structured", recording)
+    monkeypatch.setattr(BaseMeridianAgent, "call_claude_structured", recording)
 
     outcome = execute_body(task_id)
 

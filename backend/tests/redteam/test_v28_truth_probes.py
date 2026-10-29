@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import E_AUTH, E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_AUTH, E_CONFIG, E_NOT_FOUND, E_VALIDATION, MeridianError
 
 #: The ONLY operations allowed to answer without X-API-Key. Each is public for a stated
 #: reason: liveness (health), a readiness probe an orchestrator cannot authenticate (ready),
@@ -112,7 +112,7 @@ async def test_stored_secret_never_appears_in_the_integrations_response(
     from app.services import secret_store
 
     # A scratch store, so the assertion never depends on the owner's real secrets file.
-    monkeypatch.setenv("POLSIA_SECRETS_FILE", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("MERIDIAN_SECRETS_FILE", str(tmp_path / "secrets.json"))
     sentinel = "fake-github-sentinel-v28-do-not-use"
     secret_store.set_secret("GITHUB_TOKEN", sentinel)
 
@@ -140,7 +140,7 @@ async def test_untestable_provider_refuses_and_names_the_missing_variables(
 ):
     from app.config import settings
 
-    monkeypatch.setenv("POLSIA_SECRETS_FILE", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("MERIDIAN_SECRETS_FILE", str(tmp_path / "secrets.json"))
     for name in ("META_ADS_ACCESS_TOKEN", "META_ADS_ACCOUNT_ID"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(settings, "meta_ads_access_token", "", raising=False)
@@ -181,7 +181,7 @@ async def test_deploy_dry_run_refuses_config_and_names_both_render_variables(mon
     # The site exists (that is not what is missing); credentials are.
     monkeypatch.setattr(site_service, "read_site_meta", lambda slug, root=None: {"slug": slug})
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site("v28-truth-probe", dry_run=True)
 
     assert caught.value.code == E_CONFIG
@@ -198,14 +198,14 @@ async def test_deploy_of_unknown_slug_is_validation_and_state_read_is_not_found(
     from app.services import deploy_service
 
     def _missing(slug, root=None):
-        raise PolsiaError(E_NOT_FOUND, f"no site exists for slug {slug!r}")
+        raise MeridianError(E_NOT_FOUND, f"no site exists for slug {slug!r}")
 
     monkeypatch.setattr(deploy_service.site_service, "read_site_meta", _missing)
 
-    with pytest.raises(PolsiaError) as request_side:
+    with pytest.raises(MeridianError) as request_side:
         await deploy_service.deploy_site("no-such-site", dry_run=True)
     assert request_side.value.code == E_VALIDATION  # bad input named by the REQUEST
 
-    with pytest.raises(PolsiaError) as read_side:
+    with pytest.raises(MeridianError) as read_side:
         deploy_service.deploy_state("no-such-site")
     assert read_side.value.code == E_NOT_FOUND  # a resource READ keeps E_NOT_FOUND

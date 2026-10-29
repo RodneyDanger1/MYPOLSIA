@@ -40,7 +40,7 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime, tool_registry
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 #: Clearly fake, ASCII-only (httpx encodes header values as ASCII) — house pattern.
 SAFE_TEST_KEY = "fake-deepseek-key-v26"
@@ -398,8 +398,8 @@ def test_the_worker_hands_the_run_id_to_the_invoker(queue_db, execute_body, monk
 
 # ── 8. the base agent forwards the published id (and omits it when absent) ──────────────────
 
-class _Agent(BasePolsiaAgent):
-    """Minimal real BasePolsiaAgent subclass for the runtime dispatch seam."""
+class _Agent(BaseMeridianAgent):
+    """Minimal real BaseMeridianAgent subclass for the runtime dispatch seam."""
 
     agent_type = "test"
 

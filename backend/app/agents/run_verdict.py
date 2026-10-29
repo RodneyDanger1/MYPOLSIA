@@ -97,7 +97,7 @@ def _label_summary_once(result: dict[str, Any], status: str) -> None:
 def apply_run_verdict(agent_type: str, result: dict[str, Any]) -> dict[str, Any]:
     """Enforce the run's own verdict on its payload; returns the (mutated) payload.
 
-    Called by `BasePolsiaAgent.timed_run` — the ONE seam every agent run passes through, including
+    Called by `BaseMeridianAgent.timed_run` — the ONE seam every agent run passes through, including
     the planner's direct `timed_run` calls — and idempotently again by
     `crew_factory.run_agent_for_task`, so a future dispatch site cannot skip the rule.
 
@@ -126,11 +126,11 @@ def _raise_refused_task(agent_type: str, result: dict[str, Any]) -> None:
     failed run, so a refused run does not vanish from the ledger's accounting.
     """
     from app.agents.base_agent import RUN_META_KEYS
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
 
     reason = verdict_reason(result)
     measured = {key: result[key] for key in RUN_META_KEYS if key in result}
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"agent {agent_type} refused its task: {reason}",
         how_to_fix=(

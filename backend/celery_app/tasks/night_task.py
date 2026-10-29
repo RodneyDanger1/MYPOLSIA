@@ -70,9 +70,9 @@ def run_night_task() -> dict[str, Any]:
 
 def _config_refusal(value: object, field: str, expected: str):
     """A named `E_CONFIG` refusal for a malformed stored value (the `_resolve_morning_hour` shape)."""
-    from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+    from app.core.errors import E_CONFIG, ERROR_HINTS, MeridianError
 
-    return PolsiaError(
+    return MeridianError(
         E_CONFIG,
         f"company_config.{field} {value!r} is not a valid night task setting: {expected}",
         how_to_fix=ERROR_HINTS[E_CONFIG],

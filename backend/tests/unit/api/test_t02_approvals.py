@@ -40,7 +40,7 @@ from app.agents.policy_firewall import (
 from app.agents.side_effects import _resolve_approval as resolve_approval
 from app.agents.side_effects import request_side_effect
 from app.config import settings
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CONFIG, E_POLICY_DENIED, MeridianError
 from tests.unit.celery.conftest import RunSpy
 
 SECRET = "unit-test-approval-secret"
@@ -314,7 +314,7 @@ def test_no_channel_keeps_the_exact_shipped_refusal(monkeypatch):
     _configure_secret(monkeypatch, "")
     reset_run_approval()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _request_refund()
 
     refusal = excinfo.value
@@ -330,7 +330,7 @@ def test_no_channel_keeps_the_exact_shipped_refusal(monkeypatch):
         sandbox_mode=False,
     )
     assert direct.decision is Decision.DENY
-    assert direct.code == "POLSIA-E114"
+    assert direct.code == "MERIDIAN-E114"
     assert direct.reason == "approval required but no approval channel configured"
 
 

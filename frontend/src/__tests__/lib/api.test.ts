@@ -1,6 +1,6 @@
 /** D5 (audit L5-01): the UI names a refusal in BOTH wire shapes the backend emits.
  *
- *  Envelope: the app's PolsiaError handler -> {ok:false, error:{code, message, how_to_fix}}.
+ *  Envelope: the app's MeridianError handler -> {ok:false, error:{code, message, how_to_fix}}.
  *  Detail:   FastAPI's default handler for refusal_guard/direct raises -> {detail:{code, ...}}.
  *
  *  RED leg (observed): the `typeof d.code === "string"` guard in `refusalFrom` neutralized with

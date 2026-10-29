@@ -45,7 +45,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import as_bound_instant, company_tz, now_utc
 from app.models.schedule import ScheduleCadence, TaskSchedule
 
@@ -79,8 +79,8 @@ class ClaimedSchedule(NamedTuple):
 # ── named refusals (write side E_VALIDATION / stored side E_CONFIG) ───────────────────────────
 
 
-def _refuse_validation(field: str, value: object, expected: str) -> PolsiaError:
-    return PolsiaError(
+def _refuse_validation(field: str, value: object, expected: str) -> MeridianError:
+    return MeridianError(
         E_VALIDATION,
         f"task_schedules.{field} {value!r} is invalid: {expected}",
         how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -88,8 +88,8 @@ def _refuse_validation(field: str, value: object, expected: str) -> PolsiaError:
     )
 
 
-def _refuse_stored(field: str, value: object, expected: str) -> PolsiaError:
-    return PolsiaError(
+def _refuse_stored(field: str, value: object, expected: str) -> MeridianError:
+    return MeridianError(
         E_CONFIG,
         f"task_schedules.{field} {value!r} is not a valid schedule setting: {expected}",
         how_to_fix=ERROR_HINTS[E_CONFIG],
@@ -244,7 +244,7 @@ async def get_schedule(db: AsyncSession, schedule_id: int) -> TaskSchedule:
     """One row by id; an unknown id is the named `E_NOT_FOUND` (the route answers it 404)."""
     row = await db.get(TaskSchedule, int(schedule_id))
     if row is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"task schedule {schedule_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],

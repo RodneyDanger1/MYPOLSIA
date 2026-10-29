@@ -58,7 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import deploy_service
 from app.services.activity_service import log_activity_isolated
 from app.services.site_service import delete_site, generate_site, list_sites, regenerate_site
@@ -247,7 +247,7 @@ class DeployResponse(BaseModel):
 DEPLOY_REFUSED_ACTION = "deploy_refused"
 
 
-async def _audit_deploy_refusal(db: AsyncSession, slug: str, exc: PolsiaError) -> None:
+async def _audit_deploy_refusal(db: AsyncSession, slug: str, exc: MeridianError) -> None:
     """ONE audit row for a REFUSED live deploy — the "receipt either way" (AC-03).
 
     Written through the ISOLATED writer (the shipped F-47 pattern the phone send route uses):
@@ -302,7 +302,7 @@ async def deploy_site_route(
             result = await deploy_service.deploy_site(
                 slug, dry_run=requested, db=db, approval_token=approval_token
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if not requested:
                 await _audit_deploy_refusal(db, slug, exc)
             raise

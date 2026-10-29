@@ -8,7 +8,7 @@ The defect this fixes (brief §5, D-level evidence in lane 05): `agent_runs.toke
 `cost_usd` existed from the first migration and were NEVER populated — every row NULL — because
 `finish_agent_run(db, run.id, status, output=result, duration_secs=duration)` never saw the
 envelope. `usage_from_envelope()` below turns the CLI envelope into those columns, and
-`BasePolsiaAgent` attaches the result under documented keys so the queue can write them.
+`BaseMeridianAgent` attaches the result under documented keys so the queue can write them.
 
 Two documented caveats drive the design (CLI-CONTRACT.md §2.1, D1/D4):
 
@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any
 
 from app.agents import pricing
-from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, E_POLICY_DENIED, MeridianError
 
 # ---------------------------------------------------------------------------
 # Tool evidence (V22/L1)
@@ -349,10 +349,10 @@ def compute_run_delta(env_total_usd: float, session_id: str, session_totals: dic
 # Budget guard: hard stop BEFORE dispatch
 # ---------------------------------------------------------------------------
 
-class BudgetStop(PolsiaError):
+class BudgetStop(MeridianError):
     """Raised before any process is spawned when the spend envelope is exhausted.
 
-    It IS a `PolsiaError` (code `E_BUDGET_EXCEEDED`, or `E_POLICY_DENIED` for the kill switch)
+    It IS a `MeridianError` (code `E_BUDGET_EXCEEDED`, or `E_POLICY_DENIED` for the kill switch)
     so the API boundary and the activity log report the same name the gate decided with.
 
     `how_to_fix` is optional and empty for the dispatch-gate refusals, whose remediation is the
@@ -471,7 +471,7 @@ def cli_budget_flag(allowance_usd: float, headroom: float = 0.9) -> str:
 # cost — which the ledger then measures — and the next turn is refused.  Both directions are
 # recorded in the refusal's context, never inferred from prose.
 #
-# A refusal is a `BudgetStop` (`E_BUDGET_EXCEEDED`, a `PolsiaError`): `claude_cli.run_with_retries`
+# A refusal is a `BudgetStop` (`E_BUDGET_EXCEEDED`, a `MeridianError`): `claude_cli.run_with_retries`
 # re-raises every code except `E_CLI_TIMEOUT`, so a capped run is NOT retried — the identical prompt
 # would spend again, which is the opposite of a cap.
 

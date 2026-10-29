@@ -34,7 +34,7 @@ def _req(**overrides) -> ActionRequest:
         payload={"action": "tweet", "text": "hello"},
         # These tests exercise the sandbox/approval layers, so they pin a MEASURED zero:
         # `0` = "a counting source was read and found no sends". `None` would mean UNKNOWN and
-        # now trips the fail-closed cap refusal (POLSIA-E114) for every configured cap; the
+        # now trips the fail-closed cap refusal (MERIDIAN-E114) for every configured cap; the
         # unknown-count case has its own tests in section 6 below.
         sends_today=0,
         sends_this_hour=0,
@@ -52,7 +52,7 @@ def test_unspecified_sandbox_mode_keeps_the_sandbox_on(monkeypatch):
     )
     assert decision.allowed is False, "an unspecified mode must not let an external action through"
     assert decision.sandboxed is True, "it must be recorded as a labelled draft, not performed"
-    assert decision.code.startswith("POLSIA-E")
+    assert decision.code.startswith("MERIDIAN-E")
 
 
 def test_explicit_sandbox_mode_false_is_still_honoured(monkeypatch):
@@ -64,7 +64,7 @@ def test_explicit_sandbox_mode_false_is_still_honoured(monkeypatch):
         # Repair (T5): this test's subject is the sandbox mode, not the cap counter. The new
         # fail-closed counters make an unsupplied count mean UNKNOWN, and the default RateCaps
         # DO configure a twitter cap — so without these two kwargs the unknown-cap refusal
-        # (POLSIA-E114, cap_unknown) fires first and the assertion below would fail for the
+        # (MERIDIAN-E114, cap_unknown) fires first and the assertion below would fail for the
         # wrong reason. Old vs new: the counts used to default to `0` = "measured zero" (the
         # F-04 collapse this wave removes); they are now supplied explicitly AS a measured
         # zero. The expectations ("allowed is True", "sandboxed is False") are unchanged.
@@ -81,7 +81,7 @@ def test_the_phantom_tenth_agent_is_denied_by_name():
     assert "deployment" not in AGENT_CAPABILITIES
     decision = decide(_req(agent_type="deployment"))
     assert decision.decision is Decision.DENY
-    assert decision.code == "POLSIA-E114"
+    assert decision.code == "MERIDIAN-E114"
     assert "deployment" in decision.reason
 
 
@@ -103,7 +103,7 @@ def test_a_channel_outside_the_capability_is_denied():
 def test_kill_switch_denies_everything():
     decision = decide(_req(), kill_switch=True, sandbox_mode=False)
     assert decision.decision is Decision.DENY
-    assert decision.code == "POLSIA-E118"
+    assert decision.code == "MERIDIAN-E118"
     assert decision.allowed is False
 
 
@@ -111,7 +111,7 @@ def test_a_channel_rate_cap_denies_at_the_limit():
     caps = RateCaps(per_channel_day={"twitter": 5}, per_channel_hour={"twitter": 2})
     at_cap = decide(_req(sends_today=5), caps=caps, sandbox_mode=False)
     assert at_cap.decision is Decision.DENY
-    assert at_cap.code == "POLSIA-E117"
+    assert at_cap.code == "MERIDIAN-E117"
     under = decide(_req(sends_today=4, sends_this_hour=1), caps=caps, sandbox_mode=False)
     assert under.decision is Decision.ALLOW, "one below the cap must still go through"
 
@@ -120,14 +120,14 @@ def test_a_channel_rate_cap_denies_at_the_limit():
 def test_an_action_over_the_value_threshold_needs_a_human():
     decision = decide(_req(value_usd=25.0), approval_secret=b"secret", sandbox_mode=False)
     assert decision.decision is Decision.REQUIRE_APPROVAL
-    assert decision.code == "POLSIA-E115"
+    assert decision.code == "MERIDIAN-E115"
     assert decision.require_token is True
 
 
 def test_needing_approval_with_no_approval_channel_fails_closed():
     decision = decide(_req(value_usd=100.0), approval_secret=b"", sandbox_mode=False)
     assert decision.decision is Decision.DENY, "no approval channel must deny, never allow"
-    assert decision.code == "POLSIA-E114"
+    assert decision.code == "MERIDIAN-E114"
     assert "approval" in decision.reason
 
 
@@ -159,7 +159,7 @@ def test_a_configured_day_cap_with_an_unknown_count_refuses_by_name():
     caps = RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={})
     decision = decide(_req(sends_today=None), caps=caps, sandbox_mode=False)
     assert decision.decision is Decision.DENY
-    assert decision.code == "POLSIA-E114"
+    assert decision.code == "MERIDIAN-E114"
     assert decision.audit.get("cap_unknown") is True
     assert decision.audit.get("cap_window") == "day"
     assert decision.audit.get("cap") == 12
@@ -172,7 +172,7 @@ def test_a_configured_hour_cap_with_an_unknown_count_refuses_by_name():
     caps = RateCaps(per_channel_day={}, per_channel_hour={"twitter": 3})
     decision = decide(_req(sends_this_hour=None), caps=caps, sandbox_mode=False)
     assert decision.decision is Decision.DENY
-    assert decision.code == "POLSIA-E114"
+    assert decision.code == "MERIDIAN-E114"
     assert decision.audit.get("cap_unknown") is True
     assert decision.audit.get("cap_window") == "hour"
     assert decision.audit.get("cap") == 3
@@ -180,12 +180,12 @@ def test_a_configured_hour_cap_with_an_unknown_count_refuses_by_name():
     assert decision.how_to_fix
 
 
-def test_the_unknown_cap_refusal_becomes_a_named_polsia_error():
+def test_the_unknown_cap_refusal_becomes_a_named_meridian_error():
     """The refusal reaches a caller as `E_POLICY_DENIED` with the action-specific fix attached."""
     decision = decide(_req(sends_today=None),
                       caps=RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={}),
                       sandbox_mode=False)
-    err = decision.to_polsia_error(agent_type="social_media", action="tweet")
+    err = decision.to_meridian_error(agent_type="social_media", action="tweet")
     assert err.code == "E_POLICY_DENIED"
     assert "cannot be verified" in err.message
     assert "record twitter sends" in err.how_to_fix
@@ -216,7 +216,7 @@ def test_the_sandbox_is_checked_before_the_caps_so_over_cap_still_drafts():
     assert drafted.decision is Decision.DENY
     assert drafted.sandboxed is True
     assert drafted.audit.get("sandbox") is True
-    assert drafted.code == "POLSIA-E114"
+    assert drafted.code == "MERIDIAN-E114"
 
 
 def test_a_real_over_cap_send_still_hits_the_rate_cap():
@@ -224,7 +224,7 @@ def test_a_real_over_cap_send_still_hits_the_rate_cap():
     caps = RateCaps(per_channel_day={"twitter": 12}, per_channel_hour={})
     denied = decide(_req(sends_today=99), caps=caps, sandbox_mode=False)
     assert denied.decision is Decision.DENY
-    assert denied.code == "POLSIA-E117"
+    assert denied.code == "MERIDIAN-E117"
     assert denied.e_code == "E_RATE_LIMITED"
     assert denied.sandboxed is False
 

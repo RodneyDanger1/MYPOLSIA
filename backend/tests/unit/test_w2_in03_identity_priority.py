@@ -48,7 +48,7 @@ def _shipped_identity_budget() -> int:
 
 
 def _every_agent() -> list[tuple[str, type]]:
-    """Every shipped `BasePolsiaAgent` subclass: `AGENT_MAP`'s nine PLUS `company_planner`.
+    """Every shipped `BaseMeridianAgent` subclass: `AGENT_MAP`'s nine PLUS `company_planner`.
 
     REPAIR NOTE (F1, 2026-10-28 — the coder was killed after the fix but before this pin was
     widened): `AGENT_MAP` is the WORKER's factory registry and holds nine agents.

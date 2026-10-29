@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from app.agents import crew_factory
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 from app.models.company import CompanyConfig
 
 PAUSED_LINE = "company paused by owner"
@@ -46,7 +46,7 @@ async def test_the_resolver_reads_the_flag_from_the_company_row(async_db_session
 
 # ── the sync seam: dispatch_preflight / run_agent_for_task ───────────────────────────────────
 def test_dispatch_preflight_refuses_when_the_flag_is_paused(monkeypatch):
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
 
     problems = crew_factory.dispatch_preflight("email_outreach", dispatch_paused=True)
     assert any(PAUSED_LINE in p for p in problems), problems
@@ -55,9 +55,9 @@ def test_dispatch_preflight_refuses_when_the_flag_is_paused(monkeypatch):
 
 
 def test_run_agent_for_task_refuses_with_e_policy_denied_when_paused(monkeypatch):
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         crew_factory.run_agent_for_task("email_outreach", {}, {}, dispatch_paused=True)
 
     assert excinfo.value.code == E_POLICY_DENIED

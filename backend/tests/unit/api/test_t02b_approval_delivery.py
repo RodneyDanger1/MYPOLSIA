@@ -242,7 +242,7 @@ async def test_the_full_loop_over_http_the_token_is_delivered_and_the_gated_acti
 
     # F-04 dependency, named rather than hidden: this build has no counting source for `stripe`
     # (or `github`), so the worker's snapshot says the count is UNKNOWN and the gate refuses a
-    # capped channel it cannot verify (`POLSIA-E114 cap_unknown`) — live runs are refused the same
+    # capped channel it cannot verify (`MERIDIAN-E114 cap_unknown`) — live runs are refused the same
     # way.  The REPLAYED action is gated exactly like a live one, so this test supplies the
     # MEASURED count a real counter would return (the same zeros D1's egress pins hand their runs).
     async def _measured_snapshot(db, channels, *, now=None):  # noqa: ANN001, ARG001

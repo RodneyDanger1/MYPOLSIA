@@ -1,6 +1,6 @@
 """T17 / A-T17 — money is exact at rest, and every write crosses ONE boundary.
 
-Measured basis (archived in `polsia-work/build/T17-money/raw/probe_numeric_sqlite.txt`):
+Measured basis (archived in `meridian-work/build/T17-money/raw/probe_numeric_sqlite.txt`):
 `str(Numeric(14, 4))` renders `NUMERIC(14, 4)`; a SQLite round-trip stores `Decimal("1.005")`
 and reads back `Decimal("1.0050")`; `SUM` over the column is a `Decimal`.  The DDL itself is
 pinned by `test_models_schema_frozen.py`; this file pins the value contract and the single

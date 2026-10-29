@@ -1,6 +1,6 @@
 """R26 — the ads **service** swept for real: filters, limits, ordering, refusals, dialects.
 
-Measured before this lane (`polsia-work/build/R26-ads/raw/baseline-coverage.txt`):
+Measured before this lane (`meridian-work/build/R26-ads/raw/baseline-coverage.txt`):
 `app/services/ads_service.py` 30 stmts / 18 miss / **40.0%** — no shipped test called any of the four
 functions (coverage was import-time only).  This file exercises every statement and every caller-reachable
 branch of `list_campaigns` / `create_campaign` / `get_campaign` / `list_metrics` against the repo's own
@@ -14,7 +14,7 @@ Two more are cross-file and are carried here as `xfail(strict=False)` proofs wit
 (B5/B6) — never silently skipped, never pinned as if correct:
 
 B1 `get_campaign` did a raw `db.execute` while the module docstring (`ads_service.py:8`) promises "every
-   read failure is `E_DB`" — the refusal bridge (`app/api/deps.py:95-125`) only translates `PolsiaError`,
+   read failure is `E_DB`" — the refusal bridge (`app/api/deps.py:95-125`) only translates `MeridianError`,
    so a DB fault during `list_metrics`' existence check escaped as a bare 500.
 B2 `create_campaign`'s `flush()` was unwrapped — a write failure escaped raw (the same class
    `outreach_service.create_prospect:44-58` documents as fixed for prospects: `E_VALIDATION` for a
@@ -41,7 +41,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.ads import AdCampaign, AdMetric
 from app.schemas.social import AdCampaignResponse
 from app.services import ads_service
@@ -57,7 +57,7 @@ BACKEND = Path(__file__).resolve().parents[2]
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _assert_refusal(exc: PolsiaError, code: str) -> None:
+def _assert_refusal(exc: MeridianError, code: str) -> None:
     """A refusal names itself: code, a message, and the fix hint from the one table."""
     assert exc.code == code
     assert exc.message
@@ -161,7 +161,7 @@ def test_the_public_surface_is_exactly_the_four_functions() -> None:
 
 @pytest.mark.parametrize("platform", [None, "", "   "])
 async def test_create_campaign_refuses_a_blank_platform(async_db_session, platform) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_campaign(async_db_session, platform, "a name")
     _assert_refusal(excinfo.value, E_VALIDATION)
     assert excinfo.value.context == {"platform": platform, "name": "a name"}
@@ -170,7 +170,7 @@ async def test_create_campaign_refuses_a_blank_platform(async_db_session, platfo
 
 @pytest.mark.parametrize("name", [None, "", "   "])
 async def test_create_campaign_refuses_a_blank_name(async_db_session, name) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_campaign(async_db_session, "google_ads", name)
     _assert_refusal(excinfo.value, E_VALIDATION)
     assert excinfo.value.context == {"platform": "google_ads", "name": name}
@@ -184,7 +184,7 @@ async def test_create_campaign_refuses_a_status_outside_the_migrations_value_set
     """B3: `ck_ad_campaigns_status` (0002:103-104) is enforced by PostgreSQL only; SQLite cannot carry
     it (0002:297-299) and the unit fixture has no CHECK at all, so the writer must assert the set —
     exactly what that migration note requires.  Without this guard the two engines disagree."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_campaign(async_db_session, "google_ads", "camp", status=status)
     _assert_refusal(excinfo.value, E_VALIDATION)
     assert excinfo.value.context["status"] == status
@@ -258,7 +258,7 @@ async def test_create_campaign_maps_a_constraint_violation_to_a_named_refusal(
         text("CREATE UNIQUE INDEX uq_r26_ad_campaigns_name ON ad_campaigns (name)")
     )
     await create_campaign(async_db_session, "google_ads", "unique-name")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_campaign(async_db_session, "meta", "unique-name")
     _assert_refusal(excinfo.value, E_VALIDATION)
     assert excinfo.value.context == {"platform": "meta", "name": "unique-name", "status": None}
@@ -268,7 +268,7 @@ async def test_create_campaign_maps_a_constraint_violation_to_a_named_refusal(
 async def test_create_campaign_maps_a_write_failure_to_e_db(async_db_session) -> None:
     """B2: pre-fix the raw `OperationalError` escaped; the module's refusal discipline covers writes too."""
     await async_db_session.execute(text("DROP TABLE ad_campaigns"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_campaign(async_db_session, "google_ads", "no-table")
     _assert_refusal(excinfo.value, E_DB)
     assert excinfo.value.context == {"query": "ad campaign insert"}
@@ -287,7 +287,7 @@ async def test_get_campaign_returns_the_row_or_none(async_db_session) -> None:
 async def test_get_campaign_translates_a_read_failure_to_e_db(async_db_session) -> None:
     """B1: `raw db.execute` escaped as an unnamed `OperationalError`; every read here is `E_DB`."""
     await async_db_session.execute(text("DROP TABLE ad_campaigns"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await get_campaign(async_db_session, 1)
     _assert_refusal(excinfo.value, E_DB)
     assert excinfo.value.context == {"query": "ad campaign"}
@@ -389,7 +389,7 @@ async def test_a_negative_limit_is_unbounded_on_sqlite_and_divergent_on_postgres
 
 async def test_list_campaigns_translates_a_read_failure_to_e_db(async_db_session) -> None:
     await async_db_session.execute(text("DROP TABLE ad_campaigns"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_campaigns(async_db_session)
     _assert_refusal(excinfo.value, E_DB)
     assert excinfo.value.context == {"query": "ad campaigns"}
@@ -399,7 +399,7 @@ async def test_list_campaigns_translates_a_read_failure_to_e_db(async_db_session
 
 
 async def test_list_metrics_refuses_an_unknown_campaign_by_name(async_db_session) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_metrics(async_db_session, 4242)
     _assert_refusal(excinfo.value, E_NOT_FOUND)
     assert excinfo.value.context == {"campaign_id": 4242}
@@ -437,7 +437,7 @@ async def test_list_metrics_limit_boundaries(async_db_session) -> None:
 async def test_list_metrics_translates_a_read_failure_to_e_db(async_db_session) -> None:
     campaign = await _add_campaign(async_db_session)
     await async_db_session.execute(text("DROP TABLE ad_metrics"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_metrics(async_db_session, campaign.id)
     _assert_refusal(excinfo.value, E_DB)
     assert excinfo.value.context == {"query": "ad metrics"}
@@ -448,7 +448,7 @@ async def test_list_metrics_existence_check_is_e_db_when_campaigns_are_unreadabl
 ) -> None:
     """B1's second symptom: the existence check runs on `ad_campaigns`; pre-fix its failure escaped raw."""
     await async_db_session.execute(text("DROP TABLE ad_campaigns"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_metrics(async_db_session, 1)
     _assert_refusal(excinfo.value, E_DB)
     assert excinfo.value.context == {"query": "ad campaign"}
@@ -502,7 +502,7 @@ async def test_head_schema_metrics_are_read_through_the_generated_columns(
 
 
 async def test_head_schema_unknown_campaign_still_refuses_by_name(head_session) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_metrics(head_session, 7)
     _assert_refusal(excinfo.value, E_NOT_FOUND)
 

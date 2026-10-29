@@ -27,10 +27,10 @@ import pytest
 
 from app.agents import crew_factory, deepseek_runtime
 from app.agents import runtime_status as rs
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.business_planning.agent import BusinessPlanningAgent
 from app.config import settings
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 CONNECTIVITY_TASK = {
     "title": "Connectivity check - model key",
@@ -74,7 +74,7 @@ def test_the_prompt_carries_the_live_runtime_facts(monkeypatch):
 
 
 def test_the_block_is_honest_when_no_key_is_configured_and_the_run_is_mocked(monkeypatch):
-    monkeypatch.setenv("POLSIA_CLAUDE_MODEL", "claude-pinned-by-deployment")
+    monkeypatch.setenv("MERIDIAN_CLAUDE_MODEL", "claude-pinned-by-deployment")
     doctrine = _doctrine(monkeypatch, deepseek=False, mock_mode=True)
 
     assert "- provider: claude_cli" in doctrine, doctrine
@@ -133,11 +133,11 @@ def test_a_key_status_read_failure_is_reported_as_unknown_not_invented(monkeypat
 def _install_agent(monkeypatch, status: str, notes: list[str], summary: str | None = None) -> None:
     """Install a stub agent whose run returns the given envelope status/notes."""
 
-    class StubAgent(BasePolsiaAgent):
+    class StubAgent(BaseMeridianAgent):
         agent_type = "business_planning"
         output_schema = None
 
-        def run(self, task, context):  # noqa: ANN001 - the frozen BasePolsiaAgent seam
+        def run(self, task, context):  # noqa: ANN001 - the frozen BaseMeridianAgent seam
             return {
                 "summary": summary or (
                     "Connectivity check: could not see the dispatch configuration"
@@ -152,7 +152,7 @@ def _install_agent(monkeypatch, status: str, notes: list[str], summary: str | No
 def test_run_agent_for_task_raises_by_name_when_the_run_refused(monkeypatch):
     _install_agent(monkeypatch, "refused", ["no visibility into whether a model key is configured"])
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         crew_factory.run_agent_for_task("business_planning", CONNECTIVITY_TASK, {})
 
     assert refusal.value.code == E_VALIDATION

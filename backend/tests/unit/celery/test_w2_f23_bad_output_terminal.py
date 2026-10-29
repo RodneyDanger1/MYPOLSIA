@@ -1,7 +1,7 @@
 """F-23 — a validator failure is a NAMED TERMINAL state, never a retried-then-wedged row.
 
 Live incident (2026-10-28): task 313 (`social_media`) produced a twitter post longer than the
-280-char validator, the run failed `E_AGENT_BAD_OUTPUT` (`POLSIA-E110`), and the worker spent TWO
+280-char validator, the run failed `E_AGENT_BAD_OUTPUT` (`MERIDIAN-E110`), and the worker spent TWO
 more model calls re-asking the identical prompt (`attempts=2`, `row.error_message` naming the
 validator).  The retry message then died with the worker, leaving a `pending` row with no delivery
 and no second net — the wedge.  The repo's own agent-side doctrine already says the opposite of
@@ -20,11 +20,11 @@ import json
 
 import pytest
 
-from app.core.errors import E_AGENT_BAD_OUTPUT, E_CLI_TIMEOUT, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_AGENT_BAD_OUTPUT, E_CLI_TIMEOUT, E_POLICY_DENIED, MeridianError
 
 #: The live validator text (verbatim shape from task 313's `tasks.error_message`).
 VALIDATOR_TEXT = (
-    "social_media failed: POLSIA-E110 1 validation error for SocialMediaOutput posts Value error, "
+    "social_media failed: MERIDIAN-E110 1 validation error for SocialMediaOutput posts Value error, "
     "twitter content must be <= 280 chars"
 )
 
@@ -59,11 +59,11 @@ def test_the_classifier_keeps_validator_failures_out_of_the_retryable_set():
     from celery_app.tasks.agent_tasks import RETRYABLE_CODES, is_retryable
 
     assert E_AGENT_BAD_OUTPUT not in RETRYABLE_CODES
-    assert is_retryable(PolsiaError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT)) is False
+    assert is_retryable(MeridianError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT)) is False
     # The infrastructure set is untouched: one attempt at each, then the ladder (not this fix).
     for code in (E_CLI_TIMEOUT,):
         assert code in RETRYABLE_CODES
-        assert is_retryable(PolsiaError(code, "transient")) is True
+        assert is_retryable(MeridianError(code, "transient")) is True
 
 
 def test_a_validator_failure_is_terminal_after_one_execution(queue_db, install_run_spy,
@@ -76,9 +76,9 @@ def test_a_validator_failure_is_terminal_after_one_execution(queue_db, install_r
     from celery_app.tasks.agent_tasks import run_agent_task
 
     task_id = queue_db.create_task(title="oversized twitter post", agent_type="social_media")
-    spy = install_run_spy(error_factory=lambda: PolsiaError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT))
+    spy = install_run_spy(error_factory=lambda: MeridianError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT))
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         run_agent_task(task_id)
 
     assert raised.value.code == E_AGENT_BAD_OUTPUT
@@ -102,7 +102,7 @@ def test_an_eager_validator_failure_ends_failed_and_does_not_re_execute(queue_db
     """Through Celery's own eager path: FAILURE after ONE call, no re-execution."""
     task_id = queue_db.create_task(title="oversized twitter post eager",
                                    agent_type="social_media")
-    spy = install_run_spy(error_factory=lambda: PolsiaError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT))
+    spy = install_run_spy(error_factory=lambda: MeridianError(E_AGENT_BAD_OUTPUT, VALIDATOR_TEXT))
 
     result = eager_delivery(task_id)
 
@@ -123,9 +123,9 @@ def test_a_retryable_failure_still_retries_and_carries_the_reconciler_marker(que
     from celery_app.tasks.agent_tasks import run_agent_task
 
     task_id = queue_db.create_task(title="transport failure")
-    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure"))
+    install_run_spy(error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure"))
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         run_agent_task(task_id)
 
     assert len(retry_recorder) == 1
@@ -153,7 +153,7 @@ def test_a_completed_row_drops_the_previous_attempts_error_text(queue_db):
         async with queue_db.factory() as session:
             await update_task_status(
                 session, task_id, "failed",
-                error_message=f"PolsiaError: {E_AGENT_BAD_OUTPUT}: {VALIDATOR_TEXT}",
+                error_message=f"MeridianError: {E_AGENT_BAD_OUTPUT}: {VALIDATOR_TEXT}",
             )
             await session.commit()
         async with queue_db.factory() as session:
@@ -205,9 +205,9 @@ def test_a_non_retryable_business_refusal_still_ends_failed_without_a_retry(queu
     from celery_app.tasks.agent_tasks import run_agent_task
 
     task_id = queue_db.create_task(title="policy refusal")
-    install_run_spy(error_factory=lambda: PolsiaError(E_POLICY_DENIED, "test-only refusal"))
+    install_run_spy(error_factory=lambda: MeridianError(E_POLICY_DENIED, "test-only refusal"))
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         run_agent_task(task_id)
 
     assert raised.value.code == E_POLICY_DENIED

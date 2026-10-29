@@ -43,10 +43,10 @@ NEW_FIELDS: dict[str, tuple[object, str, str]] = {
         "DEEPSEEK_TOOL_LOOP_MAX_ITERATIONS",
         "7",
     ),
-    "model_backend": ("", "POLSIA_MODEL_BACKEND", "api"),
+    "model_backend": ("", "MERIDIAN_MODEL_BACKEND", "api"),
     "redis_connect_timeout_seconds": (1.0, "REDIS_CONNECT_TIMEOUT_SECONDS", "2.5"),
     "redis_socket_timeout_seconds": (1.0, "REDIS_SOCKET_TIMEOUT_SECONDS", "3.5"),
-    "secrets_file": ("", "POLSIA_SECRETS_FILE", "data/custom_secrets.json"),
+    "secrets_file": ("", "MERIDIAN_SECRETS_FILE", "data/custom_secrets.json"),
     "stripe_signature_tolerance": (300, "STRIPE_SIGNATURE_TOLERANCE", "45"),
 }
 

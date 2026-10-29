@@ -36,7 +36,7 @@ import time
 import httpx
 import pytest
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import integration_status_service
 
 #: Clearly-fake, ASCII, NOT shaped like a provider credential (nothing here can be mistaken for a
@@ -76,7 +76,7 @@ async def test_probe_never_reads_past_the_cap(monkeypatch):
     transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
     monkeypatch.setattr(integration_status_service, "_TRANSPORT", transport, raising=True)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await integration_status_service._probe_json(
             "github", "https://api.github.com/user", FAKE_PROBE_TOKEN
         )

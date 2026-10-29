@@ -1,7 +1,7 @@
 """W4-F21-1 (wave 5) — a run may only claim a character count its payload really measures.
 
 Measured defect (live once — task 327 / run 319, evidence
-`polsia-work/build/swarm-2026-10-28/forge/raw/w4/f21-live-run319-output.json`):
+`meridian-work/build/swarm-2026-10-28/forge/raw/w4/f21-live-run319-output.json`):
 
   * the social run's summary said *"Drafted a single X post exactly 320 characters long … I wrote
     the 320-character drill tweet … Character count verified at 320"* and one note repeated

@@ -18,7 +18,7 @@ non-JSON 200, the in-loop `E_CLI_JSON` shapes) went straight up with only its ow
     `usage_metadata()`'s placeholders, so a failed run's audit copy claimed `context_tokens=0` /
     `stable_prefix_hash=""` / a `token_estimate` cost with a NULL estimate (RT-04).
 
-What is pinned here, against the REAL runtime + REAL `BasePolsiaAgent._real_call` + the REAL
+What is pinned here, against the REAL runtime + REAL `BaseMeridianAgent._real_call` + the REAL
 ladder.  The only doubles are the tree's own test seams: `httpx.MockTransport` (the provider) and a
 counting registry installed on `deepseek_runtime._tool_registry` (the frozen executor seam, exactly
 as `test_a3_writepath.py` does).
@@ -31,9 +31,9 @@ import httpx
 import pytest
 
 from app.agents import accounting, claude_cli, deepseek_runtime, pricing
-from app.agents.base_agent import BasePolsiaAgent, usage_from_outcome
+from app.agents.base_agent import BaseMeridianAgent, usage_from_outcome
 from app.config import settings
-from app.core.errors import E_AGENT_BAD_OUTPUT, E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_AGENT_BAD_OUTPUT, E_CLI_TIMEOUT, MeridianError
 from celery_app.tasks import _common
 
 SAFE_TEST_KEY = "test-key-never-a-real-secret"
@@ -41,7 +41,7 @@ FETCH_ARGS = json.dumps({"url": "https://example.test/w2-page"})
 FETCH_RESULT = "W2 page text — the tool really ran."
 
 
-class _ToolAgent(BasePolsiaAgent):
+class _ToolAgent(BaseMeridianAgent):
     """A real subclass; only the runtime/retry seam is exercised (`run` is never dispatched)."""
 
     agent_type = "competitor_research"
@@ -169,7 +169,7 @@ def test_a_raised_timeout_after_a_tool_turn_does_not_execute_the_tool_again(regi
     )
     _agent_path(monkeypatch, server, retries=1)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         _ToolAgent()._real_call("do the thing")
 
     assert caught.value.code == E_CLI_TIMEOUT
@@ -198,7 +198,7 @@ def test_a_total_failure_refusal_carries_the_actions_and_usage_for_the_worker(re
     _agent_path(monkeypatch, server, retries=0)
     agent = _ToolAgent()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._real_call("do the thing")
 
     refusal = caught.value
@@ -232,7 +232,7 @@ def test_the_runtime_raised_refusal_itself_carries_the_journal_and_usage(registr
     """The runtime's half of RT-01: the raise that happens INSIDE the loop carries the evidence."""
     server = _Scripted(_tool_turn("c1"), httpx.ReadTimeout("read timed out"))
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         deepseek_runtime.invoke(
             _invocation(), client=server.client(), api_key=SAFE_TEST_KEY, attempt=1,
         )
@@ -251,7 +251,7 @@ def test_a_tool_less_raised_refusal_keeps_its_exact_context_shape():
     server = _Scripted(httpx.ReadTimeout("read timed out"))
     inv = claude_cli.build_invocation(prompt="hi", timeout_s=30, schema_name="competitor_research")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         deepseek_runtime.invoke(inv, client=server.client(), api_key=SAFE_TEST_KEY)
 
     assert set(caught.value.context) == {"timeout_s", "url", "runtime"}
@@ -276,7 +276,7 @@ def test_the_repair_guard_carries_the_attempt_zero_usage():
     agent = _measured_agent()
     assert agent.session_id is None
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._require_repair_input()
 
     assert caught.value.code == E_AGENT_BAD_OUTPUT
@@ -294,7 +294,7 @@ def test_the_repair_guard_carries_the_actions_when_the_run_made_any():
               "args": {}, "run_id": None, "attempt": 1, "result": "x", "result_digest": "x"}
     agent.last_actions = [record]
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._require_repair_input()
 
     assert caught.value.context["actions"] == [record]
@@ -303,7 +303,7 @@ def test_the_repair_guard_carries_the_actions_when_the_run_made_any():
 def test_an_unmeasured_guard_refusal_gains_no_fabricated_accounting_keys():
     """Negative control: no measurement -> no usage key (NULL, never a fabricated zero)."""
     agent = _ToolAgent()
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._require_repair_input()
     assert "usage" not in caught.value.context
     assert "actions" not in caught.value.context

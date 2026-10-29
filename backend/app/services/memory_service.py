@@ -46,7 +46,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chroma_client import get_collection  # noqa: F401  (re-exported for patching)
-from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import now_utc
 from app.models.memory import MemoryEntry
 from app.services.query_helpers import fetch_scalar, fetch_scalars
@@ -215,7 +215,7 @@ async def store_memory(
             ids=[chroma_id],
         )
     except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"memory {entry.id} was written but could not be indexed in ChromaDB: "
             f"{type(exc).__name__}: {exc}",
@@ -274,7 +274,7 @@ async def search_memory(
 ) -> list[dict[str, Any]]:
     """Semantic search; every result dict has a "content" key."""
     if not query or not query.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "search_memory requires a non-empty query",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -309,7 +309,7 @@ async def search_memory(
         hits = await _sql_fallback(db, query, n_results, category)
         if hits:
             return hits
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"semantic search unavailable ({type(exc).__name__}: {exc}) and the keyword "
             "fallback matched nothing",
@@ -392,7 +392,7 @@ async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
     """
     entry = await get_memory(db, memory_id)
     if entry is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"memory {memory_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -406,7 +406,7 @@ async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
             collection = await asyncio.to_thread(get_collection)
             await asyncio.to_thread(collection.delete, ids=[chroma_id])
         except Exception as exc:  # noqa: BLE001 - the vector store is an external dependency
-            raise PolsiaError(
+            raise MeridianError(
                 E_STORAGE,
                 f"memory {memory_id} was NOT deleted: its ChromaDB document {chroma_id!r} "
                 f"could not be removed ({type(exc).__name__}: {exc}) — the row is kept so the "
@@ -429,7 +429,7 @@ async def delete_memory(db: AsyncSession, memory_id: int) -> MemoryEntry:
             if chroma_id
             else "the row could not be deleted"
         )
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"memory {memory_id}: {removed} ({type(exc).__name__}: {exc}) — re-run the delete "
             "to finish",
@@ -600,7 +600,7 @@ async def remember_run(
             source=agent_type,
             tags=tags,
         )
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return {
             "ok": False,
             "error": {

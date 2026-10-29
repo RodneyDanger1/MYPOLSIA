@@ -30,7 +30,7 @@ RACE NOTE (measured, fixed in V7): the frozen migration carries only an index on
 no DB constraint can encode "one active row" (`ends_at > now` is not a column). Historically the
 check and the insert ran in one transaction; on SQLite writes serialize, but the V7 close drill
 PROVED that on PostgreSQL two TRUE-concurrent POSTs under READ COMMITTED BOTH pass the check
-(sessions 2 and 3, 2026-10-14 — raw: polsia-work/build/ui-reverse/wave-v7/drills.txt). The fix
+(sessions 2 and 3, 2026-10-14 — raw: meridian-work/build/ui-reverse/wave-v7/drills.txt). The fix
 is `_acquire_start_window_lock`: a transaction-scoped `pg_advisory_xact_lock` taken BEFORE the
 check-then-insert, so the second starter blocks until the first commits and then refuses the
 named `E_VALIDATION`. No schema change; SQLite (unit harness) is an explicit no-op. The live
@@ -50,7 +50,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import utcnow
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.core.timeutil import as_bound_instant
 from app.models.auto_mode import AutoModeSession
 from app.models.task import AgentRun
@@ -73,7 +73,7 @@ MAX_DURATION_HOURS = 120.0
 #: PostgreSQL advisory-lock key serializing `start_session`'s check-then-insert. The frozen
 #: schema cannot encode "one active row" (see the module RACE NOTE), so cross-process
 #: serialization rides a transaction-scoped lock instead of a constraint. The value is a fixed
-#: 8-byte constant ("POLSIAV7" as hex) — collisions with other subsystems are impossible in
+#: 8-byte constant ("MERIDIANV7" as hex) — collisions with other subsystems are impossible in
 #: this tree because no other module takes advisory locks.
 _POSTGRES_START_WINDOW_LOCK_KEY = 0x504F4C5349415637
 
@@ -118,7 +118,7 @@ def validate_duration_hours(duration_hours: float) -> timedelta:
     except (TypeError, ValueError):
         hours = float("nan")
     if not (MIN_DURATION_HOURS <= hours <= MAX_DURATION_HOURS):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"duration_hours must be between 1 (1 hour) and 120 (5 days); got {duration_hours!r}",
             how_to_fix="send duration_hours as a number between 1 and 120 (1 hour to 5 days)",
@@ -311,7 +311,7 @@ async def start_session(
     live = await get_live_session(db, now=moment)
     if live is not None:
         ends = _as_utc(live.ends_at)
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "an Auto Mode session is already active",
             how_to_fix=(
@@ -343,7 +343,7 @@ async def stop_active_session(
     await close_stale_sessions(db, now=moment)
     live = await get_live_session(db, now=moment)
     if live is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "no Auto Mode session is active",
             how_to_fix=(

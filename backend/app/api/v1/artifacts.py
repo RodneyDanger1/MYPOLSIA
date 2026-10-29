@@ -74,7 +74,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_NOT_FOUND, PolsiaError
+from app.core.errors import E_NOT_FOUND, MeridianError
 from app.core.timeutil import iso_utc
 from app.schemas.common import UtcDatetime
 from app.services import artifact_service, run_service
@@ -177,7 +177,7 @@ async def _refuse_an_unknown_run(db: AsyncSession, run_id: str) -> None:
     ledger_id = _ledger_id(run_id)
     if ledger_id is not None and await run_service.get_run(db, run_id=ledger_id) is not None:
         return
-    raise PolsiaError(
+    raise MeridianError(
         E_NOT_FOUND,
         f"artifacts: no such run {run_id!r} — the run ledger has no row for it and this volume "
         "has no workspace for it either",

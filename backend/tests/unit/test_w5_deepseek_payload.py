@@ -25,7 +25,7 @@ import pytest
 
 from app.agents import claude_cli, deepseek_runtime
 from app.config import Settings
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 SAFE_TEST_KEY = "sk-test-not-a-real-key"
 
@@ -139,7 +139,7 @@ def test_an_unknown_effort_is_refused_before_any_request_is_built(monkeypatch) -
     monkeypatch.setattr(deepseek_runtime, "settings", Settings(_env_file=None))
     bodies, client = _capture()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_invocation(), client=client, api_key=SAFE_TEST_KEY)
 
     assert excinfo.value.code == E_VALIDATION

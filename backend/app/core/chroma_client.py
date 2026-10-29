@@ -122,7 +122,7 @@ def reset_cache() -> None:
     """Drop the cached chroma client/collection handles (module-level `_client`/`_collection`).
 
     ZERO CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/grep_reset_cache.txt) — nothing in app/,
+    meridian-work/build/R25-deadhelpers/raw/grep_reset_cache.txt) — nothing in app/,
     celery_app/, scripts/, tests/ or conftest calls it; not production AND not
     test-support either (tests reset the handles by monkeypatching `_client`/`_collection`
     to None — tests/unit/test_chroma_path_resolver.py:119-120 — or patch

@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.policy_firewall import issue_approval, verify_approval
 from app.config import settings
-from app.core.errors import E_CONFIG, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_VALIDATION, MeridianError
 from app.models.outreach import Prospect
 from app.services import email_compliance as ec
 
@@ -91,7 +91,7 @@ async def test_forged_hmac_is_refused_and_moves_nothing(api_client, async_db_ses
     forged_key = hmac.new(b"attacker-guess", VICTIM.encode(), hashlib.sha256).digest()
     forged = f"{_b64(VICTIM.encode())}.{_b64(forged_key)}"
 
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         ec.verify_unsubscribe_token(forged)
     assert refusal.value.code == E_VALIDATION
 
@@ -122,7 +122,7 @@ async def test_truncated_tokens_are_one_named_refusal(api_client, async_db_sessi
         f".{sig_part}",                 # empty payload half
     ]
     for bad in truncated:
-        with pytest.raises(PolsiaError) as refusal:
+        with pytest.raises(MeridianError) as refusal:
             ec.verify_unsubscribe_token(bad)
         assert refusal.value.code == E_VALIDATION, bad
         resp = await api_client.get(f"{UNSUB_ROUTE}?token={bad}")
@@ -149,7 +149,7 @@ async def test_mutated_address_with_a_transplanted_signature_is_refused(api_clie
     _, sig_part = attacker_token.split(".")
 
     transplanted = f"{_b64(VICTIM.encode())}.{sig_part}"
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         ec.verify_unsubscribe_token(transplanted)
     assert refusal.value.code == E_VALIDATION
 
@@ -171,7 +171,7 @@ async def test_a_raw_secret_hmac_is_not_an_unsubscribe_token():
     """
     naive = _b64(hmac.new(SECRET.encode(), VICTIM.encode(), hashlib.sha256).digest())
     naive_token = f"{_b64(VICTIM.encode())}.{naive}"
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         ec.verify_unsubscribe_token(naive_token)
     assert refusal.value.code == E_VALIDATION
 
@@ -185,7 +185,7 @@ async def test_a_raw_secret_hmac_is_not_an_unsubscribe_token():
 async def test_an_approvals_token_does_not_verify_as_an_unsubscribe_token():
     """PURPOSE (the other direction): a REAL approvals token is not an opt-out token."""
     approvals_token = issue_approval(SECRET.encode(), action_fingerprint="some-other-action", ttl_s=600)
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         ec.verify_unsubscribe_token(approvals_token.token)
     assert refusal.value.code == E_VALIDATION
 
@@ -251,10 +251,10 @@ async def test_no_secret_refuses_minting_and_verification_by_name(api_client, as
     body_before = await _status(db, VICTIM)
 
     monkeypatch.setattr(settings, "approval_secret", "")
-    with pytest.raises(PolsiaError) as mint_refusal:
+    with pytest.raises(MeridianError) as mint_refusal:
         ec.unsubscribe_token(ATTACKER)
     assert mint_refusal.value.code == E_CONFIG
-    with pytest.raises(PolsiaError) as verify_refusal:
+    with pytest.raises(MeridianError) as verify_refusal:
         ec.verify_unsubscribe_token(good)
     assert verify_refusal.value.code == E_CONFIG
 

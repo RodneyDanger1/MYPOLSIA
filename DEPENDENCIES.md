@@ -96,7 +96,7 @@ service.
 | Playwright `No such built-in module: node:sqlite` | Node < 22 | install Node ≥22 (`winget install -e --id OpenJS.NodeJS`) |
 | `npm ci` fails on a stale lockfile | lockfile drift | `npm install` (same fallback the CI uses) |
 | `/api/v1/phone/*` answers 503 `E_PHONE_UNAVAILABLE` | Phone Link store not mounted / empty (the phone feature, live since V16) | set `PHONE_LINK_DB_DIR` to the store root and `docker compose up -d`; keep the Phone Link app running for fresh sync (`PHONELINK-MCP-TEST.md`) |
-| `make restore-drill` exits 2 with `REFUSED: a container named "polsia-restore-drill-pg" already exists` | a previous drill was interrupted before its trap could tear down | `docker rm -f polsia-restore-drill-pg`, then re-run; the script never reuses or replaces an existing container |
+| `make restore-drill` exits 2 with `REFUSED: a container named "meridian-restore-drill-pg" already exists` | a previous drill was interrupted before its trap could tear down | `docker rm -f meridian-restore-drill-pg`, then re-run; the script never reuses or replaces an existing container |
 | `make restore-drill` exits 2 with `docker is not available on PATH` | Docker Desktop not running / CLI not on PATH | start Docker Desktop; verify `docker ps` works in the same shell |
 | `make smoke` reports `FAIL auth-200: no key in $API_KEY` | the key is read from the **environment** only (never `.env`) | `export API_KEY=…` in the same shell, then re-run; `make smoke-dry` shows whether the key is present |
 | `make smoke` reports `FAIL server-header: Server: nginx/x.y.z` | nginx advertises its version (`server_tokens` defaults to `on`) | add `server_tokens off;` at `http{}` scope in `nginx/nginx.conf`, then `docker compose exec nginx nginx -s reload` |

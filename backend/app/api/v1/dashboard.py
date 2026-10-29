@@ -48,7 +48,7 @@ from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictDate
 from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.config import settings
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 from app.core.timeutil import day_window, dialect_name, today_in
 from app.models.company import CompanyConfig
 from app.models.finance import RevenueSnapshot
@@ -196,7 +196,7 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
         # V20/L1 (card L2-09): this was a bare `RuntimeError` — an UNCODED 500 for a driver that
         # broke its own `SELECT ... aggregate` contract.  Refuse BY NAME, the sibling pattern
         # `run_service.count_runs` already uses (E_DB, 503, how_to_fix, the query named).
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "dashboard summary statement returned no row",
             how_to_fix=ERROR_HINTS[E_DB],

@@ -390,7 +390,7 @@ def test_an_agent_outside_the_allowlist_gets_the_standard_refusal(store, agent_t
     error = payload["error"]
     assert error["code"] == E_POLICY_DENIED
     assert "phone_read" in error["message"] and agent_type in error["message"]
-    assert error["context"]["policy_code"] == "POLSIA-E114"
+    assert error["context"]["policy_code"] == "MERIDIAN-E114"
 
 
 def test_an_unknown_agent_is_refused_by_name(store):

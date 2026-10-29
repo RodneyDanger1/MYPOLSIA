@@ -65,7 +65,7 @@ export class ApiError extends Error {
 
 /** The named refusal carried by a response, in EITHER wire shape the backend emits (D5; audit L5-01).
  *
- *  The app's PolsiaError handler emits the envelope `{ok: false, error: {code, message, how_to_fix}}`;
+ *  The app's MeridianError handler emits the envelope `{ok: false, error: {code, message, how_to_fix}}`;
  *  FastAPI's default handler serializes `HTTPException(detail={code, ...})` — the shape `refusal_guard`
  *  and direct raises produce — as `{"detail": {code, ...}}`. Before this, only the envelope was parsed,
  *  so every guard-path refusal degraded to `E_HTTP_<status>` with a raw JSON blob as its message. A

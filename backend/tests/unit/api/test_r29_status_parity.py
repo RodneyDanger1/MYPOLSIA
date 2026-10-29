@@ -1,4 +1,4 @@
-"""R29 — ONE status table, ONE refusal response: the same `PolsiaError` answers the same way
+"""R29 — ONE status table, ONE refusal response: the same `MeridianError` answers the same way
 wherever it was raised.
 
 The defect this file closes (R27 §M2; raw evidence in
@@ -77,7 +77,7 @@ from app.core.errors import (
     E_UPSTREAM,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.main import app
 
@@ -177,13 +177,13 @@ class _Raiser:
         raise self.exc
 
 
-def _refusal(code: str) -> PolsiaError:
+def _refusal(code: str) -> MeridianError:
     """The SAME refusal object shape for both legs, so the responses are byte-comparable."""
-    return PolsiaError(code, f"r29 parity probe for {code}", context={"probe": code})
+    return MeridianError(code, f"r29 parity probe for {code}", context={"probe": code})
 
 
 def _in_route_endpoint(code: str):
-    """The documented in-route shape: `PolsiaError` in the body, converted by `refusal_guard`."""
+    """The documented in-route shape: `MeridianError` in the body, converted by `refusal_guard`."""
 
     async def endpoint() -> dict:
         with refusal_guard():
@@ -339,7 +339,7 @@ async def test_real_e_db_refusal_matches_wherever_the_failure_happened(
     try:
 
         async def _refusing_get_db():
-            raise PolsiaError(E_DB, "could not open a session", how_to_fix=ERROR_HINTS[E_DB])
+            raise MeridianError(E_DB, "could not open a session", how_to_fix=ERROR_HINTS[E_DB])
 
         app.dependency_overrides[get_db] = _refusing_get_db
         pre_resp = await api_client.get("/api/v1/social/posts", headers=auth_headers)

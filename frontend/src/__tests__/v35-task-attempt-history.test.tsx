@@ -48,7 +48,7 @@ const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 /** The live `/tasks/313` record, verbatim in shape (the wire the baseline captured). */
 const RETIRED = {
   message:
-    "PolsiaError: E_AGENT_BAD_OUTPUT: social_media failed: POLSIA-E110 1 validation error for SocialMediaOutput\nposts\n  Value error, twitter content must be <= 280 chars",
+    "MeridianError: E_AGENT_BAD_OUTPUT: social_media failed: MERIDIAN-E110 1 validation error for SocialMediaOutput\nposts\n  Value error, twitter content must be <= 280 chars",
   message_chars: 347,
   truncated: false,
   attempts: 3,
@@ -195,11 +195,11 @@ describe("F-41 — the retired attempt error is rendered as history", () => {
 
   it("keeps a live failure as the CURRENT error: Error block present, no invented history", async () => {
     const { dialog } = await openSheet(
-      task({ status: "failed", error_message: "POLSIA-E110: run failed", completed_at: null }),
+      task({ status: "failed", error_message: "MERIDIAN-E110: run failed", completed_at: null }),
     );
 
     // The existing Error section still renders the current failure…
-    expect(dialog.textContent).toMatch(/POLSIA-E110: run failed/);
+    expect(dialog.textContent).toMatch(/MERIDIAN-E110: run failed/);
     // …and no attempt-history section is invented for a row the wire gave no history.
     expect(within(dialog).queryByTestId("task-attempt-history")).toBeNull();
   });
@@ -232,7 +232,7 @@ describe("F-41 — absence and junk are absence, never fabricated facts", () => 
 
   it.each([
     ["a list", ["not", "a", "record"]],
-    ["a string", "POLSIA-E110"],
+    ["a string", "MERIDIAN-E110"],
     ["a number", 7],
     ["an object with no message", { attempts: 3, retired_at: "2026-10-29T01:31:00.115Z" }],
     ["an object with an empty message", { message: "", message_chars: 0, truncated: false }],

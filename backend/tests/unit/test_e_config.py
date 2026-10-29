@@ -6,9 +6,9 @@ T4 (seat S2-t4t14): `timeutil.company_tz` converts W3-refusals' S-04 warning int
 The other `E_CONFIG` raise site (T2's morning-hour validation) is re-pinned here and by
 `test_daily_cycle_window.py`.
 
-T14: `FailureCode.RATE_CAPPED` ("POLSIA-E117") is dead in the CLI-envelope taxonomy —
+T14: `FailureCode.RATE_CAPPED` ("MERIDIAN-E117") is dead in the CLI-envelope taxonomy —
 `grep -rn RATE_CAPPED backend` found only the enum member and its two mapping rows; the cap
-is raised by the policy firewall as the raw "POLSIA-E117" string (`policy_firewall.py:415`,
+is raised by the policy firewall as the raw "MERIDIAN-E117" string (`policy_firewall.py:415`,
 via `PolicyDecision.e_code`), never by `classify_error_envelope`.  The two rows are deleted;
 the member stays (stable numbering + the comment that explains its real runtime).
 """
@@ -25,7 +25,7 @@ from app.core.errors import (
     E_CONFIG,
     E_REDIS,
     HTTP_STATUS_BY_CODE,
-    PolsiaError,
+    MeridianError,
     http_status_for,
 )
 
@@ -33,7 +33,7 @@ from app.core.errors import (
 
 
 def test_malformed_company_timezone_is_a_named_e_config_refusal(monkeypatch):
-    """`"Not/AZone"` raises `PolsiaError(E_CONFIG)`; the message names the bad value.
+    """`"Not/AZone"` raises `MeridianError(E_CONFIG)`; the message names the bad value.
 
     The raise IS the "no silent UTC" proof: no fallback value ever reaches a caller, and
     the refusal text must not offer a quiet default either.
@@ -42,7 +42,7 @@ def test_malformed_company_timezone_is_a_named_e_config_refusal(monkeypatch):
 
     monkeypatch.setattr(settings, "company_timezone", "Not/AZone")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         timeutil.company_tz()
 
     err = excinfo.value
@@ -57,7 +57,7 @@ def test_malformed_company_timezone_is_a_named_e_config_refusal(monkeypatch):
 
 def test_malformed_explicit_argument_raises_the_same_refusal():
     """An explicit `tz_name` bypassing settings is the same state — refusal, never a fallback."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         timeutil.company_tz("Not/AZone")
 
     assert excinfo.value.code == E_CONFIG
@@ -103,7 +103,7 @@ async def test_morning_hour_refusal_second_site_still_e_config(monkeypatch):
 
     monkeypatch.setattr(company_service, "get_daily_cycle_hour", _stored_hour)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await daily_cycle._resolve_morning_hour(None)
 
     assert excinfo.value.code == E_CONFIG
@@ -114,8 +114,8 @@ async def test_morning_hour_refusal_second_site_still_e_config(monkeypatch):
 
 
 def test_t14_rate_capped_member_survives_without_its_rows():
-    """The enum member stays (stable POLSIA-E117 naming); the two mapping rows are gone."""
-    assert FailureCode.RATE_CAPPED.value == "POLSIA-E117"
+    """The enum member stays (stable MERIDIAN-E117 naming); the two mapping rows are gone."""
+    assert FailureCode.RATE_CAPPED.value == "MERIDIAN-E117"
     assert FailureCode.RATE_CAPPED not in FAILURE_TO_E_CODE
     assert FailureCode.RATE_CAPPED not in REMEDIATION
     # the lookup cannot KeyError for the member in any reachable path: `.get(...) or` guards it

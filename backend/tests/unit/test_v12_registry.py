@@ -244,7 +244,7 @@ def test_an_unknown_agent_type_is_refused(live_server):
 
 
 def test_kill_switch_freeze_refuses_tool_calls(monkeypatch):
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
     payload = _payload(tool_registry.execute_tool("macro_snapshot", {}, agent_type="finance"))
 
     assert payload["ok"] is False

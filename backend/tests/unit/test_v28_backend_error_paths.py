@@ -39,7 +39,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.models.outreach import EmailLog, Prospect
 from app.services import prospect_service, site_service
@@ -87,7 +87,7 @@ async def test_deleting_a_prospect_with_send_history_is_a_named_refusal(
     await async_db_session.commit()
     await _enable_sqlite_foreign_keys(async_db_session)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await prospect_service.delete_prospect(async_db_session, prospect_id)
 
     refusal = excinfo.value
@@ -141,7 +141,7 @@ async def test_deleting_a_prospect_without_history_still_removes_it(async_db_ses
     await async_db_session.commit()
 
     assert removed.id == prospect.id
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await prospect_service.get_prospect(async_db_session, prospect.id)
     assert excinfo.value.code == "E_NOT_FOUND"
 
@@ -165,7 +165,7 @@ async def test_an_opt_out_normalises_the_address_before_it_creates_a_prospect(
 
     assert result["address"] == "ada@example.com"
     # One person, one prospect: the owner's create of the same address is now a named duplicate.
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await prospect_service.create_prospect(async_db_session, email="ada@example.com")
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["field"] == "email"
@@ -194,7 +194,7 @@ async def test_a_failed_site_write_is_e_storage_and_leaves_the_slug_reusable(
     original = Path.write_text
     _fail_second_write(monkeypatch, original)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.generate_site(
             async_db_session, root=tmp_path, slug="acme-site", title="Acme"
         )

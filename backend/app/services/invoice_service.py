@@ -54,7 +54,7 @@ from app.core.errors import (
     E_NOT_FOUND,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.timeutil import now_utc, today_in
 from app.models.invoice import Invoice, InvoiceStatus
@@ -112,7 +112,7 @@ def _coerce_status(value: Any) -> InvoiceStatus:
         return InvoiceStatus(value)
     except ValueError as exc:
         legal = ", ".join(status.value for status in InvoiceStatus)
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"{value!r} is not an invoice status; the legal values are: {legal}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -144,7 +144,7 @@ async def create_invoice(
     issue = issue_date or today_in()
     days = DEFAULT_NET_DAYS if net_days is None else int(net_days)
     if days < 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"net_days must be >= 0, got {days}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -182,7 +182,7 @@ async def create_invoice(
             continue
         return invoice
 
-    raise PolsiaError(
+    raise MeridianError(
         E_DB,
         f"invoice number for {issue.year} could not be allocated: every candidate collided "
         f"with a constraint ({MAX_NUMBER_ATTEMPTS} attempts); last error: {last_collision}",
@@ -201,7 +201,7 @@ async def get_invoice(db: AsyncSession, invoice_id: int) -> Invoice:
         )
     ).scalar_one_or_none()
     if invoice is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"invoice {invoice_id} does not exist",
             how_to_fix=ERROR_HINTS[E_NOT_FOUND],
@@ -235,7 +235,7 @@ async def transition_invoice(
     target = _coerce_status(to)
     current = _coerce_status(invoice.status)
     if target is current:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"invoice {invoice.number} is already {current.value}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -244,7 +244,7 @@ async def transition_invoice(
     legal = LEGAL_TRANSITIONS[current]
     if target not in legal:
         targets = ", ".join(status.value for status in legal) or "none (terminal state)"
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"illegal invoice transition {current.value} -> {target.value} for invoice "
             f"{invoice.number}; from {current.value} the legal targets are: {targets}",
@@ -344,7 +344,7 @@ async def _compliance_footer(db: AsyncSession) -> str:
         from app.services.company_service import get_company
         from app.services.email_compliance import footer_for_company
     except ImportError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "invoice email refused: app/services/email_compliance.py is not present, so no "
             "compliant footer can be rendered (sender identity cannot be verified)",
@@ -360,7 +360,7 @@ async def _compliance_footer(db: AsyncSession) -> str:
         footer = await footer
     text = str(footer or "").strip()
     if not text:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "invoice email refused: the compliance footer is empty — sender identity is not "
             "configured",
@@ -377,7 +377,7 @@ def _recipient(invoice: Invoice) -> str:
     bill_to = invoice.bill_to
     email = bill_to.get("email") if isinstance(bill_to, dict) else None
     if not isinstance(email, str) or not email.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"invoice {invoice.number} has no bill_to.email; the notice cannot be addressed",
             how_to_fix=(
@@ -478,8 +478,8 @@ async def deliver_invoice_email(
     )
     if not outcome.allowed:
         if outcome.decision is not None:
-            raise outcome.decision.to_polsia_error(agent_type=_SEND_AGENT_SLOT, action="send_invoice")
-        raise PolsiaError(  # pragma: no cover - outcome always carries its decision
+            raise outcome.decision.to_meridian_error(agent_type=_SEND_AGENT_SLOT, action="send_invoice")
+        raise MeridianError(  # pragma: no cover - outcome always carries its decision
             "E_POLICY_DENIED",
             f"invoice {invoice.number} email refused by policy: {outcome.reason}",
             how_to_fix=ERROR_HINTS["E_POLICY_DENIED"],
@@ -492,7 +492,7 @@ async def deliver_invoice_email(
             error = result.get("error")
             if isinstance(error, dict):
                 detail = str(error.get("message") or error.get("code") or "")
-        raise PolsiaError(
+        raise MeridianError(
             E_INTEGRATION,
             f"invoice {invoice.number} email to {recipient} was refused by the provider: "
             f"{detail or result!r}",
@@ -513,7 +513,7 @@ async def send_invoice(
     """
     invoice = await get_invoice(db, invoice_id)
     if invoice.status is not InvoiceStatus.DRAFT:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"only a draft invoice can be sent; invoice {invoice.number} is "
             f"{_coerce_status(invoice.status).value} (the dunning ladder owns follow-ups on a "

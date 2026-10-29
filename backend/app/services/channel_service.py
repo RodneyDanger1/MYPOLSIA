@@ -11,8 +11,8 @@ Three states stay distinguishable, which is the point of the module:
     `social_posts` (twitter/linkedin, published) and `email_logs` (sent) record a send; github,
     google_ads, meta_ads, stripe, render and anything unknown have no such table. Fabricating a
     `0` for them would be a second fake gate — the firewall instead refuses a configured cap it
-    cannot verify (`POLSIA-E114`, `cap_unknown`), which is the safe answer;
-  * `PolsiaError(E_DB)` — the read itself failed. "No source" is `None`; "read broke" is a named
+    cannot verify (`MERIDIAN-E114`, `cap_unknown`), which is the safe answer;
+  * `MeridianError(E_DB)` — the read itself failed. "No source" is `None`; "read broke" is a named
     refusal, never a `0` that reads like a measured zero.
 
 Windows:
@@ -32,7 +32,7 @@ from typing import Any
 from sqlalchemy import Select, and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 from app.core.timeutil import as_bound_instant, company_tz, day_window, now_utc
 from app.models.finance import StripeEvent
 from app.models.outreach import EmailLog
@@ -75,7 +75,7 @@ async def _count(db: AsyncSession, stmt: Select, *, what: str) -> int:
     """
     value = await fetch_scalar(db, stmt, what=what)
     if value is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB, f"count for {what} returned no value",
             how_to_fix=ERROR_HINTS[E_DB], context={"query": what})
     return int(value)

@@ -15,7 +15,7 @@ Every test here proves behaviour that was WRONG or UNPROVEN before wave 8:
      POST, and Stripe 11.3 defaults to an 80 s socket timeout with `max_network_retries = 2`.
      The adapters now own the bound (and Stripe's retry count), and each refusal NAMES it.
   C. The error matrix (provider failure class -> named E_* code -> HTTP status) is proven through
-     the ONE real `PolsiaError` handler, not a re-implementation.
+     the ONE real `MeridianError` handler, not a re-implementation.
 
 Doubles live ONLY at the third-party edges (a fake `tweepy`/`github`/`stripe` module, the `httpx`
 module's `post`/`stream` callables, `requests.Session.request`); the code under test is the real
@@ -44,7 +44,7 @@ from app.core.errors import (
     E_INTEGRATION,
     E_UPSTREAM,
     HTTP_STATUS_BY_CODE,
-    PolsiaError,
+    MeridianError,
     http_status_for,
 )
 from app.services.github_service import GITHUB_TIMEOUT_S
@@ -559,12 +559,12 @@ def test_the_status_map_has_one_definition_and_the_provider_classes_are_named():
     assert http_status_for("E_NOT_A_CODE") == 500  # unlisted = server fault, never a fake 200
 
 
-async def test_the_real_polsia_error_handler_answers_each_provider_class_with_its_status():
+async def test_the_real_meridian_error_handler_answers_each_provider_class_with_its_status():
     from starlette.requests import Request
 
     from app.main import app as application
 
-    handler = application.exception_handlers[PolsiaError]
+    handler = application.exception_handlers[MeridianError]
     scope = {
         "type": "http", "method": "POST", "path": "/w8-matrix", "headers": [],
         "query_string": b"", "scheme": "http", "server": ("testserver", 80),
@@ -572,7 +572,7 @@ async def test_the_real_polsia_error_handler_answers_each_provider_class_with_it
     }
     for code, status in MATRIX:
         response = await handler(
-            Request(scope), PolsiaError(code, "boom w8", how_to_fix="fix w8")
+            Request(scope), MeridianError(code, "boom w8", how_to_fix="fix w8")
         )
         assert response.status_code == status
         body = json.loads(response.body)

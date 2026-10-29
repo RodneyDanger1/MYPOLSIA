@@ -13,7 +13,7 @@ convention: writers never run docker/live; the wave verifier + parent own the de
       `AKIAIOSFODNN7EXAMPLE` in `backend/tests/unit/test_fix3_scanner.py` (a fixture asserting that
       credential shapes are flagged); zero `sk_live_*`, zero `whsec_*`, zero real `AKIA*` keys.
       Command: `git grep -nE "(sk_live_[0-9a-zA-Z]{10,}|whsec_[0-9a-zA-Z]{20,}|AKIA[0-9A-Z]{16})"`
-      (`dev-key`, `polsia_password` and empty values are the intentional defaults).
+      (`dev-key`, `meridian_password` and empty values are the intentional defaults).
 - [x] No mock/demo/stub introduced in this lane: `scripts/restore.sh` either works against the real
       system or refuses **by name** (13 pins, `backend/tests/unit/test_v17_restore_script.py`); sibling
       lanes' diffs are evidenced in their own receipts.
@@ -108,7 +108,7 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       4× `volume archive written`; `backups/` shows the `.sql` + four tars; `tar tzf
       backups/backend_data.tgz` lists files; `docker compose stop backup` logs a clean stop.
       `make backup` still refuses by name when a volume is missing.
-  - [x] Artifact half — `backups/` holds `polsia-2026-10-14.sql` (346,917 B) + `backend_data.tgz`,
+  - [x] Artifact half — `backups/` holds `meridian-2026-10-14.sql` (346,917 B) + `backend_data.tgz`,
         `chroma_data.tgz`, `celery_beat_data.tgz`, `redis_data.tgz`; `tar tzf` lists files in each.
   - [ ] Sidecar cycle/stop leg — parent (L5 must not start compose services).
 - [ ] **Data export/wipe:** `GET /api/v1/data/export` downloads a ZIP that opens (manifest + CSVs +
@@ -163,7 +163,7 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       backend container. Required: `{ok:true, tool:"phone_read", result:{store_status, threads[]}}`;
       **no code field anywhere in the payload**; a thread-scoped call returns capped
       `messages[]`; an agent the receipt does NOT grant gets the firewall refusal
-      (`POLSIA-E114`, "tool 'phone_read' not in allowlist"); with `PHONE_LINK_DB_DIR` pointed at a
+      (`MERIDIAN-E114`, "tool 'phone_read' not in allowlist"); with `PHONE_LINK_DB_DIR` pointed at a
       missing path the answer is the named `E_PHONE_UNAVAILABLE` payload, never an empty thread list.
       L2's receipt is **complete** (RED 29/29 → GREEN 68/68 on its four files; one real-store firewalled
       call: `ok=true`, `store_status=ok`, `thread_count=10`, `unread_total=10`, `truncated=true`), so the
@@ -289,7 +289,7 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       wait for the 15-minute beat, then
       `curl -s -H "X-API-Key: $KEY" http://127.0.0.1/api/v1/ops/activity-publish` → 
       `{"data":{"failures":…,"skipped_while_open":…,"breaker_open":…,"ts":"…"}}`.
-      `docker compose exec redis redis-cli DEL polsia:activity-publish:stats` → `{"data":null}`;
+      `docker compose exec redis redis-cli DEL meridian:activity-publish:stats` → `{"data":null}`;
       stop Redis → **503** with
       `X-Meridian-Error-Code: E_REDIS`. `/usage` → the **Worker process** card shows the published
       counters with their publish time, or the honest "not published yet" (no fabricated zeros); the

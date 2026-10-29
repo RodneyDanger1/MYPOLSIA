@@ -89,7 +89,7 @@ test.describe("Chat rail", () => {
         .poll(async () => rail.getByText(probe, { exact: true }).count(), { timeout: 10_000 })
         .toBeGreaterThan(0);
       await expect
-        .poll(async () => rail.locator('[data-role="polsia"]').count(), { timeout: 10_000 })
+        .poll(async () => rail.locator('[data-role="meridian"]').count(), { timeout: 10_000 })
         .toBeGreaterThan(0);
       await expect(rail.getByRole("alert")).toHaveCount(0);
     },

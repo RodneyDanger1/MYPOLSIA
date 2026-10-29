@@ -410,12 +410,12 @@ def test_an_expired_claim_can_be_taken_over_by_its_redelivery(queue_db):
 
 
 def test_a_live_claim_is_still_refused_by_the_redelivery(queue_db):
-    from app.core.errors import E_TASK_CLAIMED, PolsiaError
+    from app.core.errors import E_TASK_CLAIMED, MeridianError
 
     task_id = queue_db.create_task(title="live claim refused")
     queue_db.claim(task_id, "worker-a")
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         _takeover(queue_db, task_id, "worker-b")
 
     assert raised.value.code == E_TASK_CLAIMED
@@ -423,7 +423,7 @@ def test_a_live_claim_is_still_refused_by_the_redelivery(queue_db):
 
 
 def test_takeover_is_opt_in_so_every_other_caller_keeps_the_old_contract(queue_db):
-    from app.core.errors import E_TASK_CLAIMED, PolsiaError
+    from app.core.errors import E_TASK_CLAIMED, MeridianError
     from app.services.task_service import claim_task
 
     task_id = queue_db.create_task(title="opt-in takeover")
@@ -434,7 +434,7 @@ def test_takeover_is_opt_in_so_every_other_caller_keeps_the_old_contract(queue_d
         async with queue_db.factory() as session:
             return await claim_task(session, worker="worker-b", task_id=task_id)
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         queue_db.run(_plain_claim())
 
     assert raised.value.code == E_TASK_CLAIMED
@@ -443,7 +443,7 @@ def test_takeover_is_opt_in_so_every_other_caller_keeps_the_old_contract(queue_d
 
 def test_an_expired_claim_that_spent_the_ladder_ends_terminal_instead_of_rerunning(queue_db):
     """A crash-looping row must stop by name — the same rule `requeue_stale_claims` applies."""
-    from app.core.errors import E_TASK_NOT_RUNNABLE, PolsiaError
+    from app.core.errors import E_TASK_NOT_RUNNABLE, MeridianError
     from app.services import task_service
 
     task_id = queue_db.create_task(title="crash loop")
@@ -455,7 +455,7 @@ def test_an_expired_claim_that_spent_the_ladder_ends_terminal_instead_of_rerunni
     assert _takeover(queue_db, task_id, "worker-b") is not None  # attempts 3
     queue_db.backdate_heartbeat(task_id, 4000)
 
-    with pytest.raises(PolsiaError) as raised:
+    with pytest.raises(MeridianError) as raised:
         _takeover(queue_db, task_id, "worker-c")
 
     assert raised.value.code == E_TASK_NOT_RUNNABLE

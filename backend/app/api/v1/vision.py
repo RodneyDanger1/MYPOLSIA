@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 from app.schemas.vision import (
     SHA256_PREFIX_LEN,
     VisionDescribeResponse,
@@ -46,8 +46,8 @@ router = APIRouter(
 )
 
 
-def _body_refusal(message: str, **context: Any) -> PolsiaError:
-    return PolsiaError(
+def _body_refusal(message: str, **context: Any) -> MeridianError:
+    return MeridianError(
         E_VALIDATION, message, how_to_fix=ERROR_HINTS[E_VALIDATION], context=context
     )
 

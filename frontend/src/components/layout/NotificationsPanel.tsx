@@ -54,8 +54,8 @@ export type NotificationsState =
   | { status: "error"; message: string };
 
 /** Local-storage key for the previous visit's timestamp — the bell's only honest "unread"
- *  source, mirroring `ActivityFeed`'s `polsia.dashboard.feed.lastSeenAt`. */
-const LAST_SEEN_KEY = "polsia.topbar.notifications.lastSeenAt";
+ *  source, mirroring `ActivityFeed`'s `meridian.dashboard.feed.lastSeenAt`. */
+const LAST_SEEN_KEY = "meridian.topbar.notifications.lastSeenAt";
 
 /** The route serves at most this many items in the 48-hour window (`NOTIFICATIONS_LIMIT = 20`,
  *  `backend/app/api/v1/notifications.py`). A served count AT the cap is "up to N", never a

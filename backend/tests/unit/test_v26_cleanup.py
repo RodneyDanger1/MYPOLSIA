@@ -214,7 +214,7 @@ def test_apply_with_report_prints_before_and_after(tmp_path) -> None:
 
 
 def test_refuses_when_the_database_cannot_be_proven(tmp_path) -> None:
-    db = tmp_path / "not-polsia.db"
+    db = tmp_path / "not-meridian.db"
     con = sqlite3.connect(db)
     con.execute("CREATE TABLE random (x INTEGER)")
     con.commit()

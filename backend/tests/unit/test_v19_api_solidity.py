@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.core.errors import E_AUTH, E_CONFIG, E_DB, E_NOT_FOUND, PolsiaError
+from app.core.errors import E_AUTH, E_CONFIG, E_DB, E_NOT_FOUND, MeridianError
 from app.models.ads import AdCampaign, AdMetric
 from app.models.chat import ChatMessage
 from app.models.company import CompanyConfig
@@ -262,7 +262,7 @@ def test_company_tz_refuses_a_long_zone_name_by_name():
     """The runtime belt for a value that reached the row by another path: E_CONFIG, never OSError."""
     from app.core.timeutil import company_tz
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         company_tz("x" * 300)
     assert caught.value.code == E_CONFIG
     assert caught.value.context["value"] == "x" * 300

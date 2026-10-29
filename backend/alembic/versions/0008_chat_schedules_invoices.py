@@ -10,7 +10,7 @@ frozen interfaces the other lanes import — never renamed here:
 
 **A. NEW table `chat_messages`** (C1).  The owner <-> Meridian conversation; the class is
 `app.models.chat.ChatMessage` and `create_all` describes the same table.  `role` is a named CHECK
-(`ck_chat_messages_role`) over ('owner','polsia'); `intent` is the parsed exchange JSON (the pending
+(`ck_chat_messages_role`) over ('owner','meridian'); `intent` is the parsed exchange JSON (the pending
 create-task proposal rides the owner row's intent until /chat/confirm consumes it — C1's shape);
 `task_id` is a nullable FK to `tasks.id` (most exchanges create nothing).
 
@@ -122,7 +122,7 @@ def upgrade() -> None:
             "role",
             sa.Enum(
                 "owner",
-                "polsia",
+                "meridian",
                 name="ck_chat_messages_role",
                 native_enum=False,
                 create_constraint=True,
@@ -140,7 +140,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     print(
-        "[alembic 0008] created chat_messages (role CHECK owner|polsia; intent JSON NULL; "
+        "[alembic 0008] created chat_messages (role CHECK owner|meridian; intent JSON NULL; "
         "task_id FK tasks NULL; created_at NOT NULL default now())"
     )
 

@@ -68,7 +68,7 @@ from app.core.errors import (
     E_NOT_FOUND,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
     http_status_for,
     to_http_detail,
 )
@@ -128,7 +128,7 @@ logger = logging.getLogger(__name__)
 #: Where the minted id is remembered on the ASGI scope.  One scope object travels the whole
 #: middleware chain for a request, so the FIRST caller mints and everyone after it reads — the id in
 #: the envelope, on the response header and in the log are the same string (F-01).
-_REQUEST_ID_SCOPE_KEY = "polsia.request_id"
+_REQUEST_ID_SCOPE_KEY = "meridian.request_id"
 
 
 def request_id_from_scope(scope: Scope) -> str:
@@ -200,7 +200,7 @@ class ErrorBoundary:
                 (time.perf_counter() - started) * 1000,
                 request_id,
             )
-            refusal = PolsiaError(
+            refusal = MeridianError(
                 E_INTERNAL,
                 f"the request failed unexpectedly ({type(exc).__name__}); nothing was half-written",
                 how_to_fix=ERROR_HINTS[E_INTERNAL],
@@ -214,7 +214,7 @@ class ErrorBoundary:
             await response(scope, receive, send)
 
 
-def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
+def _refusal_headers(exc: MeridianError) -> dict[str, str]:
     """Extra headers a named refusal must carry — the SAME set wherever it was raised.
 
     `X-Meridian-Error-Code` is the machine-readable form of the code the body already names.  The
@@ -239,7 +239,7 @@ def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:
 
     At HEAD there were two wire shapes for one refusal: the envelope
     `{"ok": false, "error": {code, message, how_to_fix, context}}` that `to_http_detail` produces
-    (emitted by the `PolsiaError` handler below and by the request middleware), and
+    (emitted by the `MeridianError` handler below and by the request middleware), and
     `{"detail": {...}}` — what FastAPI's default handler serializes for the coded dicts raised by
     `refusal_guard()` (deps.py:95-125) and by the direct `HTTPException` raises in
     tasks.py:52-77.  The frontend's `isRefusal` parses the envelope only, so those raise-paths
@@ -268,7 +268,7 @@ def coded_detail_envelope(detail: Any) -> dict[str, Any] | None:
     }
 
 
-def framework_refusal(request: Request, exc: StarletteHTTPException) -> PolsiaError | None:
+def framework_refusal(request: Request, exc: StarletteHTTPException) -> MeridianError | None:
     """Name the framework's OWN refusals so they use the product envelope (SV-W4-02, wave 5).
 
     WHY: at HEAD `GET /api/v1/sites/cinder-lye` answered `405 {"detail": "Method Not Allowed"}` and
@@ -284,7 +284,7 @@ def framework_refusal(request: Request, exc: StarletteHTTPException) -> PolsiaEr
     is wrapped by `coded_detail_envelope` first.
     """
     if exc.status_code == 405:
-        return PolsiaError(
+        return MeridianError(
             E_METHOD_NOT_ALLOWED,
             f"{request.method} is not allowed on {request.url.path}",
             how_to_fix=(
@@ -294,7 +294,7 @@ def framework_refusal(request: Request, exc: StarletteHTTPException) -> PolsiaEr
             context={"method": request.method, "path": request.url.path},
         )
     if exc.status_code == 404:
-        return PolsiaError(
+        return MeridianError(
             E_NOT_FOUND,
             f"no operation matches {request.method} {request.url.path}",
             how_to_fix=(
@@ -472,7 +472,7 @@ def create_app() -> FastAPI:
         started = time.perf_counter()
         try:
             response = await call_next(request)
-        except PolsiaError as exc:  # raised before a route could convert it
+        except MeridianError as exc:  # raised before a route could convert it
             logger.warning("request %s failed: %s", request_id, exc)
             return JSONResponse(
                 status_code=http_status_for(exc.code), content=to_http_detail(exc),
@@ -488,8 +488,8 @@ def create_app() -> FastAPI:
             )
         return response
 
-    @application.exception_handler(PolsiaError)
-    async def polsia_error_handler(request: Request, exc: PolsiaError) -> JSONResponse:
+    @application.exception_handler(MeridianError)
+    async def meridian_error_handler(request: Request, exc: MeridianError) -> JSONResponse:
         """Every named failure reaches the client as a named refusal, never as a bare 500.
 
         W8-LD-05: the log line carries the SAME correlation id the response header and (for a 500)
@@ -520,7 +520,7 @@ def create_app() -> FastAPI:
         route raise) so the raise-based refusals in tasks.py/config.py are covered too.  The
         UNCODED case goes straight back to FastAPI's own handler — the default response for a 404
         route miss, a plain `detail` string or a validation array is byte-identical to before, and
-        the `PolsiaError` path above keeps its own handler (no double-wrapping: a `PolsiaError`
+        the `MeridianError` path above keeps its own handler (no double-wrapping: a `MeridianError`
         never arrives here).
         """
         envelope = coded_detail_envelope(exc.detail)
@@ -544,7 +544,7 @@ def create_app() -> FastAPI:
             "%s on %s %s [request_id=%s]: %s", envelope["error"]["code"], request.method,
             request.url.path, request_id_from_scope(request.scope), envelope["error"]["message"],
         )
-        # L1-04: the header `_refusal_headers` attaches for a `PolsiaError` must travel on this
+        # L1-04: the header `_refusal_headers` attaches for a `MeridianError` must travel on this
         # path too.  The coded raises in tasks.py/config.py carry no `headers=` of their own, so
         # before this line the same refusal answered WITH the machine-readable code header when
         # it passed through `refusal_guard` and WITHOUT it when it was raised one layer earlier
@@ -622,7 +622,7 @@ def create_app() -> FastAPI:
             "integer overflow on %s %s [request_id=%s]: %s",
             request.method, request.url.path, request_id_from_scope(request.scope), exc,
         )
-        err = PolsiaError(
+        err = MeridianError(
             E_VALIDATION,
             f"integer value out of supported range on {request.method} {request.url.path}: {exc}",
             how_to_fix=(

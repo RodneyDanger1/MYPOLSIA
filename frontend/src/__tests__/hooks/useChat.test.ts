@@ -102,7 +102,7 @@ describe("F-38 — the late history read merges, never replaces", () => {
     mockGet.mockResolvedValueOnce({
       items: [
         wire("owner", "status?", "2026-10-25T10:00:00Z"),
-        wire("polsia", "Three tasks completed today.", "2026-10-25T10:00:01Z"),
+        wire("meridian", "Three tasks completed today.", "2026-10-25T10:00:01Z"),
       ],
       total: 2,
     });

@@ -73,7 +73,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.totals import TOTAL_HEADER, declared_total
 from app.config import settings
-from app.core.errors import E_AUTH, E_CONFIG, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_AUTH, E_CONFIG, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.support import SupportInboxItem
 from app.schemas.support import SupportInboxItemCreate, SupportInboxItemResponse
 from app.services.support_inbox_service import (
@@ -183,7 +183,7 @@ def _parse_inbound_payload(raw: object) -> SupportInboundPayload:
     it, and that input is the customer's own message — a refusal must never reflect it back.
     """
     if raw is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the inbound support payload is required: POST the documented JSON object "
             "({provider_message_id, from, subject, body, received_at?, provider?})",
@@ -191,7 +191,7 @@ def _parse_inbound_payload(raw: object) -> SupportInboundPayload:
             context={"field": "payload"},
         )
     if not isinstance(raw, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the inbound support payload must be a JSON object; received {type(raw).__name__}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -210,7 +210,7 @@ def _parse_inbound_payload(raw: object) -> SupportInboundPayload:
             reason = first.get("msg", "invalid value")
         else:  # pragma: no cover - pydantic always reports at least one error on failure
             field, reason = "payload", "invalid value"
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"inbound support payload field {field!r} is invalid: {reason}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -227,7 +227,7 @@ def _inbound_secret_matches(provided: str | None) -> bool:
     """
     expected = settings.support_inbound_secret or ""
     if not expected:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the inbound support-inbox webhook is not configured: SUPPORT_INBOUND_SECRET is "
             "unset, so no caller can be authenticated",
@@ -256,7 +256,7 @@ def require_inbound_secret(provided: str | None) -> None:
     `E_CONFIG` (never an open inbox) — pinned by `tests/unit/test_w5_inbound.py`.
     """
     if not _inbound_secret_matches(provided):
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"the {INBOUND_SECRET_HEADER} header is missing or does not match the configured "
             "inbound secret",
@@ -277,7 +277,7 @@ def _parse_json_body(raw: bytes) -> object:
     try:
         return json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the inbound support payload is not valid JSON: the body of a non-multipart delivery "
             "must be the documented JSON object",
@@ -317,7 +317,7 @@ def _authenticate_sendgrid_delivery(request: Request, *, raw_body: bytes) -> str
             oauth_token=settings.sendgrid_inbound_oauth_token,
         )
         return "oauth"
-    raise PolsiaError(
+    raise MeridianError(
         E_AUTH,
         "the multipart/form-data delivery carried no credential: SendGrid's Inbound Parse sends "
         f"either the ECDSA signature headers ({SENDGRID_SIGNATURE_HEADER} + "
@@ -473,7 +473,7 @@ async def ingest_inbound_message(
         else:
             require_inbound_secret(provided_secret)
             if media_type not in ("", "application/json"):
-                raise PolsiaError(
+                raise MeridianError(
                     E_VALIDATION,
                     f"unsupported Content-Type {media_type!r} for the inbound support webhook: "
                     "send application/json (the documented JSON providers) or multipart/form-data "

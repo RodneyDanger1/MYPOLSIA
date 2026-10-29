@@ -4,7 +4,7 @@ Measured facts this module encodes (lane 06, `DATA-PERF.md` §2.7 / §5.4):
 
 * **One publish per SINK CALL** — the shipped test asserts
   `mock_redis.publish.assert_called_once()` and the channel must contain
-  `polsia:activity`, so there is exactly one `publish_activity` call site per writer and no
+  `meridian:activity`, so there is exactly one `publish_activity` call site per writer and no
   read path publishes anything.
 * **Two writers, two transaction rules.**  `log_activity` writes through the caller's session
   (the feed's own writes, a worker's outcome transaction) and publishes right after its `flush`,
@@ -39,13 +39,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core import events
 from app.core.database import get_session_factory, utcnow
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.report import ActivityLog
 from app.services.query_helpers import fetch_rows, json_or_none
 
 logger = logging.getLogger(__name__)
 
-ACTIVITY_CHANNEL = events.ACTIVITY_CHANNEL  # "polsia:activity"
+ACTIVITY_CHANNEL = events.ACTIVITY_CHANNEL  # "meridian:activity"
 
 _REQUIRED_KEYS = ("agent_type", "action", "summary")
 
@@ -202,7 +202,7 @@ async def log_activities(
     for index, entry in enumerate(entries):
         missing = [key for key in _REQUIRED_KEYS if not entry.get(key)]
         if missing:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"activity entry #{index} is missing required field(s): {', '.join(missing)}",
                 how_to_fix=ERROR_HINTS[E_VALIDATION],

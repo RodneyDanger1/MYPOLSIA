@@ -23,7 +23,7 @@ What is pinned (the brief's contract):
    is ever converted from a zero, negative or invented rate;
 8. the route `GET /api/v1/economics/convert?amount=&from=&to=` serves the alias keys `from`/`to`
    on the wire, rejects a negative or absurd amount with 422, demands the API key (401), and
-   translates the service's `PolsiaError` to its documented status.
+   translates the service's `MeridianError` to its documented status.
 
 LIVE-PROBE CORRECTION (2026-10-20, curl from the build box): Frankfurter v2 answers an UNKNOWN
 currency with **HTTP 422** `{"status":422,"message":"invalid currency: ZZZ"}` — not the 404 the
@@ -45,7 +45,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import fx_service
 
 AUTH = {"X-API-Key": "test-key"}
@@ -270,7 +270,7 @@ def test_unknown_currency_is_a_named_validation_refusal(
 
     _install_stub(handler, monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10, "EUR", "ZZZ")
 
     assert caught.value.code == E_VALIDATION  # the caller typed it, so the caller is told
@@ -284,7 +284,7 @@ def test_a_5xx_is_a_named_upstream_refusal(
 ) -> None:
     _install_stub(lambda url: _StubResponse(status_code=503, payload={}), monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10, "EUR", "USD")
 
     assert caught.value.code == E_UPSTREAM
@@ -300,7 +300,7 @@ def test_transport_failure_is_upstream(
 
     _install_stub(handler, monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10, "EUR", "USD")
 
     assert caught.value.code == E_UPSTREAM
@@ -327,7 +327,7 @@ def test_a_malformed_rate_body_is_an_upstream_refusal(
 ) -> None:
     _install_stub(lambda url: _StubResponse(payload=payload), monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10, "EUR", "USD")
 
     assert caught.value.code == E_UPSTREAM
@@ -362,7 +362,7 @@ def test_bad_codes_and_amounts_are_refused_before_any_request(
 ) -> None:
     _, calls = _install_stub(happy, monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(amount, base, quote)  # type: ignore[arg-type]
 
     assert caught.value.code == E_VALIDATION
@@ -386,14 +386,14 @@ async def convert_client(monkeypatch: pytest.MonkeyPatch):
     app = FastAPI()
     app.include_router(economics.router, prefix="/api/v1")
 
-    async def _polsia_handler(request, exc: PolsiaError):
+    async def _meridian_handler(request, exc: MeridianError):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
             headers={"X-Meridian-Error-Code": exc.code},
         )
 
-    app.add_exception_handler(PolsiaError, _polsia_handler)
+    app.add_exception_handler(MeridianError, _meridian_handler)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

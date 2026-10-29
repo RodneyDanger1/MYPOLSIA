@@ -19,7 +19,7 @@ These two knobs are REAL `Settings` fields (`redis_connect_timeout_seconds`,
 `redis_socket_timeout_seconds`).  Until wave 5 they were read with a getattr fallback over names
 that did not exist on `Settings` — so `extra="ignore"` silently discarded the environment value
 and the hardcoded 1.0 s always won (`SV-W4-05`, measured in
-`polsia-work/build/swarm-2026-10-28/systems-validator/VALIDATION-MATRIX.md` §5).
+`meridian-work/build/swarm-2026-10-28/systems-validator/VALIDATION-MATRIX.md` §5).
 """
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def get_redis_subscriber() -> aioredis.Redis:
 # publishing, and the route reports `data: null` rather than serving a stale snapshot as current.
 
 #: The shared key the worker writes and the ops route reads.
-ACTIVITY_PUBLISH_STATS_KEY = "polsia:activity-publish:stats"
+ACTIVITY_PUBLISH_STATS_KEY = "meridian:activity-publish:stats"
 #: One beat period (15 min): the snapshot outlives nothing it did not measure.
 ACTIVITY_PUBLISH_STATS_TTL_SECONDS = 15 * 60
 

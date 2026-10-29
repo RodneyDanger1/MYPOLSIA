@@ -28,7 +28,7 @@ import pytest
 
 from app.agents import claude_cli, deepseek_runtime
 from app.config import settings
-from app.core.errors import E_CLI_EXIT, E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_CLI_EXIT, E_CLI_TIMEOUT, MeridianError
 from celery_app.tasks.agent_tasks import (
     RETRYABLE_CODES,
     is_retryable,
@@ -45,9 +45,9 @@ def _in_run_budget() -> int:
 
     def _hung() -> object:
         calls["n"] += 1
-        raise PolsiaError(E_CLI_TIMEOUT, "planted hang")
+        raise MeridianError(E_CLI_TIMEOUT, "planted hang")
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         claude_cli.run_with_retries(_hung, sleep=lambda _s: None)
     return calls["n"]
 
@@ -58,9 +58,9 @@ def test_b01_the_in_run_ladder_makes_1_plus_agent_max_retries_attempts():
 
     def _hung() -> object:
         calls["n"] += 1
-        raise PolsiaError(E_CLI_TIMEOUT, "planted hang")
+        raise MeridianError(E_CLI_TIMEOUT, "planted hang")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.run_with_retries(_hung, sleep=lambda _s: None)
 
     assert caught.value.code == E_CLI_TIMEOUT, "the last attempt's refusal is re-raised by name"
@@ -76,9 +76,9 @@ def test_b02_a_hard_failure_is_not_retried_at_all():
 
     def _hard() -> object:
         calls["n"] += 1
-        raise PolsiaError(E_CLI_EXIT, "planted hard exit")
+        raise MeridianError(E_CLI_EXIT, "planted hard exit")
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.run_with_retries(_hard, sleep=lambda _s: None)
     assert caught.value.code == E_CLI_EXIT
     assert calls["n"] == 1, "a non-timeout refusal paid for exactly one provider call"
@@ -104,10 +104,10 @@ def test_b04_the_backoff_is_seeded_monotone_jitter_inside_the_documented_band():
 
     def _hung() -> object:
         calls["n"] += 1
-        raise PolsiaError(E_CLI_TIMEOUT, "planted hang")
+        raise MeridianError(E_CLI_TIMEOUT, "planted hang")
 
     rng = random.Random(20261029)  # seeded so the assertion is deterministic, not flaky
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         claude_cli.run_with_retries(_hung, sleep=lambda s: slept.append(s), rng=rng)
 
     expected_rng = random.Random(20261029)
@@ -224,7 +224,7 @@ def test_b07b_the_run_budget_is_ENFORCED_by_both_runtimes_not_just_declared():
         deadline_monotonic=time.monotonic() - 1.0,
     )
     spawned: list[tuple] = []
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.invoke(spent, spawn=lambda *args: spawned.append(args) or ("{}", 0))
     assert caught.value.code == E_CLI_TIMEOUT
     assert caught.value.context["remaining_seconds"] < 0
@@ -253,7 +253,7 @@ def test_b07b_the_run_budget_is_ENFORCED_by_both_runtimes_not_just_declared():
     transport = httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200))
     client = httpx.Client(transport=transport)
     try:
-        with pytest.raises(PolsiaError) as caught_http:
+        with pytest.raises(MeridianError) as caught_http:
             deepseek_runtime.invoke(
                 claude_cli.Invocation(
                     argv=["claude", "-p", "x"],
@@ -312,7 +312,7 @@ def test_b10_the_task_classifier_and_the_in_run_classifier_agree_on_a_terminal_p
     ) is False
     # 2. ... and the task ladder refuses to requeue the refusal the runtime then raises, when the
     #    refusal DECLARES its verdict (the wave-7 contract).
-    declared = PolsiaError(
+    declared = MeridianError(
         E_CLI_EXIT,
         "the provider rejected the key",
         context={"retryable": False, "reason": "provider_auth_rejected"},
@@ -326,13 +326,13 @@ def test_b10_the_task_classifier_and_the_in_run_classifier_agree_on_a_terminal_p
 
 
 def test_b11_the_task_classifier_respects_an_explicit_verdict_over_the_code_table():
-    retry_me = PolsiaError(E_CLI_TIMEOUT, "transient")
-    stop = PolsiaError(E_CLI_TIMEOUT, "terminal", context={"retryable": False})
-    yes = PolsiaError("E_SOMETHING_TRANSIENT", "x", context={"retryable": True})
+    retry_me = MeridianError(E_CLI_TIMEOUT, "transient")
+    stop = MeridianError(E_CLI_TIMEOUT, "terminal", context={"retryable": False})
+    yes = MeridianError("E_SOMETHING_TRANSIENT", "x", context={"retryable": True})
     assert is_retryable(retry_me) is True
     assert is_retryable(stop) is False
     assert is_retryable(yes) is True, "an explicit True must be honoured, not just False"
-    junk = PolsiaError(E_CLI_TIMEOUT, "x", context={"retryable": "no"})
+    junk = MeridianError(E_CLI_TIMEOUT, "x", context={"retryable": "no"})
     assert is_retryable(junk) is True, "a malformed verdict falls back to the code table"
 
 

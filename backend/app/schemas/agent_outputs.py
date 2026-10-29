@@ -20,7 +20,7 @@ Two things make the schema the contract rather than decoration:
   * the schema is sent to the CLI via `--json-schema` AND re-validated locally with the same
     model, because the CLI's own validation is documented behaviour this host cannot execute
     while the local validator is executable everywhere;
-  * a failure to satisfy it is a NAMED code (POLSIA-E110 / E_AGENT_BAD_OUTPUT), never a
+  * a failure to satisfy it is a NAMED code (MERIDIAN-E110 / E_AGENT_BAD_OUTPUT), never a
     silently-accepted half-object.
 
 `to_cli_schema()` down-converts Pydantic's draft 2020-12 to the draft-07 the CLI documents
@@ -623,9 +623,9 @@ UNREGISTERED_SCHEMAS: dict[str, type[BaseModel]] = {"deployment": DeploymentOutp
 def schema_for(agent_type: str) -> type[BaseModel]:
     model = AGENT_SCHEMAS.get(agent_type) or UNREGISTERED_SCHEMAS.get(agent_type)
     if model is None:
-        from app.core.errors import E_AGENT_UNKNOWN, ERROR_HINTS, PolsiaError
+        from app.core.errors import E_AGENT_UNKNOWN, ERROR_HINTS, MeridianError
 
-        raise PolsiaError(
+        raise MeridianError(
             E_AGENT_UNKNOWN,
             f"no output schema for agent_type {agent_type!r}",
             how_to_fix=ERROR_HINTS[E_AGENT_UNKNOWN],
@@ -680,11 +680,11 @@ def validate_agent_output(agent_type: str, payload: dict) -> tuple[bool, BaseMod
     agents exist.  An agent_type with no schema at all still answers the same unknown-agent
     string this function has always returned — `(False, ...)`, never a raise.
     """
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
 
     try:
         model = schema_for(agent_type)
-    except PolsiaError:
+    except MeridianError:
         return False, [f"unknown agent_type '{agent_type}'"]
     try:
         return True, model.model_validate(payload)

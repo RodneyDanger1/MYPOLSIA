@@ -43,7 +43,7 @@ UsageSnapshot = dict[str, Any]
 UsageSink = Callable[[UsageSnapshot], None]
 
 _SINK: contextvars.ContextVar[UsageSink | None] = contextvars.ContextVar(
-    "polsia_run_usage_sink", default=None
+    "meridian_run_usage_sink", default=None
 )
 
 

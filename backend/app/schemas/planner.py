@@ -1,6 +1,6 @@
 """Planner wire + model contract (wave V9, seat B1) — the FROZEN shape the UI codes against.
 
-Source of truth (verbatim): plan `2026-10-14_142249-polsia-remaining-waves-v7-v10.md` §9 B1
+Source of truth (verbatim): plan `2026-10-14_142249-meridian-remaining-waves-v7-v10.md` §9 B1
 (lines 410-438):
 
     POST /api/v1/planner/propose  {} -> 201 {"candidates": [{
@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 from app.schemas.common import UtcDatetime
 
 #: A float that must be a FINITE measurement.  pydantic's default (`allow_inf_nan=True`) accepts
@@ -142,7 +142,7 @@ class PlannerClaim(BaseModel):
         or hostile scheme must never ship inside a `verified: True` claim.
         """
         if not is_http_url(value):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"planner claim source_url must be an absolute http(s) URL (got {value!r}): "
                 "a non-http(s) citation can never be a verified source",

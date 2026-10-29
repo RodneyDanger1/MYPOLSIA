@@ -17,7 +17,7 @@ import json
 from typing import Any
 
 from app.agents import integrations
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import (
     capped_item_refusal,
@@ -26,7 +26,7 @@ from app.agents.side_effects import (
     side_effect_receipt,
 )
 from app.config import settings
-from app.core.errors import E_RATE_LIMITED, E_VALIDATION, PolsiaError
+from app.core.errors import E_RATE_LIMITED, E_VALIDATION, MeridianError
 from app.schemas.agent_outputs import AdsOutput
 
 ROLE = """You are the Ads Management agent of an autonomous company. You run paid acquisition on
@@ -88,7 +88,7 @@ def ad_metrics_extra_context(task: dict[str, Any]) -> str | None:
     if envelope is None:
         return None
     if not isinstance(envelope, dict) or not isinstance(envelope.get("ok"), bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "task metadata.ad_metrics is not the metrics-reader envelope; the ads agent "
             "cannot read a malformed attachment (it has no provider access to re-fetch it)",
@@ -110,7 +110,7 @@ def ad_metrics_extra_context(task: dict[str, Any]) -> str | None:
         return wrap_untrusted("ads_provider", "ad_metrics:refused", text)
     result = envelope.get("result")
     if not isinstance(result, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "task metadata.ad_metrics carries ok=true but no result object",
             how_to_fix="attach the envelope verbatim from integrations.read_ad_metrics",
@@ -125,7 +125,7 @@ def ad_metrics_extra_context(task: dict[str, Any]) -> str | None:
     return wrap_untrusted(platform, "ad_metrics", text)
 
 
-class AdsManagementAgent(BasePolsiaAgent):
+class AdsManagementAgent(BaseMeridianAgent):
     agent_type = "ads_management"
     description = "Manages Google and Meta ad campaigns"
     output_schema = AdsOutput
@@ -184,7 +184,7 @@ class AdsManagementAgent(BasePolsiaAgent):
                     sends_today=sends_today_now,
                     sends_this_hour=sends_hour_now,
                 )
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 # A cap denial with nothing performed yet stays fatal; after this run already
                 # applied a change it is recorded and the recommendation stays unapplied (see
                 # `capped_item_refusal`). Anything else re-raises unchanged.

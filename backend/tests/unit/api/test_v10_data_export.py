@@ -2,7 +2,7 @@
 
 RED-FIRST leg (OATH): this file is written BEFORE `app/api/v1/data.py` exists and before
 `app/main.py` wires its router; collection fails with ModuleNotFoundError until they land.  Raw
-pytest legs live in `polsia-work/build/ui-reverse/wave-v10/h1-docs-ops/RECEIPT.md`.
+pytest legs live in `meridian-work/build/ui-reverse/wave-v10/h1-docs-ops/RECEIPT.md`.
 
 The legs this pins (the brief's list, plus the two honesty legs the brief states as absolutes):
   * export ZIP member set + row counts match the seeded rows (MANIFEST included);
@@ -279,7 +279,7 @@ async def test_malformed_token_is_refused_by_name(api_client, auth_headers, asyn
     seeded = await _seed_members(async_db_session)
 
     resp = await api_client.delete(
-        "/api/v1/data?confirm_token=not-a-polsia-token", headers=auth_headers
+        "/api/v1/data?confirm_token=not-a-meridian-token", headers=auth_headers
     )
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "E_VALIDATION"

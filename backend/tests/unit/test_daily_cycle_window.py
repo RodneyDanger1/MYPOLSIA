@@ -4,7 +4,7 @@ What this file pins (the frozen T2 interface; seat S1-core implements exactly th
 
 * `celery_app.tasks.daily_cycle.run_morning_cycle()` (the sync Celery task, called directly
   in-process) computes its window from the effective hour: `company_config.daily_cycle_hour`
-  when stored, else `settings.morning_cycle_hour`; validated 0–23, else `PolsiaError(E_CONFIG)`
+  when stored, else `settings.morning_cycle_hour`; validated 0–23, else `MeridianError(E_CONFIG)`
   naming the value, the range and the source.
 * The window is `[H:00, H+1:00)` in the COMPANY-LOCAL timezone (`core/timeutil.company_tz()`,
   driven by `settings.company_timezone`) as aware UTC instants, carried on the pass result as
@@ -48,7 +48,7 @@ import pytest
 
 import app.models  # noqa: F401  (register every table on Base.metadata before create_all)
 from app.config import settings
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 from celery_app.tasks import daily_cycle
 from celery_app.tasks._common import run_async
 
@@ -304,7 +304,7 @@ def test_an_absent_stored_value_falls_back_to_the_settings_hour(cycle_db, monkey
 def test_an_invalid_stored_hour_is_a_named_refusal_and_produces_no_window(cycle_db, monkeypatch):
     """An invalid stored hour refuses BY NAME — no window, no work, no silent UTC.
 
-    Pins: row stores 99 (ORM seed, sqlite3-verified) -> `run_morning_cycle()` raises `PolsiaError`
+    Pins: row stores 99 (ORM seed, sqlite3-verified) -> `run_morning_cycle()` raises `MeridianError`
     with `code == E_CONFIG`; the message names the stored value ("99") and the accepted range
     (both "0" and "23" appear); the agent spy was never called; tasks and activity_log gained
     ZERO rows.
@@ -322,7 +322,7 @@ def test_an_invalid_stored_hour_is_a_named_refusal_and_produces_no_window(cycle_
     recorder = _install_group_recorder(monkeypatch)
     spy = _install_agent_spy(monkeypatch)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         daily_cycle.run_morning_cycle()
 
     assert excinfo.value.code == E_CONFIG

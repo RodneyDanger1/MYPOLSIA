@@ -29,7 +29,7 @@ import httpx
 import pytest
 
 from app.agents import deepseek_runtime, tool_registry
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 #: Clearly fake, ASCII-only (httpx encodes header values as ASCII) — house pattern.
 SAFE_TEST_KEY = "sk-f1-seam-test-key"
@@ -45,8 +45,8 @@ FROZEN_TOOL_NAMES = {"web_fetch", "web_search", "macro_snapshot", "pricing_catal
                      "research_fetch", "fx_convert", "signals_read", "domain_health", "link_status"}
 
 
-def _agent(agent_type: str) -> BasePolsiaAgent:
-    class _Probe(BasePolsiaAgent):
+def _agent(agent_type: str) -> BaseMeridianAgent:
+    class _Probe(BaseMeridianAgent):
         def run(self, task, context):  # pragma: no cover - never dispatched here
             return {"summary": "probe"}
 

@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import refusal_guard, verify_api_key
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.services import trust_service
 
 router = APIRouter(prefix="/trust", tags=["trust"], dependencies=[Depends(verify_api_key)])
@@ -101,7 +101,7 @@ def _refuse_unsendable_url(url: str) -> str:
     text = url.strip()
     for position, char in enumerate(text):
         if ord(char) < 0x20 or ord(char) == 0x7F:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "link_status: the url contains a control character that cannot be sent over HTTP",
                 how_to_fix=(

@@ -112,7 +112,7 @@ async def test_put_blank_is_refused_with_the_named_validation_shape(
 ) -> None:
     def refusal(body: dict) -> dict:
         """The app emits named refusals in EITHER wire shape (D5/audit L5-01): the envelope
-        `{"ok": false, "error": {code, ...}}` (PolsiaError + the coded-HTTPException handler)
+        `{"ok": false, "error": {code, ...}}` (MeridianError + the coded-HTTPException handler)
         or `{"detail": {code, ...}}`; the frontend's `refusalFrom` parses both.  This mirrors
         that documented contract instead of pinning one wording of it."""
         if body.get("ok") is False and isinstance(body.get("error"), dict):

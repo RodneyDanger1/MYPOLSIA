@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from app.config import settings
-from app.core.errors import E_AUTH, PolsiaError, http_status_for
+from app.core.errors import E_AUTH, MeridianError, http_status_for
 from app.core.security import check_api_key, verify_api_key
 
 
@@ -64,7 +64,7 @@ async def test_open_service_still_rejects_a_wrong_key(blank_key):
     HTTP mapping, so both are pinned here and the end-to-end status is pinned by the api_client tests.
     """
     for wrong in ("hunter2", "dev-key", "0"):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             await verify_api_key(wrong)
         assert excinfo.value.code == E_AUTH
         assert http_status_for(E_AUTH) == 401
@@ -74,7 +74,7 @@ async def test_open_service_still_rejects_a_wrong_key(blank_key):
 async def test_configured_key_accepts_only_itself(real_key):
     assert await verify_api_key("unit-test-key") == "unit-test-key"
     for supplied in (None, "", "   ", "unit-test-ke", "unit-test-keyy"):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             await verify_api_key(supplied)
         assert excinfo.value.code == E_AUTH, (
             f"supplied={supplied!r} must be rejected as a NAMED refusal when a key is configured"
@@ -86,7 +86,7 @@ async def test_configured_key_accepts_only_itself(real_key):
 async def test_the_inline_check_matches_the_dependency(real_key):
     """`check_api_key` is the path-param-first variant; the two must agree."""
     await check_api_key("unit-test-key")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await check_api_key("")
     assert excinfo.value.code == E_AUTH
     assert http_status_for(excinfo.value.code) == 401

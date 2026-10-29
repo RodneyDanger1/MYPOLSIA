@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.services.company_service import get_company
 from app.services.site_service import catalogue_rows, catalogue_section
@@ -207,7 +207,7 @@ async def build_site_package(db: AsyncSession, root: Path | None = None) -> dict
     """
     company = await get_company(db)
     if company is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "no company profile exists, so there is nothing to build a site package from",
             how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
@@ -219,7 +219,7 @@ async def build_site_package(db: AsyncSession, root: Path | None = None) -> dict
     if not str(company.notification_email or "").strip():
         missing.append("contact (notification_email)")
     if missing:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"site package needs the company {' and '.join(missing)}",
             how_to_fix="set the missing company field(s) in settings (PUT /api/v1/config) and retry",
@@ -252,7 +252,7 @@ def resolve_package_dir(slug: str, root: Path | None = None) -> Path:
     """
     exports_root = (Path(root) if root is not None else EXPORTS_ROOT).resolve()
     if not _SLUG_PATTERN.fullmatch(slug or ""):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site package slug {slug!r} is not a filesystem-safe slug",
             how_to_fix="build the package first (POST /api/v1/site/package) and pass its slug",
@@ -260,7 +260,7 @@ def resolve_package_dir(slug: str, root: Path | None = None) -> Path:
         )
     target = (exports_root / f"site-{slug}").resolve()
     if not target.is_relative_to(exports_root):  # unreachable past the pattern; belt only
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"site package slug {slug!r} resolves outside the exports root",
             how_to_fix="pass the slug POST /api/v1/site/package returned",
@@ -293,7 +293,7 @@ async def build_package_archive(
     if slug is None:
         company = await get_company(db)
         if company is None:
-            raise PolsiaError(
+            raise MeridianError(
                 E_CONFIG,
                 "no company profile exists, so there is no package to download",
                 how_to_fix="create the company profile in settings first (PUT /api/v1/config)",
@@ -302,7 +302,7 @@ async def build_package_archive(
         slug = _slug(str(company.name))
     package_dir = resolve_package_dir(slug)
     if not package_dir.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"no site package exists for slug {slug!r}",
             how_to_fix="build it first with POST /api/v1/site/package, then retry the download",

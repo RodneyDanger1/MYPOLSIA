@@ -178,7 +178,7 @@ predates the last closures, so where they disagree the working-tree code and L3'
   per-process; the usage panel reads the API process, and its copy said so
   (`frontend/src/app/usage/page.tsx:188-190`, `backend/celery_app/tasks/maintenance.py:244`).
   **Closed in V23 by L4:** the 15-minute tick publishes the worker's snapshot to the shared Redis key
-  `polsia:activity-publish:stats` (TTL 900 s) and `GET /api/v1/ops/activity-publish` serves it; the
+  `meridian:activity-publish:stats` (TTL 900 s) and `GET /api/v1/ops/activity-publish` serves it; the
   `/usage` **Worker process** card shows the last published counters or an honest "not published yet"
   (`maintenance.py:244-262`, `app/api/v1/ops.py:118-147`, `OpsPanel.tsx:298-349`). See §7 item 8.
 
@@ -335,7 +335,7 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 |---|---|---|---|
 | 6 | **CLOSED (V23 · L4).** The feed header now prints the server's own total — `N events` (`1 event` singular) — read from the same response's `X-Meridian-Total` through the shared `onHeaders` hook; an absent or non-integer header draws **no count** (never the rows on hand). A malformed snapshot cannot publish a stale/foreign count. | `frontend/src/hooks/useActivityFeed.ts:88-97,198-215,395`; `frontend/src/components/dashboard/ActivityFeed.tsx:147-163`; pin `frontend/src/__tests__/v23-observability.test.tsx` | **done (V23 L4)** |
 | 7 | Three components are imported by nothing: `AgentStatusGrid`, `MetricsCard`, `TopbarPopover` (two have their own unit specs). Retire-vs-keep is a recorded decision — the campaign's no-delete rule pins two of them. | `__tests__/u4-darktail.test.tsx:68-75`; `components/dashboard/*`, `components/layout/TopbarPopover.tsx` | **parent (retire decision)** |
-| 8 | **CLOSED (V23 · L4).** The 15-minute maintenance tick writes `{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job), and `GET /api/v1/ops/activity-publish` serves it: `{data:{…}}` / `{data:null}` when the worker never wrote / **503 `E_REDIS`** when Redis is unreachable or the stored value is not the frozen shape (no coercion of `"2"`/`true` into counts). The `/usage` **Worker process** card renders the four counters or the honest absence ("No counters are shown rather than fabricated zeros"); the "worker invisible" copy is gone. | `backend/celery_app/tasks/maintenance.py:244-262`; `backend/app/core/redis_client.py:84-110`; `backend/app/api/v1/ops.py:118-147`; `frontend/src/components/usage/OpsPanel.tsx:298-349`; pins `backend/tests/unit/test_v23_breaker_stats.py` (8), `frontend/src/__tests__/v23-observability.test.tsx` (7) | **done (V23 L4)** — the live tick/route read is the parent's (RELEASE-CHECKLIST V23) |
+| 8 | **CLOSED (V23 · L4).** The 15-minute maintenance tick writes `{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key `meridian:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job), and `GET /api/v1/ops/activity-publish` serves it: `{data:{…}}` / `{data:null}` when the worker never wrote / **503 `E_REDIS`** when Redis is unreachable or the stored value is not the frozen shape (no coercion of `"2"`/`true` into counts). The `/usage` **Worker process** card renders the four counters or the honest absence ("No counters are shown rather than fabricated zeros"); the "worker invisible" copy is gone. | `backend/celery_app/tasks/maintenance.py:244-262`; `backend/app/core/redis_client.py:84-110`; `backend/app/api/v1/ops.py:118-147`; `frontend/src/components/usage/OpsPanel.tsx:298-349`; pins `backend/tests/unit/test_v23_breaker_stats.py` (8), `frontend/src/__tests__/v23-observability.test.tsx` (7) | **done (V23 L4)** — the live tick/route read is the parent's (RELEASE-CHECKLIST V23) |
 
 ### 7.3 Capabilities that had no owner-facing control (all closed in V23)
 
@@ -364,7 +364,7 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 - `GOOGLE_ADS_CLIENT_SECRET` is RESERVED with no reader; `CELERY_WORKER_CONCURRENCY` is compose-owned
   (`README.md` "Known gaps", D14 decision).
 - Channels with no counting source (github, google_ads, meta_ads, stripe, render) refuse a configured
-  send cap by name (`POLSIA-E114`, `cap_unknown`) instead of reading it as zero sends; LinkedIn has no
+  send cap by name (`MERIDIAN-E114`, `cap_unknown`) instead of reading it as zero sends; LinkedIn has no
   send adapter (`README.md` "Known gaps").
 
 **Nothing above is hidden or re-labelled as done.** With V23 the product asks are built: items 6, 8,

@@ -26,7 +26,7 @@ import app.config as app_config
 from app.agents import integrations
 from app.agents.ads_management import agent as ads_agent_mod
 from app.agents.finance import agent as finance_agent_mod
-from app.core.errors import E_INTEGRATION, E_VALIDATION, PolsiaError
+from app.core.errors import E_INTEGRATION, E_VALIDATION, MeridianError
 
 GOOGLE_ADS_FIELDS = (
     "google_ads_developer_token",
@@ -257,7 +257,7 @@ def test_ads_metrics_extra_context_names_a_refusal_instead_of_inventing_numbers(
 def test_the_metrics_attach_is_refused_when_malformed() -> None:
     for bad in ("nope", {"ok": "yes"}, {"ok": True, "result": "not-a-dict"}):
         task = {"title": "Sync ad metrics", "metadata": {ads_agent_mod.AD_METRICS_KEY: bad}}
-        with pytest.raises(PolsiaError) as refusal:
+        with pytest.raises(MeridianError) as refusal:
             ads_agent_mod.ad_metrics_extra_context(task)
         assert refusal.value.code == E_VALIDATION
 
@@ -388,7 +388,7 @@ def test_revenue_facts_extra_context_names_a_refusal_instead_of_inventing_number
 
 def test_revenue_facts_attach_is_refused_when_malformed() -> None:
     task = {"title": "x", "metadata": {finance_agent_mod.REVENUE_FACTS_KEY: ["nope"]}}
-    with pytest.raises(PolsiaError) as refusal:
+    with pytest.raises(MeridianError) as refusal:
         finance_agent_mod.revenue_facts_extra_context(task)
     assert refusal.value.code == E_VALIDATION
 

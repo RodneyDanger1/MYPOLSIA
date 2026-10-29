@@ -67,7 +67,7 @@ from starlette.background import BackgroundTask
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.data import ExportFileResponse
-from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, MeridianError
 from app.core.timeutil import today_utc
 from app.services import phone_link_service as phone
 from app.services import phone_media_service as media
@@ -82,7 +82,7 @@ router = APIRouter(prefix="/phone", tags=["phone"], dependencies=[Depends(verify
 #: `activity_log` sees every 2FA read without reading the codes themselves.
 CODES_AUDIT_ACTION = "phone_codes_read"
 CODES_AUDIT_AGENT = "system"
-EXPORT_TEMP_PREFIX = "polsia-phone-export-"
+EXPORT_TEMP_PREFIX = "meridian-phone-export-"
 EXPORT_TEMP_SUFFIX = ".zip"
 
 
@@ -209,7 +209,7 @@ async def _audit_send_attempt(
     db: AsyncSession,
     payload: dict[str, Any],
     outcome: sends.SendResult | None,
-    refusal: PolsiaError | None,
+    refusal: MeridianError | None,
 ) -> bool:
     """Write the ONE audit row per attempt in its OWN transaction (F-47) — never the request's.
 
@@ -270,14 +270,14 @@ async def phone_send(
     """
     with refusal_guard():
         outcome: sends.SendResult | None = None
-        refusal: PolsiaError | None = None
+        refusal: MeridianError | None = None
         body: dict[str, Any] | None = payload if isinstance(payload, dict) else None
         if body is None:
             received = (
                 "null" if payload is None else "array" if isinstance(payload, list)
                 else type(payload).__name__
             )
-            refusal = PolsiaError(
+            refusal = MeridianError(
                 E_VALIDATION,
                 f"the request body must be a JSON OBJECT with `to` and `body` (received JSON {received})",
                 how_to_fix='send {"to": "<thread_id | E.164 digits>", "body": "1..640 chars"}',
@@ -286,7 +286,7 @@ async def phone_send(
         else:
             try:
                 outcome = await sends.send(body.get("to"), body.get("body"))
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 refusal = exc
         # One row per attempt, ALWAYS — a non-object body has no target, so `mask_target(None)`
         # yields "" and the row still names the code (V-12).  The isolated writer commits it in its
@@ -337,7 +337,7 @@ def _build_export() -> tuple[Path, dict[str, int]]:
     try:
         fd, raw_path = tempfile.mkstemp(prefix=EXPORT_TEMP_PREFIX, suffix=EXPORT_TEMP_SUFFIX)
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the phone export ZIP temp file could not be created in the system scratch dir "
             f"({type(exc).__name__}: {exc})",
@@ -370,7 +370,7 @@ async def phone_export() -> ExportFileResponse:
     """The archive download — temp file built and counted before the first byte (H-P1)."""
     with refusal_guard():
         path, counts = await asyncio.to_thread(_build_export)
-    filename = f"polsia-phone-export-{today_utc().isoformat()}.zip"  # UTC day, not the host's
+    filename = f"meridian-phone-export-{today_utc().isoformat()}.zip"  # UTC day, not the host's
     return ExportFileResponse(
         path,
         media_type="application/zip",

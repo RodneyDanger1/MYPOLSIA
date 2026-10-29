@@ -130,15 +130,15 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
     from app.api.v1 import vision
     from app.config import settings
     from app.core.database import get_db
-    from app.core.errors import PolsiaError, http_status_for, to_http_detail
+    from app.core.errors import MeridianError, http_status_for, to_http_detail
 
     monkeypatch.setattr(settings, "api_key", "test-key", raising=False)
     app = FastAPI()
     app.include_router(vision.router, prefix="/api/v1")
     app.dependency_overrides[get_db] = lambda: async_db_session
 
-    @app.exception_handler(PolsiaError)
-    async def _polsia_error(_request, exc: PolsiaError) -> JSONResponse:
+    @app.exception_handler(MeridianError)
+    async def _meridian_error(_request, exc: MeridianError) -> JSONResponse:
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),

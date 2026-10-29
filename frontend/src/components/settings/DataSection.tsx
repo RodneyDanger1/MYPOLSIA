@@ -91,13 +91,13 @@ function errorText(e: unknown): string {
 }
 
 /** The download filename: the server's Content-Disposition when CORS exposes it, else the
- *  server's own name shape printed verbatim (data.py: `polsia-data-export-<date>.zip`). */
+ *  server's own name shape printed verbatim (data.py: `meridian-data-export-<date>.zip`). */
 function downloadName(header: string | null): string {
   if (header) {
     const match = /filename="?([^";]+)"?/.exec(header);
     if (match) return match[1];
   }
-  return "polsia-data-export.zip";
+  return "meridian-data-export.zip";
 }
 
 function numberOrDash(value: unknown): string {

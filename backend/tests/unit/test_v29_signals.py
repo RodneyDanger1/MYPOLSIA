@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.errors import E_VALIDATION, PolsiaError, http_status_for, to_http_detail
+from app.core.errors import E_VALIDATION, MeridianError, http_status_for, to_http_detail
 from app.services import signals_service as svc
 
 # ── fixtures: two real feed shapes, small enough to read ─────────────────────────────────────
@@ -332,7 +332,7 @@ def test_limit_must_be_an_integer_in_range(install_transport):
     install_transport({HN: (200, RSS_FEED), TC: (200, ATOM_FEED)})
 
     for bad in (0, 31, -1, True, "5", 2.5, None):
-        with pytest.raises(PolsiaError) as caught:
+        with pytest.raises(MeridianError) as caught:
             svc.read(limit=bad)
         assert caught.value.code == E_VALIDATION
 
@@ -352,8 +352,8 @@ async def signals_client(install_transport, monkeypatch):
     app = FastAPI()
     app.include_router(signals.router, prefix="/api/v1")
 
-    @app.exception_handler(PolsiaError)
-    async def _polsia_error(_request, exc: PolsiaError) -> JSONResponse:
+    @app.exception_handler(MeridianError)
+    async def _meridian_error(_request, exc: MeridianError) -> JSONResponse:
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),

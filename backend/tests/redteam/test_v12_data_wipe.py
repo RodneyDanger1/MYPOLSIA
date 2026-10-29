@@ -103,7 +103,7 @@ async def test_no_token_cannot_delete_anything(api_client, auth_headers, async_d
 async def test_empty_and_malformed_tokens_cannot_delete_anything(api_client, auth_headers, async_db_session):
     """ATTACK: `?confirm_token=` empty, a bare word, a three-part token, a non-integer expiry."""
     seeded = await _seed_members(async_db_session)
-    for bad in ("", "not-a-polsia-token", "123.abc.def", "notint.deadbeef"):
+    for bad in ("", "not-a-meridian-token", "123.abc.def", "notint.deadbeef"):
         resp = await api_client.delete(f"{WIPE}?confirm_token={bad}", headers=auth_headers)
         assert resp.status_code == 422, bad
         assert resp.json()["error"]["code"] == "E_VALIDATION", bad

@@ -116,8 +116,8 @@ has the contract.
 
 ## 3b. WAVE V17 — CLOSED (base `27a353e`; details in `wave-v17/`)
 - **Restore drill — NEW, executed ✅.** `scripts/restore.sh` + `make restore-drill SRC=backups` prove a
-  backup restores: one throwaway `postgres:16-alpine` container (`polsia-restore-drill-pg`, **no
-  published ports**, never the compose project), dump loaded into a fresh `polsia` database, public
+  backup restores: one throwaway `postgres:16-alpine` container (`meridian-restore-drill-pg`, **no
+  published ports**, never the compose project), dump loaded into a fresh `meridian` database, public
   table count + core-set row counts verified against a manifest parsed from the dump itself, every
   volume archive extracted with each listed member proven present, and trap teardown (`docker rm -f`)
   on every exit path. Refusals by name (exit 2) for missing/corrupt artifacts, docker absent, or a
@@ -233,7 +233,7 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
   `code`/`codes` key at any depth, `phone_link_service.codes()` never called (trip-wired), and a
   code-shaped message body is replaced by the named marker `[message body withheld: it looks like a
   verification code — codes are not available to tools]`. **Allowlist: `orchestrator` +
-  `customer_support` only** — the other eight agents get `E_POLICY_DENIED` / `POLSIA-E114` (pinned for
+  `customer_support` only** — the other eight agents get `E_POLICY_DENIED` / `MERIDIAN-E114` (pinned for
   all eight); an absent or corrupt store returns `E_PHONE_UNAVAILABLE`, never an empty list. Proof:
   RED **29/29 failed** → GREEN **68/68** on the lane's four files, neighbours **80/0**, ruff/mypy
   clean, plus **one real-store firewalled call** (`probes/live_phone_read_probe.py`: `ok=true`,
@@ -474,7 +474,7 @@ the wave is **unsettled** (no commit; L6's frozen-tree gate **PASSED** — 2,745
   apply, full suites, browser/e2e click-through.
 - **Observability (L4) — DONE ✅** (`wave-v23/l4-observability/RECEIPT.md`, 12:27). The 15-minute
   `check_activity_publish_health` tick now writes `{failures, skipped_while_open, breaker_open, ts}`
-  to `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job).
+  to `meridian:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job).
   `GET /api/v1/ops/activity-publish` serves `{data:{…}}`, `{data:null}` when the worker never wrote,
   or **503 `E_REDIS`** when Redis is unreachable or the value is not the frozen shape (no coercion of
   `"2"`/`true`). `/usage` gains a **Worker process** card (four counters or an honest "not published
@@ -600,7 +600,7 @@ smoke **PASS — 13 checks**, `tsc --noEmit` exit 0, ruff `All checks passed!`, 
   is accepted by the frozen contract and produces **exactly ONE run** (the worker's atomic claim is the
   mutex — measured); a terminal row is refused **409 `E_TASK_NOT_RUNNABLE`** with its current status.
 - **Agents genuinely use the web.** `web_search` calls DeepSeek `POST /v1/tools/search` with the app's
-  own key resolution; a live `competitor_research` run returned 5 ranked results, fetched `polsia.com`
+  own key resolution; a live `competitor_research` run returned 5 ranked results, fetched `meridian.com`
   through `web_fetch`, and recorded `tools_used: ["web_search", "web_fetch"]` in the run ledger
   (run 238: 18.3 s, 26,721 tokens, $0.0027).
 - **Code workspace tools.** `code_write` / `code_read` / `code_list` (traversal/absolute/symlink
@@ -764,7 +764,7 @@ reading task; real GitHub/Render/ad/Stripe actions remain owner-gated.
 - App: `backend/` (FastAPI + Celery), `frontend/` (Next.js), `nginx/`, `docker-compose.yml`, `Makefile`.
 - Docs: `README.md` (tour), `USAGE.md` (operator guide), `DEPENDENCIES.md` (setup), `docs/SUPERVISION.md`
   (tiers), `docs/ACCEPTANCE_TESTING.md`, `RELEASE-CHECKLIST.md`, `PHONELINK-MCP-TEST.md` (this repo's root).
-- Campaign records: `Desktop\polsia-work\build\ui-reverse\` (per-wave plans, receipts, verify reports —
+- Campaign records: `Desktop\meridian-work\build\ui-reverse\` (per-wave plans, receipts, verify reports —
   NOT in this repo by design; they carry machine-local paths).
 - Hermes-side tools: phone MCP (see `PHONELINK-MCP-TEST.md`), wave-ops skills, CDP drivers
   (`wave-v10/`, gitignored — contains a captured Stripe test webhook secret).

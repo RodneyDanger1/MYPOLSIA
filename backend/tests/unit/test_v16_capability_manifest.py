@@ -21,7 +21,7 @@ import pytest
 from app.agents import policy_firewall as pf
 from app.agents import tool_registry
 from app.agents.policy_firewall import AgentCapability
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 from app.services import capability_manifest
 
 
@@ -161,7 +161,7 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
         pf.AGENT_CAPABILITIES, "finance",
         AgentCapability(allowed_tools=(), agent_tools=("ghost_tool",)),
     )
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         capability_manifest.tool_entries_for("finance")
     assert excinfo.value.code == E_CONFIG
     assert "ghost_tool" in str(excinfo.value)

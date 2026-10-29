@@ -14,7 +14,7 @@ from celery import Celery
 
 from celery_app import celery_config
 
-app = Celery("polsia", include=list(celery_config.TASK_MODULES))
+app = Celery("meridian", include=list(celery_config.TASK_MODULES))
 app.config_from_object("celery_app.celery_config")  # this also installs beat_schedule
 
 # Eager registration of the task modules.  Each of them does

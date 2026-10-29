@@ -1,6 +1,6 @@
 # MERIDIAN — Complete Guide (v1, wave 9 tree)
 
-> **What this is.** Meridian (renamed from MYPOLSIA) is a self-hosted, owner-operated **autonomous
+> **What this is.** Meridian (renamed from Meridian) is a self-hosted, owner-operated **autonomous
 > AI business-operations platform**: a FastAPI backend, a Celery/Redis task queue, a Next.js dashboard,
 > a PostgreSQL database (26 tables), and ten agents that plan, research, draft, send and account —
 > always behind a policy firewall (sandbox, approvals, caps, kill switch, taint escalation).
@@ -13,15 +13,15 @@
 > capability statement is tied to a file/route/test or marked as needing credentials. Claims are
 > deliberately conservative — "cannot" is stated as plainly as "can".
 
-## 0. Rename note (MYPOLSIA → Meridian)
+## 0. Rename note (Meridian → Meridian)
 
 The product brand is **Meridian** everywhere it is user-visible: README/docs, dashboard title and
 top bar, page metadata, API `app_name`, config default, notification text, and the guide.
 **Technical identifiers deliberately keep their historical names** so imports, env contracts, the
-database and Docker images do not break: `PolsiaError`, `POLSIA_*` environment variables (e.g.
-`POLSIA_KILL_SWITCH`), `polsia_*` tables/containers, and the upstream comparison document
-(`COMPARISON-POLSIA.md`, which cites the reference product *Polsia*). A word-boundary rename was used,
-so `PolsiaError` is untouched while the word "Polsia" became "Meridian". This is a brand rename, not a
+database and Docker images do not break: `MeridianError`, `MERIDIAN_*` environment variables (e.g.
+`MERIDIAN_KILL_SWITCH`), `meridian_*` tables/containers, and the upstream comparison document
+(`COMPARISON-MERIDIAN.md`, which cites the reference product *Meridian*). A word-boundary rename was used,
+so `MeridianError` is untouched while the word "Meridian" became "Meridian". This is a brand rename, not a
 schema break.
 
 ---
@@ -137,8 +137,8 @@ states have no outgoing edge; two explicit re-arms (`failed → pending` manual 
 | Control | What it does |
 |---|---|
 | **Sandbox** (default ON) | Every external action is a labelled draft: no provider call, no fake id, `drafted_not_sent` recorded. Turning it off requires an owner edit + restart. |
-| **Approvals** | HMAC single-use tokens (TTL 1 h; consumed in a dedicated transaction; replay = `POLSIA-E121`) for every irreversible external action, any action from a tainted run, and values ≥ $25. Minting is owner-key only and audited. |
-| **Kill switch** | `POLSIA_KILL_SWITCH=freeze` refuses all dispatch/tool calls; `throttle` refuses external-class agents; direct-effect endpoints check it before transport. |
+| **Approvals** | HMAC single-use tokens (TTL 1 h; consumed in a dedicated transaction; replay = `MERIDIAN-E121`) for every irreversible external action, any action from a tainted run, and values ≥ $25. Minting is owner-key only and audited. |
+| **Kill switch** | `MERIDIAN_KILL_SWITCH=freeze` refuses all dispatch/tool calls; `throttle` refuses external-class agents; direct-effect endpoints check it before transport. |
 | **Caps** | Day/hour channel caps (email 50/day/15 hour; twitter 12/3; others 3–10/day), per-run $2, day $25, $1 reserve; an uncountable cap refuses by name rather than reading 0. |
 | **SSRF/egress** | DoH resolution, public-IP-only, ports 80/443, pinned dial, redirect origin lock. |
 | **Taint** | Untrusted content is wrapped/labelled; a tainted run escalates every external action and taint is sticky. |
@@ -199,7 +199,7 @@ evening summary. Everything the agents "did" is in the run ledger; nothing is cl
 
 ### 6.4 No-Docker development path
 
-Backend: `.venv` + `DATABASE_URL=sqlite+aiosqlite:///./polsia.db` + `alembic upgrade head` + seed, run
+Backend: `.venv` + `DATABASE_URL=sqlite+aiosqlite:///./meridian.db` + `alembic upgrade head` + seed, run
 uvicorn. Frontend: `npm ci` then `npm run dev` with `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_API_KEY`;
 production `npm run build && npm start` (standalone). The README documents the proxy layout (:3000 +
 :8000 behind :80).

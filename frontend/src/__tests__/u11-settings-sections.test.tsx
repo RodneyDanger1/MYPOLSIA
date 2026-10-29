@@ -129,19 +129,19 @@ const PRICING: PricingCatalog = {
 const DRY_RUN = {
   ok: true,
   dry_run: true,
-  action_fingerprint: "polsia-data-wipe:v1:0123456789ab",
+  action_fingerprint: "meridian-data-wipe:v1:0123456789ab",
   would_delete: { tasks: 3, chat_messages: 2, memory_entries: 1 },
   total_rows: 6,
   kept: ["company_config", "deepseek_key_store"],
   how_to_execute:
-    'mint the confirm token with POST /api/v1/approvals {"action_fingerprint": "polsia-data-wipe:v1:0123456789ab"}',
+    'mint the confirm token with POST /api/v1/approvals {"action_fingerprint": "meridian-data-wipe:v1:0123456789ab"}',
 };
 
 const TOKEN = "1799999999.deadbeef";
 
 const MINT = {
   token: TOKEN,
-  action_fingerprint: "polsia-data-wipe:v1:0123456789ab",
+  action_fingerprint: "meridian-data-wipe:v1:0123456789ab",
   expires_at: 1799999999,
   ttl_s: 3600,
 };
@@ -298,7 +298,7 @@ describe("u11 settings — data export & wipe", () => {
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(await screen.findByTestId("settings-data-export-done")).toHaveTextContent(
-      "Exported 42 rows to polsia-data-export.zip.",
+      "Exported 42 rows to meridian-data-export.zip.",
     );
   });
 
@@ -339,7 +339,7 @@ describe("u11 settings — data export & wipe", () => {
     expect(screen.getByText("chat_messages")).toBeInTheDocument();
     expect(screen.getByText(/company_config, deepseek_key_store/)).toBeInTheDocument();
     // The fingerprint appears twice by design: its own line AND inside how_to_execute.
-    expect(screen.getAllByText(/polsia-data-wipe:v1:0123456789ab/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/meridian-data-wipe:v1:0123456789ab/).length).toBeGreaterThanOrEqual(2);
     // No token yet: the wipe control is not even offered.
     expect(screen.queryByTestId("settings-data-wipe")).toBeNull();
 
@@ -347,7 +347,7 @@ describe("u11 settings — data export & wipe", () => {
     fireEvent.click(screen.getByTestId("settings-data-mint"));
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith("/approvals", {
-        action_fingerprint: "polsia-data-wipe:v1:0123456789ab",
+        action_fingerprint: "meridian-data-wipe:v1:0123456789ab",
       }),
     );
     expect(await screen.findByTestId("settings-data-minted")).toHaveTextContent("single-use");
@@ -508,19 +508,19 @@ describe("u11 settings — site package", () => {
   it("builds via POST /site/package and reports the REAL response — paths, not an archive", async () => {
     await renderSettings();
     mockPost.mockResolvedValueOnce({
-      package_dir: "C:\\Meridian\\backend\\data\\exports\\site-polsia",
+      package_dir: "C:\\Meridian\\backend\\data\\exports\\site-meridian",
       files: [
-        "C:\\Meridian\\backend\\data\\exports\\site-polsia\\index.html",
-        "C:\\Meridian\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
+        "C:\\Meridian\\backend\\data\\exports\\site-meridian\\index.html",
+        "C:\\Meridian\\backend\\data\\exports\\site-meridian\\HOSTING-README.md",
       ],
-      slug: "polsia",
+      slug: "meridian",
     });
 
     fireEvent.click(screen.getByTestId("settings-site-build"));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/site/package"));
 
     const result = await screen.findByTestId("settings-site-result");
-    expect(result).toHaveTextContent("polsia");
+    expect(result).toHaveTextContent("meridian");
     expect(result).toHaveTextContent("index.html");
     expect(result).toHaveTextContent("HOSTING-README.md");
     // V15/W2 (4-07) DELIBERATE UPDATE: the old copy claimed "no HTTP download" — false since the

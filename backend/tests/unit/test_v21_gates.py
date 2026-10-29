@@ -32,7 +32,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app.config import settings
-from app.core.errors import E_PHONE_UNAVAILABLE, PolsiaError
+from app.core.errors import E_PHONE_UNAVAILABLE, MeridianError
 from app.main import create_app
 from app.services.phone_send_service import (
     E_PHONE_SEND_UNPAIRED,
@@ -88,7 +88,7 @@ def _exposed(response) -> set[str]:
 
 
 @pytest.mark.asyncio
-async def test_polsia_total_is_cors_exposed(api_client) -> None:
+async def test_meridian_total_is_cors_exposed(api_client) -> None:
     origin = settings.cors_origins[0]
     resp = await api_client.get("/api/v1/health", headers={"Origin": origin})
     assert resp.status_code == 200
@@ -194,7 +194,7 @@ def test_driver_refusal_keeps_the_context_object() -> None:
             "context": {"ticket": "abc123"},
         },
     }
-    with pytest.raises(PolsiaError) as info:
+    with pytest.raises(MeridianError) as info:
         parse_driver_stdout(3, json.dumps(payload))
     assert info.value.code == E_PHONE_SEND_UNPAIRED
     assert info.value.context == {"ticket": "abc123", "driver_exit": 3}

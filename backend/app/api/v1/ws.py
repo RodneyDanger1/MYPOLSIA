@@ -70,7 +70,7 @@ from pydantic import BaseModel
 from app.api.deps import refusal_guard
 from app.config import settings
 from app.core import events
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, MeridianError
 from app.core.query_scrub import scrub_query_credentials
 from app.core.security import api_key_matches, verify_api_key
 
@@ -142,7 +142,7 @@ def _ticket_secret() -> bytes:
     Derived rather than reused so that a leaked ticket reveals nothing about the key (HMAC is
     one-way) and a key rotation invalidates every outstanding ticket for free.
     """
-    material = b"polsia-ws-ticket\x00" + (settings.api_key or "").encode("utf-8")
+    material = b"meridian-ws-ticket\x00" + (settings.api_key or "").encode("utf-8")
     return hashlib.sha256(material).digest()
 
 
@@ -214,7 +214,7 @@ def operator_identity() -> str:
     value appears in cap keys and log lines, and it must never be usable as a credential.
     An OPEN backend (no key configured) has one anonymous operator, which is the honest answer.
     """
-    material = b"polsia-ws-operator\x00" + (settings.api_key or "").encode("utf-8")
+    material = b"meridian-ws-operator\x00" + (settings.api_key or "").encode("utf-8")
     return hashlib.sha256(material).hexdigest()[:16]
 
 
@@ -244,7 +244,7 @@ def _authorise_mint(operator: str | None = None, *, now: float | None = None) ->
 
     open_sockets = _operator_sockets.get(ident, 0)
     if open_sockets >= _MAX_SOCKETS_PER_OPERATOR:
-        raise PolsiaError(
+        raise MeridianError(
             E_RATE_LIMITED,
             "a socket ticket was not minted: this operator already holds "
             f"{open_sockets} open activity socket(s), which is the install-wide cap "
@@ -264,7 +264,7 @@ def _authorise_mint(operator: str | None = None, *, now: float | None = None) ->
     if len(history) >= limit:
         retry_after = max(0.0, window - (current - history[0]))
         _mint_times[ident] = history
-        raise PolsiaError(
+        raise MeridianError(
             E_RATE_LIMITED,
             f"a socket ticket was not minted: {len(history)} tickets were already minted in the "
             f"last {window:g}s (limit {limit} per operator)",

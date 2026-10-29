@@ -422,7 +422,7 @@ async def _catch_up_cycle(
     never a second model call.
     """
     from app.core.database import get_session_factory
-    from app.core.errors import E_REDIS, PolsiaError
+    from app.core.errors import E_REDIS, MeridianError
     from app.services.activity_service import log_activity
 
     detail = owed.get("detail") or {}
@@ -433,7 +433,7 @@ async def _catch_up_cycle(
         try:
             await enqueue_created(undelivered, label=f"{cycle} cycle catch-up")
             dispatched = undelivered
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code != E_REDIS:
                 raise
             rearm = await _rearm_cycle_tick(
@@ -527,7 +527,7 @@ async def _resolve_morning_hour(db) -> tuple[int, str]:
     """
     # precedence: company_config.daily_cycle_hour wins; settings.morning_cycle_hour fills an
     # absent value only.
-    from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+    from app.core.errors import E_CONFIG, ERROR_HINTS, MeridianError
     from app.services.company_service import get_daily_cycle_hour
 
     stored = await get_daily_cycle_hour(db)
@@ -536,7 +536,7 @@ async def _resolve_morning_hour(db) -> tuple[int, str]:
     else:
         hour, source = stored, "company"
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"morning cycle hour {hour!r} (from {source}) is not a valid hour: "
             "the accepted range is an integer 0-23",
@@ -565,11 +565,11 @@ def _resolve_evening_hour() -> tuple[int, str]:
     (`company_config.daily_cycle_hour` is the morning's), so `settings.evening_cycle_hour` is
     the single source today; a company-level evening hour is an owner decision (REQUESTS).
     """
-    from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+    from app.core.errors import E_CONFIG, ERROR_HINTS, MeridianError
 
     hour, source = settings.evening_cycle_hour, "settings"
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"evening cycle hour {hour!r} (from {source}) is not a valid hour: "
             "the accepted range is an integer 0-23",
@@ -730,7 +730,7 @@ async def _skip_paused_cycle_tick(
 async def _morning_cycle() -> dict[str, Any]:
     from app.agents.accounting import BudgetStop
     from app.core.database import get_session_factory
-    from app.core.errors import E_REDIS, PolsiaError
+    from app.core.errors import E_REDIS, MeridianError
     from app.models.task import Task
     from app.services.activity_service import log_activities, log_activity
     from app.services.company_service import get_full_context
@@ -1077,7 +1077,7 @@ async def _morning_cycle() -> dict[str, Any]:
     if dispatch_ids:
         try:
             await enqueue_created(dispatch_ids, label="morning cycle")
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code != E_REDIS:
                 raise
             deferred = await _rearm_cycle_tick(
@@ -1211,7 +1211,7 @@ async def _exact_day_outcome_counts(db, day: date) -> dict[str, Any]:
     """
     from sqlalchemy import func, select
 
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
     from app.core.timeutil import day_window
     from app.models.task import Task
     from app.services.query_helpers import fetch_rows
@@ -1230,7 +1230,7 @@ async def _exact_day_outcome_counts(db, day: date) -> dict[str, Any]:
             .group_by(Task.status),
             what=f"exact day outcome counts {day.isoformat()}",
         )
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return {"status": "unavailable", "reason": exc.code, "by_status": {},
                 "counted": None, "window": window}
     by_status = {str(status): int(count) for status, count in rows}

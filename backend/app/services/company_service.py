@@ -122,7 +122,7 @@ def cache_info() -> dict[str, Any]:
     """Introspection for probes/ops: what is live, and for how much longer.
 
     ZERO CALLERS (R25 dead-helper sweep, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/grep_cache_info.txt) — exported in `__all__`
+    meridian-work/build/R25-deadhelpers/raw/grep_cache_info.txt) — exported in `__all__`
     but called by nothing: no app/, celery_app/ or scripts/ code, and no test reads it
     either.  Intended as the ops/probe view of `_CONTEXT_CACHE` (entries, TTL, remaining
     life).  Removal vs adoption is an owner decision (REQUESTS R25-1).
@@ -168,7 +168,7 @@ async def get_company_by_name(db: AsyncSession, name: str) -> CompanyConfig | No
     """Lookup by exact name; a failed read is a named `E_DB` (L2-06, same class as above).
 
     ZERO CALLERS (R25 bounded scan, 2026-10-13; raw grep evidence:
-    polsia-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
+    meridian-work/build/R25-deadhelpers/raw/scan_public_funcs.txt) — exported in `__all__`
     but called by nothing (production or tests); the app resolves the single company row
     via `get_company`.  Removal vs adoption is an owner decision (REQUESTS R25-1).
     """

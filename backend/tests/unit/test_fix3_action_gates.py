@@ -14,7 +14,7 @@ What this file pins (findings lane-3 + research-C, phase-3 fixer-3):
   performed is added to the pre-run snapshot before every firewall call, and incremented only
   after a performed AND successful provider call. A cap denial with nothing performed stays
   fatal (the shipped contract, `tests/unit/test_channel_agent_caps.py`); a cap denial AFTER a
-  real send is recorded as a named refusal (`E_RATE_LIMITED`, POLSIA-E117) and the item stays a
+  real send is recorded as a named refusal (`E_RATE_LIMITED`, MERIDIAN-E117) and the item stays a
   draft — so the performed work still persists and a retryable refusal cannot re-run the batch.
 * L3-07 — the reply's `reply_id` is the PROVIDER's id (or None), never the model's string, and
   the sandbox guard covers replies too.
@@ -39,7 +39,7 @@ from app.agents.code_generation.agent import CodeGenerationAgent
 from app.agents.email_outreach.agent import EmailOutreachAgent
 from app.agents.side_effects import SideEffectOutcome
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_POLICY_DENIED, E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_RATE_LIMITED, MeridianError
 
 #: V11/W1: the worker-resolved compliance preflight a real `email_outreach` run carries — the
 #: same `channel_sends` pattern (the worker owns the DB, the agent does not). A send without it
@@ -228,7 +228,7 @@ def test_code_generation_open_pr_action_still_attempts_through_the_firewall(monk
         calls.append(kwargs)
         return SideEffectOutcome(
             allowed=True, sandboxed=False, requires_approval=False,
-            policy_code="POLSIA-E000", reason="test stub: approved",
+            policy_code="MERIDIAN-E000", reason="test stub: approved",
         )
 
     monkeypatch.setattr(codegen_agent, "request_side_effect", spy)
@@ -272,7 +272,7 @@ def test_social_batch_sends_exactly_one_then_records_the_cap_refusals(monkeypatc
     assert all("cap for twitter" in r["error"]["message"] for r in refusals)
     receipts = out["side_effects"]
     assert [r["performed"] for r in receipts] == [True, False, False, False, False]
-    assert all(r["policy_code"] == "POLSIA-E117" for r in receipts[1:])
+    assert all(r["policy_code"] == "MERIDIAN-E117" for r in receipts[1:])
     assert out["drafted_not_sent"] is True
 
 
@@ -285,7 +285,7 @@ def test_social_cap_refusal_with_nothing_performed_stays_fatal(monkeypatch):
         "action": "post", "posts": [{"platform": "twitter", "content": "one too many"}],
     })
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent.run({"title": "post"}, {"channel_sends": {"twitter": {"today": 12, "hour": 3}}})
 
     assert excinfo.value.code == E_RATE_LIMITED
@@ -334,7 +334,7 @@ def test_none_snapshot_plus_performed_stays_none(monkeypatch):
         "action": "post", "posts": [{"platform": "twitter", "content": "x"}],
     })
 
-    with pytest.raises(PolsiaError) as excinfo:  # unknown count -> fail closed (E114)
+    with pytest.raises(MeridianError) as excinfo:  # unknown count -> fail closed (E114)
         agent.run({"title": "post"}, {"channel_sends": {"twitter": {"today": None, "hour": None}}})
 
     assert excinfo.value.code == E_POLICY_DENIED

@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
-from app.core.errors import E_CONFIG, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_CONFIG, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import day_window, today_in
 from app.models.finance import ExpenseRecord
 from app.models.task import AgentRun
@@ -289,7 +289,7 @@ async def stripe_webhook(
         # grep).  The same missing-configuration condition elsewhere in the API is `E_CONFIG`
         # (`api/v1/data.py`: APPROVAL_SECRET unset -> 503 + how_to_fix); this route now answers
         # the same way.  Nothing was verified and nothing was stored.
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "the Stripe webhook secret is not configured, so no delivery can be verified",
             how_to_fix=(

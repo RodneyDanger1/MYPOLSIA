@@ -46,7 +46,7 @@ from typing import Any
 
 import httpx
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.core.timeutil import now_utc
 
 #: The v2 pair endpoint (live-verified shape above; the v1 `/latest` document is NOT used here).
@@ -75,7 +75,7 @@ def _code(value: object, field: str) -> str:
     """One ISO currency code, normalised — or the named `E_VALIDATION` refusal."""
     text = value.strip().upper() if isinstance(value, str) else ""
     if not _CODE_RE.fullmatch(text):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"{field} must be a 3-letter ISO currency code (got {value!r})",
             how_to_fix="use a code like USD, EUR, GBP, JPY",
@@ -94,7 +94,7 @@ def _amount(value: object) -> float:
     JSON parses arbitrarily long integers, so this is caller input, not an internal invariant.
     """
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"amount must be a non-negative finite number (got {value!r})",
             how_to_fix="pass amount >= 0, e.g. 1234.56",
@@ -103,14 +103,14 @@ def _amount(value: object) -> float:
     try:
         numeric = float(value)
     except OverflowError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "amount is too large to represent as a money value",
             how_to_fix="pass a smaller amount, e.g. 1234.56",
             context={"field": "amount"},
         ) from exc
     if not math.isfinite(numeric) or numeric < 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"amount must be a non-negative finite number (got {value!r})",
             how_to_fix="pass amount >= 0, e.g. 1234.56",
@@ -131,7 +131,7 @@ def _cents(amount: float, rate: float) -> float:
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
     except InvalidOperation as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"fx_convert: amount {amount!r} is too large to convert at cent precision",
             how_to_fix="pass a smaller amount; a display conversion is not an accounting total",
@@ -147,14 +147,14 @@ def _fetch(frm: str, to: str) -> dict[str, Any]:
         with _CLIENT(timeout=TIMEOUT_S) as client:
             response = client.get(url)
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"fx_convert: timed out after {TIMEOUT_S:g}s calling {url}",
             how_to_fix="retry once; if it persists the rate source is slow",
             context={"from": frm, "to": to},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"fx_convert: transport failure: {type(exc).__name__}",
             how_to_fix="check egress and retry once",
@@ -164,14 +164,14 @@ def _fetch(frm: str, to: str) -> dict[str, Any]:
     if response.status_code in (404, 422):
         # 422 is what v2 ACTUALLY answers for an unknown currency (measured 2026-10-20); 404 is
         # kept for the endpoint's documented miss shape.  Both mean the same caller error.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"fx_convert: the rate source does not know the currency pair {frm}/{to}",
             how_to_fix="check the ISO 4217 codes; both must be currencies the ECB publishes",
             context={"from": frm, "to": to, "status": response.status_code},
         )
     if response.status_code != 200:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"fx_convert: provider answered HTTP {response.status_code} for {frm}/{to}",
             how_to_fix="retry once; if it persists the free rate source is down",
@@ -181,14 +181,14 @@ def _fetch(frm: str, to: str) -> dict[str, Any]:
     try:
         body = response.json()
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             "fx_convert: provider returned a non-JSON body",
             how_to_fix="retry once",
             context={"from": frm, "to": to},
         ) from exc
     if not isinstance(body, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             "fx_convert: provider returned a malformed rate document",
             how_to_fix="retry once",
@@ -202,14 +202,14 @@ def _fetch(frm: str, to: str) -> dict[str, Any]:
         or not math.isfinite(float(raw_rate))
         or float(raw_rate) <= 0
     ):
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"fx_convert: provider returned a malformed rate for {frm}/{to}: {raw_rate!r}",
             how_to_fix="retry once; a zero or non-numeric rate is never converted",
             context={"from": frm, "to": to},
         )
     if body.get("base") != frm or body.get("quote") != to:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"fx_convert: provider answered for {body.get('base')!r}/{body.get('quote')!r}, "
             f"not {frm}/{to}",

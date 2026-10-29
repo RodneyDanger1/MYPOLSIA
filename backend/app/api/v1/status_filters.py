@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 
 __all__ = [
     "AD_CAMPAIGN_STATUSES",
@@ -66,7 +66,7 @@ def require_status(value: str | None, valid: Sequence[str], *, what: str) -> Non
     """
     if value is None or value in valid:
         return
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"unknown {what} status {value!r}; valid: {', '.join(valid)}",
         how_to_fix=ERROR_HINTS[E_VALIDATION],

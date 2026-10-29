@@ -1,4 +1,4 @@
-# MYPOLSIA vs the real Polsia — an honest comparison
+# Meridian vs the real Meridian — an honest comparison
 
 *Written 2026-10-19 against the live stack at `http://127.0.0.1`. **Updated after wave V27 settled**
 (backend **3,337 tests / 0 failed / 0 errors / 13 skipped**, jest **108 suites / 1,017 tests**, live
@@ -13,9 +13,9 @@ mypy file count — are marked **BLOCKED**, never estimated.*
 
 ---
 
-## 1. What the real Polsia is
+## 1. What the real Meridian is
 
-Polsia (polsia.com, founder Ben Broca) is a hosted, multi-tenant SaaS that sells itself as "AI that
+Meridian (meridian.com, founder Ben Broca) is a hosted, multi-tenant SaaS that sells itself as "AI that
 runs your company while you sleep": you describe an idea; an orchestrator agent plans, then
 specialist agents execute — planning docs, code, website/app builds, hosting and database
 provisioning, payments setup, Meta ads, cold outreach, social content, customer support, and a
@@ -38,7 +38,7 @@ outcome complaints; the marketing is stronger than the reliability record.
 
 ## 2. Side-by-side capability matrix
 
-| Capability | Real Polsia | MYPOLSIA (live, V26 build) | Verdict |
+| Capability | Real Meridian | Meridian (live, V26 build) | Verdict |
 |---|---|---|---|
 | Orchestrator + specialist agents | ✓ (9 agents, orchestrator plans) | ✓ 10 agents (orchestrator, planning, research, social, email, support, ads, code, finance, planner) with real prompts + a shared pipeline | **parity** |
 | Autonomous cadence | ✓ one nightly task; extra runs cost credits | ✓ morning/evening daily cycles + scheduler lanes, 15-min/5-min ticks, auto-mode advisory lock; **no per-run credit meter** | **parity+** (we don't meter) |
@@ -63,11 +63,11 @@ outcome complaints; the marketing is stronger than the reliability record.
 | Test/quality evidence | not public | ✓ **3,226 backend / 983 FE** tests, **live drills 42/42 + 45/45 + 17/17**, 13-check smoke, mypy+ruff hard gates; the V26-settle Playwright count is **BLOCKED** (no suite log in `v-settle/`) and is not claimed | **we only** |
 | Multi-tenant onboarding | ✓ signup → company in minutes | ✗ single-tenant by design | deliberate difference |
 
-## 3. What Polsia has that we lack — and what improving it would take
+## 3. What Meridian has that we lack — and what improving it would take
 
 Ordered by real-world impact for you:
 
-1. **Infrastructure provisioning (Render + Neon + GitHub).** Polsia's headline trick is that an agent
+1. **Infrastructure provisioning (Render + Neon + GitHub).** Meridian's headline trick is that an agent
    can stand up a working web service, database and repo for a company. We have a **site generator
    + hosting on your own box** (V24/V26), a **Render deploy adapter** (V25: dry-run by default, a real
    deploy only with owner Render credentials), and firewalled GitHub branch/commit/PR tools (V25) —
@@ -80,23 +80,23 @@ Ordered by real-world impact for you:
    *Residual:* a stack with no vision key refuses `E_CONFIG` by name.
 3. **God Mode cockpit.** **V25 shipped `/ops`**: live runs with tool chips/cost/duration, pending
    approvals with real approve/deny, agent triggers, auto-mode/pause/sandbox readings. (P2, done.)
-4. **Lead-gen + CRM depth.** Polsia ships a lead-gen MCP and a mini CRM. We have outreach + a support
+4. **Lead-gen + CRM depth.** Meridian ships a lead-gen MCP and a mini CRM. We have outreach + a support
    inbox + compliance, but no prospect database/enrichment loop. (P2, medium; compliance-sensitive.)
 5. **Real ad writes.** Our ads agent reads Google/Meta and reports honest revenue/ROAS (V24); actual
    campaign creation/adjustment is sandbox-gated and unproven. (P1 gated by owner keys; medium.)
 6. **Business email + domain provisioning.** We send through SendGrid with a compliance footer; no
    mailbox or domain provisioning. (P2, small.)
-7. **Credit/usage metering.** Polsia meters every agentic task; we meter cost per run instead and give
+7. **Credit/usage metering.** Meridian meters every agentic task; we meter cost per run instead and give
    unlimited tasks. That's a *feature for you*, not a gap — noted so the difference is deliberate.
-8. **Public availability engineering.** Polsia's reviews show failed deployments; our equivalent risk
+8. **Public availability engineering.** Meridian's reviews show failed deployments; our equivalent risk
    is the (single) compose stack — we mitigate with backups/restore drills and CI, not multi-region.
 
-## 4. What MYPOLSIA has that the real Polsia cannot (or does not) offer
+## 4. What Meridian has that the real Meridian cannot (or does not) offer
 
 - **Full ownership, zero take rate.** No 20% revenue share, no credit meter — your hardware, your DB,
   your data, your IP.
 - **A personal phone bridge.** SMS threads, calls, verification codes and media from Phone Link, plus a
-  `phone_read` agent tool with codes structurally absent and a host send bridge. Polsia has no phone
+  `phone_read` agent tool with codes structurally absent and a host send bridge. Meridian has no phone
   concept.
 - **An open, documented, tested API.** 76 routes, Swagger UI at `/apidocs`, parity pins that fail CI if
   the surface drifts.
@@ -105,7 +105,7 @@ Ordered by real-world impact for you:
 - **Verifiable quality.** 3,226 backend tests, 983 frontend tests, live drills 42/42 + 45/45 + 17/17,
   a 13-check one-command smoke, hard mypy/ruff gates, and a 92% coverage floor — all reproducible
   locally. (The V26-settle Playwright count is **BLOCKED**: no suite log exists in
-  `wave-v26/v-settle/`, so none is claimed.) Polsia publishes no such evidence.
+  `wave-v26/v-settle/`, so none is claimed.) Meridian publishes no such evidence.
 - **Firewalled tool-calling.** Per-agent allowlists with policy codes; an agent literally cannot call a
   tool it was not granted, and the refusal is audited.
 - **Sandbox mode.** A single switch that turns every external action into a named refusal — safe by
@@ -118,7 +118,7 @@ Six lanes on `51affcf`, settled by the parent; the tree is committed green and t
 | Seat | Delivered | Proof |
 |---|---|---|
 | **L1 — runnable tasks** | `POST /api/v1/tasks/ID/run` (202 dispatched), **Run this task** on pending cards + detail, New Task copy states the wait | Live drill: created → 202 → completed in 18.3 s; second dispatch while pending produced **exactly 1 run**; completed-row rerun **409 `E_TASK_NOT_RUNNABLE`** |
-| **L2 — agent tools** | Firewalled **`web_search`** on DeepSeek `POST /v1/tools/search` (app's own key resolution, named refusals `E_VALIDATION/E_CONFIG/E_AUTH/E_BALANCE/E_RATE_LIMIT/E_UNAVAILABLE`, honest `[]`), **code write/read/list** workspace | Live `competitor_research` run: 5 ranked results + `polsia.com` fetched; run ledger `tools_used: ["web_search","web_fetch"]`; smoke `registry_tools=8` |
+| **L2 — agent tools** | Firewalled **`web_search`** on DeepSeek `POST /v1/tools/search` (app's own key resolution, named refusals `E_VALIDATION/E_CONFIG/E_AUTH/E_BALANCE/E_RATE_LIMIT/E_UNAVAILABLE`, honest `[]`), **code write/read/list** workspace | Live `competitor_research` run: 5 ranked results + `meridian.com` fetched; run ledger `tools_used: ["web_search","web_fetch"]`; smoke `registry_tools=8` |
 | **L3 — website builder** | Profile-driven site generator, `/sites/<slug>/` hosting via nginx, `/sites` page (create/list/preview), nav entry | Live: POST 201 → page 200 with the requested title, script-free, `styles.css` 200; `GET /sites` lists it |
 | **L4 — ads truth** | `revenue_usd` measured-or-`None`; `roas` only when revenue **and** spend are measured | Drill: honest empty when no campaigns; unit suite pins None ≠ 0 |
 | **L5 — UI polish** | 30 s focus refresh, one activity read for two consumers, hidden-tab polling stopped, DOM-shaped skeletons, working Retry, lazy chat rail | Measured before/after in the lane receipt; jest 918/918 |
@@ -167,9 +167,9 @@ retention keeps the shared root for runs without an id. The V26-settle Playwrigh
 2. Set the real **website URL** (compliance footer refuses by name until then) and rotate the API key.
 3. Keep backups verified (already daily + restore drill).
 
-**P1 — parity with Polsia's spine (code):**
+**P1 — parity with Meridian's spine (code):**
 4. **Deploy/provision adapter** (Render/GitHub/Neon) behind firewalled tools with owner-approved creds —
-   the last thing between "MYPOLSIA can build a site" and "MYPOLSIA can launch a business."
+   the last thing between "Meridian can build a site" and "Meridian can launch a business."
 5. **GitHub push tool** for the code agent (real source history), then a code-review agent pass.
 6. Vision input on tasks (DeepSeek V4.1-Flash already supports it).
 7. Verified ad writes (Meta/Google) with budgets + kill switch.
@@ -197,10 +197,10 @@ Live-drill scripts (V26 settle): `wave-v26/v-settle/settle-v-live.sh` — **45/4
 
 ## 8. Sources
 
-DeepSeek Search queries (via `POST https://api.deepseek.com/v1/tools/search`): "Polsia AI platform
-features website builder deployment God Mode reviews"; "Polsia AI pricing plans credits what
-included"; "Polsia AI what can it do build websites apps deploy hosting"; "Polsia AI limitations
-complaints not working reviews". DeepSeek Fetch (`/v1/tools/fetch`) pages: salesforge.ai Polsia
+DeepSeek Search queries (via `POST https://api.deepseek.com/v1/tools/search`): "Meridian AI platform
+features website builder deployment God Mode reviews"; "Meridian AI pricing plans credits what
+included"; "Meridian AI what can it do build websites apps deploy hosting"; "Meridian AI limitations
+complaints not working reviews". DeepSeek Fetch (`/v1/tools/fetch`) pages: salesforge.ai Meridian
 review (pricing/credits/20% take/IP), render.com "A sandbox doesn't constrain an API Key" (Render +
-GitHub + Neon + MCP stack), polsia.com landing page. Screenshots: `docs/screenshots/` (dashboard,
+GitHub + Neon + MCP stack), meridian.com landing page. Screenshots: `docs/screenshots/` (dashboard,
 agents, usage, capabilities, tasks-with-run-action) captured from the live stack.

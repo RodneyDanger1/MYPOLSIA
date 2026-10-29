@@ -15,7 +15,7 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.finance import ExpenseRecord
 from app.services.finance_service import persist_finance_run, record_expense, record_stripe_event
 
@@ -66,7 +66,7 @@ async def test_blank_currency_never_becomes_an_empty_string(async_db_session):
 @pytest.mark.asyncio
 async def test_non_text_currency_is_a_named_refusal(async_db_session):
     """Fail-closed, never `AttributeError` inside a persistence path."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await record_expense(async_db_session, **_kwargs(currency=840))
     assert excinfo.value.code == E_VALIDATION
     assert "currency" in excinfo.value.message

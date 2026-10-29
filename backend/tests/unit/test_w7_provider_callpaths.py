@@ -29,14 +29,14 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime, integrations, structured_output
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.config import settings as app_settings
-from app.core.errors import E_CLI_EXIT, E_INTEGRATION, PolsiaError
+from app.core.errors import E_CLI_EXIT, E_INTEGRATION, MeridianError
 
 SAFE_TEST_KEY = "sk-w7-unit-not-a-real-key"
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     """The smallest real agent: `_finish_call` is the code under test, nothing is dispatched."""
 
     agent_type = "test"
@@ -63,8 +63,8 @@ def _status_envelope(status: int, body: dict | None = None) -> claude_cli.Invoke
     return deepseek_runtime.invoke(_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
 
 
-def _raised_failure(result: claude_cli.InvokeResult, attempts: int = 1) -> PolsiaError:
-    with pytest.raises(PolsiaError) as excinfo:
+def _raised_failure(result: claude_cli.InvokeResult, attempts: int = 1) -> MeridianError:
+    with pytest.raises(MeridianError) as excinfo:
         _Agent()._finish_call(result, attempts=attempts, transport="http")
     return excinfo.value
 
@@ -86,7 +86,7 @@ def test_a_rejected_key_names_the_deepseek_key_and_never_the_cli_login(status):
     exc = _raised_failure(_status_envelope(status))
 
     assert exc.code == E_CLI_EXIT  # taxonomy unchanged (the API boundary still answers 502)
-    assert exc.context["failure_code"] == "POLSIA-E101"
+    assert exc.context["failure_code"] == "MERIDIAN-E101"
     assert exc.context["provider"] == "deepseek"
     assert exc.context["api_error_status"] == status
     assert "DeepSeek rejected the API key" in exc.how_to_fix
@@ -102,7 +102,7 @@ def test_insufficient_balance_is_named_as_the_account_condition_it_is():
     """RED before wave 7: 402 fell through to "Branch on subtype/api_error_status" — no balance."""
     exc = _raised_failure(_status_envelope(402))
 
-    assert exc.context["failure_code"] == "POLSIA-E105"
+    assert exc.context["failure_code"] == "MERIDIAN-E105"
     assert exc.context["api_error_status"] == 402
     assert "insufficient balance" in exc.how_to_fix
     assert "402" in exc.how_to_fix
@@ -115,7 +115,7 @@ def test_a_rate_limit_keeps_its_generic_hint_and_stays_retryable():
     result = _status_envelope(429)
     exc = _raised_failure(result)
 
-    assert exc.context["failure_code"] == "POLSIA-E105"
+    assert exc.context["failure_code"] == "MERIDIAN-E105"
     assert "retryable" not in exc.context  # no verdict -> the code table answers, as before
     assert "claude login" not in exc.how_to_fix
     assert _Agent()._retryable(result) is True
@@ -178,14 +178,14 @@ def test_the_task_ladder_reads_a_declared_verdict_and_falls_back_to_the_table():
     from celery_app.tasks.agent_tasks import is_retryable
 
     # A declared verdict wins, in both directions.
-    assert is_retryable(PolsiaError(E_CLI_EXIT, "x", context={"retryable": False})) is False
-    assert is_retryable(PolsiaError(E_CLI_EXIT, "x", context={"retryable": True})) is True
+    assert is_retryable(MeridianError(E_CLI_EXIT, "x", context={"retryable": False})) is False
+    assert is_retryable(MeridianError(E_CLI_EXIT, "x", context={"retryable": True})) is True
     # A malformed value is not a licence to retry: the code table answers.
-    assert is_retryable(PolsiaError(E_CLI_EXIT, "x", context={"retryable": "yes"})) is True
+    assert is_retryable(MeridianError(E_CLI_EXIT, "x", context={"retryable": "yes"})) is True
     # No verdict at all: the shipped table, byte for byte.
-    assert is_retryable(PolsiaError(E_CLI_EXIT, "x")) is True
-    assert is_retryable(PolsiaError("E_RATE_LIMITED", "x")) is False
-    assert is_retryable(PolsiaError("E_CLI_TIMEOUT", "hang")) is True
+    assert is_retryable(MeridianError(E_CLI_EXIT, "x")) is True
+    assert is_retryable(MeridianError("E_RATE_LIMITED", "x")) is False
+    assert is_retryable(MeridianError("E_CLI_TIMEOUT", "hang")) is True
     assert is_retryable(None) is True
     assert is_retryable(RuntimeError("driver")) is True
 

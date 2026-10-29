@@ -71,7 +71,7 @@ def test_the_kill_switch_freezes_dispatch_even_on_a_fresh_day(queue_db, monkeypa
     from celery_app.tasks.agent_tasks import _create_and_enqueue
 
     _noop_delay(monkeypatch)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
 
     result = queue_db.run(_create_and_enqueue("customer_support", "D3 freeze sweep", bucket="d3-c"))
 
@@ -84,7 +84,7 @@ def test_ads_stripe_sync_reports_each_denied_entry_and_skips_its_row(queue_db, m
     from celery_app.tasks.agent_tasks import _ads_stripe_sync
 
     _noop_delay(monkeypatch)
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
 
     result = queue_db.run(_ads_stripe_sync())
 

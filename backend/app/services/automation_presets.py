@@ -7,7 +7,7 @@ rows E8/E9/E19):
   ONCE / DAILY / WEEKDAYS / WEEKLY with the printed monthly counts ``30/22/4 TASKS/MO`` and the
   footnote ``Uses 1 credit per run.`` (``agent2-code/cap-07.md``); Support offers ONCE / DAILY
   (``agent2-code/cap-08.md``); Meta Ads setup "creates a **Meta Ads - Daily** task"
-  (<https://help.polsia.com/how-to-run-meta-ads>, fetched 2026-10-15).
+  (<https://help.meridian.com/how-to-run-meta-ads>, fetched 2026-10-15).
 * OURS already has the durable half: ``task_schedules`` (cadence once/daily/weekdays/weekly,
   ``app/models/schedule.py``), the DST-safe ``schedule_service.compute_next_run``, and the
   15-minute cadence tick (``celery_app/beat_schedule.py`` "task-cadence").  What was missing is
@@ -30,7 +30,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, NoReturn
 from zoneinfo import ZoneInfo
 
-from app.core.errors import E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_VALIDATION, ERROR_HINTS, MeridianError
 from app.models.schedule import ScheduleCadence
 from app.services.schedule_service import compute_next_run
 
@@ -79,7 +79,7 @@ _CADENCE_VALUES = tuple(member.value for member in ScheduleCadence)
 
 
 def _refuse(field: str, value: object, expected: str, *, how_to_fix: str = "") -> NoReturn:
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"automation preset {field} {value!r} is invalid: {expected}",
         how_to_fix=how_to_fix or ERROR_HINTS[E_VALIDATION],

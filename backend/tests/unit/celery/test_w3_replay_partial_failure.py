@@ -44,7 +44,7 @@ from app.agents.policy_firewall import (
     reset_run_approval,
 )
 from app.config import settings
-from app.core.errors import E_INTEGRATION, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_INTEGRATION, E_POLICY_DENIED, MeridianError
 from celery_app.tasks import agent_tasks
 
 SECRET = "w3-or02-approval-secret"
@@ -224,7 +224,7 @@ def test_a_failed_second_item_keeps_item_ones_artifact_marker_and_the_owed_park(
     provider = _install_provider(
         monkeypatch,
         BatchProvider(
-            second_failure=PolsiaError(E_INTEGRATION, "the provider answered 503 mid-batch")
+            second_failure=MeridianError(E_INTEGRATION, "the provider answered 503 mid-batch")
         ),
     )
     model_calls = _install_model(monkeypatch)
@@ -285,7 +285,7 @@ def test_a_second_delivery_replays_the_owed_item_only_and_never_re_sends_item_on
     provider = _install_provider(
         monkeypatch,
         BatchProvider(
-            second_failure=PolsiaError(E_INTEGRATION, "the provider answered 503 mid-batch")
+            second_failure=MeridianError(E_INTEGRATION, "the provider answered 503 mid-batch")
         ),
     )
     model_calls = _install_model(monkeypatch)
@@ -369,7 +369,7 @@ def test_a_terminal_replay_failure_ends_the_parked_approval_and_drops_the_token(
     _accept_every_token(monkeypatch)
     _install_provider(
         monkeypatch,
-        BatchProvider(second_failure=PolsiaError(E_POLICY_DENIED, "the opt-out gate refused")),
+        BatchProvider(second_failure=MeridianError(E_POLICY_DENIED, "the opt-out gate refused")),
     )
     _install_model(monkeypatch)
     metadata, fp_first, fp_second = _two_item_park()

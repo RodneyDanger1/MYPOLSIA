@@ -244,7 +244,7 @@ def test_f29_a_real_mutation_is_refused_under_sandbox_and_never_runs(monkeypatch
     out = _call("github_commit", COMMIT_ARGS)
 
     assert out["ok"] is False, "an irreversible external call is refused under SANDBOX_MODE"
-    assert out["error"]["context"]["policy_code"] == "POLSIA-E114"
+    assert out["error"]["context"]["policy_code"] == "MERIDIAN-E114"
     assert "SANDBOX_MODE" in out["error"]["message"]
     assert sent == [], "nothing was sent"
 
@@ -262,7 +262,7 @@ def test_f29_a_reversible_external_action_is_a_labelled_draft_under_sandbox():
     )
 
     assert decision.decision is Decision.DENY
-    assert decision.sandboxed is True and decision.code == "POLSIA-E114"
+    assert decision.sandboxed is True and decision.code == "MERIDIAN-E114"
     assert decision.e_code == "E_SANDBOX_BLOCKED"
 
 

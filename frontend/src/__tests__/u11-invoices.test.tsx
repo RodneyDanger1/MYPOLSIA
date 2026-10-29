@@ -13,7 +13,7 @@
  * Request bodies: InvoiceCreateRequest / InvoiceSendRequest / InvoiceVoidRequest declared IN
  * inboxes.py (invoices.py:33-61). Response: `app/schemas/invoice.py` InvoiceResponse — money is
  * `float | None` (null is "not measured", NEVER 0) and `paid_at` is `datetime | None`.
- * Send refusals are the service's named PolsiaErrors (E_CONFIG / E_SANDBOX_BLOCKED /
+ * Send refusals are the service's named MeridianErrors (E_CONFIG / E_SANDBOX_BLOCKED /
  * E_RATE_LIMITED / E_INTEGRATION; illegal transition = E_VALIDATION) — the page must render
  * `ApiError.display` (code + how_to_fix), never a friendlier lie.
  */

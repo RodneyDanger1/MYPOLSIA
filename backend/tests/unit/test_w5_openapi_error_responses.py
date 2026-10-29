@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from app.core.openapi_errors import (
     OPERATION_EXTRA_STATUSES,
     UNAUTHENTICATED_OPERATIONS,
-    PolsiaErrorEnvelope,
+    MeridianErrorEnvelope,
 )
 from app.main import create_app
 
@@ -123,14 +123,14 @@ def test_every_addressed_operation_declares_not_found(operations: dict) -> None:
 def test_the_declared_envelope_schema_is_real(schema: dict, operations: dict) -> None:
     """The 401/404/500/503 bodies must be the ENVELOPE, not an empty description."""
     schemas = schema["components"]["schemas"]
-    assert "PolsiaErrorEnvelope" in schemas, sorted(schemas)
-    assert "PolsiaErrorDetail" in schemas, sorted(schemas)
-    assert set(schemas["PolsiaErrorEnvelope"]["required"]) == {"ok", "error"}
-    assert set(schemas["PolsiaErrorDetail"]["required"]) == {"code", "message"}
+    assert "MeridianErrorEnvelope" in schemas, sorted(schemas)
+    assert "MeridianErrorDetail" in schemas, sorted(schemas)
+    assert set(schemas["MeridianErrorEnvelope"]["required"]) == {"ok", "error"}
+    assert set(schemas["MeridianErrorDetail"]["required"]) == {"code", "message"}
     for status in ("401", "404", "500", "503"):
         body = operations[("GET", "/api/v1/runs/{run_id}")]["responses"][status]["content"]
         assert body["application/json"]["schema"] == {
-            "$ref": "#/components/schemas/PolsiaErrorEnvelope"
+            "$ref": "#/components/schemas/MeridianErrorEnvelope"
         }, f"{status} does not reference the envelope"
 
 
@@ -140,7 +140,7 @@ def test_the_model_describes_the_runtime_envelope() -> None:
         resp = client.get("/api/v1/runs")
     assert resp.status_code == 401
     assert resp.headers["x-meridian-error-code"] == "E_AUTH"
-    parsed = PolsiaErrorEnvelope.model_validate(resp.json())
+    parsed = MeridianErrorEnvelope.model_validate(resp.json())
     assert parsed.ok is False
     assert parsed.error.code == "E_AUTH"
     assert parsed.error.how_to_fix
@@ -179,10 +179,10 @@ def test_the_validation_error_declares_both_documented_shapes(operations: dict) 
     pin the array as the operation's ONLY shape: right about the wire it looked at, wrong about the
     contract, because the route's own coded `HTTPException` and the `E_VALIDATION` raises in
     `app.services.task_service` (a direct import) reach `main.coded_http_exception_handler` /
-    `main.polsia_error_handler`, both of which answer 422 with the envelope.
+    `main.meridian_error_handler`, both of which answer 422 with the envelope.
 
       old arithmetic: 111 x 422 = 111 x $ref HTTPValidationError                  (array only)
-      new arithmetic: 111 x 422 = 109 x anyOf(HTTPValidationError, PolsiaErrorEnvelope)  [wave-8 ruling
+      new arithmetic: 111 x 422 = 109 x anyOf(HTTPValidationError, MeridianErrorEnvelope)  [wave-8 ruling
     SV-W8-01: anyOf — HTTPValidationError has no `required`, so an envelope body validates
     under BOTH branches and oneOf would reject the real coded 422]
                                 +   2 x $ref HTTPValidationError                  (pricing, ws/ticket)
@@ -197,7 +197,7 @@ def test_the_validation_error_declares_both_documented_shapes(operations: dict) 
     schema = op["responses"]["422"]["content"]["application/json"]["schema"]
     assert [part.get("$ref") for part in schema["anyOf"]] == [
         "#/components/schemas/HTTPValidationError",
-        "#/components/schemas/PolsiaErrorEnvelope",
+        "#/components/schemas/MeridianErrorEnvelope",
     ], schema
     # the two operations with no reachable coded refusal keep the framework array ALONE
     for target in (("GET", "/api/v1/pricing"), ("POST", "/api/v1/ws/ticket")):

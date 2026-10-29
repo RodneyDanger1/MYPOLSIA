@@ -23,7 +23,7 @@ from datetime import timedelta
 import pytest
 
 from app.core.database import utcnow
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.models.finance import StripeEvent
 from app.models.report import ActivityLog
 from app.models.task import Task
@@ -267,7 +267,7 @@ async def test_the_digest_says_so_when_it_cannot_read(async_db_session, monkeypa
     db = async_db_session
 
     async def _boom(*_args, **_kwargs):
-        raise PolsiaError(E_DB, "the database is unreachable")
+        raise MeridianError(E_DB, "the database is unreachable")
 
     monkeypatch.setattr(report_service, "fetch_rows", _boom)
     digest = await report_service.build_day_digest(db, utcnow().date())

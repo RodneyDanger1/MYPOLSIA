@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.v1.totals import TOTAL_HEADER, declared_total
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.models.invoice import Invoice, InvoiceStatus
 from app.schemas.company import non_finite_paths
 from app.schemas.invoice import InvoiceResponse
@@ -126,7 +126,7 @@ def _invoice_response(row: Any) -> InvoiceResponse:
     """
     bad = [name for name in _MONEY_COLUMNS if not _is_finite_money(getattr(row, name))]
     if bad:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"invoice {row.number} (id {row.id}) carries non-finite money in {', '.join(bad)}"
             " — refusing to render it",
@@ -147,7 +147,7 @@ def _invoice_response(row: Any) -> InvoiceResponse:
         if (paths := non_finite_paths(getattr(row, name, None), name))
     }
     if bad_json:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"invoice {row.number} (id {row.id}) carries non-finite numbers in "
             f"{', '.join(bad_json)} — refusing to render it",
@@ -238,7 +238,7 @@ async def send_invoice(
 ) -> InvoiceResponse:
     """Render + deliver a DRAFT invoice through the firewalled email path, then flip it to sent.
 
-    Every refusal is the SERVICE's named `PolsiaError` (E_CONFIG / E_SANDBOX_BLOCKED /
+    Every refusal is the SERVICE's named `MeridianError` (E_CONFIG / E_SANDBOX_BLOCKED /
     E_RATE_LIMITED / E_INTEGRATION) translated to its HTTP form by `refusal_guard` — the
     invoice stays a draft on every one of them.
     """

@@ -164,12 +164,12 @@ def _run_capture(
             _sh(),
             "-c",
             'PATH="$1:$PATH"; export PATH; shift; exec "$@"',
-            "polsia-shim",
+            "meridian-shim",
             path_prefix,
             *argv,
         ]
 
-    with tempfile.TemporaryDirectory(prefix="polsia-test-proc-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="meridian-test-proc-") as tmp:
         out_path = Path(tmp) / "stdout.txt"
         err_path = Path(tmp) / "stderr.txt"
         with out_path.open("wb") as out_f, err_path.open("wb") as err_f:

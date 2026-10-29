@@ -205,10 +205,10 @@ def test_the_egress_fence_refuses_the_addresses_an_ssrf_steers_at(host, why):
     tested is False for RFC 6598.  The fence now asks the positive question (`is_global`) and names
     the range in the message, so an operator can tell policy from a resolver failure.
     """
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
     from app.services import trust_service
 
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress(host, 443)
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED, why
     assert refused.value.how_to_fix, f"{host}: the refusal carries no fix"
@@ -219,17 +219,17 @@ def test_a_do_h_answer_is_what_gets_refused_never_the_name(monkeypatch):
 
     A public name whose DoH answer is private must be refused with the ADDRESS in the message
     (S1's probe measured the pre-fix tree dialling the name and never receiving the answer)."""
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
     from app.services import trust_service
 
     monkeypatch.setattr(trust_service, "_doh", lambda host, rrtype: {"status": 0, "answers": ["10.0.0.5"]})
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         trust_service.resolve_egress("example.com", 443)
     assert refused.value.code == trust_service.E_EGRESS_BLOCKED
     assert "10.0.0.5" in refused.value.message, "the refusal does not name the answer it vetted"
 
     monkeypatch.setattr(trust_service, "_doh", lambda host, rrtype: {"status": 3})
-    with pytest.raises(PolsiaError) as nxdomain:
+    with pytest.raises(MeridianError) as nxdomain:
         trust_service.resolve_egress("nxdomain.test", 443)
     assert nxdomain.value.code == trust_service.E_EGRESS_BLOCKED
     assert "NXDOMAIN" in nxdomain.value.message or "does not resolve" in nxdomain.value.message

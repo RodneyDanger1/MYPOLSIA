@@ -30,7 +30,7 @@ import pytest
 
 from app.agents import accounting, claude_cli, deepseek_runtime, pricing
 from app.config import settings
-from app.core.errors import E_BUDGET_EXCEEDED, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, MeridianError
 
 SAFE_TEST_KEY = "sk-test-not-a-real-key"
 
@@ -171,7 +171,7 @@ def test_the_guard_refuses_before_a_call_whose_worst_case_passes_the_cap(monkeyp
         hits.append(request)
         return httpx.Response(200, json=_completion("{}"))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler))
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED
@@ -199,7 +199,7 @@ def test_a_call_that_spends_past_the_cap_fails_the_run_and_accounts_for_it(monke
         hits.append(request)
         return httpx.Response(200, json=_completion('{"summary": "done"}', usage=usage))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler))
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED
@@ -242,7 +242,7 @@ def test_the_guard_does_not_retry_a_capped_run(monkeypatch):
             _make_inv(), client=_client(lambda request: httpx.Response(200, json=_completion("{}")))
         )
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         claude_cli.run_with_retries(dispatch)
 
     assert len(calls) == 1
@@ -278,7 +278,7 @@ def test_one_guard_spans_a_logical_runs_dispatches(monkeypatch):
         hits.append(request)
         return httpx.Response(200, json=_completion("{}"))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), cost_guard=guard)
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED
@@ -307,7 +307,7 @@ def test_the_agent_hands_the_same_guard_to_every_ladder_dispatch(monkeypatch):
         result = dispatch()
         return result, 2
 
-    class _Probe(base_agent.BasePolsiaAgent):
+    class _Probe(base_agent.BaseMeridianAgent):
         agent_type = "business_planning"
         output_schema = None
 

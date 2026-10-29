@@ -69,7 +69,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_AUTH, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_AUTH, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import as_bound_instant, dialect_name, now_utc
 from app.models.outreach import EmailLog, Prospect
 from app.models.support import SupportInboxItem
@@ -152,14 +152,14 @@ def _require_text(field: str, value: object, *, max_len: int | None = None) -> s
     """
     text = str(value).strip() if value is not None else ""
     if not text:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"support inbox item requires a non-empty {field}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
             context={"field": field},
         )
     if max_len is not None and len(text) > max_len:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"support inbox item {field} is {len(text)} characters; the maximum is {max_len}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -256,7 +256,7 @@ async def submit_item(
     subj = _require_text("subject", subject, max_len=512)
     text = _require_text("body", body)
     if received_at is not None and received_at.tzinfo is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "support inbox item received_at must carry a timezone offset (a timezone-less "
             "value would be read as UTC and silently reorder the attach)",
@@ -329,7 +329,7 @@ async def submit_item(
     if existing is None:
         # Only reachable if the conflicting row was deleted in between; either way we must
         # not report a fake success (same guard as create_task's dedupe path).
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"provider_message_id {pid!r} conflicted but no row could be re-read",
             how_to_fix="retry submit_item; if it persists, check the "
@@ -382,7 +382,7 @@ async def ingest_inbound_item(
     """
     provider_tag = (provider or "").strip() or None
     if provider_tag is not None and len(provider_tag) > MAX_INBOUND_PROVIDER_CHARS:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"inbound support payload provider is {len(provider_tag)} characters; the maximum "
             f"is {MAX_INBOUND_PROVIDER_CHARS}",
@@ -394,7 +394,7 @@ async def ingest_inbound_item(
             },
         )
     if isinstance(body, str) and len(body) > MAX_INBOUND_BODY_CHARS:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"inbound support payload body is {len(body)} characters; the maximum is "
             f"{MAX_INBOUND_BODY_CHARS}.  The message is refused rather than truncated: a clipped "
@@ -462,7 +462,7 @@ async def list_items(
     same rule `list_tasks`-style reads carry in this codebase).
     """
     if status is not None and status not in VALID_STATUSES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"unknown support inbox status {status!r}; valid: {', '.join(VALID_STATUSES)}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -573,7 +573,7 @@ async def attach_pending(db: AsyncSession, *, now: datetime | None = None) -> li
                 # task reference instead of being re-attempted forever.
                 existing_id = await db.scalar(select(Task.id).where(Task.dedupe_key == key).limit(1))
                 if existing_id is None:
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_VALIDATION,
                         f"dedupe key {key!r} conflicted but no task row could be re-read",
                         how_to_fix="retry attach_pending; if it persists, check ix_tasks_dedupe_key",
@@ -730,7 +730,7 @@ def _multipart_boundary(content_type: str) -> str:
     message["Content-Type"] = content_type
     boundary = message.get_param("boundary")
     if not isinstance(boundary, str) or not boundary.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the multipart/form-data delivery declares no boundary parameter in its "
             "Content-Type, so its form fields cannot be separated",
@@ -756,7 +756,7 @@ def parse_multipart_form(raw_body: bytes, content_type: str) -> dict[str, bytes]
     silently stored as an empty message.
     """
     if len(raw_body) > MAX_INBOUND_MULTIPART_BYTES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the multipart/form-data delivery is {len(raw_body)} bytes; the maximum is "
             f"{MAX_INBOUND_MULTIPART_BYTES}.  The message is refused rather than truncated: a "
@@ -770,7 +770,7 @@ def parse_multipart_form(raw_body: bytes, content_type: str) -> dict[str, bytes]
         )
     boundary = _multipart_boundary(content_type)
     if boundary.encode("latin-1", "replace") not in raw_body:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the multipart/form-data body contains no part for its declared boundary, so it is "
             "not a multipart delivery (a body altered before the signature was checked looks "
@@ -787,14 +787,14 @@ def parse_multipart_form(raw_body: bytes, content_type: str) -> dict[str, bytes]
             + raw_body
         )
     except Exception as exc:  # noqa: BLE001 — a hostile body must become a refusal, not a 500
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the multipart/form-data delivery could not be parsed ({type(exc).__name__})",
             how_to_fix="send the delivery exactly as the provider does (raw bytes, unmodified)",
             context={"field": "payload", "reason": "unparsable"},
         ) from exc
     if not parsed.is_multipart():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the multipart/form-data delivery produced no MIME parts",
             how_to_fix="send the delivery exactly as the provider does (raw bytes, unmodified)",
@@ -813,7 +813,7 @@ def parse_multipart_form(raw_body: bytes, content_type: str) -> dict[str, bytes]
         try:
             fields[name] = _part_payload_bytes(part)
         except Exception as exc:  # noqa: BLE001 — see above: refuse by name, never a 500
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"the multipart/form-data field {name!r} could not be decoded "
                 f"({type(exc).__name__})",
@@ -821,7 +821,7 @@ def parse_multipart_form(raw_body: bytes, content_type: str) -> dict[str, bytes]
                 context={"field": "payload", "part": name},
             ) from exc
     if not fields:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the multipart/form-data delivery carried no named form fields",
             how_to_fix="send the fields SendGrid documents (headers/from/subject/text …)",
@@ -869,7 +869,7 @@ def _decode_multipart_text(
     try:
         return raw.decode(charset, "strict")
     except (LookupError, UnicodeDecodeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the multipart/form-data field {name!r} could not be decoded as {charset!r}; the "
             "message is refused rather than stored with replaced characters",
@@ -896,7 +896,7 @@ def _sendgrid_mime_message(fields: dict[str, bytes]) -> Message | None:
     try:
         return BytesParser(policy=_FORM_DATA_POLICY).parsebytes(raw)
     except Exception as exc:  # noqa: BLE001 — a hostile MIME blob becomes a refusal, not a 500
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the raw-format `email` field could not be parsed as a MIME message "
             f"({type(exc).__name__})",
@@ -1058,7 +1058,7 @@ def build_sendgrid_inbound_item(fields: dict[str, bytes]) -> SendGridInboundItem
     if not subject.strip():
         subject = _message_header(headers, "Subject") or _message_header(mime, "Subject")
     if not subject.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the inbound delivery carries no subject: neither the `subject` form field nor a "
             "`Subject:` header is present, so the item would have to invent one",
@@ -1079,7 +1079,7 @@ def build_sendgrid_inbound_item(fields: dict[str, bytes]) -> SendGridInboundItem
         # the displayed sender — it is a real address, but only used when nothing names the From.
         from_address = _sendgrid_address(_sendgrid_envelope_from(fields, charsets))
     if not from_address:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the inbound delivery carries no usable sender address: the `from` field, every "
             "`From:` header and `envelope.from` are absent or not an addr-spec",
@@ -1097,7 +1097,7 @@ def build_sendgrid_inbound_item(fields: dict[str, bytes]) -> SendGridInboundItem
         body = _sendgrid_mime_body(fields)
         body_source = "email"
     if not body.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the inbound delivery carries no message body: `text`, `html` and the raw `email` "
             "message are all absent or blank",
@@ -1127,7 +1127,7 @@ def _load_sendgrid_public_key(material: str) -> ec.EllipticCurvePublicKey:
                 base64.b64decode(material.encode("ascii"), validate=True)
             )
     except (ValueError, TypeError, binascii.Error, UnicodeEncodeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "SENDGRID_INBOUND_PUBLIC_KEY is not a loadable public key: expected the security "
             "policy's base64-encoded DER SubjectPublicKeyInfo (the `MFkw…` value SendGrid "
@@ -1137,7 +1137,7 @@ def _load_sendgrid_public_key(material: str) -> ec.EllipticCurvePublicKey:
             context={"setting": "SENDGRID_INBOUND_PUBLIC_KEY", "reason": "unloadable_key"},
         ) from exc
     if not isinstance(loaded, ec.EllipticCurvePublicKey):
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "SENDGRID_INBOUND_PUBLIC_KEY is not an EC (ECDSA) public key; the signed Inbound "
             "Parse webhook is ECDSA",
@@ -1174,7 +1174,7 @@ def verify_sendgrid_signature(
     """
     key_material = (public_key or "").strip()
     if not key_material:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the SendGrid Inbound Parse signature cannot be verified: SENDGRID_INBOUND_PUBLIC_KEY "
             "is unset, so no delivery can be authenticated",
@@ -1184,7 +1184,7 @@ def verify_sendgrid_signature(
             context={"setting": "SENDGRID_INBOUND_PUBLIC_KEY", "reason": "unconfigured"},
         )
     if not signature or not timestamp:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"the signed webhook headers are incomplete: both {SENDGRID_SIGNATURE_HEADER} and "
             f"{SENDGRID_TIMESTAMP_HEADER} are required",
@@ -1199,7 +1199,7 @@ def verify_sendgrid_signature(
     try:
         stamp_epoch = int(stamp)
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"{SENDGRID_TIMESTAMP_HEADER} is not an integer epoch timestamp",
             how_to_fix="send the delivery exactly as SendGrid does; do not rewrite the timestamp "
@@ -1213,7 +1213,7 @@ def verify_sendgrid_signature(
     )
     skew = abs(int((now or now_utc()).timestamp()) - stamp_epoch)
     if skew > window:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"the signed timestamp is {skew}s away from this server's clock, outside the "
             f"{window}s replay window",
@@ -1225,7 +1225,7 @@ def verify_sendgrid_signature(
     try:
         signature_bytes = base64.b64decode((signature or "").strip().encode("ascii"), validate=True)
     except (binascii.Error, ValueError, UnicodeEncodeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"{SENDGRID_SIGNATURE_HEADER} is not base64-encoded DER, so it cannot be a SendGrid "
             "signature",
@@ -1241,7 +1241,7 @@ def verify_sendgrid_signature(
             ec.ECDSA(hashes.SHA256()),
         )
     except (InvalidSignature, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the SendGrid signature does not verify for this request: the raw body (or the "
             "timestamp) differs from what was signed, or the configured public key is another "
@@ -1267,7 +1267,7 @@ def verify_sendgrid_oauth_token(*, authorization: str | None, oauth_token: str) 
     """
     expected = (oauth_token or "").strip()
     if not expected:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the Inbound Parse OAuth credential cannot be verified: SENDGRID_INBOUND_OAUTH_TOKEN "
             "is unset, so no bearer token can be authenticated",
@@ -1278,7 +1278,7 @@ def verify_sendgrid_oauth_token(*, authorization: str | None, oauth_token: str) 
         )
     scheme, _, presented = (authorization or "").partition(" ")
     if scheme.strip().lower() != "bearer" or not presented.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             "the Authorization header is not a Bearer token (RFC 6750 `Authorization: Bearer "
             "<token>`)",
@@ -1286,7 +1286,7 @@ def verify_sendgrid_oauth_token(*, authorization: str | None, oauth_token: str) 
             "`Authorization: Bearer <token>`",
             context={"reason": "invalid_request"},
         )
-    mismatch_refusal = PolsiaError(
+    mismatch_refusal = MeridianError(
         E_AUTH,
         "the bearer token does not match SENDGRID_INBOUND_OAUTH_TOKEN — invalid_token",
         how_to_fix="align the authorization server's issued token with "
@@ -1319,7 +1319,7 @@ async def ingest_sendgrid_inbound(
     cannot tell which provider produced it (except for the `provider` tag it records).
     """
     if not is_multipart_form_data(content_type):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the SendGrid Inbound Parse adapter only accepts multipart/form-data; received "
             f"{media_type_of(content_type) or 'no Content-Type'}",

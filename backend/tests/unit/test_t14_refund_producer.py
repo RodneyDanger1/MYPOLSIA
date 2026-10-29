@@ -9,7 +9,7 @@ both halves:
   * PRODUCER — `stripe_webhook` extracts the id from the delivery's SHAPE (charge/invoice carry
     `payment_intent`; a `payment_intent` object IS one) via `finance_service.
     extract_payment_intent_id` and persists it on the event row as
-    `raw_payload["_polsia"]["payment_intent_id"]` (a measured `null` for a shape that carries
+    `raw_payload["_meridian"]["payment_intent_id"]` (a measured `null` for a shape that carries
     none — never `""`, never a substitute id);
   * READ — `finance_service.recent_failed_payments` turns those rows into records;
   * DELIVERY — the morning cycle attaches them to the finance task's `metadata.failed_payments`,
@@ -36,7 +36,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app.core.errors import E_INTEGRATION, E_VALIDATION, PolsiaError
+from app.core.errors import E_INTEGRATION, E_VALIDATION, MeridianError
 
 SECRET = "whsec_t14_producer"
 NOW = int(time.time())
@@ -165,7 +165,7 @@ async def test_signed_deliveries_persist_the_payment_intent_id(
     for event_id, _type, _obj, expected in deliveries:
         payload = rows[event_id].raw_payload or {}
         assert payload["id"] == event_id, "the verbatim event is stored"
-        annotation = payload.get("_polsia") or {}
+        annotation = payload.get("_meridian") or {}
         if expected is None:
             assert "payment_intent_id" not in annotation, (
                 "a shape with no PaymentIntent records NO extracted id — the verbatim event "
@@ -307,7 +307,7 @@ def test_no_attachment_means_no_extra_context(monkeypatch):
 def test_a_malformed_attachment_is_a_named_refusal_before_any_model_call():
     from app.agents.finance.agent import FinanceAgent, failed_payments_extra_context
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         failed_payments_extra_context({"metadata": {"failed_payments": "not-a-list"}})
     assert excinfo.value.code == E_VALIDATION
     assert "failed_payments" in excinfo.value.message
@@ -316,7 +316,7 @@ def test_a_malformed_attachment_is_a_named_refusal_before_any_model_call():
     agent = FinanceAgent()
     called: list = []
     agent.collect_structured = lambda *a, **kw: called.append(kw) or ({}, None)  # type: ignore[func-returns-value]
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         agent.run({"metadata": {"failed_payments": {"nope": True}}}, {})
     assert called == []
 

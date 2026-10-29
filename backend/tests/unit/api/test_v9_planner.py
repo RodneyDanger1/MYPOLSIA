@@ -2,7 +2,7 @@
 
 RED-FIRST leg (OATH): written before `app/api/v1/planner.py`, `app/services/planner_service.py`
 and `app/agents/company_planner/` exist; collection fails with ModuleNotFoundError until they
-land.  Raw pytest legs live in `polsia-work/build/ui-reverse/wave-v9/b1-planner/` (RECEIPT.md).
+land.  Raw pytest legs live in `meridian-work/build/ui-reverse/wave-v9/b1-planner/` (RECEIPT.md).
 
 The router is NOT wired into `main.py` (V9-D3 — the parent wires planner + invoices at settle),
 so these tests build a test app that includes the router DIRECTLY, with the conftest's
@@ -10,7 +10,7 @@ in-memory session as the `get_db` override — the same seam every shipped api t
 
 MOCKED MODEL + MOCKED FETCH (both seams, per the brief): `_research_sync` (the fetch step) and
 `_proposal_sync` (the model step) are monkeypatched; the real code paths they stand in for run
-through `BasePolsiaAgent.collect_structured` (the SAME seam every agent uses to reach the
+through `BaseMeridianAgent.collect_structured` (the SAME seam every agent uses to reach the
 model).  One test drives the REAL `_research_sync` in `CLAUDE_CLI_MOCK` mode to pin the budget
 leg end to end.
 """
@@ -97,7 +97,7 @@ async def planner_client(async_db_session, mock_redis, monkeypatch):
     from app.api.deps import get_db
     from app.api.v1 import planner
     from app.config import settings
-    from app.core.errors import PolsiaError, http_status_for, to_http_detail
+    from app.core.errors import MeridianError, http_status_for, to_http_detail
 
     monkeypatch.setattr(settings, "api_key", "test-key")
     app = FastAPI()
@@ -106,14 +106,14 @@ async def planner_client(async_db_session, mock_redis, monkeypatch):
 
     # Mirror main.py's named-refusal handler (dependency-raised refusals, e.g. E_AUTH, must
     # answer the same body/headers they do in the real app rather than escaping the test app).
-    async def _polsia_handler(request, exc: PolsiaError):
+    async def _meridian_handler(request, exc: MeridianError):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
             headers={"X-Meridian-Error-Code": exc.code},
         )
 
-    app.add_exception_handler(PolsiaError, _polsia_handler)
+    app.add_exception_handler(MeridianError, _meridian_handler)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

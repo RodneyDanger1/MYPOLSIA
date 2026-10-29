@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 
 SECRET = "whsec_r32_edges"
 OLD_SECRET = "whsec_r32_edges_old"  # the pre-rotation secret
@@ -195,14 +195,14 @@ async def test_report_service_reads_refuse_by_name_on_a_db_fault(async_db_sessio
 
     await _drop(async_db_session, "daily_reports")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await get_daily_report(async_db_session, date(2026, 1, 2))
     assert excinfo.value.code == E_DB
     assert excinfo.value.context == {"query": "daily report 2026-01-02"}
     assert isinstance(excinfo.value.__cause__, SQLAlchemyError)
 
     await async_db_session.rollback()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await get_latest_daily_report(async_db_session)
     assert excinfo.value.code == E_DB
     assert excinfo.value.context == {"query": "latest daily report"}

@@ -2,12 +2,12 @@
 
 Everything here runs the REAL code: the real `deepseek_runtime.invoke` against an
 `httpx.MockTransport` (the tree's own model seam — no socket leaves the process), the real
-`BasePolsiaAgent._finish_call` / `_require_repair_input` / `consume_approved_payload`, the real
+`BaseMeridianAgent._finish_call` / `_require_repair_input` / `consume_approved_payload`, the real
 `context_assembler.assemble`, the real policy firewall (`request_side_effect`, `issue_approval`,
 `fingerprint`) and the real registry `TOOL_SPECS`. The ONLY doubles are:
 
   * `httpx.MockTransport` — the model HTTP transport (no provider is called from a unit test);
-  * `BasePolsiaAgent._real_call` in the F-23 ladder test — the CLI/provider boundary, so the
+  * `BaseMeridianAgent._real_call` in the F-23 ladder test — the CLI/provider boundary, so the
     test can count the provider calls the ladder WOULD have paid for.
 
 Every assertion is a property of production code, and each test fails at HEAD for the stated reason
@@ -25,11 +25,11 @@ import pytest
 
 from app.agents import claude_cli, deepseek_runtime, pricing, tool_registry
 from app.agents import policy_firewall as pf
-from app.agents.base_agent import APPROVED_PAYLOAD_KEY, BasePolsiaAgent, usage_from_outcome
+from app.agents.base_agent import APPROVED_PAYLOAD_KEY, BaseMeridianAgent, usage_from_outcome
 from app.agents.context_assembler import Layer, assemble, compute_run_taint, untrusted_blocks
 from app.agents.policy_firewall import ActionClass, RunApproval, RunTaint
 from app.config import settings
-from app.core.errors import E_ACTION_REPLAY_UNAVAILABLE, E_AGENT_BAD_OUTPUT, PolsiaError
+from app.core.errors import E_ACTION_REPLAY_UNAVAILABLE, E_AGENT_BAD_OUTPUT, MeridianError
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -110,7 +110,7 @@ def _tool_call(call_id: str, name: str = "web_fetch") -> dict:
     }
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     """The smallest REAL agent: the base class's own seams, no domain logic to get in the way."""
 
     agent_type = "email_outreach"
@@ -288,7 +288,7 @@ def test_f23_resume_miss_refuses_by_name(monkeypatch):
     """No session at all -> E_AGENT_BAD_OUTPUT with the reason, before any provider call."""
     agent = _agent()
     assert agent.session_id is None
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._require_repair_input()
     assert caught.value.code == E_AGENT_BAD_OUTPUT
     assert caught.value.context["repair_refused"] == "no_session"
@@ -300,7 +300,7 @@ def test_f23_evicted_session_refuses_by_name(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "has_session", lambda sid: False)
     agent = _agent()
     agent.session_id = "deepseek-gone"
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._require_repair_input()
     assert caught.value.code == E_AGENT_BAD_OUTPUT
     assert caught.value.context["repair_refused"] == "resume_miss"
@@ -343,7 +343,7 @@ def test_f23_the_ladder_does_not_pay_for_the_content_free_repair(monkeypatch):
                         exit_code=0)
 
     monkeypatch.setattr(agent, "_real_call", fake_real_call)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent.call_claude_structured("the original task", schema=None, schema_name="email_outreach")
     assert caught.value.code == E_AGENT_BAD_OUTPUT
     assert caught.value.context["repair_refused"] == "no_session"
@@ -375,7 +375,7 @@ def test_f20_a_failed_run_hands_its_measured_usage_to_the_refusal():
     agent = _agent()
     result = _invoke_result(_failure_stdout(
         {"input_tokens": 900, "output_tokens": 120, "cache_read_input_tokens": 0}))
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._finish_call(result, 1, transport="http")
     usage = caught.value.context["usage"]
     assert usage["tokens_input"] == 900
@@ -393,7 +393,7 @@ def test_f20_a_failed_run_hands_its_measured_usage_to_the_refusal():
 def test_f20_an_unmeasured_failure_says_unknown_and_never_zero():
     """No usage key in the envelope -> no accounting keys at all (a NULL, never a fabricated 0)."""
     agent = _agent()
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._finish_call(_invoke_result(_failure_stdout(None)), 1, transport="http")
     assert "usage" not in caught.value.context
 
@@ -406,7 +406,7 @@ def test_f20_an_unpriced_failure_is_unknown_not_free():
         "model": "some-unpinned-model", "num_turns": 1,
         "usage": {"input_tokens": 900, "output_tokens": 120},
     })
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent._finish_call(_invoke_result(stdout), 1, transport="http")
     usage = caught.value.context["usage"]
     assert usage["tokens_used"] == 1020
@@ -416,12 +416,12 @@ def test_f20_an_unpriced_failure_is_unknown_not_free():
 
 def test_f20_the_worker_reader_prefers_a_completed_result_and_reads_the_failure():
     """`usage_from_outcome` is the ONE reader the worker persist path needs."""
-    failure = PolsiaError(E_AGENT_BAD_OUTPUT, "x", context={"usage": {"tokens_input": 1}})
+    failure = MeridianError(E_AGENT_BAD_OUTPUT, "x", context={"usage": {"tokens_input": 1}})
     assert usage_from_outcome({}, failure) == {"tokens_input": 1}
     assert usage_from_outcome(None, failure) == {"tokens_input": 1}
     assert usage_from_outcome({"tokens_input": 5}, failure) == {"tokens_input": 5}
     assert usage_from_outcome({}, None) == {}
-    assert usage_from_outcome({}, PolsiaError(E_AGENT_BAD_OUTPUT, "y")) == {}
+    assert usage_from_outcome({}, MeridianError(E_AGENT_BAD_OUTPUT, "y")) == {}
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -633,7 +633,7 @@ def test_r2_a_tainted_run_is_refused_at_the_seam(monkeypatch):
     monkeypatch.setattr(settings, "sandbox_mode", False)
     pf.set_run_taint(RunTaint(tainted=True, sources=["layer:task"]))
     fp = pf.fingerprint(str(ActionClass.EXTERNAL_REVERSIBLE), "email", dict(_EMAIL_PAYLOAD))
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         _agent().consume_approved_payload(
             {APPROVED_PAYLOAD_KEY: {fp: _approved_email_record(fp)}},
             {"channel_sends": {"email": {"today": 0, "hour": 0}}},
@@ -652,7 +652,7 @@ def test_r2_another_performers_payload_is_refused_by_name():
         "payload": {"amount": 10},
     }
     agent = _agent()
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent.consume_approved_payload(
             {APPROVED_PAYLOAD_KEY: {"fp-other": record}}, {"channel_sends": {}}
         )
@@ -671,8 +671,8 @@ def test_r2_a_run_with_no_approved_payload_is_byte_identical():
 def test_r2_a_malformed_payload_is_refused_not_dropped():
     """An approval the run cannot read is a NAMED error, never a silent skip."""
     agent = _agent()
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         agent.consume_approved_payload({APPROVED_PAYLOAD_KEY: ["not", "a", "mapping"]})
     assert caught.value.code  # E_VALIDATION, a typed refusal
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         agent.consume_approved_payload({APPROVED_PAYLOAD_KEY: {"fp": "not-a-record"}})

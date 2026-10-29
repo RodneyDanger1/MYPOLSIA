@@ -37,7 +37,7 @@ from app.agents.accounting import (
     spend_summary,
     unit_economics,
 )
-from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import day_bounds, day_window, dialect_name, now_utc, today_in, today_utc
 from app.models.ads import AdCampaign
 from app.models.finance import ExpenseRecord, RevenueSnapshot, StripeEvent
@@ -71,7 +71,7 @@ def money(value: Any) -> Decimal | None:
         return None
     result = value if isinstance(value, Decimal) else Decimal(str(value))
     if not result.is_finite():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"money value {value!r} is not finite (NaN/Infinity are not measurements)",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -557,7 +557,7 @@ async def upsert_revenue_snapshot(
     unknown = sorted(set(values) - set(_SNAPSHOT_COLUMNS))
     if unknown:
         # A key with no column used to reach the INSERT and die as an uncoded CompileError.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"revenue snapshot has no column(s) {unknown}",
             how_to_fix=f"supply only these snapshot columns: {', '.join(_SNAPSHOT_COLUMNS)}",
@@ -567,7 +567,7 @@ async def upsert_revenue_snapshot(
     # TS-2 (input validation at the boundary): a datetime is a `date` SUBCLASS, and a string would
     # die as an uncoded TypeError in the future-date comparison before the database ever sees it.
     if isinstance(snapshot_date, datetime) or not isinstance(snapshot_date, date):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"revenue snapshot date must be a date, not {type(snapshot_date).__name__}",
             how_to_fix="pass snapshot_date as a datetime.date (YYYY-MM-DD); never a datetime or a string",
@@ -577,7 +577,7 @@ async def upsert_revenue_snapshot(
     utc_today = today_utc()
     latest_plausible_day = max(company_today, utc_today)
     if snapshot_date > latest_plausible_day:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"revenue snapshot date {snapshot_date.isoformat()} is in the future — a snapshot "
             "records a day that happened",
@@ -603,7 +603,7 @@ async def upsert_revenue_snapshot(
         if values.get(column) is not None
     }
     if not measured_values:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "revenue snapshot measured no column — refusing to write a date-only row",
             how_to_fix=(
@@ -643,7 +643,7 @@ async def upsert_revenue_snapshot(
             )
         ).scalars().one_or_none()
     if snapshot is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"revenue snapshot for {snapshot_date} could not be written or re-read",
             how_to_fix=ERROR_HINTS[E_DB],
@@ -678,7 +678,7 @@ async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
     """
     amount = values.get("amount_cents")
     if amount is None or int(amount) <= 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"expense amount_cents must be a positive integer, got {amount!r}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -687,7 +687,7 @@ async def record_expense(db: AsyncSession, **values: Any) -> ExpenseRecord:
     currency = values.get("currency")
     if currency is not None:
         if not isinstance(currency, str):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"expense currency must be text, got {type(currency).__name__}",
                 how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -796,7 +796,7 @@ def _expense_kwargs(expense: Any) -> dict[str, Any]:
     missing.  `amount_cents` is left for `record_expense` to adjudicate by name.
     """
     if not isinstance(expense, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"expense entry is not an object: {type(expense).__name__}",
             how_to_fix=ERROR_HINTS[E_VALIDATION],
@@ -807,7 +807,7 @@ def _expense_kwargs(expense: Any) -> dict[str, Any]:
     parsed = _iso_date(expense.get("date"))
     if missing or parsed is None:
         detail = f"missing {missing}" if missing else f"unusable date {expense.get('date')!r}"
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"expense entry cannot be recorded: {detail}",
             how_to_fix="each expense needs a category, a vendor and an ISO date; fix the agent output",
@@ -865,7 +865,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
             snapshot = result.get("snapshot")
             if snapshot is not None:
                 if not isinstance(snapshot, dict):
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_VALIDATION,
                         f"snapshot is not an object: {type(snapshot).__name__}",
                         how_to_fix="the finance agent must provide a snapshot object or null",
@@ -873,7 +873,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
                     )
                 snapshot_date = _iso_date(snapshot.get("snapshot_date"))
                 if snapshot_date is None:
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_VALIDATION,
                         f"snapshot has no usable snapshot_date: {snapshot.get('snapshot_date')!r}",
                         how_to_fix=(
@@ -898,7 +898,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
                 try:
                     await record_expense(db, **_expense_kwargs(expense))
                     expenses_written += 1
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     if exc.code != E_VALIDATION:
                         raise
                     # `record_expense` refuses `amount_cents<=0` by name (and an entry that
@@ -914,7 +914,7 @@ async def persist_finance_run(db: AsyncSession, result: dict[str, Any]) -> dict[
                 "skipped_invalid": skipped_invalid,
             }
     except Exception as exc:  # noqa: BLE001 - the documented contract is "never raises"
-        if isinstance(exc, PolsiaError):
+        if isinstance(exc, MeridianError):
             error: dict[str, Any] = {
                 "code": exc.code,
                 "message": exc.message,
@@ -959,7 +959,7 @@ async def record_stripe_event(
 
     `payment_intent_id` (T14/D21) is the refundable id the webhook extracted from the
     delivery's shape (`extract_payment_intent_id`).  When it is present it is persisted as ONE
-    Meridian-owned sibling key on the stored payload — `raw_payload["_polsia"]["payment_intent_id"]`
+    Meridian-owned sibling key on the stored payload — `raw_payload["_meridian"]["payment_intent_id"]`
     — because `stripe_events` carries no dedicated column in this lane's ownership (models/alembic
     are another seat's files) and the verbatim Stripe event must stay byte-for-byte under its own
     keys.  A shape that carries NO PaymentIntent writes no annotation at all: the verbatim event
@@ -969,7 +969,7 @@ async def record_stripe_event(
     `recent_failed_payments` extracts from the verbatim event.
     """
     if not stripe_event_id:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "stripe_event_id is empty: the event cannot be de-duplicated",
             how_to_fix="reject events without an id at the webhook boundary",
@@ -978,10 +978,10 @@ async def record_stripe_event(
     if isinstance(raw_payload, dict) and payment_intent_id is not None:
         # Copy-on-write: the caller's event object is never mutated, and the verbatim keys stay
         # untouched — the annotation rides beside them under a key Stripe does not use.
-        annotation = raw_payload.get("_polsia")
+        annotation = raw_payload.get("_meridian")
         stored_payload = {
             **raw_payload,
-            "_polsia": {
+            "_meridian": {
                 **(annotation if isinstance(annotation, dict) else {}),
                 "payment_intent_id": payment_intent_id,
             },
@@ -1029,7 +1029,7 @@ async def record_stripe_event(
 def persisted_payment_intent_id(row: StripeEvent) -> str | None:
     """The refundable id recorded on a `stripe_events` row — annotation first, event fallback.
 
-    The annotation (`raw_payload["_polsia"]["payment_intent_id"]`, written by the webhook when it
+    The annotation (`raw_payload["_meridian"]["payment_intent_id"]`, written by the webhook when it
     really extracted one) is preferred because it was taken at INGEST from a delivery we saw
     whole.  Everything else — a shape that carried none (no annotation by design), a row written
     by another path (raw SQL/ops, a pre-T14 writer) — is answered by re-reading the verbatim event
@@ -1044,7 +1044,7 @@ def persisted_payment_intent_id(row: StripeEvent) -> str | None:
     payload = row.raw_payload
     if not isinstance(payload, dict):
         return None
-    annotation = payload.get("_polsia")
+    annotation = payload.get("_meridian")
     if isinstance(annotation, dict):
         recorded = annotation.get("payment_intent_id")
         if isinstance(recorded, str) and recorded.strip():

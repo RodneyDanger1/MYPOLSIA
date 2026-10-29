@@ -1,7 +1,7 @@
 """SV-W4-03 — a completed row must not SERVE a superseded attempt's error, and must not LOSE it.
 
 Live defect (systems-validator wave 4): `GET /api/v1/tasks/313` answered `status:"completed"` AND
-`error_message:"PolsiaError: E_AGENT_BAD_OUTPUT … twitter content must be <= 280 chars"` — the
+`error_message:"MeridianError: E_AGENT_BAD_OUTPUT … twitter content must be <= 280 chars"` — the
 attempt-1 validator failure, superseded by the attempt-3 run that actually completed.  Any surface
 painting `error_message` showed a finished task as failed.  (The column-clearing half landed in
 wave 2 as the F-23 residue fix; the live 313 row predates it, and the text was simply dropped from
@@ -30,11 +30,11 @@ from app.models.task import AgentRun, Task
 
 #: The live validator text's shape (task 313's attempt-1 failure), verbatim enough to be honest.
 VALIDATOR_TEXT = (
-    "social_media failed: POLSIA-E110 1 validation error for SocialMediaOutput posts Value error, "
+    "social_media failed: MERIDIAN-E110 1 validation error for SocialMediaOutput posts Value error, "
     "twitter content must be <= 280 chars"
 )
 #: The shape the worker writes: `f"{type(failure).__name__}: {failure}"` (agent_tasks.py:2447).
-ATTEMPT_ONE_ERROR = f"PolsiaError: {E_AGENT_BAD_OUTPUT}: {VALIDATOR_TEXT}"
+ATTEMPT_ONE_ERROR = f"MeridianError: {E_AGENT_BAD_OUTPUT}: {VALIDATOR_TEXT}"
 
 
 def _metadata(row: dict) -> dict:

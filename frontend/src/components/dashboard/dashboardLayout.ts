@@ -8,7 +8,7 @@ import { useSyncExternalStore } from "react";
  * WHAT THE ORIGINAL HAS: an editable dashboard. `EDIT` in the navbar opens the
  * editor; every widget carries a show/hide switch, widgets can be reordered, and
  * "Restore default layout" brings back the starting selection and order
- * (help.polsia.com/add-dashboard-capabilities, fetched 2026-10-15; agent1
+ * (help.meridian.com/add-dashboard-capabilities, fetched 2026-10-15; agent1
  * live-UI DOSSIER §1.2 for the EDIT control itself).
  *
  * WHAT THIS IS: the same feature, browser-local. The live product syncs a layout
@@ -96,7 +96,7 @@ export type DashboardLayout = {
 };
 
 /** One versioned key. Bump the version to retire old saved shapes. */
-export const STORAGE_KEY = "polsia.dashboard.layout.v1";
+export const STORAGE_KEY = "meridian.dashboard.layout.v1";
 
 /** The shipped dashboard: everything visible, default order. */
 export const INITIAL_LAYOUT: DashboardLayout = { hidden: [], order: {} };

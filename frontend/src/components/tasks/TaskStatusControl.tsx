@@ -85,7 +85,7 @@ export function legalTaskStatusTargets(current: string | null | undefined): read
 /**
  * The `accepted` list a refusal carried, read structurally: the API client keeps the parsed body
  * on `ApiError.body`, and the frozen envelope puts the set under `detail.context.accepted`
- * (HTTPException shape) or `error.context.accepted` (PolsiaError shape). `null` = the refusal did
+ * (HTTPException shape) or `error.context.accepted` (MeridianError shape). `null` = the refusal did
  * not declare one, so the mirror stands.
  */
 function acceptedFrom(e: unknown): string[] | null {

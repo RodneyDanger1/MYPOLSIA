@@ -37,7 +37,7 @@ import pytest
 
 from app.agents import claude_cli, deepseek_runtime, run_progress
 from app.config import settings
-from app.core.errors import E_BUDGET_EXCEEDED, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, MeridianError
 
 SAFE_TEST_KEY = "sk-test-not-a-real-key"
 
@@ -134,7 +134,7 @@ def test_a_call_that_trips_the_cap_is_reported_before_the_refusal(monkeypatch):
     seen: list[dict] = []
     token = run_progress.set_run_usage_sink(seen.append)
     try:
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             deepseek_runtime.invoke(
                 _make_inv(),
                 client=_client(
@@ -393,7 +393,7 @@ def test_the_budget_refusal_names_the_days_unmeasured_runs(queue_db, monkeypatch
     _seed_run(queue_db, status="cancelled", seconds_ago=elapsed - 5)  # cost unknown
     monkeypatch.setattr(settings, "agent_daily_cost_cap_usd", 0.011)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         queue_db.run(assert_budget_allows("finance"))
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED

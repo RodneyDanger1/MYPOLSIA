@@ -10,7 +10,7 @@ table that is right in a unit call but does not reach `/openapi.json` would pass
 
 The expected sets are the census, not a copy of the table: every operation listed here has a raise
 site reachable from its handler, cited in `app/core/openapi_errors.OPERATION_EXTRA_STATUSES` (and in
-`polsia-work/build/swarm-2026-10-28/systems-validator/raw/w6/domain-reach.txt`).  A new status on an
+`meridian-work/build/swarm-2026-10-28/systems-validator/raw/w6/domain-reach.txt`).  A new status on an
 operation, or a new operation carrying one, must be added HERE too - deliberately, with its seam.
 
 A status that is NOT declared matters just as much as one that is: `test_no_operation_claims_...`
@@ -135,7 +135,7 @@ def test_every_declarable_status_has_a_shared_entry() -> None:
 
 def test_every_domain_status_body_is_the_envelope(operations: dict) -> None:
     """A declared 403/404/409/413/429/502/504 must reference the refusal envelope, not be empty."""
-    ref = "#/components/schemas/PolsiaErrorEnvelope"
+    ref = "#/components/schemas/MeridianErrorEnvelope"
     broken = {}
     for target, expected in EXPECTED_DOMAIN_STATUSES.items():
         for status in sorted(expected & {"403", "404", "409", "413", "429", "502", "504"}):

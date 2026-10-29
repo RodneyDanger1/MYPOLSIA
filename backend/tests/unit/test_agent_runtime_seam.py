@@ -13,12 +13,12 @@ import json
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.config import settings
-from app.core.errors import E_CLI_EXIT, E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_CLI_EXIT, E_CLI_TIMEOUT, MeridianError
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -131,7 +131,7 @@ def test_provider_is_chosen_once_per_logical_run(monkeypatch):
     _instant_backoff(monkeypatch)
 
     agent = _Agent()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent._real_call("retry me")
 
     assert excinfo.value.code == E_CLI_EXIT          # the 429 envelope's named E-code
@@ -146,7 +146,7 @@ def test_deepseek_timeout_refusal_is_retried_by_the_shared_ladder(monkeypatch):
     def flaky(inv, *, task_title=None, images=None, cost_guard=None):  # V25/L1 + REQUESTS-2 seam kwargs
         calls["n"] += 1
         if calls["n"] == 1:
-            raise PolsiaError(E_CLI_TIMEOUT, "deepseek API exceeded 7s",
+            raise MeridianError(E_CLI_TIMEOUT, "deepseek API exceeded 7s",
                               how_to_fix="raise deepseek_timeout_seconds in Settings")
         return _ok_result()
 

@@ -28,7 +28,7 @@ const FALLBACK_LABEL = "text-gray-500";
  *  the backend has no read-model, so "unread" is defined as `created_at` newer than the last time
  *  this device visited the dashboard. No stored value (first visit / storage unavailable) = no
  *  markers, rather than inventing them. */
-const LAST_SEEN_KEY = "polsia.dashboard.feed.lastSeenAt";
+const LAST_SEEN_KEY = "meridian.dashboard.feed.lastSeenAt";
 
 function readLastSeenAt(): number | null {
   if (typeof window === "undefined") return null;

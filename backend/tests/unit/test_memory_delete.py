@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, E_STORAGE, ERROR_HINTS, MeridianError
 from app.models.memory import MemoryEntry
 from app.services.memory_service import (
     delete_memory,
@@ -111,7 +111,7 @@ async def test_delete_removes_row_and_chroma_document(async_db_session, stateful
 
 @pytest.mark.asyncio
 async def test_delete_missing_memory_is_a_named_e_not_found(async_db_session, stateful_chroma):
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await delete_memory(async_db_session, 4242)
 
     assert excinfo.value.code == E_NOT_FOUND
@@ -131,7 +131,7 @@ async def test_delete_twice_second_call_refuses(async_db_session, stateful_chrom
     await delete_memory(async_db_session, entry.id)
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await delete_memory(async_db_session, entry.id)
     assert excinfo.value.code == E_NOT_FOUND
 
@@ -165,7 +165,7 @@ async def test_chroma_delete_failure_refuses_and_keeps_both_halves(async_db_sess
     chroma_id = entry.chroma_id
 
     stateful_chroma.delete_raises = RuntimeError("the vector store is down")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await delete_memory(async_db_session, entry.id)
 
     assert excinfo.value.code == E_STORAGE
@@ -218,7 +218,7 @@ async def test_row_delete_failure_is_named_e_db_and_says_what_was_removed(
         raise SQLAlchemyError("disk I/O error")
 
     mocker.patch.object(async_db_session, "flush", side_effect=_broken_flush)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await delete_memory(async_db_session, entry.id)
 
     assert excinfo.value.code == E_DB

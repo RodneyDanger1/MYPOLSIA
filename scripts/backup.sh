@@ -36,8 +36,8 @@ log() {
     printf '[backup] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
 }
 
-POSTGRES_USER=${POSTGRES_USER:-polsia}
-POSTGRES_DB=${POSTGRES_DB:-polsia}
+POSTGRES_USER=${POSTGRES_USER:-meridian}
+POSTGRES_DB=${POSTGRES_DB:-meridian}
 PGHOST=${PGHOST:-postgres}
 BACKUP_DIR=${BACKUP_DIR:-/backups}
 BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-86400}
@@ -47,7 +47,7 @@ VOLUMES_ROOT=${VOLUMES_ROOT:-/volumes}
 
 backup_database() {
     stamp=$(date -u +%Y-%m-%dT%H%M%SZ)
-    target="$BACKUP_DIR/polsia-$stamp.sql"
+    target="$BACKUP_DIR/meridian-$stamp.sql"
     part="$target.part"
     log "pg_dump $POSTGRES_DB@$PGHOST -> $target"
     if pg_dump -h "$PGHOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$part"; then
@@ -93,7 +93,7 @@ backup_volume() {
 
 prune_old_backups() {
     log "pruning artifacts older than ${BACKUP_RETENTION_DAYS} day(s) in $BACKUP_DIR"
-    found=$(find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'polsia-*.sql' -o -name '*.tgz' \) -mtime "+$BACKUP_RETENTION_DAYS" -print)
+    found=$(find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'meridian-*.sql' -o -name '*.tgz' \) -mtime "+$BACKUP_RETENTION_DAYS" -print)
     if [ -z "$found" ]; then
         log "nothing older than the retention window — nothing pruned"
         return 0

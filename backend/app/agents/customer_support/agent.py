@@ -19,7 +19,7 @@ becomes a refund on its own: the refund action class is irreversible, so it is a
 outside sandbox (`proposed_action="refund"` + `needs_human=true`).
 
 Per-run reply budget (T18b/D22): the live product documents "One run answers up to 10 unanswered
-emails and uses one credit" (`polsia-behavior-dossier.md` §8).  That bound has no home in
+emails and uses one credit" (`meridian-behavior-dossier.md` §8).  That bound has no home in
 `RateCaps` (day/hour windows only, and the `email` channel is SHARED with email_outreach — W2
 R-W2-1), so this agent enforces it directly: each reply that reaches the SEND path consumes one of
 `MAX_REPLIES_PER_RUN` slots, and a reply beyond the budget is skipped BY NAME — never attempted,
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.customer_support.send_bridge import send_cs_reply
 from app.agents.policy_firewall import ActionClass, wrap_untrusted
 from app.agents.side_effects import (
@@ -41,7 +41,7 @@ from app.agents.side_effects import (
     side_effect_receipt,
 )
 from app.config import settings
-from app.core.errors import E_NOT_FOUND, E_RATE_LIMITED, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_RATE_LIMITED, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.schemas.agent_outputs import CustomerSupportOutput
 from app.services.email_lifecycle import (
     provider_accepted,
@@ -78,7 +78,7 @@ INBOX_ITEM_KEY = "inbox_item"
 INBOX_ITEM_ID_KEY = "inbox_item_id"
 
 #: The documented per-run reply budget (T18b/D22): "One run answers up to 10 unanswered emails and
-#: uses one credit" (`polsia-behavior-dossier.md` §8).  Enforced in `run()`'s reply loop — a reply
+#: uses one credit" (`meridian-behavior-dossier.md` §8).  Enforced in `run()`'s reply loop — a reply
 #: that would be an 11th send attempt is SKIPPED BY NAME, never attempted (the loop's guard below,
 #: plus the `replies_skipped_by_budget` count on the run summary).  Deliberately NOT a `RateCaps`
 #: value: those are day/hour windows and the `email` channel is shared with email_outreach
@@ -125,7 +125,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
     if item is None:
         if reference is None:
             return None  # nothing referenced, nothing attached: previous behaviour, unchanged
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"customer_support task {task_ref!r} references inbox item {reference!r}, but its "
             "body was not attached (metadata.inbox_item); this agent has no inbox access and "
@@ -135,7 +135,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
         )
 
     if not isinstance(item, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"customer_support task {task_ref!r}: metadata.inbox_item must be an object with "
             f"id and body, got {type(item).__name__}",
@@ -149,7 +149,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
         # The id is BOTH the quarantine block's content_id (provenance for the audit trail) and
         # the reply's `message_ref` source (SupportReply: "absent means the reply cannot be acted
         # on") — without it the block cannot name its source and a reply could never be sent.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"customer_support task {task_ref!r}: inbox item is missing its provider id (a "
             "non-empty string); without it the quarantine block cannot name its provenance "
@@ -158,7 +158,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
             context={"task_id": task_ref},
         )
     if not (isinstance(body, str) and body.strip()):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"customer_support task {task_ref!r}: inbox item {item_id!r} arrived without a "
             "body; refusing to answer a message that cannot be read",
@@ -168,7 +168,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
     if reference is not None and str(reference) != item_id:
         # Answering a message the task did not reference would be a wrong-item risk; refuse
         # rather than guess which of the two ids is real.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"customer_support task {task_ref!r}: metadata.inbox_item_id {reference!r} does "
             f"not match the attached item id {item_id!r}; refusing to answer a different "
@@ -179,7 +179,7 @@ def inbox_item_extra_context(task: dict[str, Any]) -> str | None:
     return wrap_untrusted("inbox", item_id, body)
 
 
-class CustomerSupportAgent(BasePolsiaAgent):
+class CustomerSupportAgent(BaseMeridianAgent):
     agent_type = "customer_support"
     description = "Reads the inbox and drafts replies"
     output_schema = CustomerSupportOutput
@@ -296,7 +296,7 @@ class CustomerSupportAgent(BasePolsiaAgent):
                     sends_today=sends_today_now,
                     sends_this_hour=sends_hour_now,
                 )
-            except PolsiaError as exc:
+            except MeridianError as exc:
                 # A cap denial with nothing performed yet stays fatal; after this run already
                 # sent a reply it is recorded and the reply stays a draft (see
                 # `capped_item_refusal`). Anything else re-raises unchanged.
@@ -326,7 +326,7 @@ class CustomerSupportAgent(BasePolsiaAgent):
                         body=str(reply.get("reply_body") or ""),
                         context=context,
                     )
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     # A refusal is never silent: nothing was sent, and the reason (E_CONFIG
                     # naming the missing identity fields, E_POLICY_DENIED for an opt-out,
                     # E_DB for an unreadable database) is NAMED on the run output in the same

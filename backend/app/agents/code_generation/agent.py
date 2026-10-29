@@ -25,11 +25,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents import integrations
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import ActionClass
 from app.agents.side_effects import capped_item_refusal, request_side_effect, side_effect_receipt
 from app.config import settings
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, MeridianError
 from app.schemas.agent_outputs import CodeGenOutput
 
 ROLE = """You are the Code Generation agent of an autonomous company. You implement small,
@@ -59,7 +59,7 @@ approval. While the company runs in sandbox mode the action is refused and your 
 as a labelled draft (`pr_url=null`) — that is the expected outcome, not a failure."""
 
 
-class CodeGenerationAgent(BasePolsiaAgent):
+class CodeGenerationAgent(BaseMeridianAgent):
     agent_type = "code_generation"
     description = "Writes code and opens pull requests"
     output_schema = CodeGenOutput
@@ -118,7 +118,7 @@ class CodeGenerationAgent(BasePolsiaAgent):
                         sends_today=sends_today_now,
                         sends_this_hour=sends_hour_now,
                     )
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     # Cap denial with nothing performed yet stays fatal; after this run opened a
                     # PR it is recorded and the change stays unapplied (see `capped_item_refusal`).
                     if exc.code != E_RATE_LIMITED or performed == 0:

@@ -75,7 +75,7 @@ Every agent run goes through the provider-selectable runtime:
 - `SANDBOX_MODE=false`: the same gates now let real sends through — still bounded by the policy
   firewall: per-channel **send caps** (at cap → `E_RATE_LIMITED`; a channel with no counting source
   refuses by name instead of guessing), **approval escalation** for irreversible/high-value
-  actions (≥ $25), and the **kill switch** `POLSIA_KILL_SWITCH` (`throttle` = external-action
+  actions (≥ $25), and the **kill switch** `MERIDIAN_KILL_SWITCH` (`throttle` = external-action
   agents pause, reads continue; `freeze` = all dispatch refused — takes effect without a redeploy).
 - **Cost budgets** (`AGENT_RUN_COST_CAP_USD` $2.0/run, `AGENT_DAILY_COST_CAP_USD` $25/day) are
   enforced per dispatch: a denied entry is **skipped with its reason**, never silently dropped.
@@ -440,7 +440,7 @@ is a named `E_VALIDATION`. Result:
 - **Allowlisted per agent, enforced at call time.** Only **`orchestrator`** and **`customer_support`**
   hold the grant (both already read owner data: the planner plans from the owner's real situation;
   support's job is the owner's inbound correspondence). The other eight agents are refused by name
-  (`E_POLICY_DENIED`, `policy_code=POLSIA-E114`, message naming tool + agent) — pinned for all eight,
+  (`E_POLICY_DENIED`, `policy_code=MERIDIAN-E114`, message naming tool + agent) — pinned for all eight,
   and the Capabilities map (§6) derives the same two holders. Every call rides `execute_tool`, which
   consults `AgentCapability.agent_tools` on every call.
 - **No store, no fabrication.** With the store absent or corrupt, the tool returns the named

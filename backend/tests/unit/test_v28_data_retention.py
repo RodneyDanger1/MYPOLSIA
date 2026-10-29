@@ -24,7 +24,7 @@ import subprocess
 import pytest
 
 from app.agents.tool_registry import cleanup_expired_run_workspaces
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 
 NOW = 1_000_000_000  # fixed epoch seconds: every age below is exact integer arithmetic
 
@@ -180,7 +180,7 @@ def test_a_linked_runs_directory_refuses_and_deletes_nothing(workspace, tmp_path
     (workspace / "runs").rmdir()
     _make_dir_link(workspace / "runs", outside)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         cleanup_expired_run_workspaces(workspace_root=workspace, keep_latest=0, max_age_hours=72, now=NOW)
     assert excinfo.value.code == E_VALIDATION
     assert "link or junction" in excinfo.value.message

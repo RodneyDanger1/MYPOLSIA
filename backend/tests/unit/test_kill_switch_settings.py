@@ -29,7 +29,7 @@ import pytest
 
 import app.config as app_config
 from app.agents import crew_factory
-from app.core.errors import E_CLI_JSON, E_CLI_MISSING, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CLI_JSON, E_CLI_MISSING, E_POLICY_DENIED, MeridianError
 
 
 def _pin_settings_kill_switch(monkeypatch, request, value: str) -> None:
@@ -76,7 +76,7 @@ def _non_mock_runtime(monkeypatch) -> None:
     monkeypatch.setattr(app_config.settings, "claude_cli_mock", False)
     monkeypatch.delenv("CLAUDE_CLI_PATH", raising=False)
     monkeypatch.setattr(app_config.settings, "claude_cli_path", "claude")
-    monkeypatch.delenv("POLSIA_MODEL_BACKEND", raising=False)
+    monkeypatch.delenv("MERIDIAN_MODEL_BACKEND", raising=False)
     _pin_deepseek_availability(monkeypatch, False)
     monkeypatch.setattr(crew_factory, "_CLI_AUTH_VERDICTS", {})
 
@@ -90,7 +90,7 @@ class _FakeProc:
 
 # ── item 1 — the settings fallback is real, and the env still wins ──────────────────────────────
 def test_settings_kill_switch_freezes_when_env_is_unset(monkeypatch, request):
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     _pin_settings_kill_switch(monkeypatch, request, "freeze")
 
     problems = crew_factory.dispatch_preflight("email_outreach")
@@ -98,14 +98,14 @@ def test_settings_kill_switch_freezes_when_env_is_unset(monkeypatch, request):
     assert any("freeze" in p for p in problems)
 
     # …and the same settings value stops the WHOLE dispatch, not just the preflight list.
-    with pytest.raises(PolsiaError) as exc_info:
+    with pytest.raises(MeridianError) as exc_info:
         crew_factory.run_agent_for_task("email_outreach", {}, {})
     assert exc_info.value.code == E_POLICY_DENIED
     assert exc_info.value.context["kill_grade"] == "freeze"
 
 
 def test_settings_kill_switch_throttle_stops_external_agents_only(monkeypatch, request):
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     _pin_settings_kill_switch(monkeypatch, request, "throttle")
 
     stopped = crew_factory.dispatch_preflight("email_outreach")          # external side effects
@@ -116,16 +116,16 @@ def test_settings_kill_switch_throttle_stops_external_agents_only(monkeypatch, r
 def test_the_env_still_wins_over_the_settings_field(monkeypatch, request):
     """Precedence, pinned: an operator's shell-level stop is the fastest one there is."""
     _pin_settings_kill_switch(monkeypatch, request, "freeze")
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "run")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "run")
     assert crew_factory.dispatch_preflight("email_outreach") == []
 
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
     assert crew_factory.dispatch_preflight("email_outreach")
 
 
 def test_the_freeze_refusal_is_reported_once(monkeypatch, request):
     """Both gates hold on a freeze, but the refusal names it once (no duplicated kill-switch line)."""
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "freeze")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "freeze")
     problems = crew_factory.dispatch_preflight("email_outreach")
     kill_lines = [p for p in problems if "kill switch" in p.lower()]
     assert len(kill_lines) == 1, f"expected one kill-switch refusal, got {problems}"
@@ -135,7 +135,7 @@ def test_the_freeze_refusal_is_reported_once(monkeypatch, request):
 def test_a_missing_cli_binary_refuses_dispatch_before_any_spawn(monkeypatch):
     """CLI-missing sim: the binary is not resolvable and the CLI IS the path ⇒ named refusal."""
     _non_mock_runtime(monkeypatch)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(crew_factory.shutil, "which", lambda _name: None)
 
     def _no_spawn(*_args, **_kwargs):  # a spawn attempt here would mean the gate failed
@@ -146,7 +146,7 @@ def test_a_missing_cli_binary_refuses_dispatch_before_any_spawn(monkeypatch):
     problems = crew_factory.dispatch_preflight("email_outreach")
     assert any(E_CLI_MISSING in p for p in problems), problems
 
-    with pytest.raises(PolsiaError) as exc_info:
+    with pytest.raises(MeridianError) as exc_info:
         crew_factory.run_agent_for_task("email_outreach", {}, {})
     assert exc_info.value.code == E_POLICY_DENIED
     assert E_CLI_MISSING in exc_info.value.message
@@ -158,7 +158,7 @@ def test_a_missing_cli_binary_refuses_dispatch_before_any_spawn(monkeypatch):
 def test_a_logged_out_cli_refuses_dispatch_before_any_spawn(monkeypatch):
     """Auth sim: the real probe's parsing runs on the CLI's own logged-out wording."""
     _non_mock_runtime(monkeypatch)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(crew_factory.shutil, "which", lambda name: f"/usr/bin/{name}")
     seen: list[list[str]] = []
 
@@ -173,7 +173,7 @@ def test_a_logged_out_cli_refuses_dispatch_before_any_spawn(monkeypatch):
     assert any(E_CLI_JSON in p for p in problems), problems
     assert seen == [["claude", "auth", "status"]], "the probe must ask the CLI itself"
 
-    with pytest.raises(PolsiaError) as exc_info:
+    with pytest.raises(MeridianError) as exc_info:
         crew_factory.run_agent_for_task("email_outreach", {}, {})
     assert E_CLI_JSON in exc_info.value.message
     assert exc_info.value.context["safety"]["cli_auth"] == "logged_out"
@@ -186,7 +186,7 @@ def test_an_inconclusive_auth_probe_does_not_refuse_the_fleet(monkeypatch):
     spawn-time CLI_AUTH_FAILED -> E_CLI_EXIT mapping stays the second line of defence.
     """
     _non_mock_runtime(monkeypatch)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(crew_factory.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     def _explode(*_args, **_kwargs):
@@ -218,7 +218,7 @@ def test_mock_mode_never_refuses_for_a_missing_cli(monkeypatch):
     """The CLI legs are NOT APPLICABLE when nothing spawns (CLAUDE_CLI_MOCK) — not a fake pass:
     the reason is recorded so the verdict is auditable."""
     monkeypatch.setenv("CLAUDE_CLI_MOCK", "true")
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(crew_factory.shutil, "which", lambda _name: None)
 
     def _no_spawn(*_args, **_kwargs):
@@ -237,7 +237,7 @@ def test_a_non_cli_backend_does_not_need_the_cli_binary(monkeypatch):
     """The DeepSeek-shaped runtime: a declared non-CLI backend means a missing binary is not a
     failure of a path that would never be taken."""
     _non_mock_runtime(monkeypatch)
-    monkeypatch.setenv("POLSIA_MODEL_BACKEND", "deepseek")
+    monkeypatch.setenv("MERIDIAN_MODEL_BACKEND", "deepseek")
     monkeypatch.setattr(crew_factory.shutil, "which", lambda _name: None)
 
     def _no_spawn(*_args, **_kwargs):
@@ -272,7 +272,7 @@ def test_a_resolvable_deepseek_key_does_not_require_the_cli(monkeypatch):
 def test_an_unknown_backend_signal_still_requires_the_cli(monkeypatch):
     """Fail closed: an unrecognised backend is the claude-cli path, so the binary check applies."""
     _non_mock_runtime(monkeypatch)
-    monkeypatch.setenv("POLSIA_MODEL_BACKEND", "something-new")
+    monkeypatch.setenv("MERIDIAN_MODEL_BACKEND", "something-new")
     monkeypatch.setattr(crew_factory.shutil, "which", lambda _name: None)
 
     problems = crew_factory.dispatch_preflight("email_outreach")
@@ -281,7 +281,7 @@ def test_an_unknown_backend_signal_still_requires_the_cli(monkeypatch):
 
 def test_throttle_semantics_are_preserved_alongside_the_safety_gate(monkeypatch):
     """Both gates hold: throttle still stops external-action agents while the safety legs are clear."""
-    monkeypatch.setenv("POLSIA_KILL_SWITCH", "throttle")
+    monkeypatch.setenv("MERIDIAN_KILL_SWITCH", "throttle")
     monkeypatch.setenv("CLAUDE_CLI_MOCK", "true")
     stopped = crew_factory.dispatch_preflight("ads_management")
     assert any("throttle" in p for p in stopped)

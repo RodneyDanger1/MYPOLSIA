@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 
 from app.agents import claude_cli, deepseek_runtime
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.config import settings
 from app.schemas.agent_outputs import CompetitorReport
 
@@ -31,8 +31,8 @@ VALID_PAYLOAD = {
 }
 
 
-class _ProbeAgent(BasePolsiaAgent):
-    """A real BasePolsiaAgent whose registry tools (competitor_research) are web_search/web_fetch."""
+class _ProbeAgent(BaseMeridianAgent):
+    """A real BaseMeridianAgent whose registry tools (competitor_research) are web_search/web_fetch."""
 
     agent_type = "competitor_research"
     output_schema = CompetitorReport
@@ -70,7 +70,7 @@ def _envelope(
     )
 
 
-def _collect(agent: BasePolsiaAgent) -> dict:
+def _collect(agent: BaseMeridianAgent) -> dict:
     payload, assembled = agent.collect_structured({"title": "Research the US candle market"}, {})
     return agent.attach_run_meta(payload, assembled=assembled)
 

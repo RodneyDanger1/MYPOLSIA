@@ -49,7 +49,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ERROR_HINTS, PolsiaError
+from app.core.errors import ERROR_HINTS, MeridianError
 from app.models.task import Task
 from app.services import company_service
 from app.services.activity_service import log_activity
@@ -88,7 +88,7 @@ async def _firewall_clearance(db: AsyncSession, *, action: str, payload: dict[st
       * sandboxed -> raise `_NotificationFailure` carrying the named refusal
         (E_SANDBOX_BLOCKED) plus the house draft markers, so the funnel records a NAMED row —
         a labelled draft, never a silent skip;
-      * a policy/cap denial -> `enforce` raises its own named `PolsiaError` (E_RATE_LIMITED, or
+      * a policy/cap denial -> `enforce` raises its own named `MeridianError` (E_RATE_LIMITED, or
         the cap-unknown posture) — the funnel records it by code, the provider stays untouched;
       * allowed -> returns None; the caller may send.
     """
@@ -179,7 +179,7 @@ async def notify_owner_for_terminal_outcome(db: AsyncSession, task_id: int, outc
         await _notify_owner(db, task_id, outcome)
     except _NotificationFailure as failure:
         await _record_failure(db, task_id, outcome, failure.error)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # A named failure from the read path (config `E_DB`, the task load) keeps its E_* code.
         await _record_failure(
             db,
@@ -351,7 +351,7 @@ async def notify_owner_cycle_report(
             note=str(failure.error.get("code") or "refused"),
             detail={"error": failure.error},
         )
-    except PolsiaError as exc:
+    except MeridianError as exc:
         await _record_cycle_row(
             db,
             "cycle_report_email_failed",

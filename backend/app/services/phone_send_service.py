@@ -63,7 +63,7 @@ from app.core.errors import (
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
     http_status_for,
 )
 
@@ -80,7 +80,7 @@ E164_MIN_DIGITS = 8
 THREAD_ID_MAX = 2**31 - 1
 SEND_TIMEOUT_S = 45.0
 DEFAULT_PORT = 9223
-TEMP_PREFIX = "polsia-phone-send-"
+TEMP_PREFIX = "meridian-phone-send-"
 AUDIT_ACTION = "phone_send"
 AUDIT_AGENT = "system"
 
@@ -110,7 +110,7 @@ def driver_candidates() -> list[Path]:
 
 
 #: The real driver script: the first candidate that EXISTS at import time, else the primary (whose
-#: absence `send()` reports as the named 503 with both candidates listed).  `POLSIA_PHONE_SEND_DRIVER`
+#: absence `send()` reports as the named 503 with both candidates listed).  `MERIDIAN_PHONE_SEND_DRIVER`
 #: still overrides this for an operator who keeps the driver outside the tree; nothing in the app
 #: sets it.  Resolving "first existing" ONCE here (not per call) keeps `DRIVER_PATH` a plain module
 #: attribute — the shipped tests monkeypatch it to their own path and must never be silently
@@ -186,14 +186,14 @@ def _decode_bridge_reply(raw: bytes) -> dict[str, Any]:
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             f"the phone send bridge answered something that is not JSON "
             f"({type(exc).__name__}: {exc})",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
         ) from exc
     if not isinstance(payload, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             "the phone send bridge answered a non-object JSON payload",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -225,8 +225,8 @@ def _post_bridge(
             exc.close()
 
 
-def _bridge_timeout(url: str, timeout: float) -> PolsiaError:
-    return PolsiaError(
+def _bridge_timeout(url: str, timeout: float) -> MeridianError:
+    return MeridianError(
         E_PHONE_UNAVAILABLE,
         f"the phone send bridge at {url} timed out after {timeout:g}s — nothing is claimed "
         "as sent",
@@ -235,7 +235,7 @@ def _bridge_timeout(url: str, timeout: float) -> PolsiaError:
     )
 
 
-def _bridge_unreachable(url: str, exc: BaseException | str) -> PolsiaError:
+def _bridge_unreachable(url: str, exc: BaseException | str) -> MeridianError:
     """A bridge connect failure, rendered from whichever shape `URLError.reason` carries.
 
     `urllib.error.URLError.reason` is `str | BaseException` (typeshed): the socket layer reports
@@ -244,7 +244,7 @@ def _bridge_unreachable(url: str, exc: BaseException | str) -> PolsiaError:
     as-is; an exception keeps its own type name.
     """
     detail = f"{type(exc).__name__}: {exc}" if isinstance(exc, BaseException) else exc
-    return PolsiaError(
+    return MeridianError(
         E_PHONE_UNAVAILABLE,
         f"the phone send bridge at {url} is unreachable ({detail}) — start "
         "scripts/phone_send_bridge.py on the host, then retry",
@@ -260,21 +260,21 @@ def _map_bridge_reply(status: int, payload: dict[str, Any], url: str) -> SendRes
         to_masked = payload.get("to_masked")
         driver_name = payload.get("driver")
         if driver_name != DRIVER_NAME:
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 f"the phone send bridge result came from an unrecognised driver ({driver_name!r})",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
                 context={"bridge_url": url, "driver": driver_name},
             )
         if not isinstance(sent_at, str) or not sent_at.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 "the phone send bridge did not report a send time — no send is claimed",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
                 context={"bridge_url": url},
             )
         if not isinstance(to_masked, str) or not to_masked.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 "the phone send bridge did not report a masked recipient — no send is claimed",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -290,7 +290,7 @@ def _map_bridge_reply(status: int, payload: dict[str, Any], url: str) -> SendRes
         if status == 401:  # a token gate that did not name itself still means E_AUTH
             code = E_AUTH
         else:
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 f"the phone send bridge at {url} answered HTTP {status} without a recognised "
                 "refusal",
@@ -302,13 +302,13 @@ def _map_bridge_reply(status: int, payload: dict[str, Any], url: str) -> SendRes
         _BRIDGE_HINTS.get(code) or _HINTS.get(code) or ERROR_HINTS.get(code, "")
     )
     if code == E_AUTH:
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             f"the phone send bridge at {url} rejected the bridge token: {message}",
             how_to_fix=how_to_fix,
             context={"bridge_url": url, "bridge_status": status},
         )
-    raise PolsiaError(
+    raise MeridianError(
         code,
         f"the phone send bridge at {url} refused the send: {message}",
         how_to_fix=how_to_fix,
@@ -320,7 +320,7 @@ async def _send_via_bridge(target: str, body: str, url: str, timeout: float) -> 
     """Validate the bridge configuration AT CALL TIME, then POST and map the answer."""
     token = os.environ.get(PHONE_SEND_BRIDGE_TOKEN_ENV, "").strip()
     if not token:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"{BRIDGE_URL_ENV} is set ({url}) but {PHONE_SEND_BRIDGE_TOKEN_ENV} is empty — the "
             "bridge transport will not POST a send without its token",
@@ -328,7 +328,7 @@ async def _send_via_bridge(target: str, body: str, url: str, timeout: float) -> 
             context={"bridge_url": url, "env": PHONE_SEND_BRIDGE_TOKEN_ENV},
         )
     if len(token) < BRIDGE_TOKEN_MIN_CHARS:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"{PHONE_SEND_BRIDGE_TOKEN_ENV} is {len(token)} characters; the bridge requires at "
             f"least {BRIDGE_TOKEN_MIN_CHARS}",
@@ -337,7 +337,7 @@ async def _send_via_bridge(target: str, body: str, url: str, timeout: float) -> 
         )
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"{BRIDGE_URL_ENV} {url!r} is not an http(s) URL with a host — the bridge transport "
             "refuses to guess",
@@ -403,8 +403,8 @@ class SendResult:
 # ── validation ─────────────────────────────────────────────────────────────────────────────
 
 
-def _invalid(message: str, how_to_fix: str, **context: Any) -> PolsiaError:
-    return PolsiaError(E_VALIDATION, message, how_to_fix=how_to_fix, context=context)
+def _invalid(message: str, how_to_fix: str, **context: Any) -> MeridianError:
+    return MeridianError(E_VALIDATION, message, how_to_fix=how_to_fix, context=context)
 
 
 def validate_target(raw: Any) -> str:
@@ -505,7 +505,7 @@ def mask_target(raw: Any) -> str:
 
 def driver_executable() -> Path:
     """Resolve the driver path (env override honoured, missing file reported by `send`)."""
-    override = os.environ.get("POLSIA_PHONE_SEND_DRIVER", "").strip()
+    override = os.environ.get("MERIDIAN_PHONE_SEND_DRIVER", "").strip()
     return Path(override) if override else DRIVER_PATH
 
 
@@ -555,7 +555,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
     """Turn the driver's one-line envelope into a `SendResult`, or refuse BY NAME."""
     text = (stdout or "").strip()
     if not text:
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             f"the phone send driver exited {returncode} without a JSON result",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -564,7 +564,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
     try:
         payload = json.loads(text.splitlines()[-1])
     except json.JSONDecodeError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             f"the phone send driver printed something that is not its JSON envelope "
             f"({type(exc).__name__}: {exc})",
@@ -572,7 +572,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
             context={"exit_code": returncode, "stdout_tail": text[-400:]},
         ) from exc
     if not isinstance(payload, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             "the phone send driver answered a non-object JSON payload",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -581,7 +581,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
 
     if payload.get("ok") is True:
         if returncode != 0:
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 f"the phone send driver claimed ok but exited {returncode}",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -589,7 +589,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
             )
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 "the phone send driver answered ok without its data object",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -598,20 +598,20 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
         to_masked = data.get("to_masked")
         driver_name = data.get("driver")
         if driver_name != DRIVER_NAME:
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 f"the phone send result came from an unrecognised driver ({driver_name!r})",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
                 context={"driver": driver_name},
             )
         if not isinstance(sent_at, str) or not sent_at.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 "the phone send driver did not report a send time — no send is claimed",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
             )
         if not isinstance(to_masked, str) or not to_masked.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 "the phone send driver did not report a masked recipient — no send is claimed",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -634,7 +634,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
             code = E_PHONE_UNAVAILABLE
         return _raise_driver_refusal(code, message, how_to_fix, context, returncode)
 
-    raise PolsiaError(
+    raise MeridianError(
         E_PHONE_UNAVAILABLE,
         "the phone send driver answered neither ok nor a named refusal",
         how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -645,7 +645,7 @@ def parse_driver_stdout(returncode: int, stdout: str, stderr: str = "") -> SendR
 def _raise_driver_refusal(
     code: str, message: str, how_to_fix: str, context: dict[str, Any], returncode: int
 ) -> SendResult:
-    raise PolsiaError(
+    raise MeridianError(
         code,
         str(message),
         how_to_fix=how_to_fix or _HINTS.get(code, ""),
@@ -679,7 +679,7 @@ async def send(
     require_external_effects_enabled("phone send")
 
     if settings.sandbox_mode if sandbox is None else sandbox:
-        raise PolsiaError(
+        raise MeridianError(
             E_SANDBOX_BLOCKED,
             "phone send refused: SANDBOX_MODE is on, so no real SMS is sent from this deployment",
             how_to_fix=ERROR_HINTS.get(
@@ -700,7 +700,7 @@ async def send(
 
     driver = driver_executable()
     if not driver.is_file():
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             f"the phone send driver is missing: {driver}",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -710,7 +710,7 @@ async def send(
                 # happened to be picked.  A refusal that names only the first candidate sends an
                 # operator looking in the wrong directory when the layout is the other one.
                 "driver_candidates": [str(path) for path in driver_candidates()],
-                "driver_path_env": "POLSIA_PHONE_SEND_DRIVER",
+                "driver_path_env": "MERIDIAN_PHONE_SEND_DRIVER",
             },
         )
 
@@ -718,7 +718,7 @@ async def send(
     try:
         fd, raw_path = tempfile.mkstemp(prefix=TEMP_PREFIX, suffix=".txt")
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_PHONE_UNAVAILABLE,
             f"the phone send body file could not be staged ({type(exc).__name__}: {exc})",
             how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -732,7 +732,7 @@ async def send(
         try:
             run = await asyncio.wait_for(_run_driver(argv, limit), timeout=limit)
         except TimeoutError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_PHONE_UNAVAILABLE,
                 f"the phone send driver timed out after {limit:g}s — nothing is claimed as sent",
                 how_to_fix=_HINTS[E_PHONE_UNAVAILABLE],
@@ -746,7 +746,7 @@ async def send(
     return parse_driver_stdout(run.returncode, run.stdout, run.stderr)
 
 
-def http_refusal(exc: PolsiaError) -> HTTPException:
+def http_refusal(exc: MeridianError) -> HTTPException:
     """The coded HTTPException for a send refusal (same detail shape `deps.as_http_exception` builds)."""
     status = SEND_STATUS_BY_CODE.get(exc.code) or http_status_for(exc.code)
     return HTTPException(

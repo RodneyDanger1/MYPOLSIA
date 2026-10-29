@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_STORAGE, E_VALIDATION, MeridianError
 from app.services import secret_store
 
 FAKE_KEY = "sk-rd13-stored-key-0001"
@@ -66,14 +66,14 @@ def test_corrupt_store_documents_raise_E_STORAGE_not_a_silent_env_fallback(
     key_file.write_text(document, encoding="utf-8")
     monkeypatch.setenv(secret_store.DEEPSEEK_ENV_VAR, FAKE_ENV_KEY)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.get_deepseek_api_key()
     assert excinfo.value.code == E_STORAGE
     assert str(key_file) in excinfo.value.how_to_fix  # the fix hint names the file to delete
     assert excinfo.value.how_to_fix  # ... and it is a real hint, not a KeyError('E_STORAGE')
 
     # The masked status refuses the same way instead of claiming "env" (wrong credential).
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.deepseek_key_status()
     assert excinfo.value.code == E_STORAGE
 
@@ -124,14 +124,14 @@ def test_unreadable_file_is_an_honest_E_STORAGE_refusal(
 
     monkeypatch.setattr(Path, "read_text", _denied)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.get_deepseek_api_key()
     assert excinfo.value.code == E_STORAGE
     assert "PermissionError" in excinfo.value.message
     # RD13: this used to be `KeyError: 'E_STORAGE'` — ERROR_HINTS had no E_STORAGE entry.
     assert excinfo.value.how_to_fix
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.deepseek_key_status()
     assert excinfo.value.code == E_STORAGE
 
@@ -146,7 +146,7 @@ def test_failed_clear_is_a_named_E_STORAGE_refusal_not_a_KeyError(
 
     monkeypatch.setattr(Path, "unlink", _denied)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.clear_deepseek_api_key()
     assert excinfo.value.code == E_STORAGE
     assert excinfo.value.how_to_fix
@@ -328,7 +328,7 @@ def test_two_writers_race_cache_and_file_stay_coherent(
 def test_set_refuses_blank_without_touching_an_existing_file(key_file: Path) -> None:
     """Re-verified boundary: a refused write must not disturb the live value."""
     secret_store.set_deepseek_api_key(FAKE_KEY)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         secret_store.set_deepseek_api_key("   ")
     assert excinfo.value.code == E_VALIDATION
     assert json.loads(key_file.read_text(encoding="utf-8"))["deepseek_api_key"] == FAKE_KEY

@@ -252,11 +252,11 @@ def test_worker_records_no_persistence_report_for_an_agent_without_one(
 # _persist_run_artifacts — the dispatcher's own contract (no database needed)
 # ─────────────────────────────────────────────────────────────────────────────
 async def test_persist_run_artifacts_reports_a_named_refusal(monkeypatch):
-    from app.core.errors import E_DB, PolsiaError
+    from app.core.errors import E_DB, MeridianError
     from celery_app.tasks.agent_tasks import _persist_run_artifacts
 
     async def persist(db, result):
-        raise PolsiaError(E_DB, "insert refused", how_to_fix="check the database")
+        raise MeridianError(E_DB, "insert refused", how_to_fix="check the database")
 
     monkeypatch.setattr("app.services.finance_service.persist_finance_run", persist, raising=False)
 

@@ -559,7 +559,7 @@ def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover
                     "file or raise the cap"
                 )
             chunks.append(chunk)
-    boundary = f"polsia-{uuid.uuid4().hex}"
+    boundary = f"meridian-{uuid.uuid4().hex}"
     metadata = json.dumps({
         "snippet": {"title": text[:100], "description": text[:5000]},   # YouTube's own limits
         "status": {"privacyStatus": "public"},
@@ -739,8 +739,8 @@ SENDGRID_UNDOCUMENTED_STATUS_CLASSES: dict[int, tuple[str, bool]] = {
 #: The correlation id this adapter mints for EVERY attempt and carries in the DOCUMENTED
 #: `custom_args` body field ("values that are specific to the entire send ... carried along with
 #: the email and its activity data"). It is the anchor for the `X-Message-Id` fallback below.
-SENDGRID_CORRELATION_ARG = "polsia_correlation_id"
-SENDGRID_CORRELATION_PREFIX = "polsia-"
+SENDGRID_CORRELATION_ARG = "meridian_correlation_id"
+SENDGRID_CORRELATION_PREFIX = "meridian-"
 #: `message_id_source` values on a successful send. A consumer must be able to tell the provider's
 #: own id from "the provider accepted it and returned no id", or it will either fabricate one or
 #: call an accepted send "failed".

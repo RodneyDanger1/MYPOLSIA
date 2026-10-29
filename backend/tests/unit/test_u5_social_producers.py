@@ -29,7 +29,7 @@ import pytest
 import app.config as app_config
 from app.agents import integrations
 from app.agents.social_media.agent import SocialMediaAgent
-from app.core.errors import E_RATE_LIMITED, PolsiaError
+from app.core.errors import E_RATE_LIMITED, MeridianError
 from app.services import social_service
 from app.services.channel_service import channel_sends_snapshot
 
@@ -167,7 +167,7 @@ async def test_linkedin_cap_fires_against_rows_the_real_producer_wrote(async_db_
     assert at_cap == {"linkedin": {"today": 4, "hour": 1}}
 
     agent2 = _stub_collection(SocialMediaAgent(), _post_social("linkedin", "one too many"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "4/4" in excinfo.value.message and "linkedin" in excinfo.value.message
@@ -208,7 +208,7 @@ async def test_facebook_cap_fires_against_rows_the_real_producer_wrote(async_db_
     assert at_cap == {"facebook": {"today": 3, "hour": 1}}
 
     agent2 = _stub_collection(SocialMediaAgent(), _post_social("facebook", "one too many"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "3/3" in excinfo.value.message and "facebook" in excinfo.value.message
@@ -256,7 +256,7 @@ async def test_instagram_cap_fires_with_the_image_threaded_from_the_payload(asyn
 
     agent2 = _stub_collection(SocialMediaAgent(), _post_social(
         "instagram", "one too many", image_url="https://cdn.example.com/pic2.jpg"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "5/5" in excinfo.value.message and "instagram" in excinfo.value.message
@@ -326,7 +326,7 @@ async def test_tiktok_cap_fires_against_rows_the_real_producer_wrote(async_db_se
 
     agent2 = _stub_collection(SocialMediaAgent(), _post_social(
         "tiktok", "one too many", image_url="https://cdn.example.com/clip2.mp4"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "10/10" in excinfo.value.message and "tiktok" in excinfo.value.message
@@ -368,7 +368,7 @@ async def test_youtube_cap_fires_against_rows_the_real_producer_wrote(async_db_s
 
     agent2 = _stub_collection(SocialMediaAgent(), _post_social(
         "youtube", "one too many", image_url="https://cdn.example.com/clip2.mp4"))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent2.run({"title": "post"}, {"channel_sends": at_cap})
     assert excinfo.value.code == E_RATE_LIMITED
     assert "3/3" in excinfo.value.message and "youtube" in excinfo.value.message

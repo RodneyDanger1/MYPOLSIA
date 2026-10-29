@@ -81,7 +81,7 @@ from app.core.errors import (
     E_UPSTREAM,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.timeutil import company_tz, day_window, now_utc
 from app.models.report import ActivityLog
@@ -165,7 +165,7 @@ def _require_credentials(api_key: str | None, service_id: str | None) -> tuple[s
         if not value
     ]
     if missing:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "Render deploy is not configured: missing " + ", ".join(missing),
             how_to_fix=(
@@ -213,10 +213,10 @@ def _require_site(slug: str, root: Path | None) -> None:
     """
     try:
         site_service.read_site_meta(slug, root=root)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         if exc.code != E_NOT_FOUND:
             raise
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"no site exists for slug {slug!r}, so there is nothing to deploy",
             how_to_fix="list the sites (GET /api/v1/sites) and deploy one it returns, or create one",
@@ -317,7 +317,7 @@ def deploy_fingerprint(slug: str, service_id: str) -> str:
     cannot name one must say so rather than produce a token minted for `service_id: ""`.
     """
     if not service_id:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"a live deploy of {slug!r} has no approval fingerprint yet: the Render service id "
             "is not configured, so the action a token would approve cannot be named",
@@ -353,7 +353,7 @@ async def render_deploys_today(db: AsyncSession, *, now: datetime | None = None)
     )
     value = await fetch_scalar(db, stmt, what="render deploys today")
     if value is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "count for render deploys today returned no value",
             how_to_fix=ERROR_HINTS[E_DB],
@@ -377,7 +377,7 @@ async def _authorise_live_deploy(
     happens in this seam, through `consume_approval_or_refuse`, BEFORE the Render POST is opened.
     Consequences, all deliberate:
       * the SAME token cannot authorise a second deploy: the ledger's UNIQUE index refuses it and
-        the caller gets `E_POLICY_DENIED` / `POLSIA-E121` / `reason: "already_used"`;
+        the caller gets `E_POLICY_DENIED` / `MERIDIAN-E121` / `reason: "already_used"`;
       * a deploy that fails AFTER authorisation (timeout, Render 5xx) still spent the approval —
         one approval authorises one ATTEMPT, and a transient failure must not leave the approval
         replayable;
@@ -440,7 +440,7 @@ async def _authorise_live_deploy(
             "is bound to this site's slug and Render service id, so a token minted for another "
             "site does not verify"
         )
-    raise PolsiaError(
+    raise MeridianError(
         code,
         f"{DEPLOY_ACTION}: the live Render deploy of a site is refused by policy: {decision.reason}",
         how_to_fix=fix,
@@ -471,7 +471,7 @@ async def _record_render_deploy(
             detail={"site": slug, "service_id": service_id, "deploy_id": deploy_id, "at": at},
             agent_type=OWNER_DEPLOY_SLOT,
         )
-    except (PolsiaError, SQLAlchemyError) as exc:
+    except (MeridianError, SQLAlchemyError) as exc:
         logger.warning(
             "render deploy %s for site %s was accepted but the channel ledger could not record "
             "it (%s: %s); the render day cap will under-count this deploy",
@@ -581,7 +581,7 @@ async def deploy_site(
 
     # AC-03 — the cap count must be measured; a caller without the session cannot measure it.
     if db is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"a LIVE Render deploy of {slug!r} needs the database session this adapter counts "
             f"today's deploys through, and none was supplied — the {RENDER_CHANNEL} day cap "
@@ -612,7 +612,7 @@ async def deploy_site(
         async with httpx.AsyncClient(timeout=DEPLOY_TIMEOUT_SECONDS, transport=transport) as client:
             response = await client.post(plan["url"], headers=headers, json=plan["body"])
             if response.status_code in (401, 403):
-                raise PolsiaError(
+                raise MeridianError(
                     E_CONFIG,
                     f"Render rejected the key in {RENDER_API_KEY_ENV} (HTTP {response.status_code}): "
                     f"{_error_message(response)}",
@@ -623,7 +623,7 @@ async def deploy_site(
                     context={"status": response.status_code, "env": RENDER_API_KEY_ENV},
                 )
             if response.status_code == 404:
-                raise PolsiaError(
+                raise MeridianError(
                     E_CONFIG,
                     f"Render has no service {service!r} for {RENDER_SERVICE_ID_ENV} (HTTP 404): "
                     f"{_error_message(response)}",
@@ -642,7 +642,7 @@ async def deploy_site(
                     at=stamp, code=E_UPSTREAM, message=message, outcome_unknown=False
                 )
                 _store(slug, record, root)
-                raise PolsiaError(
+                raise MeridianError(
                     E_UPSTREAM,
                     message,
                     how_to_fix=(
@@ -665,7 +665,7 @@ async def deploy_site(
                     at=stamp, code=E_UPSTREAM, message=message, outcome_unknown=True
                 )
                 _store(slug, record, root)
-                raise PolsiaError(
+                raise MeridianError(
                     E_UPSTREAM,
                     message,
                     how_to_fix=(
@@ -681,7 +681,7 @@ async def deploy_site(
                 else None
             )
             url = await _read_service_url(client, plan["url"], headers=headers)
-    except PolsiaError:
+    except MeridianError:
         raise
     except httpx.TimeoutException:
         message = (
@@ -692,7 +692,7 @@ async def deploy_site(
             at=stamp, code=E_UPSTREAM, message=message, outcome_unknown=True
         )
         _store(slug, record, root)
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             message,
             how_to_fix=(
@@ -707,7 +707,7 @@ async def deploy_site(
             at=stamp, code=E_UPSTREAM, message=message, outcome_unknown=False
         )
         _store(slug, record, root)
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             message,
             how_to_fix="check this machine's outbound HTTPS access to api.render.com and retry",
@@ -722,7 +722,7 @@ async def deploy_site(
             at=stamp, code=E_UPSTREAM, message=message, outcome_unknown=True
         )
         _store(slug, record, root)
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             message,
             how_to_fix=(

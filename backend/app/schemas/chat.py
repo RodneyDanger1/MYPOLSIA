@@ -1,6 +1,6 @@
 """Chat wire contract (wave V8, seat C1) — the FROZEN shape the UI codes against.
 
-Source of truth (verbatim): plan `2026-10-14_142249-polsia-remaining-waves-v7-v10.md` §7 C1 +
+Source of truth (verbatim): plan `2026-10-14_142249-meridian-remaining-waves-v7-v10.md` §7 C1 +
 `wave-v8/WAVE-PLAN.md` "Frozen interface — CHAT".  Every field name below is quoted from that
 contract; nothing here is invented.
 

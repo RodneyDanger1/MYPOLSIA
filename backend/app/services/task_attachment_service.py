@@ -45,7 +45,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.errors import E_CONFIG, E_NOT_FOUND, E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, E_UPSTREAM, E_VALIDATION, MeridianError
 from app.models.task import Task, TaskAttachment
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ def _safe_stored_name(name: Any) -> str:
         or "/" in text
         or text in {".", ".."}
     ):
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"stored attachment name {text!r} is not a server-generated file name; nothing was read",
             how_to_fix=(
@@ -156,7 +156,7 @@ def attachment_path(row: Any) -> Path:
     """
     task_id = _ref_value(row, "task_id")
     if task_id is None:
-        raise PolsiaError(E_NOT_FOUND, "attachment row carries no task_id", context={})
+        raise MeridianError(E_NOT_FOUND, "attachment row carries no task_id", context={})
     stored = _safe_stored_name(_ref_value(row, "stored_name"))
     root = resolve_root()
     directory = task_dir(int(task_id), root=root)
@@ -164,7 +164,7 @@ def attachment_path(row: Any) -> Path:
     try:
         path.resolve().relative_to(directory.resolve())
     except (ValueError, OSError) as exc:  # pragma: no cover - _safe_stored_name already refuses
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"stored attachment path for task {task_id} escapes its directory",
             how_to_fix="inspect the task_attachments row; it was not written by the upload route",
@@ -180,9 +180,9 @@ def _display_filename(raw: Any) -> str:
     return (text or "image")[:255]
 
 
-def _storage_refusal(exc: OSError, *, what: str, path: Path) -> PolsiaError:
+def _storage_refusal(exc: OSError, *, what: str, path: Path) -> MeridianError:
     """A write/mkdir/unlink failure at the data volume: `E_CONFIG`, with the real OSError named."""
-    return PolsiaError(
+    return MeridianError(
         E_CONFIG,
         f"attachments storage: {what} {str(path)!r} failed ({type(exc).__name__}: {exc})",
         how_to_fix=(
@@ -219,7 +219,7 @@ async def read_upload(upload: Any) -> bytes:
             break
         total += len(chunk)
         if total > MAX_UPLOAD_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 (
                     f"attachment upload: the file is at least {total} bytes, over the 5 MB "
@@ -248,21 +248,21 @@ async def save_attachment(
     never trusted for the stored `mime`.
     """
     if not isinstance(data, bytes | bytearray):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"attachment upload: expected bytes, got {type(data).__name__}",
             how_to_fix="send the file as multipart/form-data with a `file` part",
         )
     payload = bytes(data)
     if not payload:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "attachment upload: the file is empty",
             how_to_fix="choose an image file that has content",
             context={"filename": _display_filename(filename)},
         )
     if len(payload) > MAX_UPLOAD_BYTES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             (
                 f"attachment upload: {len(payload)} bytes exceeds the 5 MB per-image limit "
@@ -278,7 +278,7 @@ async def save_attachment(
 
     mime = sniff_image_mime(payload)
     if mime is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             (
                 f"attachment upload: {_display_filename(filename)!r} is not {ALLOWED_MIME_TEXT} "
@@ -301,7 +301,7 @@ async def save_attachment(
 
     count, total_bytes = await _task_usage(db, task_id)
     if count >= MAX_PER_TASK:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             (
                 f"task {task_id} already has {count} attachments; the limit is {MAX_PER_TASK} "
@@ -311,7 +311,7 @@ async def save_attachment(
             context={"task_id": int(task_id), "count": count, "limit": MAX_PER_TASK},
         )
     if total_bytes + len(payload) > MAX_TASK_TOTAL_BYTES:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             (
                 f"task {task_id} already stores {total_bytes} image bytes; adding {len(payload)} "
@@ -433,7 +433,7 @@ def image_parts(refs: list[Any] | None) -> list[dict[str, Any]]:
     for ref in refs or []:
         mime = str(_ref_value(ref, "mime") or "")
         if mime not in _EXTENSIONS:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"attachment {_ref_value(ref, 'id')}: recorded mime {mime!r} is not {ALLOWED_MIME_TEXT}",
                 how_to_fix="re-upload the image; the row records an unsupported content type",
@@ -442,7 +442,7 @@ def image_parts(refs: list[Any] | None) -> list[dict[str, Any]]:
         data = _read_bytes(ref)
         sniffed = sniff_image_mime(data)
         if sniffed != mime:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 (
                     f"attachment {_ref_value(ref, 'id')}: stored bytes are "
@@ -454,7 +454,7 @@ def image_parts(refs: list[Any] | None) -> list[dict[str, Any]]:
                          "sniffed": sniffed},
             )
         if len(data) > MAX_UPLOAD_BYTES:  # pragma: no cover - the upload route cannot produce it
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"attachment {_ref_value(ref, 'id')} is {len(data)} bytes, over the 5 MB limit",
                 how_to_fix="re-upload a smaller image",
@@ -462,7 +462,7 @@ def image_parts(refs: list[Any] | None) -> list[dict[str, Any]]:
             )
         total += len(data)
         if total > MAX_TASK_TOTAL_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 (
                     f"task {_ref_value(ref, 'task_id')}: image attachments total {total} bytes, "
@@ -486,7 +486,7 @@ def _read_bytes(ref: Any) -> bytes:
     try:
         return path.read_bytes()
     except FileNotFoundError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             (
                 f"attachment {_ref_value(ref, 'id')} is recorded for task "
@@ -499,7 +499,7 @@ def _read_bytes(ref: Any) -> bytes:
             context={"attachment_id": _ref_value(ref, "id"), "path": str(path)},
         ) from exc
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"attachment {_ref_value(ref, 'id')} could not be read ({type(exc).__name__}: {exc})",
             how_to_fix="check permissions and free space on the attachments data volume",

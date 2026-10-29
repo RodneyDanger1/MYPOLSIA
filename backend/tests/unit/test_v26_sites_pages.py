@@ -35,7 +35,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.services import site_service
 
@@ -109,12 +109,12 @@ def test_each_template_preset_renders_the_same_pages_with_its_own_treatment() ->
 
 
 def test_an_unknown_template_is_the_named_validation_refusal() -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.validate_template("neon")
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["field"] == "template"
     assert excinfo.value.context["template"] == "neon"
-    with pytest.raises(PolsiaError):
+    with pytest.raises(MeridianError):
         _pages(template="neon")
 
 
@@ -223,7 +223,7 @@ def test_the_sitemap_is_xml_escaped() -> None:
 
 
 def test_a_non_http_base_url_is_refused_by_name() -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.render_sitemap("ftp://probe/", "acme", site_service.PAGES)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["field"] == "base_url"
@@ -259,7 +259,7 @@ def test_a_bare_hostname_is_accepted_verbatim(domain: str) -> None:
     ],
 )
 def test_a_malformed_domain_is_the_named_validation_refusal(domain: str) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.validate_custom_domain(domain)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["field"] == "custom_domain"
@@ -274,7 +274,7 @@ def test_an_absent_domain_is_none_not_an_empty_string() -> None:
     ["a" * 64 + ".com", ("a" * 49 + ".") * 6 + "com"],
 )
 def test_the_domain_length_bounds_are_enforced(domain: str) -> None:
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.validate_custom_domain(domain)
     assert excinfo.value.code == E_VALIDATION
 
@@ -352,7 +352,7 @@ async def test_generate_site_refuses_a_malformed_domain_by_name(
 ) -> None:
     async_db_session.add(_company())
     await async_db_session.commit()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await site_service.generate_site(
             async_db_session, title="Bad Domain", custom_domain="http://x/y", root=tmp_path
         )
@@ -541,6 +541,6 @@ def test_an_unknown_site_page_is_a_404_not_a_fabricated_page(tmp_path: Path, mon
     resp = client.get("/sites/no-such-site/about.html")
     assert resp.status_code == 404
     # E_NOT_FOUND stays the service-level word for "no such site".
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         site_service.read_site_meta("no-such-site", root=tmp_path)
     assert excinfo.value.code == E_NOT_FOUND

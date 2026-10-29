@@ -13,7 +13,7 @@ Two facts frame everything below:
    surface — mint approvals, read artifacts, confirm paid runs. **Rotating the backend key alone
    breaks every page** (each fetch 401s while `curl` still looks healthy, because curl sends no
    header); the frontend MUST be rebuilt with the same value.
-2. **`POSTGRES_PASSWORD` has a committed default** (`polsia_password`, in `docker-compose.yml`,
+2. **`POSTGRES_PASSWORD` has a committed default** (`meridian_password`, in `docker-compose.yml`,
    `.env.example` and `app/config.py`). Postgres publishes no host port, so it is not reachable
    from outside the compose network — but anything that gets a shell in the network has it.
 
@@ -43,7 +43,7 @@ tracked files + the lane's artefacts + backend/worker/nginx logs:
   (`/_next/static/chunks/919-*.js`, HTTP 200, 8,907 B, verified again this wave). The chunk name is
   build-specific: re-scan `/_next/static/chunks/*.js` after any frontend build. The default value
   also appears in docs/tests/compose by design.
-* **`POSTGRES_PASSWORD`** is still the committed default (`polsia_password`), in compose/config/
+* **`POSTGRES_PASSWORD`** is still the committed default (`meridian_password`), in compose/config/
   `.env.example`/tests and copies — the known P3.
 * **`STRIPE_WEBHOOK_SECRET` is LEAKED to disk (wave-6 finding):** the live value (70 chars,
   sha256_8 `ac7cab10`) appears verbatim in `wave-v10/stripe-lab/listen.log` — a git-ignored,
@@ -51,7 +51,7 @@ tracked files + the lane's artefacts + backend/worker/nginx logs:
   the Stripe dashboard, update `.env`, recreate `backend`/`celery_worker`, then delete the lab log.
 * **`backups/` (git-ignored, repo-local) is a secret+PII store (wave-6 finding):**
   `backend_data.tgz` holds the **previous DeepSeek key** (35 chars, different from the live key) and
-  the ten **un-redacted legacy `contact.html` pages**; the three `polsia-*.sql` dumps hold the
+  the ten **un-redacted legacy `contact.html` pages**; the three `meridian-*.sql` dumps hold the
   owner's street/locality/legal name from before the profile correction. Nothing here is committed,
   but a backup copied off-host carries them: revoke the old DeepSeek key at the provider if it is
   still live, keep the archives encrypted, and never attach them to a receipt.
@@ -117,9 +117,9 @@ The password is baked into the Postgres **data volume** at first init and into `
 backend/worker. Changing `.env` alone locks the app out; you must change the role's password too.
 
 ```bash
-# 1. Change it IN the running server first (the role is `polsia` unless POSTGRES_USER overrides):
-docker compose exec postgres psql -U polsia -d polsia -c \
-  "ALTER USER polsia WITH PASSWORD '<new>';"
+# 1. Change it IN the running server first (the role is `meridian` unless POSTGRES_USER overrides):
+docker compose exec postgres psql -U meridian -d meridian -c \
+  "ALTER USER meridian WITH PASSWORD '<new>';"
 
 # 2. .env: POSTGRES_PASSWORD=<new>   (DATABASE_URL is composed from it in docker-compose.yml)
 # 3. Recreate the services that read it:
@@ -168,9 +168,9 @@ DeepSeek console first, then re-enter.
 |---|---|---|---|
 | R-W4-S2 / W5 | `API_KEY` is the guessable default `dev-key` **and** inlined in the served bundle | P2 (design) | owner: rotate, then plan the BFF (wave 7) |
 | R-W4-S3 | committed `POSTGRES_PASSWORD` default in compose/config/.env.example | P3 | owner |
-| W5 | `POSTGRES_PASSWORD` is also quoted (name + value) in three lane folders' evidence under `polsia-work/`; not usable without network access | P4 (info) | owner/integrator: acceptance, not a runtime leak |
+| W5 | `POSTGRES_PASSWORD` is also quoted (name + value) in three lane folders' evidence under `meridian-work/`; not usable without network access | P4 (info) | owner/integrator: acceptance, not a runtime leak |
 | **W6-S1** | **live `STRIPE_WEBHOOK_SECRET` in `wave-v10/stripe-lab/listen.log`** (git-ignored, repo-local); helper scripts beside it | **P2 (leak)** | owner: rotate at Stripe first, update `.env`, recreate backend/celery_worker, delete the lab log |
-| **W6-S2** | `backups/backend_data.tgz` holds the **previous DeepSeek key** and the ten un-redacted legacy `contact.html` pages; `backups/polsia-*.sql` hold the pre-correction owner address/legal name | P2 (leak, offline) | owner: revoke the old DeepSeek key if still live, encrypt/rotate the archives, never publish them |
+| **W6-S2** | `backups/backend_data.tgz` holds the **previous DeepSeek key** and the ten un-redacted legacy `contact.html` pages; `backups/meridian-*.sql` hold the pre-correction owner address/legal name | P2 (leak, offline) | owner: revoke the old DeepSeek key if still live, encrypt/rotate the archives, never publish them |
 | **W6-S3** | a credential in a **query string** was written verbatim to uvicorn/nginx access logs | **FIXED** (wave 7–8, log-side: uvicorn `--no-access-log`, nginx path-only + referer map, shared query scrub) | verified live (0 markers in both logs); rotate the default API_KEY before exposure |
 | **F-45-R1** | nginx **error_log** may still print a raw request line (query included) on *error* entries | P3 (latent) | owner: `error_log crit` (loses diagnostics) or move WS auth off the query string |
 | **W7-S1** | one lane's `docker compose config --format json` printed live `APPROVAL_SECRET`, the Stripe test key and the webhook secret into a tool transcript (no product source/log; scan 0 hits) | P3 (hygiene) | owner: rotate `APPROVAL_SECRET` alongside W6-S1; never dump compose config into evidence |

@@ -23,7 +23,7 @@ import { PanelError, PanelSkeleton } from "./states";
  * Everything shown is read off the nine status rows: whether any agent's latest run is still
  * `running`, the newest `last_run_at`, and how many agents have tasks created today.
  */
-export function PolsiaStatusCard() {
+export function MeridianStatusCard() {
   const { statuses, loading, error } = useAgentStatus();
 
   return (

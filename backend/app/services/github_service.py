@@ -29,7 +29,7 @@ NAMED REFUSALS (the frozen V25 taxonomy)
     JSON object, or a response larger than the read cap.  `E_UPSTREAM` is module-local: it is
     the V25 plan's name for "no usable answer from GitHub" and `app/core/errors.py` (outside
     this lane) does not carry it — the same treatment V24 gave `E_BALANCE`/`E_RATE_LIMIT`.
-Nothing here fabricates a result: a refused call returns a `PolsiaError` with the provider's own
+Nothing here fabricates a result: a refused call returns a `MeridianError` with the provider's own
 message (clipped and scrubbed of the token), and every success shape is built from real fields.
 
 DRY RUN, AND NEVER A FORCE-PUSH
@@ -67,7 +67,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.core.errors import E_AUTH, E_CONFIG, E_STORAGE, E_VALIDATION, PolsiaError
+from app.core.errors import E_AUTH, E_CONFIG, E_STORAGE, E_VALIDATION, MeridianError
 
 #: GitHub's REST base. Module-level so a test can point it elsewhere without touching call sites.
 GITHUB_API = "https://api.github.com"
@@ -110,8 +110,8 @@ _TITLE_MAX_CHARS = 256
 _PR_BODY_MAX_CHARS = 20000
 
 
-class GithubApiError(PolsiaError):
-    """A `PolsiaError` that also carries the HTTP status, so a caller can branch on 404."""
+class GithubApiError(MeridianError):
+    """A `MeridianError` that also carries the HTTP status, so a caller can branch on 404."""
 
     def __init__(self, code: str, message: str, *, status: int, how_to_fix: str = "",
                  context: dict[str, Any] | None = None) -> None:
@@ -134,14 +134,14 @@ def resolve_token() -> str:
 
     try:
         value = secret_store.get_secret(GITHUB_TOKEN_NAME)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         if exc.code == E_STORAGE:
             raise
-        raise PolsiaError(
+        raise MeridianError(
             exc.code, exc.message, how_to_fix=exc.how_to_fix, context=dict(exc.context)
         ) from exc
     if not value:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "github: no GITHUB_TOKEN is configured, so no GitHub call can be made",
             how_to_fix=(
@@ -161,7 +161,7 @@ def resolve_token() -> str:
 def validate_repo(value: Any) -> str:
     """`owner/name`, or a named `E_VALIDATION` — never a guessed or repaired spelling."""
     if not isinstance(value, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: 'repo' must be a string 'owner/name' (got {type(value).__name__})",
             how_to_fix="pass the repository as 'owner/name', e.g. 'acme/widgets'",
@@ -180,7 +180,7 @@ def validate_repo(value: Any) -> str:
     elif not _REPO_RE.match(text):
         problem = "is not a valid GitHub 'owner/name'"
     if problem:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: repo {value!r} {problem}",
             how_to_fix="pass the repository as 'owner/name', e.g. 'acme/widgets'",
@@ -192,7 +192,7 @@ def validate_repo(value: Any) -> str:
 def validate_branch(value: Any, *, field: str = "branch") -> str:
     """A git branch name GitHub will accept, or a named `E_VALIDATION`."""
     if not isinstance(value, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: {field!r} must be a string (got {type(value).__name__})",
             how_to_fix="pass a branch name such as 'main' or 'feature/checkout'",
@@ -215,7 +215,7 @@ def validate_branch(value: Any, *, field: str = "branch") -> str:
     elif any(token in text for token in _BRANCH_FORBIDDEN):
         problem = "contains a sequence git refuses"
     if problem:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: {field} {value!r} {problem}",
             how_to_fix="pass a valid git branch name (no spaces, '..', '~^:?*[', backslash)",
@@ -227,7 +227,7 @@ def validate_branch(value: Any, *, field: str = "branch") -> str:
 def validate_path(value: Any) -> str:
     """A repository-relative file path, or a named `E_VALIDATION` (traversal-proof)."""
     if not isinstance(value, str):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github_commit: a file 'path' must be a string (got {type(value).__name__})",
             how_to_fix="pass a repository-relative path, e.g. 'src/app.py'",
@@ -249,7 +249,7 @@ def validate_path(value: Any) -> str:
     elif any(part in ("", ".", "..") for part in normalized.split("/")):
         problem = "contains an empty, '.' or '..' segment"
     if problem:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github_commit: file path {value!r} {problem}",
             how_to_fix="pass a repository-relative path inside the repo, e.g. 'src/app.py'",
@@ -261,14 +261,14 @@ def validate_path(value: Any) -> str:
 def _validate_files(value: Any) -> list[dict[str, Any]]:
     """`[{path, data, text}]` for a commit's `files`, or a named `E_VALIDATION`."""
     if not isinstance(value, list) or not value:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "github_commit: 'files' must be a non-empty list of {path, content}",
             how_to_fix="pass at least one file: [{\"path\": \"src/app.py\", \"content\": \"...\"}]",
             context={"files": type(value).__name__},
         )
     if len(value) > MAX_FILES_PER_COMMIT:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github_commit: {len(value)} files exceeds the {MAX_FILES_PER_COMMIT}-file cap "
             "for one commit",
@@ -280,7 +280,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
     total = 0
     for index, item in enumerate(value):
         if not isinstance(item, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: files[{index}] must be an object with path+content",
                 how_to_fix="pass [[{path, content}]] entries",
@@ -288,7 +288,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
             )
         unknown = sorted(set(item) - {"path", "content"})
         if unknown:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: files[{index}] carries unknown field(s) {', '.join(unknown)}; "
                 "one entry is exactly {path, content}",
@@ -297,7 +297,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
             )
         path = validate_path(item.get("path"))
         if path in seen:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: file path {path!r} appears twice in one commit",
                 how_to_fix="list each path once",
@@ -306,7 +306,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
         seen.add(path)
         content = item.get("content")
         if not isinstance(content, str):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: {path!r} content must be a string "
                 f"(got {type(content).__name__})",
@@ -314,7 +314,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
                 context={"path": path},
             )
         if "\x00" in content:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: {path!r} content contains a NUL byte — text files only",
                 how_to_fix="commit text; binary content is refused by name",
@@ -323,7 +323,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
         try:
             data = content.encode("utf-8")
         except UnicodeEncodeError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: {path!r} content is not encodable as UTF-8 "
                 f"({exc.reason} at index {exc.start})",
@@ -331,7 +331,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
                 context={"path": path},
             ) from exc
         if len(data) > MAX_FILE_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: {path!r} is {len(data)} bytes; the per-file cap is "
                 f"{MAX_FILE_BYTES} (256 KiB)",
@@ -340,7 +340,7 @@ def _validate_files(value: Any) -> list[dict[str, Any]]:
             )
         total += len(data)
         if total > MAX_TOTAL_BYTES:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"github_commit: the files total more than {MAX_TOTAL_BYTES} bytes",
                 how_to_fix="split the change into smaller commits",
@@ -355,7 +355,7 @@ def _validate_text(value: Any, *, field: str, maximum: int, required: bool = Tru
     if value is None and not required:
         return None
     if not isinstance(value, str) or (required and not value.strip()):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: {field!r} must be a non-blank string",
             how_to_fix=f"pass {field} as text",
@@ -363,7 +363,7 @@ def _validate_text(value: Any, *, field: str, maximum: int, required: bool = Tru
         )
     text = value.strip()
     if len(text) > maximum:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: {field!r} is longer than {maximum} characters",
             how_to_fix=f"shorten {field}",
@@ -377,7 +377,7 @@ def _validate_bool(value: Any, *, field: str, default: bool) -> bool:
     if value is None:
         return default
     if not isinstance(value, bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"github: {field!r} must be true or false (got {value!r})",
             how_to_fix=f"pass {field} as a JSON boolean, not a string",
@@ -395,7 +395,7 @@ def _headers(token: str) -> dict[str, str]:
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "PolsiaAgent/1.0 (+github_service)",
+        "User-Agent": "MeridianAgent/1.0 (+github_service)",
     }
 
 
@@ -452,14 +452,14 @@ def _request(
             response = http.request(method, f"{GITHUB_API}{path}", headers=_headers(token),
                                     json=body)
         except httpx.TimeoutException as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 f"github: {method} {path} timed out after {GITHUB_TIMEOUT_S:g}s",
                 how_to_fix="retry once; if it persists, check GitHub's status page",
                 context={"method": method, "path": path, "timeout_s": GITHUB_TIMEOUT_S},
             ) from exc
         except httpx.HTTPError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 _scrub(f"github: {method} {path} failed at the transport layer: "
                        f"{type(exc).__name__}: {exc}", token),
@@ -519,7 +519,7 @@ def _required_sha(document: dict[str, Any], *keys: str) -> str:
     for key in keys:
         node = node.get(key) if isinstance(node, dict) else None
     if not isinstance(node, str) or not node.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"github: the API answered 200 without the expected {'/'.join(keys)}",
             how_to_fix="retry; if it persists the GitHub contract has changed",
@@ -729,7 +729,7 @@ def create_pr(
                         expect=(201,), client=client)
     number = document.get("number")
     if not isinstance(number, int) or isinstance(number, bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             "github: the pull request was answered 201 without a number — refusing to report "
             "a PR reference nobody can look up",

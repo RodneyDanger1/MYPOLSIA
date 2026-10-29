@@ -3,7 +3,7 @@
 RED-first pins, written before the script.  Every pin here is either STATIC (the script must
 contain the safety structure: trap teardown, no published ports, no compose project) or
 DRY-RUN/REFUSAL (the paths that must never touch docker).  The real drill — an actual
-postgres:16-alpine container, an actual load of `backups/polsia-*.sql`, actual verification
+postgres:16-alpine container, an actual load of `backups/meridian-*.sql`, actual verification
 queries — is EXECUTED by the lane and its log lives in the wave receipt; a unit test must not
 pretend to prove it, and no docker is required to run this file.
 
@@ -22,7 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "restore.sh"
 
-CONTAINER = "polsia-restore-drill-pg"
+CONTAINER = "meridian-restore-drill-pg"
 CANONICAL_VOLUMES = ("backend_data", "chroma_data", "celery_beat_data", "redis_data")
 
 # A docker shim that records every call and answers the two read-only probes the script makes
@@ -62,7 +62,7 @@ def _make_artifacts(src: Path, *, sql: bool = True, volumes=CANONICAL_VOLUMES) -
     """A backup dir shaped exactly like backup.sh's output (no docker involved)."""
     src.mkdir(parents=True, exist_ok=True)
     if sql:
-        (src / "polsia-2026-10-14.sql").write_text(
+        (src / "meridian-2026-10-14.sql").write_text(
             "--\n-- PostgreSQL database dump\n--\n\n"
             "SET statement_timeout = 0;\n"
             "CREATE TABLE public.tasks (id integer);\n"
@@ -169,7 +169,7 @@ def test_src_without_a_database_dump_refuses_by_name(tmp_path: Path) -> None:
     src = _make_artifacts(tmp_path / "backups", sql=False)
     proc, _ = _run(tmp_path, "--src", src.as_posix(), "--dry-run")
     assert proc.returncode == 2
-    assert "polsia-*.sql" in proc.stdout
+    assert "meridian-*.sql" in proc.stdout
 
 
 def test_src_without_volume_archives_refuses_by_name(tmp_path: Path) -> None:
@@ -197,7 +197,7 @@ def test_corrupt_volume_archive_refuses_by_name(tmp_path: Path) -> None:
 
 def test_empty_database_dump_refuses_by_name(tmp_path: Path) -> None:
     src = _make_artifacts(tmp_path / "backups")
-    (src / "polsia-2026-10-14.sql").write_text("", encoding="utf-8")
+    (src / "meridian-2026-10-14.sql").write_text("", encoding="utf-8")
     proc, _ = _run(tmp_path, "--src", src.as_posix(), "--dry-run")
     assert proc.returncode == 2
     assert "EMPTY" in proc.stdout

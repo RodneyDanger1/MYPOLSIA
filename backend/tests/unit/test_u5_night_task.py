@@ -4,7 +4,7 @@ What this file pins (the frozen U5 interface; seat coder-p3-schema-night impleme
 
 * `night_task.run_night_task()` (the sync Celery task, called directly in-process) self-gates on
   the COMPANY-LOCAL hour: `company_config.night_task_hour` when stored, else the documented 23:00
-  default (reported as window `source == "default"`); out of 0-23 -> named `PolsiaError(E_CONFIG)`;
+  default (reported as window `source == "default"`); out of 0-23 -> named `MeridianError(E_CONFIG)`;
   stored `night_task_limit` outside 1-5 -> named `E_CONFIG` too.  The window is `[H:00, H+1:00)`
   in `core/timeutil.company_tz()` as aware UTC instants, carried as `"window"`.
 * ENABLED + in-window: up to `night_task_limit` of the TOP-N `pending` rows **in the dispatcher's
@@ -41,7 +41,7 @@ import pytest
 
 import app.models  # noqa: F401  (register every table on Base.metadata before create_all)
 from app.config import settings
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 from celery_app.tasks import night_task
 from celery_app.tasks._common import run_async
 
@@ -450,7 +450,7 @@ def _write_company_hour(db: NightDB, hour: int) -> None:
 def test_invalid_stored_hour_or_limit_is_a_named_refusal_with_no_writes(night_db, monkeypatch):
     """Malformed stored values refuse BY NAME (E_CONFIG) — no silent fallback, no partial writes.
 
-    Pins: stored hour 99 -> `PolsiaError.code == E_CONFIG`, message names 99 and the 0-23 range;
+    Pins: stored hour 99 -> `MeridianError.code == E_CONFIG`, message names 99 and the 0-23 range;
     stored limit 6 -> E_CONFIG naming 6 and "1-5"; in BOTH cases nothing was written (activity
     empty) and the queue is untouched — the refusal happens before any selection or fan-out.
     """
@@ -460,7 +460,7 @@ def test_invalid_stored_hour_or_limit_is_a_named_refusal_with_no_writes(night_db
 
     night_db.seed_company(enabled=True, hour=99, limit=3)
     night_db.add_task(title="Queued")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         night_task.run_night_task()
     assert excinfo.value.code == E_CONFIG
     assert "99" in excinfo.value.message
@@ -471,7 +471,7 @@ def test_invalid_stored_hour_or_limit_is_a_named_refusal_with_no_writes(night_db
 
     _write_company_hour(night_db, 23)
     _set_company_limit(night_db, 6)  # the wire refuses 6; a stored 6 is the runtime's problem
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         night_task.run_night_task()
     assert excinfo.value.code == E_CONFIG
     assert "6" in excinfo.value.message and "1-5" in excinfo.value.message

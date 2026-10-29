@@ -5,13 +5,13 @@ test executes it against real containers:
 
 1. a real `postgres:16-alpine` container gets a small schema (2 tables, 5 rows) and a REAL
    `pg_dump -Fc` is taken from it — the custom format, byte for byte;
-2. a backup dir is assembled exactly as `scripts/backup.sh` leaves one: one `polsia-*.sql` dump
+2. a backup dir is assembled exactly as `scripts/backup.sh` leaves one: one `meridian-*.sql` dump
    plus the four volume archives as readable gzip tars;
 3. `scripts/restore.sh --src <dir>` runs the drill it ships (its OWN throwaway container, default
-   name `polsia-restore-drill-pg`), which must exit 0, report `format=custom`, dispatch
+   name `meridian-restore-drill-pg`), which must exit 0, report `format=custom`, dispatch
    `pg_restore` (never `psql`), report the restored table count, materialise all four volumes and
    print `RESULT: PASS`;
-4. teardown is asserted from the outside: no `polsia-restore-drill-pg` container may remain.
+4. teardown is asserted from the outside: no `meridian-restore-drill-pg` container may remain.
 
 Docker IS required here (the drill container is the point). If docker, bash or the drill name is
 unavailable the test SKIPS with a named reason — never a silent pass. Whatever happens, the drill
@@ -33,7 +33,7 @@ from sqlalchemy import make_url
 pytestmark = [pytest.mark.integration]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DRILL_NAME = "polsia-restore-drill-pg"
+DRILL_NAME = "meridian-restore-drill-pg"
 VOLUMES = ("backend_data", "chroma_data", "celery_beat_data", "redis_data")
 EXPECTED_TABLES = 2
 
@@ -118,7 +118,7 @@ def test_restore_sh_runs_its_pgdmp_path_and_tears_the_drill_container_down():
             )
             assert schema.returncode == 0, schema.stderr
 
-            dump = src / "polsia-20260302-120000.sql"
+            dump = src / "meridian-20260302-120000.sql"
             with dump.open("wb") as handle:
                 dumped = subprocess.run(
                     ["docker", "exec", container_id, "pg_dump", "-U", user, "-d", database, "-Fc"],

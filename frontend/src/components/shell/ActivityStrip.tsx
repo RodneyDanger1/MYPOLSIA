@@ -23,7 +23,7 @@
  * ui-gap §7 acceptance carried here: filter chips by stage (ALL · one chip per distinct action
  * observed at open time · OTHER), an event whose action has no chip lands under OTHER and is never
  * silently hidden, COPY writes EXACTLY the rendered visible lines, DOWNLOAD writes the same text as
- * `polsia-activity.log`, and a dropped socket moves the strip's status word without a reload (that
+ * `meridian-activity.log`, and a dropped socket moves the strip's status word without a reload (that
  * reactivity is the hook's; this file renders `status` — including `RECONNECTING (ATTEMPT n)`).
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -80,7 +80,7 @@ const SCRIM = "rgba(0, 0, 0, 0.55)";
 export const COPY_CONFIRM_MS = 1500;
 
 /** The download's file name (ui-gap §7 acceptance). */
-export const DOWNLOAD_FILENAME = "polsia-activity.log";
+export const DOWNLOAD_FILENAME = "meridian-activity.log";
 
 /** Chip labels the row set reserves for itself; an action literally named `ALL`/`OTHER` would
  *  collide with them, so such an action gets no chip and its events live under OTHER (visible,
@@ -247,7 +247,7 @@ export function ActivityStrip() {
     }
   };
 
-  /** DOWNLOAD — the same text as a text blob named `polsia-activity.log`, objectURL revoked after. */
+  /** DOWNLOAD — the same text as a text blob named `meridian-activity.log`, objectURL revoked after. */
   const download = () => {
     const blob = new Blob([visibleText], { type: "text/plain" });
     const url = URL.createObjectURL(blob);

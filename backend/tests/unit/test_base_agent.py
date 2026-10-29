@@ -1,4 +1,4 @@
-"""Test BasePolsiaAgent.call_claude() — subprocess mock.
+"""Test BaseMeridianAgent.call_claude() — subprocess mock.
 
 Extended for wave W3-refusals (T9/T10): the accounting metadata must distinguish "unmeasured"
 (absent key -> NULL column) from "measured zero", and the two sites that used to fall back
@@ -13,10 +13,10 @@ from pydantic import BaseModel
 
 import app.agents.base_agent as base_agent_module
 from app.agents import accounting, claude_cli, structured_output
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 
-class ConcreteAgent(BasePolsiaAgent):
+class ConcreteAgent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):

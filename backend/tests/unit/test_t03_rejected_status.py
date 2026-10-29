@@ -27,7 +27,7 @@ import pytest
 
 from alembic import command
 from alembic import config as alembic_config
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.task import TaskStatus
 from app.services.task_service import (
     VALID_TASK_STATUSES,
@@ -240,7 +240,7 @@ def test_a_budget_refused_dispatch_lands_rejected_with_nothing_charged(queue_db,
 
 def test_a_normal_terminal_failure_still_lands_failed_not_rejected(queue_db, monkeypatch, install_run_spy):
     """A failure is a failure: the terminal refusal of the RUN is `failed`."""
-    from app.core.errors import E_CLI_MISSING, PolsiaError
+    from app.core.errors import E_CLI_MISSING, MeridianError
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
     # E_CLI_MISSING is NOT in agent_tasks.RETRYABLE_CODES (infrastructure-terminal), so the run
@@ -248,7 +248,7 @@ def test_a_normal_terminal_failure_still_lands_failed_not_rejected(queue_db, mon
     # the budget refusal above (a refusal is `rejected`; a run that failed is `failed`).
     install_run_spy(
         delegate=False,
-        error_factory=lambda: PolsiaError(E_CLI_MISSING, "the claude CLI is not on PATH"),
+        error_factory=lambda: MeridianError(E_CLI_MISSING, "the claude CLI is not on PATH"),
     )
     task_id = queue_db.create_task(title="T03 normal failure", agent_type="finance")
 
@@ -266,7 +266,7 @@ async def test_an_unknown_status_is_refused_by_name_before_any_write(async_db_se
     """A typo cannot become a stored value â€” the writer refuses by name (E_VALIDATION)."""
     task = await create_task(async_db_session, title="typo guard", agent_type="finance")
     await async_db_session.flush()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await update_task_status(async_db_session, task.id, "rejectedd")
     assert excinfo.value.code == E_VALIDATION
     fresh = await get_task(async_db_session, task.id)

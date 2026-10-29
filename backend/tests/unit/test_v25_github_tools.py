@@ -89,7 +89,7 @@ def _runtime(monkeypatch, tmp_path):
     """A test-only secret store file, a token, no kill switch, sandbox off (except its own test)."""
     monkeypatch.setenv(secret_store.SECRETS_FILE_ENV_VAR, str(tmp_path / "secrets.json"))
     monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "sandbox_mode", False)
     # A3/S2: the run-scoped policy context is process state; no case may inherit another's.
     pf.reset_run_taint()
@@ -246,23 +246,23 @@ def test_a_stored_secret_wins_over_the_environment(monkeypatch):
 
 def test_a_corrupt_secret_store_is_E_STORAGE_not_a_missing_token(monkeypatch, tmp_path):
     """A broken store must not be reported as 'no token' — that would blame the wrong thing."""
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
 
     path = tmp_path / "corrupt-secrets.json"
     path.write_text("{not json", encoding="utf-8")
     monkeypatch.setenv(secret_store.SECRETS_FILE_ENV_VAR, str(path))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         github_service.resolve_token()
 
     assert excinfo.value.code == "E_STORAGE"
 
 
 def test_secret_names_are_environment_style_only():
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
 
     for name in ("github_token", "GITHUB TOKEN", "../GITHUB_TOKEN", "", "1TOKEN"):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             secret_store.get_secret(name)
         assert excinfo.value.code == "E_VALIDATION", name
 

@@ -28,7 +28,7 @@
 #   PHONE_SEND_BRIDGE_URL                  optional host send bridge (e.g. http://127.0.0.1:9227);
 #                                          unset = bridge OFF (the default) -> the check is a NAMED SKIP
 #   PHONE_SEND_BRIDGE_TOKEN                bridge token (>=24 chars); presence is reported, never the value
-#   POLSIA_ROOT                            repo root for .env + backups/ (default: script's parent)
+#   MERIDIAN_ROOT                            repo root for .env + backups/ (default: script's parent)
 #   TMPDIR                                 temp dir for response bodies
 #
 # NO jq: JSON is parsed with python3 (or `python`) when present; otherwise the structural checks
@@ -39,7 +39,7 @@ set -u
 BASE=http://127.0.0.1
 API_BASE=""
 KEY_VAR=API_KEY
-ROOT=${POLSIA_ROOT:-}
+ROOT=${MERIDIAN_ROOT:-}
 TIMEOUT=8
 DRY_RUN=0
 
@@ -183,7 +183,7 @@ print_plan() {
     printf '  %-2s %-15s %-5s %s\n' 10 api-docs GET "${API_BASE:-$BASE}/apidocs -> 200 swagger-ui (api-base: /docs) + /openapi.json -> 200 openapi"
     printf '  %-2s %-15s %-5s %s\n' 11 server-header GET "$BASE/ -> Server absent or version-masked"
     printf '  %-2s %-15s %-5s %s\n' 12 send-bridge GET "<\$PHONE_SEND_BRIDGE_URL>/health -> 200 {status:ok}; unset = named SKIP"
-    printf '  %-2s %-15s %-5s %s\n' 13 backups LOCAL "$ROOT/backups/polsia-*.sql + 4 volume archives (warn-only)"
+    printf '  %-2s %-15s %-5s %s\n' 13 backups LOCAL "$ROOT/backups/meridian-*.sql + 4 volume archives (warn-only)"
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -207,7 +207,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/polsia-smoke.XXXXXX") || refuse "cannot create a temp work dir"
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/meridian-smoke.XXXXXX") || refuse "cannot create a temp work dir"
 # The documented Windows host ships a mingw curl that CANNOT open an MSYS `/tmp/...` path (measured:
 # `curl: (23) client returned ERROR on write`).  The mixed `C:/...` form is understood by both curl
 # and the POSIX tools, so convert when cygpath exists; on Linux this is a no-op.
@@ -636,7 +636,7 @@ else
 fi
 
 # ── 13. backup artifacts (warn-only: a fresh clone has none until `make backup`) ───────────
-sql_count=$(ls -1 "$ROOT"/backups/polsia-*.sql 2>/dev/null | wc -l | tr -d ' ')
+sql_count=$(ls -1 "$ROOT"/backups/meridian-*.sql 2>/dev/null | wc -l | tr -d ' ')
 missing=""
 for vol in backend_data chroma_data celery_beat_data redis_data; do
     [ -f "$ROOT/backups/$vol.tgz" ] || missing="$missing $vol.tgz"
@@ -645,7 +645,7 @@ if [ "${sql_count:-0}" -gt 0 ] && [ -z "$missing" ]; then
     pass backups "$sql_count database dump(s) + 4/4 volume archives under $ROOT/backups"
 else
     detail=""
-    [ "${sql_count:-0}" -gt 0 ] || detail="no polsia-*.sql"
+    [ "${sql_count:-0}" -gt 0 ] || detail="no meridian-*.sql"
     [ -z "$missing" ] || detail="$detail missing:$missing"
     warn backups "$detail (warn-only — run 'make backup' for a restorable artifact set)"
 fi

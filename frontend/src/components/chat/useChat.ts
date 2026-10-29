@@ -29,7 +29,7 @@ import { ApiError, api } from "@/lib/api";
  */
 
 /** One persisted transcript row — the frozen GET shape. `role` is an open string on the wire
- *  (`'owner' | 'polsia'` today): the rail renders an unknown role with its own word instead of
+ *  (`'owner' | 'meridian'` today): the rail renders an unknown role with its own word instead of
  *  treating it as impossible. `created_at` is nullable like every timestamp in this app and
  *  renders as the shared "date unknown" placeholder. */
 export type ChatMessageRow = {
@@ -323,7 +323,7 @@ export function useChat() {
         local: true,
       };
       const replyRow: ChatItem = {
-        role: "polsia",
+        role: "meridian",
         content: reply.reply.text,
         created_at: now,
         task_id: reply.task_id ?? null,

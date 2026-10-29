@@ -33,8 +33,8 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime, pricing, structured_output
-from app.agents.base_agent import BasePolsiaAgent
-from app.core.errors import E_CLI_JSON, E_CONFIG, PolsiaError
+from app.agents.base_agent import BaseMeridianAgent
+from app.core.errors import E_CLI_JSON, E_CONFIG, MeridianError
 
 #: Clearly fake, ASCII-only (httpx encodes header values as ASCII) — house pattern.
 SAFE_TEST_KEY = "sk-v12-toolloop-test-key"
@@ -49,7 +49,7 @@ SUMMARY_SCHEMA = {
 }
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -231,7 +231,7 @@ def test_tool_calls_reply_without_tools_requested_is_still_E_CLI_JSON(monkeypatc
     """The pre-loop guard survives: a bare tool-call reply is off-contract when we asked for none."""
     server = _Scripted(_completion(None, finish="tool_calls",
                                    tool_calls=[_tool_call("c1", "web_fetch", "{}")]))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _make_inv())
     assert excinfo.value.code == E_CLI_JSON
 
@@ -491,7 +491,7 @@ def test_a_non_string_tool_result_is_refused_by_name(monkeypatch):
 def test_structurally_broken_tool_calls_are_named_E_CLI_JSON(registry, broken):
     """A call that cannot be answered with a tool_call_id is off-contract — never guessed at."""
     server = _Scripted(_completion(None, finish="tool_calls", tool_calls=[broken]))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _make_inv(allowed_tools=("web_fetch",)))
     assert excinfo.value.code == E_CLI_JSON
     assert registry.calls == []
@@ -499,7 +499,7 @@ def test_structurally_broken_tool_calls_are_named_E_CLI_JSON(registry, broken):
 
 def test_a_tool_calls_reply_with_no_calls_at_all_is_named(registry):
     server = _Scripted(_completion(None, finish="tool_calls", tool_calls=[]))
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _make_inv(allowed_tools=("web_fetch",)))
     assert excinfo.value.code == E_CLI_JSON
 
@@ -511,7 +511,7 @@ def test_a_missing_registry_module_is_a_named_E_CONFIG_refusal(monkeypatch):
     monkeypatch.setitem(sys.modules, "app.agents.tool_registry", None)  # forces ImportError
     server = _Scripted(_completion("never reached"))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _invoke(server, _make_inv(allowed_tools=("web_fetch",)))
     assert excinfo.value.code == E_CONFIG
     assert "tool_registry" in str(excinfo.value)

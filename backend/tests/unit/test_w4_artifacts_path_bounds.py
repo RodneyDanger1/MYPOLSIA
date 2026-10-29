@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import artifact_service as artifacts
 
 
@@ -37,8 +37,8 @@ def _workspace(tmp_path: Path) -> Path:
     return workspace
 
 
-def _refusal(call) -> PolsiaError:
-    with pytest.raises(PolsiaError) as excinfo:
+def _refusal(call) -> MeridianError:
+    with pytest.raises(MeridianError) as excinfo:
         call()
     return excinfo.value
 

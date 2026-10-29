@@ -52,7 +52,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
 from app.core import events, redis_client
-from app.core.errors import E_DB, E_REDIS, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_REDIS, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import day_window, iso_utc, today_in
 from app.models.report import ActivityLog
 from app.models.task import AgentRun
@@ -122,7 +122,7 @@ async def read_activity_publish_stats() -> ActivityPublishResponse:
         try:
             raw = await redis_client.get_redis().get(redis_client.ACTIVITY_PUBLISH_STATS_KEY)
         except Exception as exc:  # noqa: BLE001 - a dependency failure is NAMED, not a bare 500
-            raise PolsiaError(
+            raise MeridianError(
                 E_REDIS,
                 f"activity publish stats could not be read from Redis: {type(exc).__name__}: {exc}",
                 how_to_fix=ERROR_HINTS[E_REDIS],
@@ -137,7 +137,7 @@ async def read_activity_publish_stats() -> ActivityPublishResponse:
         except (TypeError, ValueError, ValidationError) as exc:
             # A value that is not the shape this worker writes cannot be rendered as counters —
             # serving it would fabricate a reading.  Named, in the same dependency class.
-            raise PolsiaError(
+            raise MeridianError(
                 E_REDIS,
                 "activity publish stats in Redis are unreadable (not the frozen shape)",
                 how_to_fix=ERROR_HINTS[E_REDIS],
@@ -376,14 +376,14 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "the request body is not valid JSON",
             how_to_fix='send {"apply": false|true} (or no body at all for a dry run)',
             context={"reason": str(exc)[:200]},
         ) from exc
     if not isinstance(payload, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the request body must be a JSON object (got {type(payload).__name__})",
             how_to_fix='send {"apply": false|true}',
@@ -391,7 +391,7 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
         )
     unknown = sorted(set(payload) - _CLEANUP_BODY_KEYS)
     if unknown:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"the request body carries unknown key(s): {', '.join(unknown)}",
             how_to_fix='send only {"apply": boolean} and, for a drill, {"workspace_root": string}',
@@ -399,7 +399,7 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
         )
     apply = payload.get("apply", False)
     if not isinstance(apply, bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"`apply` must be a JSON boolean (got {type(apply).__name__})",
             how_to_fix="pass true to delete the expired run directories, false (or omit) to preview",
@@ -408,7 +408,7 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
     root = payload.get("workspace_root")
     if root is not None:
         if not isinstance(root, str) or not root.strip():
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "`workspace_root` must be a non-blank string when present",
                 how_to_fix="pass a directory path, or omit workspace_root for the configured one",
@@ -422,7 +422,7 @@ async def _cleanup_body(request: Request) -> tuple[bool, str | None]:
         # the /trust/link control-character refusal).
         for position, char in enumerate(root):
             if ord(char) < 0x20 or ord(char) == 0x7F:
-                raise PolsiaError(
+                raise MeridianError(
                     E_VALIDATION,
                     "`workspace_root` contains a control character that cannot appear in a path",
                     how_to_fix=(
@@ -492,7 +492,7 @@ async def read_last_run_workspace_cleanup(
 
         detail = row.detail if isinstance(row.detail, dict) else None
         if detail is None:
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 f"activity row {row.id} carries no readable run-workspace cleanup detail",
                 how_to_fix="inspect the activity_log row; the panel cannot render a result it cannot read",
@@ -501,7 +501,7 @@ async def read_last_run_workspace_cleanup(
         try:
             result = RunWorkspaceCleanupResult.model_validate(detail)
         except ValidationError as exc:
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 f"activity row {row.id} is not the run-workspace cleanup shape this server writes",
                 how_to_fix="inspect the activity_log row's detail JSON",

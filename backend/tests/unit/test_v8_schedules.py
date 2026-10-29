@@ -33,7 +33,7 @@ import pytest
 
 import app.models  # noqa: F401  (register every table on Base.metadata before create_all)
 from app.config import settings
-from app.core.errors import E_CONFIG, E_NOT_FOUND, PolsiaError
+from app.core.errors import E_CONFIG, E_NOT_FOUND, MeridianError
 from celery_app.tasks import cadence
 
 UTC_TZ = "UTC"
@@ -210,7 +210,7 @@ def test_service_crud_create_list_patch_delete(queue_db, monkeypatch):
     _service(queue_db, schedule_service.delete_schedule, enabled_id)
     assert queue_db.count("task_schedules", "id = ?", (enabled_id,)) == 0
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         _run_service(queue_db, schedule_service.delete_schedule, enabled_id)
     assert excinfo.value.code == E_NOT_FOUND
     assert str(enabled_id) in excinfo.value.message
@@ -382,7 +382,7 @@ def test_malformed_stored_values_refuse_by_name(queue_db, monkeypatch):
     _set_schedule(queue_db, schedule_id, hour=99)
     _pin_clock(monkeypatch, datetime(2026, 10, 14, 12, 30, tzinfo=UTC))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         cadence.run_due_schedules()
     assert excinfo.value.code == E_CONFIG
     assert "99" in excinfo.value.message and "0-23" in excinfo.value.message
@@ -390,7 +390,7 @@ def test_malformed_stored_values_refuse_by_name(queue_db, monkeypatch):
     assert _get_schedule(queue_db, schedule_id)["last_run_at"] is None
 
     _set_schedule(queue_db, schedule_id, hour=6, cadence="weekly", weekday=None)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         cadence.run_due_schedules()
     assert excinfo.value.code == E_CONFIG
     assert "weekday" in excinfo.value.message

@@ -17,13 +17,13 @@ from __future__ import annotations
 import pytest
 
 from app.agents import claude_cli
-from app.core.errors import E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_POLICY_DENIED, MeridianError
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("DATABASE_URL", "postgresql+asyncpg://polsia:sekret@postgres:5432/polsia"),
+        ("DATABASE_URL", "postgresql+asyncpg://meridian:sekret@postgres:5432/meridian"),
         ("REDIS_URL", "redis://:sekret@redis:6379/0"),
         ("SENTRY_DSN", "https://abc123@o1.ingest.sentry.io/42"),
         ("BROKER_CONNECTION_STRING", "amqp://guest:sekret@rabbit:5672//"),
@@ -31,7 +31,7 @@ from app.core.errors import E_POLICY_DENIED, PolsiaError
 )
 def test_a_url_style_credential_cannot_be_forwarded_into_the_cli_child(name: str, value: str) -> None:
     """A credential carried in a URL's VALUE is refused exactly like one named by its KEY."""
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         claude_cli.child_environment(extra_env={name: value})
     assert caught.value.code == E_POLICY_DENIED
     assert caught.value.context.get("variable") == name
@@ -40,5 +40,5 @@ def test_a_url_style_credential_cannot_be_forwarded_into_the_cli_child(name: str
 
 def test_an_ordinary_override_is_still_passed_through() -> None:
     """The guard must not over-block: a non-credential variable reaches the child unchanged."""
-    env = claude_cli.child_environment(extra_env={"POLSIA_PROBE_MARKER": "ok"})
-    assert env["POLSIA_PROBE_MARKER"] == "ok"
+    env = claude_cli.child_environment(extra_env={"MERIDIAN_PROBE_MARKER": "ok"})
+    assert env["MERIDIAN_PROBE_MARKER"] == "ok"

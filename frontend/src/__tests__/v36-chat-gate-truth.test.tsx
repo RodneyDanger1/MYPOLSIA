@@ -42,7 +42,7 @@ const EXPIRES_AT = new Date(Date.now() + 8 * MINUTE_MS).toISOString();
  *  the window closes too — the OLD rows do not; both must be told apart from a live gate). */
 function storedInstruction(tag: string, { wave7Copy = false } = {}): Record<string, unknown> {
   return {
-    role: "polsia",
+    role: "meridian",
     content:
       `Ready to file this for the orchestrator agent: "${tag}"\n` +
       "Confirm and I'll queue it — nothing is created until you confirm (single-use token, " +
@@ -64,7 +64,7 @@ const OWNER_ROW = {
 };
 
 const ANSWER_ROW = {
-  role: "polsia",
+  role: "meridian",
   content: "Finance: MRR not measured; cash balance $0.00.",
   created_at: ago(80 * MINUTE_MS),
   task_id: null,
@@ -254,12 +254,12 @@ describe("F-46 — the narrowing rules (pure units)", () => {
     expect(carriesConfirmInstruction(undefined)).toBe(false);
   });
 
-  it("indexes only polsia rows, in order", () => {
+  it("indexes only meridian rows, in order", () => {
     const items = [
       { role: "owner", content: "Confirm and I'll queue it" },
-      { role: "polsia", content: "Confirm and I'll queue it (a)" },
-      { role: "polsia", content: "an answer" },
-      { role: "polsia", content: "Confirm and I'll queue it (b)" },
+      { role: "meridian", content: "Confirm and I'll queue it (a)" },
+      { role: "meridian", content: "an answer" },
+      { role: "meridian", content: "Confirm and I'll queue it (b)" },
     ];
     expect(confirmInstructionIndexes(items)).toEqual([1, 3]);
   });
@@ -275,9 +275,9 @@ describe("F-46 — the narrowing rules (pure units)", () => {
 
   it("liveGateIndex is the NEWEST instruction, or -1", () => {
     const items = [
-      { role: "polsia", content: "Confirm and I'll queue it (a)" },
+      { role: "meridian", content: "Confirm and I'll queue it (a)" },
       { role: "owner", content: "x" },
-      { role: "polsia", content: "Confirm and I'll queue it (b)" },
+      { role: "meridian", content: "Confirm and I'll queue it (b)" },
     ];
     expect(liveGateIndex(items, { status: "pending" })).toBe(2);
     expect(liveGateIndex(items, null)).toBe(-1);

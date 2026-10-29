@@ -119,7 +119,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.api.params import StrictInstant
 from app.api.v1.status_filters import RUN_STATUSES, require_status
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, ERROR_HINTS, MeridianError
 from app.core.timeutil import iso_utc
 from app.schemas.common import UtcDatetime
 from app.services.run_service import (
@@ -275,9 +275,9 @@ def _detail_model(row: RunDetailData) -> RunDetail:
     )
 
 
-def _refuse_unknown_format(requested: str) -> PolsiaError:
+def _refuse_unknown_format(requested: str) -> MeridianError:
     """The named refusal for an unknown export format (E_VALIDATION, per the frozen contract)."""
-    return PolsiaError(
+    return MeridianError(
         E_VALIDATION,
         f"unknown export format {requested!r}",
         how_to_fix=f"pass format= one of {', '.join(SUPPORTED_EXPORT_FORMATS)}",

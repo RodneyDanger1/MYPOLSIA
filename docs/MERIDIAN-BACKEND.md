@@ -5,8 +5,8 @@ reference; `app/...` means `backend/app/...`. Behavioural statements were read f
 enforces them (constants quoted with their line). Anything I could not verify is marked in §6.
 No repository file was modified.
 
-Naming note: the code's own identifiers are still `Polsia` (`BasePolsiaAgent`, `PolsiaError`,
-`POLSIA_*` env names), while `Settings.app_name` reads `"Meridian"` (`app/config.py:18`) and a rename
+Naming note: the code's own identifiers are still `Meridian` (`BaseMeridianAgent`, `MeridianError`,
+`MERIDIAN_*` env names), while `Settings.app_name` reads `"Meridian"` (`app/config.py:18`) and a rename
 sweep is in flight in the working tree. This chapter cites identifiers as they exist.
 
 ---
@@ -50,7 +50,7 @@ deliberately **not** in `AGENT_MAP`: `planner_service.py:51,421` constructs it a
 "would break `GET /agents/status == 9`"; a plan naming `deployment` fails validation and the morning
 cycle skips that entry (`daily_cycle.py:962-978`).
 
-### 1.2 How an agent runs (`BasePolsiaAgent`)
+### 1.2 How an agent runs (`BaseMeridianAgent`)
 
 `app/agents/base_agent.py` (2,010 lines) owns the seam:
 
@@ -224,10 +224,10 @@ mid-run writes `task_outcome_superseded` and keeps the run's ledger row (`agent_
 | Control | Implementation | Evidence |
 |---|---|---|
 | **Sandbox** | `settings.sandbox_mode`, default **True** (`config.py:131`; `.env` true). `decide()` refuses every `external_*` action marked `sandbox: true`; agents record a labelled draft (`sandbox=true`, `drafted_not_sent=true`), never a fake id. Checked **before** caps so a draft is not turned into a run-killing denial | `policy_firewall.py:1282-1291`; `side_effects.py:1-16, 108-121`; inverse guard `:1507-1528` |
-| **Approval tokens** | HMAC-SHA256 over `fingerprint\|exp\|jti\|issued_to`, 32-hex sig + 16-hex nonce, one dot on the wire; **single-use** via a UNIQUE insert into `consumed_approvals` in its own session (never the caller's transaction); TTL 3600 s; replay is its own control `POLSIA-E121`. Mint: `POST /api/v1/approvals` (owner key; optional `task_id` attaches, audits, requeues, dispatches; unset `APPROVAL_SECRET` ⇒ named `E_CONFIG`). Rotate: changing the secret invalidates every outstanding token by construction; the ledger stores only `sha256(body)` | `policy_firewall.py:846-889, 916-924, 947-1067`; `approvals.py:178-239, 102-175`; `models/approval.py:52`; migration `0018`; `test_r32_signature_rotation.py` |
+| **Approval tokens** | HMAC-SHA256 over `fingerprint\|exp\|jti\|issued_to`, 32-hex sig + 16-hex nonce, one dot on the wire; **single-use** via a UNIQUE insert into `consumed_approvals` in its own session (never the caller's transaction); TTL 3600 s; replay is its own control `MERIDIAN-E121`. Mint: `POST /api/v1/approvals` (owner key; optional `task_id` attaches, audits, requeues, dispatches; unset `APPROVAL_SECRET` ⇒ named `E_CONFIG`). Rotate: changing the secret invalidates every outstanding token by construction; the ledger stores only `sha256(body)` | `policy_firewall.py:846-889, 916-924, 947-1067`; `approvals.py:178-239, 102-175`; `models/approval.py:52`; migration `0018`; `test_r32_signature_rotation.py` |
 | **What needs approval** | every EXTERNAL_IRREVERSIBLE action; **any** external action from a tainted run; `value_usd ≥ $25.00` compared in exact whole cents (HALF_UP; non-finite fails closed) | `policy_firewall.py:1109-1136, 1311-1344` |
-| **Kill switch** | `POLSIA_KILL_SWITCH` env → `settings.kill_switch`; `freeze` refuses all dispatch and tool calls, `throttle` refuses agents with an external action class. Read at call time; direct-effect endpoints (`/phone/send`, deploy) call `require_external_effects_enabled` before transport | `policy_firewall.py:1412-1468`; `crew_factory.py:275-285`; `test_kill_switch_settings.py` |
-| **Caps — channel** | day: email 50, twitter 12, github 6, google_ads 10, meta_ads 10, stripe 5, render 3, linkedin 4, facebook 3, instagram 5, tiktok 10, youtube 3; hour: email 15, twitter 3, github 2. A configured cap whose count is **unknown** is refused by name (`cap_unknown`, `POLSIA-E114`), never read as zero | `policy_firewall.py:720-753, 1139-1154, 1293-1309` |
+| **Kill switch** | `MERIDIAN_KILL_SWITCH` env → `settings.kill_switch`; `freeze` refuses all dispatch and tool calls, `throttle` refuses agents with an external action class. Read at call time; direct-effect endpoints (`/phone/send`, deploy) call `require_external_effects_enabled` before transport | `policy_firewall.py:1412-1468`; `crew_factory.py:275-285`; `test_kill_switch_settings.py` |
+| **Caps — channel** | day: email 50, twitter 12, github 6, google_ads 10, meta_ads 10, stripe 5, render 3, linkedin 4, facebook 3, instagram 5, tiktok 10, youtube 3; hour: email 15, twitter 3, github 2. A configured cap whose count is **unknown** is refused by name (`cap_unknown`, `MERIDIAN-E114`), never read as zero | `policy_firewall.py:720-753, 1139-1154, 1293-1309` |
 | **Caps — budget** | day $25, per-run $2, $1 reserve; `allowance = min(remaining_day − reserve, remaining_agent, per_run_cap)`. In-run guard checks a provable worst case **before** each provider call and the measured spend after; a capped run is not retried | `accounting.py:368-433, 442-680`; `_common.py:516-552`; `deepseek_runtime.py:1800-1821` |
 | **SSRF / egress** | resolve once via Cloudflare DoH (never the OS resolver), require every answer `is_global` and not multicast, allowlist ports 80/443, then dial the vetted address (no re-resolve); hand-walked redirects cannot change origin; `is_global` also catches RFC 6598 shared space | `tool_registry.py:1363-1432, 1462-1600`; `trust_service.py:380-414, 734+`; `test_a3_egress.py` |
 | **Injection taint** | untrusted content wrapped in `<untrusted source content_id>`, forgery escaped, capped; heuristic cues set `RunTaint` on a contextvar; `close_quarantine` repairs a truncated fence so no opener stays unscanned; a tainted run escalates every external action and is **sticky** | `policy_firewall.py:394-462, 493-503`; `base_agent.py:330-385, 838-849`; `side_effects.py:38-87`; `test_taint_chain.py`, `test_w8_taint_sticky.py` |
@@ -318,7 +318,7 @@ as no credential; a non-blank wrong key is 401 (`core/security.py:12-49`). Excep
 the Stripe webhook (signature), the inbound-email route (shared secret / ECDSA / OAuth), and the
 WebSocket (ticket; an API key in the query string is refused and scrubbed from the access log —
 `core/query_scrub.py:39-88`). Refusals are `{code, message, how_to_fix, context}` +
-`X-Polsia-Error-Code` (`api/deps.py:59-70`); 29 named `E_*` codes plus a local
+`X-Meridian-Error-Code` (`api/deps.py:59-70`); 29 named `E_*` codes plus a local
 `E_PHONE_SEND_UNPAIRED` (`phone_send_service.py:73`).
 
 ### 4.3 Migrations, limits, censuses
@@ -386,7 +386,7 @@ WebSocket (ticket; an API key in the query string is refused and scrubbed from t
 | Answer chat with a model | deterministic routing over the DB — `chat_service.py:161-453` | a chat runtime plus its own policy and cost story |
 | Any external effect while `SANDBOX_MODE=true` (the default, and this `.env`) | `policy_firewall.py:1282-1291`; `config.py:131` | `SANDBOX_MODE=false` **and** provider credentials |
 | Run an agent here with neither key nor `claude` | measured: no key file, empty `DEEPSEEK_API_KEY`, `claude` absent | save a key via `PUT /config/deepseek-key`, or install/authenticate the CLI |
-| Verify a cap it cannot count | `cap_unknown` (`POLSIA-E114`) instead of a fabricated zero — `policy_firewall.py:1139-1154` | a counting table for that channel |
+| Verify a cap it cannot count | `cap_unknown` (`MERIDIAN-E114`) instead of a fabricated zero — `policy_firewall.py:1139-1154` | a counting table for that channel |
 | Send SMS without a paired driver | `E_PHONE_SEND_UNPAIRED` / `E_PHONE_UNAVAILABLE` — `phone_send_service.py:1-90` | a paired `cdp-google-messages` driver |
 | Enforce a global hourly budget cap | no such policy (`RateCaps` per-channel hourly only; `BudgetPolicy` day/per-run) | a policy field + gate + tests |
 | Merge a PR or force-push | not expressible (`force` refused; `github_pr` never merges) — `tool_registry.py:68-79` | a new tool and approval class |
@@ -396,7 +396,7 @@ WebSocket (ticket; an API key in the query string is refused and scrubbed from t
 
 The CANNOT table's "Needs" column plus §3's credential column is the checklist; three environment facts
 gate the rest: a live run needs a DeepSeek key (`PUT /config/deepseek-key`) **or** `claude` on PATH and
-logged in; any external effect needs `SANDBOX_MODE=false` and `POLSIA_KILL_SWITCH` empty/`run`; periodic
+logged in; any external effect needs `SANDBOX_MODE=false` and `MERIDIAN_KILL_SWITCH` empty/`run`; periodic
 work needs beat armed.
 
 ---

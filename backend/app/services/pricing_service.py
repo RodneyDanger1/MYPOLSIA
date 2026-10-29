@@ -1,7 +1,7 @@
 """The 50-row pricing catalog (V9 B2): loaded ONCE, searched, and read by exact service name.
 
 The dataset is the frozen conversion of R3's research table
-(`polsia-work/build/ui-reverse/u6-research/biz-economics/RESEARCH.md`, 50 rows, fetch date
+(`meridian-work/build/ui-reverse/u6-research/biz-economics/RESEARCH.md`, 50 rows, fetch date
 2026-10-14) — see `backend/app/data/pricing_catalog.json`.  Prices are market-rate CLAIMS with their
 source URL and fetch type (F = full page fetched, S = search-excerpt retrieval; the S rows stay S
 and are never upgraded).  Nothing here is LLM-invented: every planning action reads these rows.
@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from app.core.errors import E_CONFIG, ERROR_HINTS, PolsiaError
+from app.core.errors import E_CONFIG, ERROR_HINTS, MeridianError
 from app.core.timeutil import today_in
 
 #: The frozen dataset (bare list of 50 row objects; shape pinned by test_v9_catalog.py).
@@ -74,28 +74,28 @@ def load_catalog() -> tuple[dict[str, Any], ...]:
     try:
         rows = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"pricing catalog is unreadable at {CATALOG_PATH}: {exc}",
             how_to_fix=ERROR_HINTS[E_CONFIG],
             context={"path": str(CATALOG_PATH)},
         ) from exc
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"pricing catalog is not valid JSON: {exc}",
             how_to_fix=ERROR_HINTS[E_CONFIG],
             context={"path": str(CATALOG_PATH)},
         ) from exc
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             "pricing catalog must be a JSON list of row objects",
             how_to_fix=ERROR_HINTS[E_CONFIG],
             context={"path": str(CATALOG_PATH)},
         )
     if len(rows) != 50:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"pricing catalog must carry exactly 50 rows, found {len(rows)}",
             how_to_fix=ERROR_HINTS[E_CONFIG],
@@ -110,7 +110,7 @@ def load_catalog() -> tuple[dict[str, Any], ...]:
         # F23 (V12/W-C): `search()`/`get()` index `row["service"]` — a row missing it raised a
         # bare KeyError mid-request; refuse at LOAD, naming the rows, like every other
         # malformed-catalog state.
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"pricing catalog rows must carry a non-empty 'service' (malformed rows: {bad_rows[:5]})",
             how_to_fix=ERROR_HINTS[E_CONFIG],

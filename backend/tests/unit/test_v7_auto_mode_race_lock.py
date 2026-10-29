@@ -3,7 +3,7 @@
 The V7 close drill (two true-concurrent POST /api/v1/auto-mode against the LIVE PostgreSQL
 stack) PROVED the race the U5 module docstring had flagged as "in principle": both requests
 passed the check and created windows (sessions 2 and 3; raw evidence in
-polsia-work/build/ui-reverse/wave-v7/drills.txt).
+meridian-work/build/ui-reverse/wave-v7/drills.txt).
 
 Fix under pin here: `start_session` takes a PostgreSQL transaction-scoped advisory lock
 BEFORE its check-then-insert, so a second starter blocks until the first transaction commits,
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import auto_mode_service as ams
 
 
@@ -73,7 +73,7 @@ async def test_start_session_acquires_the_lock_before_checking(monkeypatch, asyn
 async def test_second_start_still_refuses_e_validation(async_db_session) -> None:
     """Sequential contract unchanged: one active window; the second start refuses by name."""
     await ams.start_session(async_db_session, duration_hours=1.0)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await ams.start_session(async_db_session, duration_hours=1.0)
     assert excinfo.value.code == "E_VALIDATION"
     assert "already active" in excinfo.value.message

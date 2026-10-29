@@ -124,12 +124,12 @@ from app.core.errors import (
     E_POLICY_DENIED,
     E_RUN_CANCELLED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 
 #: Mirror of integrations.py: the lazy-import install hint (httpx is pinned in requirements.txt).
 _HTTPX_HINT = "pip install httpx==0.28.1 (already pinned in requirements.txt)"
-_USER_AGENT = "PolsiaAgent/1.0 (+tool_registry.web_fetch)"
+_USER_AGENT = "MeridianAgent/1.0 (+tool_registry.web_fetch)"
 
 #: web_fetch bounds. Read at CALL time so tests (and an operator) can monkeypatch them.
 WEB_FETCH_TIMEOUT_S = 15.0          # wall clock per fetch; the plan caps this at <= 15s
@@ -162,9 +162,9 @@ METERED_CALLS_PER_RUN = 10
 #: The run's metered-call count, and the tool-path sends this run has really performed per
 #: channel.  Both live in ONE run scope (`begin_run_tool_budget`), because both are "what THIS
 #: run has spent/committed so far" — the same thing the agent path calls `performed`.
-_RUN_METERED: ContextVar[int | None] = ContextVar("polsia_run_metered_tools", default=None)
+_RUN_METERED: ContextVar[int | None] = ContextVar("meridian_run_metered_tools", default=None)
 _RUN_CHANNEL_PERFORMED: ContextVar[dict[str, int] | None] = ContextVar(
-    "polsia_run_channel_performed", default=None)
+    "meridian_run_channel_performed", default=None)
 
 #: `phone_read` bounds (V20/L2).  Read at CALL time so tests (and an operator) can monkeypatch
 #: them.  `limit` caps MESSAGES only; the thread window is fixed at the newest 10.
@@ -255,14 +255,14 @@ _SEARCH_TRANSPORT: Any = None
 #: same isolation pattern `policy_firewall.RUN_TAINT`/`RUN_APPROVAL` use, because the executor's
 #: frozen signature carries no run object.  Default "" = "the caller had no title" (the request
 #: then omits `ori_question` entirely; the provider treats absent as not provided).
-_TASK_TITLE: ContextVar[str] = ContextVar("polsia_tool_task_title", default="")
+_TASK_TITLE: ContextVar[str] = ContextVar("meridian_tool_task_title", default="")
 
 #: The calling run's id (V25/L2).  `execute_tool(..., run_id=...)` publishes it for the duration
 #: of ONE tool call and the three code tools read it for their workspace scope — the same
 #: contextvar isolation the task title uses (the executor's frozen signature carries no run
 #: object).  Default `None` = "the caller has no run id" = the shared workspace root, exactly as
 #: before V25.
-_RUN_ID: ContextVar[str | None] = ContextVar("polsia_tool_run_id", default=None)
+_RUN_ID: ContextVar[str | None] = ContextVar("meridian_tool_run_id", default=None)
 
 
 class RunToolBudget:
@@ -1135,7 +1135,7 @@ def _tool_action_class(name: str, arguments: Any) -> ActionClass:
     elif name in READ_ONLY_TOOLS:
         action_class = ActionClass.READ
     else:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"tool {name!r} has no action-class entry: it is in neither "
             "tool_registry._TOOL_ACTION_CLASS (writes) nor READ_ONLY_TOOLS (reads), so the "
@@ -1264,11 +1264,11 @@ def _execute(name: str, arguments: Any, *, agent_type: str) -> dict:
             )
         # D3-R1 / F-16: the OUTER code must be the one the firewall decided.  `decide()` refuses
         # a lease-lost run FIRST, and `PolicyDecision.e_code` is the firewall's OWN name for that
-        # denial (`E_RUN_CANCELLED`, policy code POLSIA-E120).  The sibling side-effect path
+        # denial (`E_RUN_CANCELLED`, policy code MERIDIAN-E120).  The sibling side-effect path
         # (`side_effects.request_side_effect` -> `enforce()`) already raises that code, so a tool
         # call refused for a lost claim must not read as a generic policy denial.  Only the
         # cancellation code is adopted here: every other denial keeps `E_POLICY_DENIED` and its
-        # `policy_code` still names the precise POLSIA reason.
+        # `policy_code` still names the precise MERIDIAN reason.
         refusal_code = (
             E_RUN_CANCELLED if decision.e_code == E_RUN_CANCELLED else E_POLICY_DENIED
         )
@@ -1410,7 +1410,7 @@ def egress_policy_refusal(url: str, *, agent_type: str, tool: str = "web_fetch")
 
     try:
         addresses = trust_service.resolve_egress(host, port)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         code = (E_POLICY_DENIED if exc.code == trust_service.E_EGRESS_BLOCKED
                 else E_VALIDATION if exc.code == E_VALIDATION else E_INTEGRATION)
         return named_refusal(
@@ -1512,7 +1512,7 @@ def _run_web_fetch(*, agent_type: str, arguments: dict) -> dict:
         try:
             status, response_headers, raw_body = _pinned_get(
                 current_url, timeout_s=timeout_s, max_bytes=socket_cap)
-        except PolsiaError as exc:
+        except MeridianError as exc:
             return _fetch_refusal(exc, url=current_url, agent_type=agent_type)
         content_type = str(response_headers.get("content-type", ""))
         if status not in (301, 302, 303, 307, 308):
@@ -1608,7 +1608,7 @@ def _pinned_get(url: str, *, timeout_s: float, max_bytes: int) -> tuple[int, dic
                            headers={"User-Agent": _USER_AGENT})
 
 
-def _fetch_refusal(exc: PolsiaError, *, url: str, agent_type: str) -> dict:
+def _fetch_refusal(exc: MeridianError, *, url: str, agent_type: str) -> dict:
     """The resolver's typed refusal, in `web_fetch`'s published vocabulary.
 
     An egress verdict stays `E_POLICY_DENIED` — the tool's documented code for "this address is
@@ -1696,7 +1696,7 @@ def _search_client(timeout_s: float):
         timeout=httpx.Timeout(timeout_s),
         follow_redirects=False,
         transport=_SEARCH_TRANSPORT,
-        headers={"User-Agent": "PolsiaAgent/1.0 (+tool_registry.web_search)",
+        headers={"User-Agent": "MeridianAgent/1.0 (+tool_registry.web_search)",
                  "Accept": "application/json"},
     )
 
@@ -1793,7 +1793,7 @@ def _run_web_search(*, agent_type: str, arguments: dict) -> dict:
 
     try:
         key = _deepseek_api_key()
-    except PolsiaError as exc:  # the resolver's own named refusal (e.g. a corrupt key store)
+    except MeridianError as exc:  # the resolver's own named refusal (e.g. a corrupt key store)
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="web_search", agent=agent_type)
     if not key:
@@ -2302,7 +2302,7 @@ def cleanup_run_workspace(run_id: str) -> dict[str, object]:
     already-clean run is not an error.
     """
     if not isinstance(run_id, str) or not run_id.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "cleanup_run_workspace: run_id must be a non-blank string",
             how_to_fix="pass the run id whose workspace should be removed",
@@ -2310,7 +2310,7 @@ def cleanup_run_workspace(run_id: str) -> dict[str, object]:
         )
     name = run_id.strip()
     if not _RUN_ID_RE.match(name):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_run_workspace: run_id {run_id!r} is not a safe run id",
             how_to_fix="pass 1-64 letters, digits, '_' or '-' (no separators, dots or '..')",
@@ -2329,7 +2329,7 @@ def cleanup_run_workspace(run_id: str) -> dict[str, object]:
 
     resolved = candidate.resolve()
     if resolved == runs_dir or runs_dir.resolve() not in resolved.parents:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_run_workspace: {name!r} resolves outside the runs directory — refusing "
             "to delete anything through a link",
@@ -2337,14 +2337,14 @@ def cleanup_run_workspace(run_id: str) -> dict[str, object]:
             context={"run_id": name, "resolved": str(resolved)},
         )
     if not resolved.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_run_workspace: {name!r} is not a directory",
             how_to_fix="pass a run id whose workspace exists as a directory",
             context={"run_id": name},
         )
     if _tree_contains_link(resolved):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_run_workspace: the workspace for {name!r} contains a link or junction — "
             "refusing a recursive delete that could follow it out of the workspace",
@@ -2401,7 +2401,7 @@ def cleanup_expired_run_workspaces(
     Raising `E_VALIDATION` for a bad argument or a linked `runs/` deletes nothing.
     """
     if not isinstance(keep_latest, int) or isinstance(keep_latest, bool) or keep_latest < 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_expired_run_workspaces: keep_latest must be a non-negative int "
             f"(got {keep_latest!r})",
@@ -2410,7 +2410,7 @@ def cleanup_expired_run_workspaces(
         )
     if (not isinstance(max_age_hours, int | float) or isinstance(max_age_hours, bool)
             or max_age_hours < 0):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_expired_run_workspaces: max_age_hours must be a non-negative number "
             f"(got {max_age_hours!r})",
@@ -2432,7 +2432,7 @@ def cleanup_expired_run_workspaces(
     try:
         base = candidate_base.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"cleanup_expired_run_workspaces: the workspace root {str(candidate_base)!r} cannot "
             f"be resolved ({type(exc).__name__}: {exc})",
@@ -2447,7 +2447,7 @@ def cleanup_expired_run_workspaces(
         return empty
     is_junction = getattr(os.path, "isjunction", None)
     if runs_dir.is_symlink() or (callable(is_junction) and is_junction(runs_dir)):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"cleanup_expired_run_workspaces: {str(runs_dir)!r} is a link or junction — "
             "refusing to enumerate or delete anything through it",
@@ -2455,7 +2455,7 @@ def cleanup_expired_run_workspaces(
             context={"runs_dir": str(runs_dir)},
         )
     if not runs_dir.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"cleanup_expired_run_workspaces: {str(runs_dir)!r} exists but is not a directory",
             how_to_fix="point CODE_WORKSPACE_DIR at a directory (or remove the file in the way)",
@@ -2529,7 +2529,7 @@ def _run_macro_snapshot(*, agent_type: str, arguments: dict) -> dict:  # noqa: A
 
     try:
         snapshot = economics_service.macro_snapshot()
-    except PolsiaError as exc:  # the service's own named refusal, passed through
+    except MeridianError as exc:  # the service's own named refusal, passed through
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="macro_snapshot", agent=agent_type)
     return {"ok": True, "tool": "macro_snapshot", "result": snapshot}
@@ -2541,7 +2541,7 @@ def _run_pricing_catalog(*, agent_type: str, arguments: dict) -> dict:  # noqa: 
     try:
         rows = [dict(row) for row in pricing_service.load_catalog()]
         provenance = pricing_service.catalog_provenance()
-    except PolsiaError as exc:  # E_CONFIG when the catalog is unreadable/wrong-shaped
+    except MeridianError as exc:  # E_CONFIG when the catalog is unreadable/wrong-shaped
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="pricing_catalog", agent=agent_type)
     kept: list[dict] = []
@@ -2680,7 +2680,7 @@ def _run_phone_read(*, agent_type: str, arguments: dict) -> dict:
             if thread_id is not None
             else None
         )
-    except PolsiaError as exc:  # the service's own named refusal, passed through verbatim
+    except MeridianError as exc:  # the service's own named refusal, passed through verbatim
         return named_refusal(
             exc.code, exc.message, how_to_fix=exc.how_to_fix, store=exc.context,
             tool="phone_read", agent=agent_type)
@@ -2759,8 +2759,8 @@ def _github_dry_run(
     return raw, None
 
 
-def _github_refusal(tool: str, exc: PolsiaError, *, agent_type: str) -> dict:
-    """A service `PolsiaError` -> the registry's named-refusal payload (context preserved)."""
+def _github_refusal(tool: str, exc: MeridianError, *, agent_type: str) -> dict:
+    """A service `MeridianError` -> the registry's named-refusal payload (context preserved)."""
     return named_refusal(
         exc.code, exc.message, how_to_fix=exc.how_to_fix,
         tool=tool, agent=agent_type, github=dict(exc.context))
@@ -2774,7 +2774,7 @@ def _run_github_repo(*, agent_type: str, arguments: dict) -> dict:
     # (`_undeclared_argument_refusal`), so each runner receives only documented keys.
     try:
         result = github_service.get_repo(arguments.get("repo"))
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return _github_refusal("github_repo", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_repo", "result": {"repo": result}}
 
@@ -2794,7 +2794,7 @@ def _run_github_branch(*, agent_type: str, arguments: dict) -> dict:
             result = github_service.create_branch(
                 arguments.get("repo"), arguments.get("branch"), from_branch,
                 dry_run=True if dry_run is None else dry_run)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return _github_refusal("github_branch", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_branch", "result": result}
 
@@ -2810,7 +2810,7 @@ def _run_github_commit(*, agent_type: str, arguments: dict) -> dict:
         result = github_service.commit_files(
             arguments.get("repo"), arguments.get("branch"), arguments.get("message"),
             arguments.get("files"), dry_run=True if dry_run is None else dry_run)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return _github_refusal("github_commit", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_commit", "result": result}
 
@@ -2827,7 +2827,7 @@ def _run_github_pr(*, agent_type: str, arguments: dict) -> dict:
             arguments.get("repo"), arguments.get("title"), arguments.get("head"),
             arguments.get("base"), arguments.get("body"),
             dry_run=True if dry_run is None else dry_run)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return _github_refusal("github_pr", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_pr", "result": result}
 
@@ -2843,7 +2843,7 @@ def _run_research_fetch(*, agent_type: str, arguments: dict) -> dict:
     try:
         result = research_fetch_service.fetch(
             url, max_chars=arguments.get("max_chars", research_fetch_service.MAX_CONTENT_CHARS))
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="research_fetch", agent=agent_type)
     return {"ok": True, "tool": "research_fetch", "result": result}
@@ -2862,7 +2862,7 @@ def _run_fx_convert(*, agent_type: str, arguments: dict) -> dict:
             tool="fx_convert", agent=agent_type)
     try:
         result = fx_service.convert(amount, base, quote)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="fx_convert", agent=agent_type)
     return {"ok": True, "tool": "fx_convert", "result": result}
@@ -2873,7 +2873,7 @@ def _run_signals_read(*, agent_type: str, arguments: dict) -> dict:
 
     try:
         result = signals_service.read(limit=arguments.get("limit", signals_service.DEFAULT_LIMIT))
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="signals_read", agent=agent_type)
     return {"ok": True, "tool": "signals_read", "result": result}
@@ -2889,7 +2889,7 @@ def _run_domain_health(*, agent_type: str, arguments: dict) -> dict:
             how_to_fix='pass {"host": "example.com"}', tool="domain_health", agent=agent_type)
     try:
         result = trust_service.check_domain(host)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="domain_health", agent=agent_type)
     return {"ok": True, "tool": "domain_health", "result": result}
@@ -2905,7 +2905,7 @@ def _run_link_status(*, agent_type: str, arguments: dict) -> dict:
             how_to_fix='pass {"url": "https://example.com"}', tool="link_status", agent=agent_type)
     try:
         result = trust_service.check_link(url)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return named_refusal(exc.code, exc.message, how_to_fix=exc.how_to_fix,
                              tool="link_status", agent=agent_type)
     return {"ok": True, "tool": "link_status", "result": result}

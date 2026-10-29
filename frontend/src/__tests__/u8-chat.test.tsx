@@ -43,7 +43,7 @@ const HISTORY = {
       task_id: null,
     },
     {
-      role: "polsia",
+      role: "meridian",
       content: "Three tasks completed today; one is still waiting on your approval.",
       created_at: ago(HOUR_MS + 30_000),
       task_id: null,
@@ -97,19 +97,19 @@ describe("chat rail (wave V8 / C3)", () => {
 
     render(<ChatRail />);
 
-    // Owner right / polsia left is carried on data-role (the classes are presentation).
+    // Owner right / meridian left is carried on data-role (the classes are presentation).
     const owner = await screen.findByText("How many tasks ran today?");
-    const polsia = screen.getByText(
+    const meridian = screen.getByText(
       "Three tasks completed today; one is still waiting on your approval.",
     );
     expect(owner.closest("li")).toHaveAttribute("data-role", "owner");
-    expect(polsia.closest("li")).toHaveAttribute("data-role", "polsia");
+    expect(meridian.closest("li")).toHaveAttribute("data-role", "meridian");
 
     // Timestamps: relativeTime visible, absoluteStamp in the title, machine time in dateTime.
     const asked = within(owner.closest("li") as HTMLElement).getByText("2h ago");
     expect(asked).toHaveAttribute("title", absoluteStamp(HISTORY.items[0].created_at));
     expect(asked).toHaveAttribute("datetime", HISTORY.items[0].created_at);
-    const answered = within(polsia.closest("li") as HTMLElement).getByText("1h ago");
+    const answered = within(meridian.closest("li") as HTMLElement).getByText("1h ago");
     expect(answered).toHaveAttribute("title", absoluteStamp(HISTORY.items[1].created_at));
 
     // The read is the frozen path.

@@ -64,7 +64,7 @@ from typing import Any
 from sqlalchemy import ColumnElement, Text, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 from app.core.timeutil import as_bound_instant
 from app.models.task import AgentRun, Task
 from app.services.query_helpers import fetch_one, fetch_rows, fetch_scalar
@@ -264,7 +264,7 @@ async def count_runs(db: AsyncSession, *, filters: RunFilters) -> int:
     if total is None:
         # `SELECT count(*)` always yields one row; a None here means the driver broke its own
         # contract — refuse loudly rather than serve a fabricated 0.
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             "runs count query returned no row",
             how_to_fix=ERROR_HINTS[E_DB],
@@ -382,7 +382,7 @@ async def export_runs(db: AsyncSession, *, filters: RunFilters) -> tuple[list[Ru
     total = await count_runs(db, filters=filters)
     rows = await fetch_run_rows(db, filters=filters, limit=None, offset=0)
     if len(rows) != total:
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"runs export refused: declared total={total} but {len(rows)} row(s) read",
             how_to_fix="retry the export; the ledger changed between the count and the read",

@@ -104,7 +104,7 @@ def get_process_loop() -> asyncio.AbstractEventLoop:
             _loop = asyncio.new_event_loop()
             _loop_ready.clear()
             _loop_thread = threading.Thread(
-                target=_run_loop_forever, args=(_loop,), name="polsia-task-loop", daemon=True
+                target=_run_loop_forever, args=(_loop,), name="meridian-task-loop", daemon=True
             )
             _loop_thread.start()
             _loop_ready.wait(timeout=10)
@@ -115,7 +115,7 @@ def run_async[T](coro: Coroutine[Any, Any, T]) -> T:
     """Run `coro` on the process loop and block the Celery task until it returns.
 
     Exceptions propagate unchanged, so `self.retry`/error classification in the task
-    modules sees the real exception type (a `PolsiaError` from the service layer, a
+    modules sees the real exception type (a `MeridianError` from the service layer, a
     `ValueError` from `crew_factory`, …).
     """
     loop = get_process_loop()
@@ -192,12 +192,12 @@ async def create_task_deduped(
     catch the same decision themselves and return a clean skip, so this raise is the
     defense-in-depth half for any future caller that forgets.
     """
-    from app.core.errors import PolsiaError
+    from app.core.errors import MeridianError
     from app.services.task_service import VALID_AGENT_TYPES, VALID_TASK_STATUSES
 
     paused_reason = await dispatch_paused_reason(db)
     if paused_reason is not None:
-        raise PolsiaError(
+        raise MeridianError(
             PAUSED_DISPATCH_CODE,
             f"task creation refused: {paused_reason}",
             context={
@@ -324,7 +324,7 @@ async def enqueue_created(task_ids: list[int], *, label: str) -> None:
             group([run_agent_task.s(task_id) for task_id in task_ids]).apply_async()
     except Exception as exc:  # noqa: BLE001 — a broker refusal is NAMED below; the rows stay queued
         from app.core.database import get_session_factory
-        from app.core.errors import E_REDIS, PolsiaError
+        from app.core.errors import E_REDIS, MeridianError
 
         reason = f"enqueue_refused:{exc.__class__.__name__}"
         logger.warning(
@@ -335,7 +335,7 @@ async def enqueue_created(task_ids: list[int], *, label: str) -> None:
         async with session_factory() as db:
             rearmed = await stamp_rearmed(db, task_ids, reason=reason)
             await db.commit()
-        raise PolsiaError(
+        raise MeridianError(
             E_REDIS,
             (
                 f"{label}: {len(task_ids)} task(s) could not be handed to a worker; they stay "
@@ -519,7 +519,7 @@ async def assert_budget_allows(agent_type: str) -> None:
     The DAG planner's `authorize` gate had no production caller; this puts the same decision on
     the paths that actually dispatch. The policy is what the settings DECLARE
     (`agent_daily_cost_cap_usd` / `agent_run_cost_cap_usd` via `accounting.budget_policy_from_settings`;
-    kill switch frozen when `POLSIA_KILL_SWITCH` says freeze). The estimate is the policy's own
+    kill switch frozen when `MERIDIAN_KILL_SWITCH` says freeze). The estimate is the policy's own
     per-run cap — the flat plan carries no per-node estimate, so the gate uses the conservative
     worst case rather than an invented small number.
 

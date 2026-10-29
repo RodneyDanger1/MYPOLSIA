@@ -134,11 +134,11 @@ def test_the_read_hook_leaves_memories_absent_when_the_store_cannot_answer(
     monkeypatch, queue_db, execute_body, mock_chroma, caplog
 ):
     """A dead store is RECORDED (warn) and the key stays ABSENT — never an injected `[]`."""
-    from app.core.errors import E_DB, PolsiaError
+    from app.core.errors import E_DB, MeridianError
 
     async def broken(db: Any, *, agent_type: str, query: str = "",
                      limit: int = 8) -> list[dict[str, Any]]:
-        raise PolsiaError(E_DB, "memory store unreachable", how_to_fix="restart the store")
+        raise MeridianError(E_DB, "memory store unreachable", how_to_fix="restart the store")
 
     monkeypatch.setattr(memory_service, "resolve_agent_memories", broken)
     calls = _install_agent_capture(monkeypatch, {"summary": "run without memories"})

@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     api_key: str = "dev-key"
 
     # --- database ---
-    database_url: str = "postgresql+asyncpg://polsia:polsia_password@localhost:5432/polsia"
+    database_url: str = "postgresql+asyncpg://meridian:meridian_password@localhost:5432/meridian"
     db_echo: bool = False
     db_pool_size: int = 5
     db_max_overflow: int = 10
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
-    activity_channel: str = "polsia:activity"
+    activity_channel: str = "meridian:activity"
     celery_task_time_limit: int = 900
     celery_soft_time_limit: int = 840
     celery_max_tasks_per_child: int = 50
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # parity, but no code path reads it.  Worker concurrency is a launch-command knob, and the
     # launch command owns it: docker-compose.yml:95 runs
     # `celery -A celery_app.worker worker --loglevel=info --concurrency=4`.  Kept, not deleted —
-    # the removal-vs-label decision is recorded in polsia-work/build/R20-minors REQUESTS.
+    # the removal-vs-label decision is recorded in meridian-work/build/R20-minors REQUESTS.
     celery_worker_concurrency: int = 4
     # R23 note (celery_worker_concurrency), read-verified: docker-compose.yml:95 is exactly the
     # command quoted above and the beat service (docker-compose.yml:120) passes no `--concurrency`
@@ -96,14 +96,14 @@ class Settings(BaseSettings):
         return value
 
     # --- agent runtime selection (SV-W4-05, wave 5) ---
-    # `crew_factory._spawn_facts()` read `os.getenv("POLSIA_MODEL_BACKEND")` first and then
+    # `crew_factory._spawn_facts()` read `os.getenv("MERIDIAN_MODEL_BACKEND")` first and then
     # `getattr(settings, "model_backend", "")`, but the second name was NOT a field: a `.env`
     # declaration (as opposed to a container env var) could never reach it.  The field accepts
-    # BOTH documented spellings (`POLSIA_MODEL_BACKEND` is the one `.env.example`/README use).
+    # BOTH documented spellings (`MERIDIAN_MODEL_BACKEND` is the one `.env.example`/README use).
     # Blank = let the provider seam decide (`deepseek_runtime.available()`), which is the
     # authoritative signal; the fallback tokens are listed in `crew_factory._NON_CLI_BACKENDS`.
     model_backend: str = Field(
-        default="", validation_alias=AliasChoices("POLSIA_MODEL_BACKEND", "MODEL_BACKEND")
+        default="", validation_alias=AliasChoices("MERIDIAN_MODEL_BACKEND", "MODEL_BACKEND")
     )
 
     # --- chroma ---
@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # unless CHROMA_PERSIST_DIR is set explicitly — the default itself stays the container path
     # (D7; audit L3-01).
     chroma_persist_dir: str = "/app/data/chroma"
-    chroma_collection: str = "polsia_memory"
+    chroma_collection: str = "meridian_memory"
 
     # --- claude CLI ---
     # `claude` = PATH lookup (dev machines); the container image pins /usr/local/bin/claude via its
@@ -158,14 +158,14 @@ class Settings(BaseSettings):
 
     # --- kill switch (fleet dispatch gate; registry D4 — the switch was settings-dead) ---
     # "" = run; "throttle" = agents with external actions pause (reads continue); "freeze" = all
-    # dispatch refused.  policy_firewall.kill_grade_from_env() reads POLSIA_KILL_SWITCH from the
+    # dispatch refused.  policy_firewall.kill_grade_from_env() reads MERIDIAN_KILL_SWITCH from the
     # environment FIRST, then this field; crew_factory.dispatch_preflight() enforces it.  The
-    # POLSIA_-prefixed name is the documented switch; a `.env` line reaches pydantic but NOT
+    # MERIDIAN_-prefixed name is the documented switch; a `.env` line reaches pydantic but NOT
     # os.environ outside docker, so it is accepted here by alias (KILL_SWITCH, the plain
     # field-name convention, stays accepted too).
     kill_switch: str = Field(
         default="",
-        validation_alias=AliasChoices("POLSIA_KILL_SWITCH", "KILL_SWITCH"),
+        validation_alias=AliasChoices("MERIDIAN_KILL_SWITCH", "KILL_SWITCH"),
     )
 
     # --- approvals (D1 / T02: owner-authed approval tokens; FROZEN interface) ---
@@ -193,13 +193,13 @@ class Settings(BaseSettings):
     stripe_signature_tolerance: int = 300
 
     # --- secret stores (one local file each; neither value is ever logged) ---
-    # `services/secret_store.py::_resolve_secrets_file` reads `POLSIA_SECRETS_FILE` from the
+    # `services/secret_store.py::_resolve_secrets_file` reads `MERIDIAN_SECRETS_FILE` from the
     # process environment FIRST, then this field, then the repo-anchored default
     # (`backend/data/secrets.json`).  SV-W4-05 (wave 5): the field did not exist, so the middle
-    # branch of that precedence was dead and `SECRETS_FILE`/`POLSIA_SECRETS_FILE` in `.env` (as
+    # branch of that precedence was dead and `SECRETS_FILE`/`MERIDIAN_SECRETS_FILE` in `.env` (as
     # opposed to the container env) could never reach Settings.  Blank = the anchored default.
     secrets_file: str = Field(
-        default="", validation_alias=AliasChoices("POLSIA_SECRETS_FILE", "SECRETS_FILE")
+        default="", validation_alias=AliasChoices("MERIDIAN_SECRETS_FILE", "SECRETS_FILE")
     )
 
     # --- integrations (optional) ---

@@ -43,7 +43,7 @@ from sqlalchemy import func, select
 
 import app.config as app_config
 from app.agents.email_outreach.agent import EmailOutreachAgent
-from app.core.errors import E_INTEGRATION, E_POLICY_DENIED, E_VALIDATION, PolsiaError
+from app.core.errors import E_INTEGRATION, E_POLICY_DENIED, E_VALIDATION, MeridianError
 from app.models.company import CompanyConfig
 from app.models.outreach import EmailLog, Prospect
 from app.schemas.agent_outputs import EmailDraft
@@ -436,7 +436,7 @@ async def test_a_case_variant_send_cannot_bypass_the_suppression_list(
     await outreach_service.unsubscribe_prospect(db, "Ada@Example.COM")
     await db.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await send_compliant_email(
             db, to="ADA@example.com", subject="hi", body="hello",
         )

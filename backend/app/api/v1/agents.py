@@ -33,7 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_DB, E_REDIS, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_REDIS, ERROR_HINTS, MeridianError
 from app.schemas.task import AgentStatusResponse, AgentTriggerRequest, AgentTriggerResponse
 from app.services.task_service import (
     VALID_AGENT_TYPES,
@@ -106,7 +106,7 @@ async def trigger_agent(
         except SQLAlchemyError as exc:
             # The store refused the row: nothing was dispatched, and the caller gets the named
             # refusal instead of a 202 for work the broker was never told about.
-            raise PolsiaError(
+            raise MeridianError(
                 E_DB,
                 f"task #{task.id} could not be committed; nothing was dispatched",
                 how_to_fix=ERROR_HINTS[E_DB],
@@ -158,7 +158,7 @@ async def trigger_agent(
         # back and never existed, so the ledger lost the attempt entirely while the caller held an
         # id.  The created row, its re-arm marker and its reason must survive the refusal.
         await db.commit()
-        raise PolsiaError(
+        raise MeridianError(
             E_REDIS,
             f"task #{task.id} was accepted (created, still pending) but NOT dispatched: the "
             f"broker refused the hand-off ({exc.__class__.__name__}), so the row stays queued for "

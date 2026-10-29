@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.policy_firewall import wrap_untrusted
 from app.schemas.agent_outputs import CompetitorReport
 
@@ -117,7 +117,7 @@ def research_budget_violation(payload: Any) -> dict[str, Any] | None:
     }
 
 
-class CompetitorResearchAgent(BasePolsiaAgent):
+class CompetitorResearchAgent(BaseMeridianAgent):
     agent_type = "competitor_research"
     description = "Researches competitors and positioning"
     output_schema = CompetitorReport

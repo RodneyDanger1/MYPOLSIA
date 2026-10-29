@@ -14,13 +14,13 @@ import httpx
 import pytest
 
 from app.agents import claude_cli, deepseek_runtime, structured_output
-from app.agents.base_agent import BasePolsiaAgent
-from app.core.errors import E_CLI_JSON, E_CLI_TIMEOUT, E_DEEPSEEK_KEY, E_VALIDATION, PolsiaError
+from app.agents.base_agent import BaseMeridianAgent
+from app.core.errors import E_CLI_JSON, E_CLI_TIMEOUT, E_DEEPSEEK_KEY, E_VALIDATION, MeridianError
 
 SAFE_TEST_KEY = "sk-test-not-a-real-key"
 
 
-class _Agent(BasePolsiaAgent):
+class _Agent(BaseMeridianAgent):
     agent_type = "test"
 
     def run(self, task, context):  # pragma: no cover - never dispatched here
@@ -118,7 +118,7 @@ SUMMARY_SCHEMA = {
 def test_missing_key_is_a_named_refusal_with_the_settings_hint(monkeypatch):
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: None)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(lambda request: httpx.Response(500)))
 
     assert excinfo.value.code == E_DEEPSEEK_KEY
@@ -289,7 +289,7 @@ def test_reasoning_effort_canonicalizes_and_from_settings(monkeypatch):
     assert captured["body"]["reasoning_effort"] == "low"  # documented alias canonicalized
 
     _override_setting(monkeypatch, "deepseek_reasoning_effort", "bogus")
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_VALIDATION  # never silently coerced
 
@@ -346,7 +346,7 @@ def test_read_timeout_raises_E_CLI_TIMEOUT_like_the_cli_wall_clock(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("read timed out")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
 
     assert excinfo.value.code == E_CLI_TIMEOUT
@@ -408,7 +408,7 @@ def test_finish_reason_length_is_a_named_failure_not_a_success():
     assert failure is structured_output.FailureCode.ENVELOPE_IS_ERROR
     assert "error_max_tokens" in detail
     assert agent._retryable(result) is False  # same prompt would truncate again
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         agent._finish_call(result, 1, transport="http")
     assert "error_max_tokens" in str(excinfo.value)
 
@@ -431,7 +431,7 @@ def test_non_json_200_body_is_a_named_E_CLI_JSON_refusal():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>gateway portal</html>")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
 
@@ -440,7 +440,7 @@ def test_200_without_choices_is_a_named_E_CLI_JSON_refusal():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"usage": {}})
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(_make_inv(), client=_client(handler), api_key=SAFE_TEST_KEY)
     assert excinfo.value.code == E_CLI_JSON
 
@@ -497,6 +497,6 @@ def test_plan_reads_the_stdin_transport():
 
 def test_plan_without_a_prompt_is_a_named_refusal():
     inv = claude_cli.Invocation(argv=["claude", "--output-format", "json"])
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.plan_from_invocation(inv)
     assert excinfo.value.code == E_VALIDATION

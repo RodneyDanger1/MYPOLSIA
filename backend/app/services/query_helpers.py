@@ -3,7 +3,7 @@
 Two rules this module exists to enforce:
 
 1. **A read that fails is a named refusal.**  `fetch_*` translate a driver/SQLAlchemy
-   failure into `PolsiaError(E_DB, ...)` so a route can never turn "the database is
+   failure into `MeridianError(E_DB, ...)` so a route can never turn "the database is
    unreachable" into `[]` (an empty list that looks like "no rows").
 2. **Dialect choices are made in one place.**  `agent_rollup_expr` picks the string
    aggregation each engine actually has (SQLite `group_concat`, PostgreSQL
@@ -34,7 +34,7 @@ from sqlalchemy import Select, distinct, func, literal
 from sqlalchemy.exc import DataError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, MeridianError
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ def is_data_error(exc: BaseException) -> bool:
     return False
 
 
-def db_refusal(what: str, exc: BaseException) -> PolsiaError:
+def db_refusal(what: str, exc: BaseException) -> MeridianError:
     """The single shape of "we could not read X" — and of "X is not a value we can use".
 
     A data/range failure is `E_VALIDATION` (422): the caller sent a value the column cannot hold,
@@ -146,7 +146,7 @@ def db_refusal(what: str, exc: BaseException) -> PolsiaError:
             what,
             driver_text,
         )
-        return PolsiaError(
+        return MeridianError(
             E_VALIDATION,
             f"{what} is not a value this database column can hold: the driver rejected it as a "
             "data/range error (an out-of-range integer, a malformed date/number, or a value too "
@@ -160,7 +160,7 @@ def db_refusal(what: str, exc: BaseException) -> PolsiaError:
             },
         )
     logger.warning("database read failed for %s: %s", what, driver_text)
-    return PolsiaError(
+    return MeridianError(
         E_DB,
         f"could not read {what}: {_redact_sql(driver_text)}",
         how_to_fix=ERROR_HINTS[E_DB],

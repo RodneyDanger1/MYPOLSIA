@@ -10,7 +10,7 @@ Two rules, both of them "a record must say what happened":
      record (AGENTS.md §1).
 
 Rows:
-  E1  a route refusal logs WARNING with its code (the `PolsiaError` handler);
+  E1  a route refusal logs WARNING with its code (the `MeridianError` handler);
   E2  a PRE-route refusal logs with the correlation id (the middleware branch);
   E3  a run whose agent failed records the named code ON THE LEDGER (task.error_message /
       agent_runs.raw_log) and one `task_failed` activity row — the refusal is not only in a log
@@ -28,7 +28,7 @@ import ast
 import logging
 from pathlib import Path
 
-from app.core.errors import E_DB, E_INTEGRATION, E_NOT_FOUND, PolsiaError
+from app.core.errors import E_DB, E_INTEGRATION, E_NOT_FOUND, MeridianError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 TERRITORY_FILES = (
@@ -58,7 +58,7 @@ async def test_e02_a_pre_route_refusal_logs_its_code_and_answers_with_an_id(
     from app.main import app as application
 
     def _boom():  # noqa: ANN202 - a FastAPI dependency
-        raise PolsiaError(E_DB, "planted: the database is unreachable")
+        raise MeridianError(E_DB, "planted: the database is unreachable")
 
     monkeypatch.setitem(application.dependency_overrides, get_db, _boom)
     with caplog.at_level(logging.WARNING, logger="app.main"):
@@ -77,7 +77,7 @@ async def test_e02b_the_refusals_log_line_carries_the_same_request_id(
     """W8-LD-05, CLOSED in wave 9 (the strict xfail was removed when this row went green).
 
     The defect: the correlation id is minted in the `correlation_and_timing` middleware, but every
-    route/dependency `PolsiaError` is answered by the exception handler INSIDE that middleware — so
+    route/dependency `MeridianError` is answered by the exception handler INSIDE that middleware — so
     the log line an operator got for a refusal carried NO request id, and the middleware branch
     that would have added it was unreachable for those refusals.  A client quoting its
     `X-Request-ID` and the server log could not be matched, which is the one thing the id is for.
@@ -90,7 +90,7 @@ async def test_e02b_the_refusals_log_line_carries_the_same_request_id(
     from app.main import app as application
 
     def _boom():  # noqa: ANN202 - a FastAPI dependency
-        raise PolsiaError(E_DB, "planted: the database is unreachable")
+        raise MeridianError(E_DB, "planted: the database is unreachable")
 
     monkeypatch.setitem(application.dependency_overrides, get_db, _boom)
     with caplog.at_level(logging.WARNING, logger="app.main"):
@@ -117,7 +117,7 @@ async def test_e02b_the_refusals_log_line_carries_the_same_request_id(
 def test_e03_a_failed_run_records_the_named_code_on_the_ledger(queue_db, install_run_spy):
     install_run_spy(
         delegate=False,
-        error_factory=lambda: PolsiaError(
+        error_factory=lambda: MeridianError(
             E_INTEGRATION, "planted: the provider refused the request"
         ),
     )

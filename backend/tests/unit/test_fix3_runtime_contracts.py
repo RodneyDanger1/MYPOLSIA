@@ -37,7 +37,7 @@ from app.agents.policy_firewall import (
     decide,
 )
 from app.agents.structured_output import REMEDIATION, FailureCode, coerce_types
-from app.core.errors import E_CLI_TIMEOUT, ERROR_HINTS, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, ERROR_HINTS, MeridianError
 from app.schemas.agent_outputs import AGENT_SCHEMAS
 
 # ─────────────────────────────────────────────────────────────── L3-06 orchestrator mode
@@ -153,7 +153,7 @@ def test_a_denied_tool_is_denied_by_name():
     decision = decide(ActionRequest(agent_type="code_generation", action_class=ActionClass.READ,
                                     channel="github", tool="mcp__github__create_issue"))
     assert decision.decision is Decision.DENY
-    assert decision.code == "POLSIA-E114"
+    assert decision.code == "MERIDIAN-E114"
 
 
 # ─────────────────────────────────────────────────────────────── L3-09 CLI auth hint
@@ -226,9 +226,9 @@ def test_a_raised_timeout_costs_exactly_one_plus_max_retries_attempts():
 
     def dispatch():
         calls.append(1)
-        raise PolsiaError(E_CLI_TIMEOUT, "claude CLI exceeded 7s")
+        raise MeridianError(E_CLI_TIMEOUT, "claude CLI exceeded 7s")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         claude_cli.run_with_retries(dispatch, attempts=2, sleep=lambda _s: None)
 
     assert excinfo.value.code == E_CLI_TIMEOUT
@@ -261,7 +261,7 @@ def test_the_deepseek_timeout_refusal_carries_its_own_hint(monkeypatch):
 
     client = httpx.Client(transport=httpx.MockTransport(raise_timeout))
     inv = claude_cli.build_invocation(prompt="timeout probe", max_turns=1)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(inv, client=client, api_key="sk-probe-key")
     assert excinfo.value.code == E_CLI_TIMEOUT
     assert "deepseek_timeout_seconds" in excinfo.value.how_to_fix

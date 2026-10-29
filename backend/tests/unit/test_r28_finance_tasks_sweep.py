@@ -35,7 +35,7 @@ from app.api.v1.finance import (
     _stdlib_verify,
     construct_stripe_event,
 )
-from app.core.errors import E_DB, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, ERROR_HINTS, MeridianError
 from app.core.timeutil import dialect_name
 from app.models.task import Task
 from app.services.query_helpers import (
@@ -247,7 +247,7 @@ def test_the_docstring_no_longer_claims_the_sdk_is_absent() -> None:
 
 def test_db_refusal_shape_names_the_query_and_the_hint() -> None:
     err = db_refusal("widgets", ValueError("boom"))
-    assert isinstance(err, PolsiaError)
+    assert isinstance(err, MeridianError)
     assert err.code == E_DB
     assert err.message == "could not read widgets: ValueError: boom"
     assert err.how_to_fix == ERROR_HINTS[E_DB]
@@ -274,7 +274,7 @@ async def test_fetch_rows_returns_rows_and_refuses_a_driver_failure(async_db_ses
     )
     assert [title for title, _agent in rows] == ["r28-a", "r28-b"]
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await fetch_rows(async_db_session, _broken_select(), what="tasks probe")
     assert excinfo.value.code == E_DB
     assert excinfo.value.context == {"query": "tasks probe"}
@@ -290,7 +290,7 @@ async def test_fetch_scalars_returns_values_and_refuses_a_driver_failure(async_d
     )
     assert titles == ["r28-a", "r28-b"]
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await fetch_scalars(async_db_session, _broken_select(), what="scalars probe")
     assert excinfo.value.code == E_DB and excinfo.value.context == {"query": "scalars probe"}
 
@@ -305,7 +305,7 @@ async def test_fetch_scalar_returns_the_first_value_and_refuses_a_driver_failure
     )
     assert count == 2
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await fetch_scalar(async_db_session, _broken_select(), what="scalar probe")
     assert excinfo.value.code == E_DB and excinfo.value.context == {"query": "scalar probe"}
 
@@ -324,12 +324,12 @@ async def test_fetch_one_returns_none_when_empty_and_refuses_multiple_rows(async
 
     # "a query that promised one row and returned several is a bug worth seeing": re-raised as a
     # named E_DB with the ORIGINAL MultipleResultsFound chained, never silently truncated.
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await fetch_one(async_db_session, select(Task).order_by(Task.id).limit(2), what="one task")
     assert excinfo.value.code == E_DB
     assert isinstance(excinfo.value.__cause__, MultipleResultsFound)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await fetch_one(async_db_session, _broken_select(), what="one row probe")
     assert excinfo.value.code == E_DB and excinfo.value.context == {"query": "one row probe"}
 

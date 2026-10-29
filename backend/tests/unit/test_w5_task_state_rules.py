@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import E_TASK_NOT_RUNNABLE, E_VALIDATION, PolsiaError
+from app.core.errors import E_TASK_NOT_RUNNABLE, E_VALIDATION, MeridianError
 
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────
 
@@ -128,7 +128,7 @@ async def test_the_api_writer_refuses_an_error_supplied_with_a_completion(async_
     await _claim(async_db_session, task.id)
     await async_db_session.flush()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await task_service.transition_task_status(
             async_db_session,
             task.id,
@@ -232,7 +232,7 @@ async def test_create_task_refuses_a_non_object_metadata_by_name(async_db_sessio
     from app.models.task import Task
     from app.services.task_service import create_task
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_task(async_db_session, title="bad", agent_type="finance", metadata=[None])
 
     assert _error_code(excinfo) == E_VALIDATION

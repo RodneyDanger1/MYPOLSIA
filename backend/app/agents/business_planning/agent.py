@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.schemas.agent_outputs import BusinessPlan
 
 ROLE = """You are the Business Planning agent: the strategist of an autonomous company.
@@ -50,7 +50,7 @@ watch next, ordered. Keep `status` honest: "partial" when the context lacks the 
 need to be certain."""
 
 
-class BusinessPlanningAgent(BasePolsiaAgent):
+class BusinessPlanningAgent(BaseMeridianAgent):
     agent_type = "business_planning"
     description = "Strategy, KPIs, growth recommendations"
     output_schema = BusinessPlan

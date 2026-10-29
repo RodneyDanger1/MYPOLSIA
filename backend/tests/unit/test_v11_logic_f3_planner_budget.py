@@ -22,7 +22,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.core.errors import E_BUDGET_EXCEEDED, E_CLI_TIMEOUT, E_TASK_CLAIMED, PolsiaError
+from app.core.errors import E_BUDGET_EXCEEDED, E_CLI_TIMEOUT, E_TASK_CLAIMED, MeridianError
 from app.services import planner_service
 
 FETCHED = "https://research.example/pricing"
@@ -112,7 +112,7 @@ async def test_an_exhausted_day_cap_refuses_before_any_agent_work(async_db_sessi
     calls = _spies(monkeypatch)
     await _spend(async_db_session, "999.00")  # far above the default $25/day cap
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service.propose(async_db_session)
 
     assert excinfo.value.code == E_BUDGET_EXCEEDED
@@ -144,7 +144,7 @@ async def test_a_step_over_the_bounded_timeout_is_refused_by_name(async_db_sessi
     monkeypatch.setattr(planner_service, "_proposal_sync", lambda p, r: calls.append("model") or {"ideas": ideas(3)})
     monkeypatch.setattr(planner_service, "PLANNER_STEP_TIMEOUT_SECONDS", 0.05, raising=False)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await planner_service.propose(async_db_session)
 
     assert excinfo.value.code == E_CLI_TIMEOUT
@@ -168,7 +168,7 @@ async def test_a_concurrent_propose_is_refused_while_one_is_in_flight(async_db_s
             await asyncio.sleep(0.01)
             if getattr(planner_service, "_PROPOSE_IN_FLIGHT", None):
                 break
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             await planner_service.propose(async_db_session)
         assert excinfo.value.code == E_TASK_CLAIMED
         assert excinfo.value.how_to_fix

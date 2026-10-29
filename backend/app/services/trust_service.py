@@ -62,7 +62,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.core.errors import E_EGRESS_BLOCKED, E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_EGRESS_BLOCKED, E_UPSTREAM, E_VALIDATION, MeridianError
 from app.core.timeutil import now_utc
 
 DOH_URL = "https://cloudflare-dns.com/dns-query"
@@ -122,8 +122,8 @@ def _cache_put(key: str, result: dict[str, Any]) -> None:
 
 def _host(value: Any) -> str:
     """A bare hostname or the named `E_VALIDATION` — no scheme, path, port or userinfo."""
-    def refuse(reason: str) -> PolsiaError:
-        return PolsiaError(
+    def refuse(reason: str) -> MeridianError:
+        return MeridianError(
             E_VALIDATION,
             f"domain_health: {value!r} is not a bare hostname ({reason})",
             how_to_fix='pass {"host": "example.com"} — letters, digits, dots and dashes only',
@@ -156,7 +156,7 @@ def _port_of(parsed: Any) -> int:
     try:
         port = parsed.port
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"link_status: {parsed.netloc!r} carries an invalid port",
             how_to_fix="use a URL on port 80 or 443",
@@ -169,8 +169,8 @@ def _port_of(parsed: Any) -> int:
 
 def _link_target(value: Any) -> str:
     """A safe-to-check http(s) URL, or the named `E_VALIDATION`."""
-    def refuse(reason: str) -> PolsiaError:
-        return PolsiaError(
+    def refuse(reason: str) -> MeridianError:
+        return MeridianError(
             E_VALIDATION,
             f"link_status: {value!r} is not a checkable URL ({reason})",
             how_to_fix='pass {"url": "https://example.com/page"} — public http(s) only',
@@ -191,7 +191,7 @@ def _link_target(value: Any) -> str:
     # removed surrounding whitespace, matching the owner route's own rule.
     for position, char in enumerate(text):
         if ord(char) < 0x20 or ord(char) == 0x7F:
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 "link_status: the url contains a control character that cannot be sent over HTTP",
                 how_to_fix=(
@@ -216,7 +216,7 @@ def _link_target(value: Any) -> str:
         raise refuse("credentials in a URL are refused")
     port = _port_of(parsed)
     if port not in ALLOWED_PORTS:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"link_status: port {port} on {parsed.hostname} is not allowed — only port 80 or 443 "
             "is checked",
@@ -259,7 +259,7 @@ def _public_address(text: str, host: str) -> str:
     try:
         ip = ipaddress.ip_address(text)
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: the DNS answer {text!r} for {host} is not an IP address",
             how_to_fix="retry; a resolver returned a non-address answer",
@@ -267,7 +267,7 @@ def _public_address(text: str, host: str) -> str:
         ) from exc
     label = _address_label(ip)
     if label is not None:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"link_status: the host {host} is a {label} address ({ip}) — non-public addresses "
             "are refused",
@@ -311,7 +311,7 @@ def _resolve_public(host: str, port: int) -> list[str]:
     for rrtype in ("A", "AAAA"):
         answer, status, error = _doh_leg(host, rrtype)
         if error is not None:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 f"link_status: the DNS {rrtype} lookup for {host} failed: {error}",
                 how_to_fix="retry; Cloudflare DoH is temporarily unavailable",
@@ -319,14 +319,14 @@ def _resolve_public(host: str, port: int) -> list[str]:
                          "leg": f"dns-{rrtype.lower()}"},
             )
         if status == 3:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 f"link_status: {host} does not resolve (NXDOMAIN)",
                 how_to_fix="check the hostname; nothing answers for it",
                 context={"field": "url", "host": host, "port": port, "status": 3},
             )
         if status != 0:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 f"link_status: the DNS {rrtype} lookup for {host} answered RCODE {status}",
                 how_to_fix="retry; if it persists the name is misconfigured",
@@ -334,7 +334,7 @@ def _resolve_public(host: str, port: int) -> list[str]:
             )
         addresses.extend(_vetted_addresses(answer, host))
     if not addresses:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: {host} has no A or AAAA address",
             how_to_fix="check the hostname; it resolves to no address",
@@ -345,8 +345,8 @@ def _resolve_public(host: str, port: int) -> list[str]:
 
 def _egress_host(value: Any) -> str:
     """A bare host or IP literal to resolve, or the named `E_EGRESS_BLOCKED` refusal."""
-    def refuse(reason: str) -> PolsiaError:
-        return PolsiaError(
+    def refuse(reason: str) -> MeridianError:
+        return MeridianError(
             E_EGRESS_BLOCKED,
             f"egress: {value!r} is not a host to resolve ({reason})",
             how_to_fix="pass a bare hostname or IP literal — no scheme, path, port or sign-in part",
@@ -392,7 +392,7 @@ def resolve_egress(host: str, port: int) -> list[str]:
     """
     name = _egress_host(host)
     if port not in ALLOWED_PORTS:
-        raise PolsiaError(
+        raise MeridianError(
             E_EGRESS_BLOCKED,
             f"egress: port {port!r} on {name!r} is not allowed — only port 80 or 443 may be "
             "dialled",
@@ -401,10 +401,10 @@ def resolve_egress(host: str, port: int) -> list[str]:
         )
     try:
         addresses = _resolve_public(name, int(port))
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # One code for the caller to catch, with the cause kept in `context["refused_by"]`: a
         # private answer and a dead resolver both mean "no vetted address, so nothing is dialled".
-        raise PolsiaError(
+        raise MeridianError(
             E_EGRESS_BLOCKED,
             f"egress: refusing {name!r}:{port} — {exc.message}",
             how_to_fix=exc.how_to_fix,
@@ -426,21 +426,21 @@ def _doh(host: str, rrtype: str) -> dict[str, Any]:
                 headers={"Accept": "application/dns-json", "User-Agent": USER_AGENT},
             )
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"domain_health: the DNS lookup for {host} timed out after {TIMEOUT_S:g}s",
             how_to_fix="retry once; Cloudflare DoH is slow or unreachable",
             context={"host": host, "leg": "dns", "type": rrtype},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"domain_health: the DNS transport failed for {host}: {type(exc).__name__}",
             how_to_fix="check egress to cloudflare-dns.com and retry",
             context={"host": host, "leg": "dns", "type": rrtype},
         ) from exc
     if response.status_code != 200:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"domain_health: the DNS resolver answered HTTP {response.status_code} for {host}",
             how_to_fix="retry; Cloudflare DoH is temporarily unavailable",
@@ -449,14 +449,14 @@ def _doh(host: str, rrtype: str) -> dict[str, Any]:
     try:
         payload = response.json()
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"domain_health: the DNS resolver returned non-JSON for {host}",
             how_to_fix="retry; the resolver is misbehaving",
             context={"host": host, "leg": "dns"},
         ) from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("Status"), int):
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"domain_health: the DNS answer for {host} carried no Status",
             how_to_fix="retry; the resolver answered outside its documented shape",
@@ -476,7 +476,7 @@ def _doh_leg(host: str, rrtype: str) -> tuple[list[str], int | None, str | None]
     """`_doh` with its refusal flattened into a field: (answers, status, error message)."""
     try:
         answer = _doh(host, rrtype)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         return [], None, exc.message
     if not isinstance(answer, dict):
         return [], None, "the DNS answer was not an object"
@@ -617,7 +617,7 @@ def check_domain(host: str) -> dict[str, Any]:
             # The answers are vetted with the module's own predicate BEFORE any socket exists, and
             # the socket then dials one of THOSE addresses — never the name (F-27).
             vetted = _vetted_addresses((*a, *aaaa), name)
-        except PolsiaError as exc:
+        except MeridianError as exc:
             # The contract of this module: a refusal is a FIELD, never an exception.  Nothing is
             # dialled — a private answer is not "unreachable", it is out of policy.
             tls = _tls_unreachable(f"refused: {exc.message}")
@@ -675,7 +675,7 @@ def _pinned_headers(
     replaced.
     """
     if headers is not None and any(key.lower() == "host" for key in headers):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "pinned_http_get: the Host header is derived from the url and may not be passed",
             how_to_fix="drop the Host header from `headers`; the pin sets it from the url",
@@ -700,7 +700,7 @@ def _pinned_url(url: str, address: str) -> httpx.URL:
     except (httpx.InvalidURL, TypeError, ValueError) as exc:
         # Defense in depth behind `_link_target`: httpx builds its own URL object and refuses
         # characters `urllib.parse` accepted, and `InvalidURL` is not an `httpx.HTTPError`.
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"link_status: {url!r} cannot be sent over HTTP ({exc})",
             how_to_fix="remove the unsendable characters (percent-encode them) and retry",
@@ -717,7 +717,7 @@ def _read_bounded(response: httpx.Response, *, max_bytes: int, url: str) -> byte
             continue
         total += len(chunk)
         if total > max_bytes:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM,
                 f"pinned_http_get: the response from {url} exceeded max_bytes={max_bytes} "
                 f"({total} bytes read) — refused, not truncated",
@@ -748,21 +748,21 @@ def pinned_http_get(
     in the same answer — still without resolving anything again.
     """
     if not isinstance(url, str) or not url.strip():
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "pinned_http_get: a non-empty url is required",
             how_to_fix='pass {"url": "https://..."}',
             context={"field": "url", "reason": "empty or not a string"},
         )
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"pinned_http_get: max_bytes must be a positive integer (got {max_bytes!r})",
             how_to_fix="pass a positive byte bound",
             context={"field": "max_bytes", "max_bytes": max_bytes},
         )
     if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"pinned_http_get: timeout must be a positive number of seconds (got {timeout!r})",
             how_to_fix="pass a positive timeout in seconds",
@@ -772,28 +772,28 @@ def pinned_http_get(
     try:
         parsed = urlparse(target)
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"pinned_http_get: {target!r} is not a URL ({exc})",
             how_to_fix="fix the URL shape (scheme, host, port)",
             context={"field": "url", "leg": "http"},
         ) from exc
     if parsed.scheme not in ("http", "https"):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"pinned_http_get: {target!r} is not http(s) — only http:// and https:// are fetched",
             how_to_fix="use an absolute http:// or https:// URL",
             context={"field": "url", "leg": "http"},
         )
     if not parsed.hostname:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"pinned_http_get: {target!r} has no host to fetch",
             how_to_fix="pass an absolute http(s) URL",
             context={"field": "url", "leg": "http"},
         )
     if parsed.username or parsed.password:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "pinned_http_get: credentials in a URL are refused",
             how_to_fix="move the credentials to the integration's own configuration",
@@ -818,20 +818,20 @@ def pinned_http_get(
                 failures.append(f"{address}: {type(exc).__name__}")
                 continue
             except httpx.TimeoutException as exc:
-                raise PolsiaError(
+                raise MeridianError(
                     E_UPSTREAM,
                     f"pinned_http_get: {target} timed out after {float(timeout):g}s",
                     how_to_fix="retry once; the host is slow or unreachable",
                     context={"url": target, "leg": "http", "address": address},
                 ) from exc
             except httpx.HTTPError as exc:
-                raise PolsiaError(
+                raise MeridianError(
                     E_UPSTREAM,
                     f"pinned_http_get: the request to {target} failed: {type(exc).__name__}",
                     how_to_fix="check the URL and retry; the host may refuse this client",
                     context={"url": target, "leg": "http", "address": address},
                 ) from exc
-    raise PolsiaError(
+    raise MeridianError(
         E_UPSTREAM,
         f"pinned_http_get: no vetted address for {host} accepted a connection "
         f"({'; '.join(failures)})",
@@ -861,14 +861,14 @@ def _fetch_headers(url: str, address: str) -> tuple[int, str | None]:
                 # Some servers refuse HEAD outright; the GET is the same resource, not a retry.
                 status, location = _request_headers(client, "GET", pinned, headers, extensions)
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: {url} timed out after {TIMEOUT_S:g}s",
             how_to_fix="retry once; the host is slow or unreachable",
             context={"url": url, "leg": "http", "address": address},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: the HTTP request to {url} failed: {type(exc).__name__}",
             how_to_fix="check the URL and retry; the host may refuse this client",
@@ -928,21 +928,21 @@ def _wayback(url: str) -> dict[str, Any]:
                 headers={"Accept": "application/json", "User-Agent": USER_AGENT},
             )
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: the Wayback API timed out after {TIMEOUT_S:g}s",
             how_to_fix="retry once; archive.org is slow",
             context={"url": url, "leg": "wayback"},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: the Wayback transport failed: {type(exc).__name__}",
             how_to_fix="retry once; archive.org may be unreachable",
             context={"url": url, "leg": "wayback"},
         ) from exc
     if response.status_code != 200:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"link_status: the Wayback API answered HTTP {response.status_code}",
             how_to_fix="retry later; the live status above is unaffected",
@@ -951,7 +951,7 @@ def _wayback(url: str) -> dict[str, Any]:
     try:
         payload = response.json()
     except ValueError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             "link_status: the Wayback API returned non-JSON",
             how_to_fix="retry later",
@@ -983,7 +983,7 @@ def check_link(url: str) -> dict[str, Any]:
     try:
         archived: dict[str, Any] | None = _wayback(target)
         archive_reason: str | None = None
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # The archive is a SECOND opinion about a dead link.  Its outage must not falsify the live
         # status, so it degrades to "not measured" — never to a fabricated "not archived".
         archived = None

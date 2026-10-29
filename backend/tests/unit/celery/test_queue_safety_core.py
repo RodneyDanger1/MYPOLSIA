@@ -26,7 +26,7 @@ import json
 
 from app.config import settings
 from app.core.database import utcnow
-from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, E_POLICY_DENIED, MeridianError
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ def test_invariant_2_a_failed_run_records_error_and_counts_the_failure(
     """
     task_id = queue_db.create_task(title="invariant-2-failure")
     spy = install_run_spy(
-        error_factory=lambda: PolsiaError(E_POLICY_DENIED, "test-only refusal: nothing was sent")
+        error_factory=lambda: MeridianError(E_POLICY_DENIED, "test-only refusal: nothing was sent")
     )
 
     outcome = execute_body(task_id)
@@ -246,7 +246,7 @@ def test_invariant_2_a_retryable_failure_requeues_the_row_for_its_retry(
     """
     task_id = queue_db.create_task(title="invariant-2-retryable")
     failing = install_run_spy(
-        error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "test-only transport failure")
+        error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "test-only transport failure")
     )
 
     first = execute_body(task_id)

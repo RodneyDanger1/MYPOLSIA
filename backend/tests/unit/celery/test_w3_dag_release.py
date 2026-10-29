@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 
-from app.core.errors import E_INTEGRATION, E_VALIDATION, PolsiaError
+from app.core.errors import E_INTEGRATION, E_VALIDATION, MeridianError
 from celery_app.tasks import agent_tasks
 
 # ── helpers (file truth; the broker is recorded, never touched) ────────────────────────────────
@@ -164,7 +164,7 @@ def test_a_terminal_failure_blocks_its_dependents_by_name_and_transitively(
         # A NON-retryable named refusal: the ladder is not going to run A again, so A's edge can
         # never be satisfied.  (`ValueError` would be treated as transient by `is_retryable` —
         # unexpected failures get a retry — so the terminal case is driven by a named code.)
-        error_factory=lambda: PolsiaError(
+        error_factory=lambda: MeridianError(
             E_VALIDATION, "the brief could not be drafted: the model returned no plan"
         ),
     )
@@ -217,7 +217,7 @@ def test_a_retryable_failure_settles_nothing_because_the_retry_is_coming(
     delivered = _install_delay_recorder(monkeypatch)
 
     def _retryable() -> Exception:
-        return PolsiaError(E_INTEGRATION, "the provider answered 503")
+        return MeridianError(E_INTEGRATION, "the provider answered 503")
 
     install_run_spy(delegate=False, error_factory=_retryable)
     a_id, b_id = _plan_dag(queue_db, chain=2)
@@ -383,7 +383,7 @@ def test_a_terminal_failure_blocks_a_dependent_beyond_the_global_batch(
     delivered = _install_delay_recorder(monkeypatch)
     install_run_spy(
         delegate=False,
-        error_factory=lambda: PolsiaError(E_VALIDATION, "the model returned no plan"),
+        error_factory=lambda: MeridianError(E_VALIDATION, "the model returned no plan"),
     )
     _seed_pending_backlog(queue_db, 200, depends_on=999_998)
     a_id, b_id = _plan_dag(queue_db, chain=2)

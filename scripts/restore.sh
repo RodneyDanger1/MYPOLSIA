@@ -6,10 +6,10 @@
 # verifies the result against a manifest it derives from the dump itself.
 #
 # WHAT IT DOES (never the live stack)
-#   1. validate the artifacts in --src: find the newest `polsia-*.sql`, require every canonical
+#   1. validate the artifacts in --src: find the newest `meridian-*.sql`, require every canonical
 #      volume archive (`*.tgz`), require each one to be a readable gzip tar, require the dump to
 #      carry a pg_dump header — otherwise exit 2 naming exactly what is wrong;
-#   2. `docker run -d --name polsia-restore-drill-pg` from `postgres:16-alpine` — NO published
+#   2. `docker run -d --name meridian-restore-drill-pg` from `postgres:16-alpine` — NO published
 #      ports, NO compose project, NO live volume, NO live network;
 #   3. wait for `pg_isready`, then `createdb`;
 #   4. load the dump — plain-SQL artifacts (what `make backup` and `scripts/backup.sh` write) go
@@ -26,10 +26,10 @@
 #   scripts/restore.sh --src backups --keep     # skip teardown (debugging; prints the manual rm)
 #
 # ENV (every value has a safe default)
-#   RESTORE_PG_CONTAINER=polsia-restore-drill-pg   throwaway container name (must not already exist)
+#   RESTORE_PG_CONTAINER=meridian-restore-drill-pg   throwaway container name (must not already exist)
 #   RESTORE_PG_IMAGE=postgres:16-alpine            image (pg_dump version must match the server)
-#   RESTORE_PG_PASSWORD=polsia_drill_pw            password INSIDE the throwaway container only
-#   POSTGRES_USER=polsia                           role created in the throwaway container
+#   RESTORE_PG_PASSWORD=meridian_drill_pw            password INSIDE the throwaway container only
+#   POSTGRES_USER=meridian                           role created in the throwaway container
 #   RESTORE_VOLUMES="backend_data chroma_data celery_beat_data redis_data"
 #   RESTORE_CORE_TABLES="activity_log agent_runs tasks memory_entries task_schedules chat_messages company_config"
 #
@@ -44,7 +44,7 @@ refuse() {
 }
 usage() {
     printf 'usage: restore.sh --src <backup-dir> [--dry-run] [--keep]\n'
-    printf '  <backup-dir> must hold a polsia-*.sql dump and the volume *.tgz archives\n'
+    printf '  <backup-dir> must hold a meridian-*.sql dump and the volume *.tgz archives\n'
     printf '  written by `make backup` or `scripts/backup.sh`.\n'
 }
 
@@ -82,10 +82,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-NAME=${RESTORE_PG_CONTAINER:-polsia-restore-drill-pg}
+NAME=${RESTORE_PG_CONTAINER:-meridian-restore-drill-pg}
 IMAGE=${RESTORE_PG_IMAGE:-postgres:16-alpine}
-PGPASSWORD_DRILL=${RESTORE_PG_PASSWORD:-polsia_drill_pw}
-PGUSER=${POSTGRES_USER:-polsia}
+PGPASSWORD_DRILL=${RESTORE_PG_PASSWORD:-meridian_drill_pw}
+PGUSER=${POSTGRES_USER:-meridian}
 VOLUMES=${RESTORE_VOLUMES:-"backend_data chroma_data celery_beat_data redis_data"}
 CORE_TABLES=${RESTORE_CORE_TABLES:-"activity_log agent_runs tasks memory_entries task_schedules chat_messages company_config"}
 
@@ -96,12 +96,12 @@ if [ ! -d "$SRC" ]; then
     refuse "backup directory \"$SRC\" does not exist — run 'make backup' first, or point --src at a real backup dir"
 fi
 
-dump_count=$(ls -1 "$SRC"/polsia-*.sql 2>/dev/null | wc -l | tr -d ' ')
+dump_count=$(ls -1 "$SRC"/meridian-*.sql 2>/dev/null | wc -l | tr -d ' ')
 if [ "$dump_count" -eq 0 ]; then
-    refuse "no polsia-*.sql database dump in \"$SRC\" — run 'make backup' first, or point --src at a real backup dir"
+    refuse "no meridian-*.sql database dump in \"$SRC\" — run 'make backup' first, or point --src at a real backup dir"
 fi
 # Newest dump wins when a dir holds several (backup.sh leaves one per cycle).
-dump=$(ls -1t "$SRC"/polsia-*.sql 2>/dev/null | head -n 1)
+dump=$(ls -1t "$SRC"/meridian-*.sql 2>/dev/null | head -n 1)
 if [ "$dump_count" -gt 1 ]; then
     log "note: $dump_count dumps in $SRC — using the newest: $dump"
 fi
@@ -149,13 +149,13 @@ print_plan() {
     printf '  volumes   : %s\n' "$VOLUMES"
     printf '  commands  : docker run -d --name %s -e POSTGRES_PASSWORD=*** -e POSTGRES_USER=%s -e POSTGRES_DB=postgres %s\n' "$NAME" "$PGUSER" "$IMAGE"
     printf '              docker exec %s pg_isready -U %s -d postgres\n' "$NAME" "$PGUSER"
-    printf '              docker exec %s createdb -U %s polsia\n' "$NAME" "$PGUSER"
+    printf '              docker exec %s createdb -U %s meridian\n' "$NAME" "$PGUSER"
     if [ "$format" = custom ]; then
-        printf '              docker exec -i %s pg_restore -U %s -d polsia --no-owner --no-privileges < %s\n' "$NAME" "$PGUSER" "$dump"
+        printf '              docker exec -i %s pg_restore -U %s -d meridian --no-owner --no-privileges < %s\n' "$NAME" "$PGUSER" "$dump"
     else
-        printf '              docker exec -i %s psql -U %s -d polsia -v ON_ERROR_STOP=1 < %s\n' "$NAME" "$PGUSER" "$dump"
+        printf '              docker exec -i %s psql -U %s -d meridian -v ON_ERROR_STOP=1 < %s\n' "$NAME" "$PGUSER" "$dump"
     fi
-    printf '              docker exec %s psql -U %s -d polsia -tAc "select count(*) from public.<table>"  (per core table)\n' "$NAME" "$PGUSER"
+    printf '              docker exec %s psql -U %s -d meridian -tAc "select count(*) from public.<table>"  (per core table)\n' "$NAME" "$PGUSER"
     printf '              tar xzf <volume>.tgz into a temp dir; every listed member must materialise\n'
     printf '              docker rm -f %s   (ALWAYS, via trap — success, failure, Ctrl-C, SIGTERM)\n' "$NAME"
     printf '  guard     : refuses to run if a container named %s already exists\n' "$NAME"
@@ -180,7 +180,7 @@ if printf '%s\n' "$existing" | grep -qx "$NAME"; then
 fi
 
 # ── 4. temp dir + teardown trap ─────────────────────────────────────────────────────────────
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/polsia-restore-drill.XXXXXX") || refuse "cannot create a temp work dir"
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/meridian-restore-drill.XXXXXX") || refuse "cannot create a temp work dir"
 STARTED=0
 cleanup() {
     if [ "$STARTED" -eq 1 ]; then
@@ -244,12 +244,12 @@ log "postgres ready"
 # (the same drill passed locally, which is exactly what a race looks like).  Retry the transient
 # failure with a bound; an existing database is success (idempotent re-entry), anything else after
 # 30 s is a real refusal.
-log "command: docker exec $NAME createdb -U $PGUSER polsia (retrying transient init-server gaps)"
+log "command: docker exec $NAME createdb -U $PGUSER meridian (retrying transient init-server gaps)"
 createdb_ok=0
 attempt=0
 while [ "$attempt" -lt 30 ]; do
     attempt=$((attempt + 1))
-    if docker exec "$NAME" createdb -U "$PGUSER" polsia >"$WORK/createdb.log" 2>&1; then
+    if docker exec "$NAME" createdb -U "$PGUSER" meridian >"$WORK/createdb.log" 2>&1; then
         createdb_ok=1
         break
     fi
@@ -291,25 +291,25 @@ fi
 
 # ── 7. load ─────────────────────────────────────────────────────────────────────────────────
 if [ "$format" = custom ]; then
-    log "command: docker exec -i $NAME pg_restore -U $PGUSER -d polsia --no-owner --no-privileges < $dump"
-    if ! docker exec -i "$NAME" pg_restore -U "$PGUSER" -d polsia --no-owner --no-privileges < "$dump" >"$WORK/load.log" 2>&1; then
+    log "command: docker exec -i $NAME pg_restore -U $PGUSER -d meridian --no-owner --no-privileges < $dump"
+    if ! docker exec -i "$NAME" pg_restore -U "$PGUSER" -d meridian --no-owner --no-privileges < "$dump" >"$WORK/load.log" 2>&1; then
         log "ERROR: pg_restore failed (last lines):"
         tail -n 15 "$WORK/load.log"
         log "RESULT: FAIL (dump did not restore)"
         exit 1
     fi
 else
-    log "command: docker exec -i $NAME psql -U $PGUSER -d polsia -v ON_ERROR_STOP=1 < $dump"
-    if ! docker exec -i "$NAME" psql -U "$PGUSER" -d polsia -v ON_ERROR_STOP=1 -q < "$dump" >"$WORK/load.log" 2>&1; then
+    log "command: docker exec -i $NAME psql -U $PGUSER -d meridian -v ON_ERROR_STOP=1 < $dump"
+    if ! docker exec -i "$NAME" psql -U "$PGUSER" -d meridian -v ON_ERROR_STOP=1 -q < "$dump" >"$WORK/load.log" 2>&1; then
         log "ERROR: psql load failed (last lines):"
         tail -n 15 "$WORK/load.log"
         log "RESULT: FAIL (dump did not restore)"
         exit 1
     fi
 fi
-log "dump restored into $NAME/polsia"
+log "dump restored into $NAME/meridian"
 
-q() { docker exec "$NAME" psql -U "$PGUSER" -d polsia -t -A -q -c "$1" 2>/dev/null | tr -d '\r' | head -n 1; }
+q() { docker exec "$NAME" psql -U "$PGUSER" -d meridian -t -A -q -c "$1" 2>/dev/null | tr -d '\r' | head -n 1; }
 
 # ── 8. verification: table count + row counts ───────────────────────────────────────────────
 if [ "$format" = plain ]; then

@@ -4,10 +4,10 @@
 overrides *that object* (`app.dependency_overrides[get_db] = ...`), so routes must
 depend on the same import.
 
-Refusals: services raise `PolsiaError` with an `E_*` code instead of returning a
+Refusals: services raise `MeridianError` with an `E_*` code instead of returning a
 plausible empty shape.  `refusal_guard()` turns that into an HTTP response that keeps
 the code, the message and the fix hint in the body — the caller never gets a bare 500
-with no explanation, and a non-`PolsiaError` still propagates as a real bug.
+with no explanation, and a non-`MeridianError` still propagates as a real bug.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from app.core.errors import (  # noqa: F401  (re-exported)
     E_TASK_NOT_RUNNABLE,
     E_VALIDATION,
     HTTP_STATUS_BY_CODE,
-    PolsiaError,
+    MeridianError,
 )
 from app.core.security import check_api_key, verify_api_key  # noqa: F401  (re-exported)
 
@@ -56,7 +56,7 @@ def refusal_status(code: str) -> int:
     return STATUS_BY_CODE.get(code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-def as_http_exception(exc: PolsiaError) -> HTTPException:
+def as_http_exception(exc: MeridianError) -> HTTPException:
     """The HTTP form of a refusal: same code, same fix hint, no lost detail."""
     return HTTPException(
         status_code=refusal_status(exc.code),
@@ -71,7 +71,7 @@ def as_http_exception(exc: PolsiaError) -> HTTPException:
 
 
 def refusal_guard():
-    """Context manager: raise `PolsiaError` in a route body, get the named refusal out.
+    """Context manager: raise `MeridianError` in a route body, get the named refusal out.
 
     Use it INSIDE the route function body::
 
@@ -88,7 +88,7 @@ def refusal_guard():
     (measured: 9 shipped tests failed).  A context manager leaves the signature
     untouched.
 
-    Only `PolsiaError` is translated; everything else keeps propagating (an
+    Only `MeridianError` is translated; everything else keeps propagating (an
     unexpected exception is a bug, not a refusal, and hiding it behind a tidy 503
     would undo the point of this module).
     """
@@ -97,7 +97,7 @@ def refusal_guard():
     def _guard():
         try:
             yield
-        except PolsiaError as exc:
+        except MeridianError as exc:
             raise as_http_exception(exc) from exc
 
     return _guard()

@@ -267,11 +267,11 @@ async def test_uploaded_extension_is_derived_from_the_sniffed_bytes_not_the_clie
 
 @pytest.mark.asyncio
 async def test_a_non_image_is_refused_by_name_and_nothing_is_written(async_db_session, attachments_root):
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
     from app.services import task_attachment_service as svc
 
     task = await _seed_task(async_db_session)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await svc.save_attachment(
             async_db_session, task_id=task.id, filename="innocent.png", data=b"GIF89a...."
         )
@@ -283,12 +283,12 @@ async def test_a_non_image_is_refused_by_name_and_nothing_is_written(async_db_se
 
 @pytest.mark.asyncio
 async def test_the_per_file_cap_is_five_mebibytes(async_db_session, attachments_root):
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
     from app.services import task_attachment_service as svc
 
     assert svc.MAX_UPLOAD_BYTES == 5 * 1024 * 1024
     task = await _seed_task(async_db_session)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await svc.save_attachment(
             async_db_session, task_id=task.id, filename="huge.png",
             data=png_of_size(svc.MAX_UPLOAD_BYTES + 1),
@@ -300,7 +300,7 @@ async def test_the_per_file_cap_is_five_mebibytes(async_db_session, attachments_
 
 @pytest.mark.asyncio
 async def test_the_four_per_task_cap_is_refused_by_name(async_db_session, attachments_root):
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
     from app.services import task_attachment_service as svc
 
     task = await _seed_task(async_db_session)
@@ -308,7 +308,7 @@ async def test_the_four_per_task_cap_is_refused_by_name(async_db_session, attach
         await svc.save_attachment(
             async_db_session, task_id=task.id, filename=f"{index}.png", data=PNG_1PX
         )
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await svc.save_attachment(
             async_db_session, task_id=task.id, filename="fifth.png", data=PNG_1PX
         )
@@ -321,7 +321,7 @@ async def test_the_four_per_task_cap_is_refused_by_name(async_db_session, attach
 async def test_the_per_task_total_byte_cap_is_refused_by_name(
     async_db_session, attachments_root, monkeypatch
 ):
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
     from app.services import task_attachment_service as svc
 
     monkeypatch.setattr(svc, "MAX_TASK_TOTAL_BYTES", 4096)
@@ -329,7 +329,7 @@ async def test_the_per_task_total_byte_cap_is_refused_by_name(
     await svc.save_attachment(
         async_db_session, task_id=task.id, filename="a.png", data=png_of_size(3000)
     )
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await svc.save_attachment(
             async_db_session, task_id=task.id, filename="b.png", data=png_of_size(2000)
         )
@@ -342,7 +342,7 @@ async def test_the_per_task_total_byte_cap_is_refused_by_name(
 async def test_a_stored_name_with_separators_can_never_escape_the_task_directory(
     async_db_session, attachments_root
 ):
-    from app.core.errors import E_NOT_FOUND, PolsiaError
+    from app.core.errors import E_NOT_FOUND, MeridianError
     from app.models.task import TaskAttachment
     from app.services import task_attachment_service as svc
 
@@ -353,7 +353,7 @@ async def test_a_stored_name_with_separators_can_never_escape_the_task_directory
     )
     async_db_session.add(row)
     await async_db_session.commit()
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         svc.attachment_path(row)
     assert excinfo.value.code == E_NOT_FOUND
 
@@ -607,14 +607,14 @@ def test_with_images_the_user_message_becomes_text_plus_image_url_parts(monkeypa
 
 def test_images_over_the_total_payload_cap_refuse_by_name_before_any_http(monkeypatch):
     from app.agents import deepseek_runtime
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
 
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: "sk-test")
     monkeypatch.setattr(deepseek_runtime, "VISION_MAX_TOTAL_BYTES", 64)
     wire = _Wire()
     data_uri = "data:image/png;base64," + base64.b64encode(PNG_1PX).decode("ascii")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         deepseek_runtime.invoke(
             _inv(), client=wire.client, api_key="sk-test",
             images=[{"mime": "image/png", "data_uri": data_uri}],
@@ -626,7 +626,7 @@ def test_images_over_the_total_payload_cap_refuse_by_name_before_any_http(monkey
 
 def test_an_image_part_with_an_unsupported_mime_or_a_malformed_data_uri_is_refused(monkeypatch):
     from app.agents import deepseek_runtime
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
 
     monkeypatch.setattr(deepseek_runtime, "_resolve_api_key", lambda: "sk-test")
     wire = _Wire()
@@ -636,7 +636,7 @@ def test_an_image_part_with_an_unsupported_mime_or_a_malformed_data_uri_is_refus
         {"mime": "image/png", "data_uri": "https://example.com/a.png"},
         {"mime": "image/png", "data_uri": "data:image/png;base64"},
     ):
-        with pytest.raises(PolsiaError) as excinfo:
+        with pytest.raises(MeridianError) as excinfo:
             deepseek_runtime.invoke(_inv(), client=wire.client, api_key="sk-test", images=[bad])
         assert excinfo.value.code == E_VALIDATION
     assert wire.bodies == []
@@ -749,7 +749,7 @@ def test_attachment_refs_and_image_parts_carry_the_stored_bytes(attachments_root
 
 
 def test_image_parts_refuse_a_file_whose_bytes_are_not_the_recorded_type(attachments_root):
-    from app.core.errors import E_UPSTREAM, PolsiaError
+    from app.core.errors import E_UPSTREAM, MeridianError
     from app.services import task_attachment_service as svc
 
     task_dir = attachments_root / "task-7"
@@ -758,7 +758,7 @@ def test_image_parts_refuse_a_file_whose_bytes_are_not_the_recorded_type(attachm
     refs = [{"id": 1, "task_id": 7, "filename": "shot.png", "mime": "image/png",
              "stored_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"}]
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         svc.image_parts(refs)
     assert excinfo.value.code == E_UPSTREAM
 
@@ -766,7 +766,7 @@ def test_image_parts_refuse_a_file_whose_bytes_are_not_the_recorded_type(attachm
 def test_image_parts_enforce_the_per_task_total_cap_before_building_a_payload(
     attachments_root, monkeypatch
 ):
-    from app.core.errors import E_VALIDATION, PolsiaError
+    from app.core.errors import E_VALIDATION, MeridianError
     from app.services import task_attachment_service as svc
 
     monkeypatch.setattr(svc, "MAX_TASK_TOTAL_BYTES", 64)
@@ -776,16 +776,16 @@ def test_image_parts_enforce_the_per_task_total_cap_before_building_a_payload(
     refs = [{"id": 1, "task_id": 7, "filename": "shot.png", "mime": "image/png",
              "stored_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"}]
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         svc.image_parts(refs)
     assert excinfo.value.code == E_VALIDATION
     assert excinfo.value.context["limit_bytes"] == 64
 
 
 def test_set_run_context_publishes_the_task_title_and_attachment_refs(attachments_root):
-    from app.agents.base_agent import BasePolsiaAgent
+    from app.agents.base_agent import BaseMeridianAgent
 
-    class _Probe(BasePolsiaAgent):
+    class _Probe(BaseMeridianAgent):
         agent_type = "finance"
 
         def run(self, task, context):  # pragma: no cover
@@ -813,9 +813,9 @@ def test_set_run_context_publishes_the_task_title_and_attachment_refs(attachment
 def test_a_run_with_images_and_no_deepseek_runtime_refuses_by_name(monkeypatch, attachments_root):
     """The CLI path cannot carry images: answering without them would silently drop the input."""
     from app.agents import base_agent, deepseek_runtime
-    from app.core.errors import E_CONFIG, PolsiaError
+    from app.core.errors import E_CONFIG, MeridianError
 
-    class _Probe(base_agent.BasePolsiaAgent):
+    class _Probe(base_agent.BaseMeridianAgent):
         agent_type = "finance"
 
         def run(self, task, context):  # pragma: no cover
@@ -832,7 +832,7 @@ def test_a_run_with_images_and_no_deepseek_runtime_refuses_by_name(monkeypatch, 
         "attachments": [{"id": 1, "task_id": 9, "mime": "image/png",
                          "stored_name": "b" * 32 + ".png", "filename": "a.png"}],
     })
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         probe._real_call("hello")
     assert excinfo.value.code == E_CONFIG
     assert "WITHOUT seeing them" in excinfo.value.message
@@ -842,7 +842,7 @@ def test_real_call_hands_the_title_and_the_images_to_the_runtime(monkeypatch, at
     """The seam the whole lane hangs on: `_real_call` -> `runtime.invoke(task_title=, images=)`."""
     from app.agents import base_agent, claude_cli, deepseek_runtime
 
-    class _Probe(base_agent.BasePolsiaAgent):
+    class _Probe(base_agent.BaseMeridianAgent):
         agent_type = "finance"
 
         def run(self, task, context):  # pragma: no cover

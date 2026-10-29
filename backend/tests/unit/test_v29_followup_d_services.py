@@ -12,7 +12,7 @@ docstring is not kept by the code.
 * `trust_service` promises "Failures are never cached".  `check_domain` cached a DoH transport
   failure and a TLS handshake failure for the full hour, so a recovered source stayed invisible.
 * `fx_service` promises that a bad amount is the named `E_VALIDATION` refusal and that every
-  conversion failure is a `PolsiaError`.  An integer too large for a float raised
+  conversion failure is a `MeridianError`.  An integer too large for a float raised
   `OverflowError` in `math.isfinite`, and an amount whose cent-precise product exceeded
   `Decimal`'s precision raised `decimal.InvalidOperation` out of the money path.
 
@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import pytest
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.services import fx_service, signals_service, trust_service
 
 HN = "news.ycombinator.com"
@@ -132,7 +132,7 @@ def _doh_stub(monkeypatch: pytest.MonkeyPatch, state: dict[str, Any]) -> None:
 
     def fake(host: str, rrtype: str) -> dict[str, Any]:
         if state["fail"]:
-            raise PolsiaError(
+            raise MeridianError(
                 E_UPSTREAM, "domain_health: the DNS resolver answered HTTP 503"
             )
         return {"status": 0, "answers": [PUBLIC_V4] if rrtype == "A" else []}
@@ -244,7 +244,7 @@ def test_a_control_character_url_is_refused_by_name_before_any_lookup(monkeypatc
     """
     doh_calls, http_calls = _trust_no_network(monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         trust_service.check_link(CONTROL_URL)
 
     assert caught.value.code == E_VALIDATION
@@ -257,7 +257,7 @@ def test_a_control_character_url_is_refused_by_name_before_any_lookup(monkeypatc
 def test_the_link_status_tool_runner_returns_the_named_refusal_not_an_internal_error(monkeypatch):
     """The tool path calls `check_link` directly; the same refusal must reach the model.
 
-    `_run_link_status` translates `PolsiaError` only, so an escaping `InvalidURL` would surface
+    `_run_link_status` translates `MeridianError` only, so an escaping `InvalidURL` would surface
     as an internal failure (or a bare 500 at the route B owns).  The runner must answer
     `ok:false` with `E_VALIDATION` and make no network call.
     """
@@ -319,7 +319,7 @@ def test_an_integer_too_large_for_a_float_is_refused_by_name_before_any_request(
     """
     calls = _fx_stub(monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10**400, "EUR", "USD")
 
     assert caught.value.code == E_VALIDATION
@@ -336,7 +336,7 @@ def test_an_amount_too_large_for_cent_precision_is_refused_by_name(monkeypatch):
     """
     _fx_stub(monkeypatch)
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         fx_service.convert(10**30, "USD", "JPY")
 
     assert caught.value.code == E_VALIDATION

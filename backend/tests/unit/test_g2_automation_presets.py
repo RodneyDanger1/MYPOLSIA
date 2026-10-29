@@ -5,7 +5,7 @@ What this file pins (the frozen interface of `app/services/automation_presets.py
 * The PRESET TABLE mirrors the ORIGINAL's start-modal evidence — Cold Outreach offers
   ONCE/DAILY/WEEKDAYS/WEEKLY (`agent2-code/cap-07.md`), Support offers ONCE/DAILY
   (`cap-08.md`), Meta Ads setup "creates a Meta Ads - Daily task"
-  (help.polsia.com/how-to-run-meta-ads, fetched 2026-10-15) — and every frequency value is a
+  (help.meridian.com/how-to-run-meta-ads, fetched 2026-10-15) — and every frequency value is a
   member of the task-schedules store's value set (`ScheduleCadence`), so the table cannot
   drift from what the store can persist.
 * `estimate_runs_per_month` is COUNTED over a fixed 30-day window (2024-01-01, a Monday) and
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.schedule import ScheduleCadence, schedule_cadence_values
 from app.services.automation_presets import (
     DEFAULTS,
@@ -89,14 +89,14 @@ def test_weekly_estimate_counts_real_occurrences_per_weekday() -> None:
 
 
 def test_estimate_refuses_unknown_cadence_and_bad_weekday() -> None:
-    with pytest.raises(PolsiaError) as unknown:
+    with pytest.raises(MeridianError) as unknown:
         estimate_runs_per_month("fortnightly")
     assert unknown.value.code == E_VALIDATION
     assert unknown.value.how_to_fix
-    with pytest.raises(PolsiaError) as bad_day:
+    with pytest.raises(MeridianError) as bad_day:
         estimate_runs_per_month("weekly", weekday=7)
     assert bad_day.value.code == E_VALIDATION
-    with pytest.raises(PolsiaError) as bool_day:
+    with pytest.raises(MeridianError) as bool_day:
         estimate_runs_per_month("weekly", weekday=True)  # bool is not a weekday
     assert bool_day.value.code == E_VALIDATION
 
@@ -138,20 +138,20 @@ def test_build_schedule_spec_name_and_prompt_override() -> None:
 
 
 def test_build_schedule_spec_refusals_by_name() -> None:
-    with pytest.raises(PolsiaError) as unknown:
+    with pytest.raises(MeridianError) as unknown:
         build_schedule_spec("cold_outreach_v2", "daily", hour=9, now=NOW, tz=CHI)
     assert unknown.value.code == E_VALIDATION
     assert unknown.value.how_to_fix
-    with pytest.raises(PolsiaError) as not_offered:
+    with pytest.raises(MeridianError) as not_offered:
         build_schedule_spec("support", "weekly", hour=9, weekday=0, now=NOW, tz=CHI)
     assert not_offered.value.code == E_VALIDATION
     assert "once" in not_offered.value.how_to_fix  # the fix names what IS offered
     # store rules propagate by name: weekly with no weekday, hour out of range
-    with pytest.raises(PolsiaError) as no_weekday:
+    with pytest.raises(MeridianError) as no_weekday:
         build_schedule_spec("cold_outreach", "weekly", hour=9, now=NOW, tz=CHI)
     assert no_weekday.value.code == E_VALIDATION
     assert no_weekday.value.how_to_fix
-    with pytest.raises(PolsiaError) as bad_hour:
+    with pytest.raises(MeridianError) as bad_hour:
         build_schedule_spec("support", "daily", hour=24, now=NOW, tz=CHI)
     assert bad_hour.value.code == E_VALIDATION
 

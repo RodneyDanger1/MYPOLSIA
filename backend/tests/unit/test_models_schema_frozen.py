@@ -95,7 +95,7 @@ four `notify_on_*` BOOLEAN NOT NULL DEFAULT false toggles — all appended after
 RE-PINNED DELIBERATELY (V8 seat c2-schema-wiring, 2026-10-14; plan §7 C2): wave V8's ONE
 migration `backend/alembic/versions/0008_chat_schedules_invoices.py` adds THREE tables (19 tables
 -> 22): `chat_messages` — C1's conversation store (`role` VARCHAR(50) with the named
-`ck_chat_messages_role` CHECK over owner|polsia, `intent` JSON nullable, `task_id` FK -> tasks.id
+`ck_chat_messages_role` CHECK over owner|meridian, `intent` JSON nullable, `task_id` FK -> tasks.id
 nullable, `created_at` NOT NULL default now()); `task_schedules` — the cadence store (`cadence`
 VARCHAR(50) with the named `ck_task_schedules_cadence` CHECK over once|daily|weekdays|weekly,
 `hour` NOT NULL, `weekday` nullable, `enabled` BOOLEAN NOT NULL server default false,

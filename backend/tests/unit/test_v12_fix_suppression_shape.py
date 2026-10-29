@@ -23,7 +23,7 @@ import pytest
 
 from app.agents import integrations
 from app.agents.email_outreach import compliance_send
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CONFIG, E_POLICY_DENIED, MeridianError
 from app.services.email_compliance import send_compliant_email
 
 SUPPRESSED = "optedout@example.com"
@@ -56,9 +56,9 @@ def _preflight_without_suppressed() -> dict[str, Any]:
     return {"company": dict(COMPANY)}
 
 
-async def _refusal(monkeypatch: pytest.MonkeyPatch, preflight: dict[str, Any], *, to: str = SUPPRESSED) -> PolsiaError:
+async def _refusal(monkeypatch: pytest.MonkeyPatch, preflight: dict[str, Any], *, to: str = SUPPRESSED) -> MeridianError:
     sent = _provider(monkeypatch)
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         await send_compliant_email(
             None, to=to, subject="s", body="b", preflight=preflight
         )
@@ -131,7 +131,7 @@ async def test_an_empty_list_still_sends(monkeypatch):
 
 def test_the_agent_seam_propagates_the_named_refusal(monkeypatch):
     sent = _provider(monkeypatch)
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         compliance_send.send_outreach_email(
             to=SUPPRESSED, subject="s", body="b", context={"compliance": _preflight(SUPPRESSED)}
         )

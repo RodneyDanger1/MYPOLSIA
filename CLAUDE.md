@@ -43,7 +43,7 @@ make test        # unit + integration (via Docker)
 
 ## Architecture in one paragraph
 
-FastAPI (async, Python 3.12) serves the REST API and WebSocket. Celery workers pull tasks from Redis and run agents. Each agent inherits `BasePolsiaAgent`; the runtime is provider-selectable — DeepSeek-first (`app/agents/deepseek_runtime.py`, OpenAI-compatible endpoint) with the Claude Code CLI (`claude -p "..." --output-format json`) as fallback. Results are written to PostgreSQL (SQLAlchemy async ORM, 26 tables) and semantic insights are dual-written to ChromaDB. Redis pub/sub broadcasts activity events to the WebSocket, which the Next.js dashboard consumes in real-time. `CLAUDE_CLI_MOCK=true` makes all agents return a stub response — used in all tests and CI.
+FastAPI (async, Python 3.12) serves the REST API and WebSocket. Celery workers pull tasks from Redis and run agents. Each agent inherits `BaseMeridianAgent`; the runtime is provider-selectable — DeepSeek-first (`app/agents/deepseek_runtime.py`, OpenAI-compatible endpoint) with the Claude Code CLI (`claude -p "..." --output-format json`) as fallback. Results are written to PostgreSQL (SQLAlchemy async ORM, 26 tables) and semantic insights are dual-written to ChromaDB. Redis pub/sub broadcasts activity events to the WebSocket, which the Next.js dashboard consumes in real-time. `CLAUDE_CLI_MOCK=true` makes all agents return a stub response — used in all tests and CI.
 
 ## Critical env vars for development
 
@@ -81,7 +81,7 @@ All ORM models use `JSON` instead of `JSONB` or `ARRAY(String)` — this makes t
 
 ## Adding a new agent
 
-1. Create `backend/app/agents/<name>/agent.py` with a class inheriting `BasePolsiaAgent`
+1. Create `backend/app/agents/<name>/agent.py` with a class inheriting `BaseMeridianAgent`
 2. Add `"<name>": ("app.agents.<name>.agent", "<ClassName>")` to `AGENT_MAP` in `crew_factory.py`
 3. Add the agent type string to `VALID_AGENT_TYPES` in `task_service.py`
 4. Add a Beat schedule entry in `celery_app/beat_schedule.py` if it needs periodic runs

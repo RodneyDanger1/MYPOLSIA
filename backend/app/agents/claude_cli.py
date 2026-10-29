@@ -53,7 +53,7 @@ from app.core.errors import (
     E_PROMPT_TOO_LARGE,
     E_STORAGE,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 
 # ── platform transport limits (CLI-CONTRACT.md §7) ───────────────────────────────────────────
@@ -87,7 +87,7 @@ SAFE_ENV_PASSTHROUGH = (
     "CLAUDE_CODE_PROMPT_CACHE_TTL",
 )
 
-SPILL_PLACEHOLDER = "@@POLSIA_SYSTEM_PROMPT_FILE@@"
+SPILL_PLACEHOLDER = "@@MERIDIAN_SYSTEM_PROMPT_FILE@@"
 
 
 # ── run-workspace + child-environment containment (AC-02) ───────────────────────────────────
@@ -117,7 +117,7 @@ SPILL_PLACEHOLDER = "@@POLSIA_SYSTEM_PROMPT_FILE@@"
 
 #: Operator override for the run-workspace ROOT.  A relative value is anchored at the backend
 #: directory (the `deepseek_key_file` anchoring rule), never at the process cwd.
-CLI_WORKSPACE_ROOT_ENV = "POLSIA_CLI_WORKSPACE_ROOT"
+CLI_WORKSPACE_ROOT_ENV = "MERIDIAN_CLI_WORKSPACE_ROOT"
 
 #: Layout under the root: `<root>/runs/<name>` — the same `runs/` shape tool_registry uses for
 #: workspace-bound registry tools, so an operator has one place to look.
@@ -163,7 +163,7 @@ def _absolute(raw: str | Path) -> Path:
 def secret_store_paths() -> tuple[Path, ...]:
     """Every local credential store this process knows about, resolved defensively at call time.
 
-    The two stores are the ones `services/secret_store.py` really writes (`POLSIA_SECRETS_FILE` /
+    The two stores are the ones `services/secret_store.py` really writes (`MERIDIAN_SECRETS_FILE` /
     `DEEPSEEK_KEY_FILE`, else the repo-anchored defaults) plus the backend `.env`, which
     docker-compose exports into the container and which the README documents as the place
     deployment credentials live.  This is a *containment* list, not a reader: nothing here logs,
@@ -175,7 +175,7 @@ def secret_store_paths() -> tuple[Path, ...]:
     # could never be checked by a census and could never be configured while the field was absent.
     for env_name, value, default in (
         ("DEEPSEEK_KEY_FILE", settings.deepseek_key_file, "data/deepseek_api_key.json"),
-        ("POLSIA_SECRETS_FILE", settings.secrets_file, "data/secrets.json"),
+        ("MERIDIAN_SECRETS_FILE", settings.secrets_file, "data/secrets.json"),
     ):
         raw = os.environ.get(env_name) or value or default
         candidates.append(str(raw))
@@ -184,9 +184,9 @@ def secret_store_paths() -> tuple[Path, ...]:
 
 
 def cli_workspace_root() -> Path:
-    """The root a CLI run directory may live under: `POLSIA_CLI_WORKSPACE_ROOT`, else the OS temp."""
+    """The root a CLI run directory may live under: `MERIDIAN_CLI_WORKSPACE_ROOT`, else the OS temp."""
     raw = (os.getenv(CLI_WORKSPACE_ROOT_ENV) or "").strip()
-    return _absolute(raw) if raw else _absolute(Path(tempfile.gettempdir()) / "polsia-cli-workspace")
+    return _absolute(raw) if raw else _absolute(Path(tempfile.gettempdir()) / "meridian-cli-workspace")
 
 
 def _new_run_name() -> str:
@@ -204,7 +204,7 @@ def planned_run_workspace(
     base = _absolute(root) if root is not None else cli_workspace_root()
     name = run_id or _new_run_name()
     if not _RUN_NAME_RE.fullmatch(name):
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"refusing a CLI run workspace with the invalid name {name!r}",
             how_to_fix="pass a run id of 1-64 letters, digits, '.', '_' or '-' (no separators)",
@@ -213,7 +213,7 @@ def planned_run_workspace(
     return base / CLI_RUNS_SUBDIR / name
 
 
-def workspace_refusal(directory: str | Path) -> PolsiaError | None:
+def workspace_refusal(directory: str | Path) -> MeridianError | None:
     """The named refusal for an unsafe run cwd, or None when the directory is acceptable.
 
     Unsafe is BOTH directions:
@@ -233,7 +233,7 @@ def workspace_refusal(directory: str | Path) -> PolsiaError | None:
         except (OSError, ValueError):  # pragma: no cover - cross-drive comparison raises ValueError
             continue
         if contains:
-            return PolsiaError(
+            return MeridianError(
                 E_POLICY_DENIED,
                 f"refusing to run the CLI with cwd {str(resolved)!r}: it contains (or is) the "
                 f"credential store {str(secret)!r}, so a bare relative read could open a secret",
@@ -244,7 +244,7 @@ def workspace_refusal(directory: str | Path) -> PolsiaError | None:
                 context={"cwd": str(resolved), "credential_store": str(secret)},
             )
         if inside:
-            return PolsiaError(
+            return MeridianError(
                 E_POLICY_DENIED,
                 f"refusing to run the CLI with cwd {str(resolved)!r}: it is inside "
                 f"{str(secret_dir)!r}, the directory that holds the credential store "
@@ -272,7 +272,7 @@ def ensure_run_workspace(directory: str | Path | None = None) -> Path:
     try:
         candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the CLI run workspace {str(candidate)!r} could not be created "
             f"({type(exc).__name__}: {exc})",
@@ -283,7 +283,7 @@ def ensure_run_workspace(directory: str | Path | None = None) -> Path:
             context={"cwd": str(candidate)},
         ) from exc
     if not candidate.is_dir():  # pragma: no cover - mkdir("a/file/..") cannot land here
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the CLI run workspace {str(candidate)!r} is not a directory",
             how_to_fix=f"point {CLI_WORKSPACE_ROOT_ENV} at a directory",
@@ -312,7 +312,7 @@ def child_environment(
         for raw_name, raw_value in (source or {}).items():
             name = str(raw_name)
             if _credential_shaped(name):
-                raise PolsiaError(
+                raise MeridianError(
                     E_POLICY_DENIED,
                     f"refusing to pass {name!r} ({label}) into the Claude CLI child process: the "
                     "child environment is a whitelist and provider credentials are not part of it",
@@ -328,10 +328,10 @@ def child_environment(
 
 
 
-class ClaudeCLIError(PolsiaError):
+class ClaudeCLIError(MeridianError):
     """Historical name from the agent-layer contract (SPEC-AGENTS.md §1.8).
 
-    It IS a `PolsiaError`, so callers that catch the named-refusal type keep working; the
+    It IS a `MeridianError`, so callers that catch the named-refusal type keep working; the
     `code` attribute always carries one of the `E_CLI_*` constants.
     """
 
@@ -538,7 +538,7 @@ def build_invocation(
         raise workspace_problem
 
     if len(prompt.encode("utf-8")) > STDIN_LIMIT:
-        raise PolsiaError(
+        raise MeridianError(
             E_PROMPT_TOO_LARGE,
             f"prompt is {len(prompt.encode('utf-8'))} bytes, over the {STDIN_LIMIT}-byte stdin cap",
             how_to_fix="write the context to a spill file and pass the path (transport='file-ref')",
@@ -586,7 +586,7 @@ def build_invocation(
             added = _absolute(d)
             for secret in secret_store_paths():
                 if secret == added or secret.is_relative_to(added):
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_POLICY_DENIED,
                         f"refusing --add-dir {d!r}: it would re-grant the CLI the credential "
                         f"store {str(secret)!r}",
@@ -639,7 +639,7 @@ def build_invocation(
 
     inv = _assemble(prompt, "argv", None)
     if inv.estimated_command_line_chars() > budget and not want_stdin:
-        raise PolsiaError(
+        raise MeridianError(
             E_PROMPT_TOO_LARGE,
             f"command line would be {inv.estimated_command_line_chars()} chars "
             f"(budget {budget}) and CLAUDE_PROMPT_VIA_STDIN is off; "
@@ -650,7 +650,7 @@ def build_invocation(
     if want_stdin:
         inv = _assemble(STDIN_POINTER, "stdin", prompt)
     if inv.estimated_command_line_chars() > budget:
-        raise PolsiaError(
+        raise MeridianError(
             E_PROMPT_TOO_LARGE,
             f"even without the prompt the command line is "
             f"{inv.estimated_command_line_chars()} chars (budget {budget})",
@@ -712,7 +712,7 @@ def _call_timeout(inv: Invocation, *, now: float | None = None) -> int:
     if remaining is None:
         return int(inv.timeout_s)
     if remaining <= 0:
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_TIMEOUT,
             (
                 f"the run's wall-clock budget ({inv.run_budget_seconds or 0:.1f}s, derived from "
@@ -762,7 +762,7 @@ def invoke(
 
     tmp_files: list[str] = []
     if inv.system_prompt_file_content is not None:
-        fd, path = tempfile.mkstemp(prefix="polsia-sysprompt-", suffix=".txt")
+        fd, path = tempfile.mkstemp(prefix="meridian-sysprompt-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(inv.system_prompt_file_content)
         tmp_files.append(path)
@@ -794,7 +794,7 @@ def invoke(
                 stdout, stderr = proc.communicate(input=inv.stdin_text, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc)
-                raise PolsiaError(
+                raise MeridianError(
                     E_CLI_TIMEOUT,
                     f"claude CLI exceeded {timeout_s}s (killed; the in-flight turn is unfinished)",
                     how_to_fix=ERROR_HINTS[E_CLI_TIMEOUT],
@@ -810,7 +810,7 @@ def invoke(
                 inv.transport,
             )
     except FileNotFoundError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CLI_MISSING,
             f"claude CLI not found at {argv[0]!r}",
             how_to_fix=ERROR_HINTS[E_CLI_MISSING],
@@ -871,7 +871,7 @@ def is_retryable_failure(code: str, *, subtype: str = "", api_status: int | None
       * `E_CLI_TIMEOUT` — in THIS (envelope) shape, i.e. exit 143: our wall clock already expired
         on this exact prompt; the documented remediation is a smaller task or a higher timeout.
 
-    The raised shape of the same code is a DIFFERENT contract (L3-13): a `PolsiaError` with
+    The raised shape of the same code is a DIFFERENT contract (L3-13): a `MeridianError` with
     `E_CLI_TIMEOUT` thrown by `invoke()` (or the DeepSeek runtime's `httpx.TimeoutException`
     branch) IS retried by `run_with_retries` up to `agent_max_retries` with jittered backoff —
     the hang may be transient provider pressure. Worst case one hang costs
@@ -923,7 +923,7 @@ def run_with_retries(
     for attempt in range(total):
         try:
             last = dispatch()
-        except PolsiaError as exc:
+        except MeridianError as exc:
             if exc.code != E_CLI_TIMEOUT or attempt == total - 1:
                 raise
             sleep(backoff_delay(attempt, base_s=backoff, rng=rng))

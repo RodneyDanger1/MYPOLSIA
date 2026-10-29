@@ -111,7 +111,7 @@ from app.agents.tool_registry import (
 )
 from app.config import settings
 from app.core import redis_client
-from app.core.errors import E_CONFIG, E_VALIDATION, PolsiaError
+from app.core.errors import E_CONFIG, E_VALIDATION, MeridianError
 from app.core.events import publish_stats
 from app.core.timeutil import UTC, as_bound_instant, now_utc
 from app.services.task_service import requeue_stale_claims
@@ -1270,7 +1270,7 @@ def _runs_dir_for(workspace_root: str | Path | None) -> Path:
         candidate = Path(text or CODE_WORKSPACE_DEFAULT).expanduser()
     else:
         if not isinstance(workspace_root, str | Path):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"run workspace cleanup: workspace_root must be a path string "
                 f"(got {type(workspace_root).__name__})",
@@ -1281,7 +1281,7 @@ def _runs_dir_for(workspace_root: str | Path | None) -> Path:
     try:
         base = candidate.resolve()
     except (OSError, ValueError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"run workspace cleanup: the workspace root {str(candidate)!r} cannot be resolved "
             f"({type(exc).__name__}: {exc})",
@@ -1322,7 +1322,7 @@ def plan_expired_run_workspaces(
 
     is_junction = getattr(os.path, "isjunction", None)
     if runs_dir.is_symlink() or (callable(is_junction) and is_junction(runs_dir)):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"run workspace cleanup: {str(runs_dir)!r} is a link or junction — refusing to "
             "preview or delete anything through it",
@@ -1330,7 +1330,7 @@ def plan_expired_run_workspaces(
             context={"runs_dir": str(runs_dir)},
         )
     if not runs_dir.is_dir():
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"run workspace cleanup: {str(runs_dir)!r} exists but is not a directory",
             how_to_fix="point CODE_WORKSPACE_DIR at a directory (or remove the file in the way)",
@@ -1412,7 +1412,7 @@ def run_workspace_cleanup(
     it off the event loop (`run_in_threadpool`).
     """
     if not isinstance(apply, bool):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"run workspace cleanup: apply must be a boolean (got {type(apply).__name__})",
             how_to_fix="pass apply=true to delete, apply=false (or omit) to preview",

@@ -41,7 +41,7 @@ from app.core.errors import (
     E_PHONE_UNAVAILABLE,
     E_SANDBOX_BLOCKED,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.services import phone_send_service as service
 
@@ -377,7 +377,7 @@ async def test_missing_bridge_token_is_e_config(monkeypatch):
         raise AssertionError("a tokenless bridge POST was attempted")
 
     monkeypatch.setattr(service, "_post_bridge", poisoned)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_CONFIG
     assert "PHONE_SEND_BRIDGE_TOKEN" in caught.value.message
@@ -387,7 +387,7 @@ async def test_missing_bridge_token_is_e_config(monkeypatch):
 async def test_short_bridge_token_is_e_config(monkeypatch):
     monkeypatch.setenv(service.BRIDGE_URL_ENV, "http://127.0.0.1:9227")
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, "short")
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_CONFIG
 
@@ -395,7 +395,7 @@ async def test_short_bridge_token_is_e_config(monkeypatch):
 async def test_non_http_bridge_url_is_e_config(monkeypatch):
     monkeypatch.setenv(service.BRIDGE_URL_ENV, "ftp://127.0.0.1:9227")
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, TOKEN)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_CONFIG
 
@@ -404,7 +404,7 @@ async def test_bridge_401_maps_to_e_auth(bridge, monkeypatch):
     _mod, base, _driver, _server = bridge
     monkeypatch.setenv(service.BRIDGE_URL_ENV, base)
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, OTHER_TOKEN)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_AUTH
     assert base in caught.value.message
@@ -414,7 +414,7 @@ async def test_bridge_unreachable_names_the_url(monkeypatch):
     url = f"http://127.0.0.1:{_closed_port()}"
     monkeypatch.setenv(service.BRIDGE_URL_ENV, url)
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, TOKEN)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_PHONE_UNAVAILABLE
     assert url in caught.value.message
@@ -429,7 +429,7 @@ async def test_bridge_timeout_is_named(monkeypatch):
     monkeypatch.setenv(service.BRIDGE_URL_ENV, url)
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, TOKEN)
     try:
-        with pytest.raises(PolsiaError) as caught:
+        with pytest.raises(MeridianError) as caught:
             await service.send("15551234567", BODY, sandbox=False, timeout=0.3)
     finally:
         stall.shutdown()
@@ -445,7 +445,7 @@ async def test_bridge_refusal_maps_to_the_same_typed_code(bridge, monkeypatch):
     _stub_driver(monkeypatch, mod, UNPAIRED_PAYLOAD, 3)
     monkeypatch.setenv(service.BRIDGE_URL_ENV, base)
     monkeypatch.setenv(service.PHONE_SEND_BRIDGE_TOKEN_ENV, TOKEN)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=False)
     assert caught.value.code == E_PHONE_SEND_UNPAIRED
     assert caught.value.how_to_fix
@@ -459,7 +459,7 @@ async def test_sandbox_refuses_before_the_bridge(monkeypatch):
         raise AssertionError("a sandboxed send reached the bridge")
 
     monkeypatch.setattr(service, "_post_bridge", poisoned)
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await service.send("15551234567", BODY, sandbox=True)
     assert caught.value.code == E_SANDBOX_BLOCKED
 

@@ -82,7 +82,7 @@ reset-db:
 
 dev-backend:
 	powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { \$$_.CommandLine -match 'start-standalone|standalone.server.js' } | ForEach-Object { Stop-Process -Id \$$_.ProcessId -Force }"
-	cd backend && DATABASE_URL="$${DATABASE_URL:-sqlite+aiosqlite:///./polsia-dev.sqlite}" CLAUDE_CLI_MOCK=true SANDBOX_MODE=true API_KEY="$${API_KEY:-dev-key}" ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+	cd backend && DATABASE_URL="$${DATABASE_URL:-sqlite+aiosqlite:///./meridian-dev.sqlite}" CLAUDE_CLI_MOCK=true SANDBOX_MODE=true API_KEY="$${API_KEY:-dev-key}" ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 dev-frontend:
 	powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { \$$_.CommandLine -match 'start-standalone|standalone.server.js' } | ForEach-Object { Stop-Process -Id \$$_.ProcessId -Force }"
@@ -93,10 +93,10 @@ dev-e2e:
 
 # ── W10 (H1/D4): backup / restore ─────────────────────────────────────────────────────────────
 # `make backup` snapshots the LIVE stack into backups/ (gitignored): a pg_dump of the postgres
-# service (backups/polsia-<date>.sql) plus one tar per DATA volume — backend_data (the DeepSeek
+# service (backups/meridian-<date>.sql) plus one tar per DATA volume — backend_data (the DeepSeek
 # key store + the chroma parent), chroma_data (the vector store), celery_beat_data (the beat
 # clock), redis_data (the broker AOF).  Volume names carry the compose PROJECT prefix
-# (`polsia_` — the repo directory's name); each one is checked with `docker volume inspect`
+# (`meridian_` — the repo directory's name); each one is checked with `docker volume inspect`
 # BEFORE the tar because `docker run -v <name>:/d` CREATES a missing volume — without the guard
 # a mistyped name would tar an EMPTY volume into a green-looking, worthless backup.  These two
 # targets use the `docker compose` v2 plugin binary; the older targets above keep their historic
@@ -106,11 +106,11 @@ BACKUP_VOLUMES = backend_data chroma_data celery_beat_data redis_data
 
 backup:
 	mkdir -p backups
-	docker compose exec -T postgres pg_dump -U $${POSTGRES_USER:-polsia} $${POSTGRES_DB:-polsia} > backups/polsia-$$(date +%F).sql
-	@echo "backup: backups/polsia-$$(date +%F).sql written"
+	docker compose exec -T postgres pg_dump -U $${POSTGRES_USER:-meridian} $${POSTGRES_DB:-meridian} > backups/meridian-$$(date +%F).sql
+	@echo "backup: backups/meridian-$$(date +%F).sql written"
 	@for vol in $(BACKUP_VOLUMES); do \
-		docker volume inspect polsia_$$vol >/dev/null 2>&1 || { echo "make backup: refusing — docker volume polsia_$$vol not found; is the stack up (docker compose up -d)?" >&2; exit 1; }; \
-		docker run --rm -v polsia_$$vol:/d -v "$$(pwd)/backups":/b alpine tar czf /b/$$vol.tgz -C /d . || exit 1; \
+		docker volume inspect meridian_$$vol >/dev/null 2>&1 || { echo "make backup: refusing — docker volume meridian_$$vol not found; is the stack up (docker compose up -d)?" >&2; exit 1; }; \
+		docker run --rm -v meridian_$$vol:/d -v "$$(pwd)/backups":/b alpine tar czf /b/$$vol.tgz -C /d . || exit 1; \
 		echo "backup: backups/$$vol.tgz written"; \
 	done
 
@@ -121,18 +121,18 @@ restore:
 	@if [ -z "$(SRC)" ]; then \
 		echo "make restore: SRC is required — SRC=<dir holding a make-backup output>, e.g. make restore SRC=backups" >&2; exit 1; \
 	fi
-	@ls "$(SRC)"/polsia-*.sql >/dev/null 2>&1 || { \
-		echo "make restore: no polsia-*.sql found in $(SRC) — run 'make backup' first, or point SRC at a real backup dir" >&2; exit 1; \
+	@ls "$(SRC)"/meridian-*.sql >/dev/null 2>&1 || { \
+		echo "make restore: no meridian-*.sql found in $(SRC) — run 'make backup' first, or point SRC at a real backup dir" >&2; exit 1; \
 	}
 	@echo "RESTORE IS A DRILL — run it against a SCRATCH compose project, never the live stack. Full steps: README.md, 'Volumes & Backup'."
 	@echo "  1. scratch project in its own dir, start from empty: docker compose -p scratch down -v"
 	@echo "  2. seed each data volume from its tar: docker run --rm -v scratch_<volume>:/d -v \"$$(pwd)/$(SRC)\":/b alpine sh -c \"tar xzf /b/<volume>.tgz -C /d\""
-	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U $${POSTGRES_USER:-polsia} $${POSTGRES_DB:-polsia} < $(SRC)/polsia-<date>.sql"
+	@echo "  3. load the dump: docker compose -p scratch up -d postgres && docker compose -p scratch exec -T postgres psql -U $${POSTGRES_USER:-meridian} $${POSTGRES_DB:-meridian} < $(SRC)/meridian-<date>.sql"
 	@echo "  4. boot the scratch stack: docker compose -p scratch up -d"
 	@echo "  5. smoke: curl -fsS http://localhost/api/v1/health && load one dashboard page"
 
 # `make restore-drill SRC=backups` EXECUTES the restore for real: scripts/restore.sh starts a
-# THROWAWAY postgres:16-alpine container (name polsia-restore-drill-pg, no published ports, never
+# THROWAWAY postgres:16-alpine container (name meridian-restore-drill-pg, no published ports, never
 # the compose project), loads the dump, verifies table/row counts against a manifest parsed from
 # the dump itself, extracts every volume archive, and always tears the container down via trap.
 # Exit 0 = PASS, 1 = FAIL (a named check failed), 2 = refusal (bad/missing artifacts, docker

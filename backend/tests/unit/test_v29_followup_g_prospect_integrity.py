@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import func, select, text
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.outreach import EmailLog, Prospect
 from app.services import prospect_service
 
@@ -44,7 +44,7 @@ async def test_a_refused_patch_changes_nothing(async_db_session) -> None:
     async_db_session.add(row)
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await prospect_service.update_prospect(
             async_db_session,
             row.id,
@@ -175,7 +175,7 @@ async def test_a_prospect_with_send_history_is_left_as_residual_never_cascaded(
     )
     await async_db_session.commit()
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await prospect_service.delete_prospect(async_db_session, prospect_id)
 
     refusal = excinfo.value

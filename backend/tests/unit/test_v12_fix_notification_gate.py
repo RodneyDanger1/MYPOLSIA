@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from app.agents import integrations
 from app.config import settings
-from app.core.errors import E_SANDBOX_BLOCKED, PolsiaError
+from app.core.errors import E_SANDBOX_BLOCKED, MeridianError
 from app.models.company import CompanyConfig
 from app.models.report import ActivityLog
 from app.models.task import Task
@@ -201,7 +201,7 @@ async def test_the_cycle_report_still_sends_with_the_sandbox_off(
     assert "Morning" in call["subject"]
 
 
-def test_a_cap_or_policy_denial_is_a_named_polsia_error():
+def test_a_cap_or_policy_denial_is_a_named_meridian_error():
     """Sanity: the refusal vocabulary this file keys on exists and is stable."""
     assert E_SANDBOX_BLOCKED == "E_SANDBOX_BLOCKED"
-    assert issubclass(PolsiaError, Exception)
+    assert issubclass(MeridianError, Exception)

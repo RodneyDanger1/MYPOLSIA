@@ -1,4 +1,4 @@
-"""BasePolsiaAgent — the Claude Code CLI agent base class.
+"""BaseMeridianAgent — the Claude Code CLI agent base class.
 
 The TEST-PINNED contract (tests/unit/test_base_agent.py, SPEC-AGENTS.md §1) is unchanged:
 
@@ -20,7 +20,7 @@ Every finished run attaches the captured accounting under the documented result 
 original never filled (`tokens_used`, `cost_usd`, `cli_session_id`, `usage_json`, ...).
 
 Failure semantics: a real run that cannot produce the agent's schema raises a named
-`PolsiaError` (`E_CLI_*`, `E_AGENT_BAD_OUTPUT`, `E_BUDGET_EXCEEDED`). An agent never returns a
+`MeridianError` (`E_CLI_*`, `E_AGENT_BAD_OUTPUT`, `E_BUDGET_EXCEEDED`). An agent never returns a
 fabricated success dict — the only success signal is a dict whose `summary` is real.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ from app.core.errors import (
     E_CONFIG,
     E_VALIDATION,
     ERROR_HINTS,
-    PolsiaError,
+    MeridianError,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ RUN_META_KEYS = (
     "num_turns",           # usage_json only
     "model",               # usage_json only (joined modelUsage, or the measured served model)
     "is_error",            # usage_json only
-    "error_code",          # POLSIA-Exxx when the run failed — usage_json only
+    "error_code",          # MERIDIAN-Exxx when the run failed — usage_json only
     "cli_attempts",        # usage_json only
     "repaired_by",         # repair step that rescued the payload, if any — usage_json only
     "context_tokens",      # assembled prompt size (budget audit) — usage_json only
@@ -396,7 +396,7 @@ class _RawCall:
     transport: str = "argv"
 
 
-class BasePolsiaAgent(ABC):
+class BaseMeridianAgent(ABC):
     """Every agent subclasses this and implements `run`."""
 
     agent_type: str = "base"
@@ -909,7 +909,7 @@ class BasePolsiaAgent(ABC):
                               (("*",) if tool_less else cap.denied_tools)),
             tools_available=("" if tool_less else cap.tools_available),
             permission_mode="dontAsk",
-            model=os.getenv("POLSIA_CLAUDE_MODEL") or None,
+            model=os.getenv("MERIDIAN_CLAUDE_MODEL") or None,
             max_turns=self.max_turns if self.max_turns is not None else int(settings.claude_max_turns or 1),
             max_budget_usd=float(max_budget),
             bare=True,
@@ -939,7 +939,7 @@ class BasePolsiaAgent(ABC):
             # The CLI path has no image channel in this build.  Sending the prompt without the
             # attachments would let the model answer as if the operator had attached nothing —
             # a silent loss of the run's input.  Refuse by name instead.
-            raise PolsiaError(
+            raise MeridianError(
                 E_CONFIG,
                 (
                     f"agent {self.agent_type}: this task has {len(self.task_images)} image "
@@ -1011,7 +1011,7 @@ class BasePolsiaAgent(ABC):
                     runtime_kwargs["attempt"] = self.run_attempt
                 try:
                     result = runtime.invoke(inv, **runtime_kwargs)
-                except PolsiaError as exc:
+                except MeridianError as exc:
                     # RT-01: a RAISED refusal is a ladder branch too.  The runtime attaches the loop
                     # evidence it accumulated; absorb it into THIS run's journal before re-raising,
                     # so the retry's `replay` contains the record and the tool is answered from it
@@ -1088,7 +1088,7 @@ class BasePolsiaAgent(ABC):
             self._run_num_turns_measured = True
 
     def _absorb_raised_run_evidence(
-        self, exc: PolsiaError, run_actions: list[dict[str, Any]]
+        self, exc: MeridianError, run_actions: list[dict[str, Any]]
     ) -> None:
         """RT-01/RT-03: absorb a RAISED refusal's loop evidence into THIS run's state and journal.
 
@@ -1205,7 +1205,7 @@ class BasePolsiaAgent(ABC):
         sessions, so only a runtime that replays in-process can be asked this question.
         """
         if not self.session_id:
-            raise PolsiaError(
+            raise MeridianError(
                 E_AGENT_BAD_OUTPUT,
                 (
                     f"agent {self.agent_type}: the previous answer cannot be repaired — the run "
@@ -1218,7 +1218,7 @@ class BasePolsiaAgent(ABC):
                 ),
             )
         if deepseek_runtime.available() and not deepseek_runtime.has_session(self.session_id):
-            raise PolsiaError(
+            raise MeridianError(
                 E_AGENT_BAD_OUTPUT,
                 (
                     f"agent {self.agent_type}: the previous answer cannot be repaired — session "
@@ -1294,7 +1294,7 @@ class BasePolsiaAgent(ABC):
             # fabricated accounting keys; `usage_from_outcome` is the reader a worker uses to hand it
             # to the same persist path a success takes.
             measured = self.measured_usage_on_failure(e_code)
-            raise PolsiaError(
+            raise MeridianError(
                 e_code,
                 f"agent {self.agent_type}: {failure.value} {detail}".strip(),
                 how_to_fix=provider_guidance or structured_output.REMEDIATION.get(
@@ -1442,11 +1442,11 @@ class BasePolsiaAgent(ABC):
             repairs.append(resolution.used_repair)
         self.last_repair = "+".join(dict.fromkeys(repairs)) or None
         if not resolution.ok or resolution.payload is None:
-            raise resolution.to_polsia_error(agent_type=self.agent_type)
+            raise resolution.to_meridian_error(agent_type=self.agent_type)
         try:
             return model.model_validate(resolution.payload).model_dump(mode="json")
         except Exception as exc:  # pragma: no cover - resolve_output already validated
-            raise PolsiaError(
+            raise MeridianError(
                 E_AGENT_BAD_OUTPUT,
                 f"agent {self.agent_type}: payload validated by the ladder but not by the model: {exc}",
                 how_to_fix=ERROR_HINTS[E_AGENT_BAD_OUTPUT],
@@ -1663,7 +1663,7 @@ class BasePolsiaAgent(ABC):
             try:
                 action_class = ActionClass(raw_class)
             except ValueError:
-                raise PolsiaError(
+                raise MeridianError(
                     E_VALIDATION,
                     f"agent {self.agent_type}: approved record {fingerprint} names action class "
                     f"{raw_class!r}, which is not an action class",
@@ -1671,7 +1671,7 @@ class BasePolsiaAgent(ABC):
                     context={"fingerprint": fingerprint, "action_class": raw_class},
                 ) from None
             if action_class not in permitted_classes or channel not in channels:
-                raise PolsiaError(
+                raise MeridianError(
                     E_ACTION_REPLAY_UNAVAILABLE,
                     f"agent {self.agent_type}: approved record {fingerprint} is "
                     f"{raw_class}/{channel!r}, outside this agent's capability — it cannot perform it",
@@ -1687,7 +1687,7 @@ class BasePolsiaAgent(ABC):
                     },
                 )
             if not isinstance(payload, dict):
-                raise PolsiaError(
+                raise MeridianError(
                     E_VALIDATION,
                     f"agent {self.agent_type}: approved record {fingerprint} carries no payload object",
                     how_to_fix="re-park the task so the approved body is stored; nothing was performed",
@@ -1829,7 +1829,7 @@ def approved_payload_records(task: dict[str, Any] | None) -> dict[str, dict[str,
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"approved payload must be a fingerprint -> record mapping, got {type(raw).__name__}",
             how_to_fix="re-park the task so the worker stores the approved records again",
@@ -1838,7 +1838,7 @@ def approved_payload_records(task: dict[str, Any] | None) -> dict[str, dict[str,
     records: dict[str, dict[str, Any]] = {}
     for fingerprint, record in raw.items():
         if not isinstance(record, dict):
-            raise PolsiaError(
+            raise MeridianError(
                 E_VALIDATION,
                 f"approved record {fingerprint!r} is {type(record).__name__}, expected an object",
                 how_to_fix="re-park the task so the worker stores the approved records again",
@@ -1996,7 +1996,7 @@ __all__ = [
     "RUN_META_KEYS",
     "TRUNCATION_MARKER",
     "UPSTREAM_PROMPT_MARKER",
-    "BasePolsiaAgent",
+    "BaseMeridianAgent",
     "CallerQuarantine",
     "business_state_lines",
     "context_memories",

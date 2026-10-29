@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, refusal_guard, verify_api_key
 from app.config import settings
-from app.core.errors import E_DB, E_NOT_FOUND, ERROR_HINTS, PolsiaError
+from app.core.errors import E_DB, E_NOT_FOUND, ERROR_HINTS, MeridianError
 from app.schemas.company import (
     CompanyConfigResponse,
     CompanyConfigUpdate,
@@ -79,7 +79,7 @@ def _config_response(company: object) -> CompanyConfigResponse:
     hit = first_non_finite_field(company)
     if hit is not None:
         column, paths = hit
-        raise PolsiaError(
+        raise MeridianError(
             E_DB,
             f"company_config.{column} carries non-finite numbers ({', '.join(paths)}) — "
             "refusing to render the configuration",

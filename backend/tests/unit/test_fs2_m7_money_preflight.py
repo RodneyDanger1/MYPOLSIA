@@ -20,7 +20,7 @@ BACKEND = pathlib.Path(__file__).resolve().parents[2]
 
 def _load_0002():
     path = BACKEND / "alembic" / "versions" / "0002_queue_and_perf.py"
-    spec = importlib.util.spec_from_file_location("polsia_migration_0002", path)
+    spec = importlib.util.spec_from_file_location("meridian_migration_0002", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

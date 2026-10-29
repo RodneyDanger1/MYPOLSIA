@@ -10,7 +10,7 @@
  * Pinned here: the four status words, the newest-event band line, the LOG affordance
  * (aria-expanded / focus into / focus return / Esc / scrim), the stage chips (ALL · distinct
  * actions · OTHER — never a silently hidden event), the counter, COPY == the rendered visible lines
- * verbatim, DOWNLOAD == the same text as `polsia-activity.log`, and the empty/error honesty.
+ * verbatim, DOWNLOAD == the same text as `meridian-activity.log`, and the empty/error honesty.
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
@@ -96,7 +96,7 @@ beforeEach(() => {
   });
   createObjectURL = jest.fn((blob: Blob) => {
     void blob;
-    return "blob:polsia-activity-test";
+    return "blob:meridian-activity-test";
   });
   revokeObjectURL = jest.fn((url: string) => {
     void url;
@@ -299,7 +299,7 @@ describe("activity log overlay", () => {
     expect(rowTexts()).toHaveLength(1);
   });
 
-  it("DOWNLOAD writes the same lines as a text blob named polsia-activity.log", async () => {
+  it("DOWNLOAD writes the same lines as a text blob named meridian-activity.log", async () => {
     setFeed({
       status: "live",
       events: [
@@ -314,13 +314,13 @@ describe("activity log overlay", () => {
 
     expect(anchorClick).toHaveBeenCalledTimes(1);
     const anchor = anchorClick.mock.instances[0] as unknown as HTMLAnchorElement;
-    expect(anchor.download).toBe("polsia-activity.log");
-    expect(anchor.href).toBe("blob:polsia-activity-test");
+    expect(anchor.download).toBe("meridian-activity.log");
+    expect(anchor.href).toBe("blob:meridian-activity-test");
 
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("text/plain");
     await expect(blobText(blob)).resolves.toBe(rowTexts().join("\n"));
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:polsia-activity-test");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:meridian-activity-test");
 
     // The download acts on the filtered visible set too.
     fireEvent.click(screen.getByTestId("chip-deploy"));

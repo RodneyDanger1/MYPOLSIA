@@ -32,7 +32,7 @@ import asyncio
 import json
 
 from app.config import settings
-from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, MeridianError
 from celery_app.tasks import agent_tasks
 from celery_app.tasks._common import get_process_loop
 
@@ -193,7 +193,7 @@ def test_3_a_retryable_failure_requeues_the_row_and_the_retry_settles_it(
     task_id = _create(
         queue_db, title="retry after partial", metadata={"plan_day": "2026-10-28", "keep": 1}
     )
-    install_run_spy(error_factory=lambda: PolsiaError(E_CLI_TIMEOUT, "the transport died"))
+    install_run_spy(error_factory=lambda: MeridianError(E_CLI_TIMEOUT, "the transport died"))
 
     first = execute_body(task_id)
 

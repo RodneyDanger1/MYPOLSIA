@@ -33,7 +33,7 @@ from decimal import Decimal
 import pytest
 
 from app.config import settings
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from celery_app.tasks import maintenance
 from celery_app.tasks.maintenance import (
     AGENT_RUN_STALE_AFTER_SECONDS,
@@ -180,13 +180,13 @@ def test_d05_a_db_failure_at_the_settle_is_named_and_the_row_is_recovered(queue_
     task_id = queue_db.create_task(title="db dies at settle")
 
     async def _broken(*_args, **_kwargs):  # noqa: ANN002, ANN003
-        raise PolsiaError(E_DB, "planted: the database went away between commit and settle")
+        raise MeridianError(E_DB, "planted: the database went away between commit and settle")
 
     monkeypatch.setattr(task_service, "finish_agent_run", _broken)
 
     from celery_app.tasks.agent_tasks import _execute_agent_task
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         queue_db.run(_execute_agent_task(task_id))
     assert caught.value.code == E_DB, "the failure is named, never swallowed into a success"
 
@@ -251,7 +251,7 @@ def test_d07_a_late_failed_settle_keeps_the_reapers_sentence_on_raw_log(queue_db
 
     _settle_late(
         queue_db, run_id, status="failed",
-        error_message="PolsiaError: E_CLI_TIMEOUT: the provider call exceeded 300s",
+        error_message="MeridianError: E_CLI_TIMEOUT: the provider call exceeded 300s",
     )
     row = queue_db.query("SELECT * FROM agent_runs WHERE id = ?", (run_id,))[0]
     raw_log = row["raw_log"] or ""

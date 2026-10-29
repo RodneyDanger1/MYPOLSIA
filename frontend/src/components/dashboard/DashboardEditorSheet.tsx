@@ -19,7 +19,7 @@ import { useDialogFocusTrap } from "@/components/ui/useDialogFocusTrap";
 /**
  * The Edit Dashboard sheet (wave V12-G1) — the live product's dashboard editor.
  *
- * The original (help.polsia.com/add-dashboard-capabilities, fetched 2026-10-15):
+ * The original (help.meridian.com/add-dashboard-capabilities, fetched 2026-10-15):
  * `EDIT` in the navbar opens the editor, each widget has a show/hide switch,
  * widgets can be reordered, and "Restore default layout" restores the starting
  * selection and order. This sheet is those controls against the real layout

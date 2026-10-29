@@ -46,7 +46,7 @@ from app.agents import side_effects as se
 from app.agents import tool_registry as registry
 from app.agents.policy_firewall import ActionClass, Decision, RunApproval, RunTaint
 from app.config import settings
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import trust_service
 
 SECRET = b"s2-toolgate-secret-not-a-real-key"
@@ -497,7 +497,7 @@ def test_web_fetch_dials_the_vetted_address_and_keeps_the_host_name(monkeypatch)
 def test_web_fetch_reports_a_refused_egress_as_a_named_refusal(monkeypatch):
     """No fallback connect path: the resolver's refusal IS the tool's answer."""
     def refuse(host: str, port: int) -> list[str]:
-        raise PolsiaError(
+        raise MeridianError(
             trust_service.E_EGRESS_BLOCKED,
             f"egress: refusing {host!r}:{port} — not a public address",
             how_to_fix="use a public host", context={"host": host, "port": port})

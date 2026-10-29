@@ -4,7 +4,7 @@ THE DEFECT (data-hunter DT-03, P1).  `report_service.build_cash_block` summed ev
 `event_type` is money-in.  One card payment arrives as up to four deliveries — `charge.succeeded`,
 `payment_intent.succeeded`, `invoice.paid`, `invoice.payment_succeeded` — so a single $100.00
 payment could read as $400.00 of money received.  The webhook already persists the PaymentIntent id
-on each event row (`raw_payload["_polsia"]["payment_intent_id"]`); the report never used it.
+on each event row (`raw_payload["_meridian"]["payment_intent_id"]`); the report never used it.
 
 THE FIX under test: the window's events are read as rows and grouped by that id before summing
 (`report_service._payment_groups`); an event with NO PaymentIntent cannot be proven to repeat
@@ -243,4 +243,4 @@ async def test_the_stored_payment_intent_annotation_is_what_groups_the_rows(asyn
     assert len(rows) == 4
     for row in rows:
         payload = row.raw_payload
-        assert payload["_polsia"]["payment_intent_id"] == PAYMENT_A
+        assert payload["_meridian"]["payment_intent_id"] == PAYMENT_A

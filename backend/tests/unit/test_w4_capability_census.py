@@ -38,7 +38,7 @@ from pydantic import ValidationError
 
 from app.agents import policy_firewall as pf
 from app.agents import tool_registry
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 from app.agents.crew_factory import (
     AGENT_MAP,
     VALID_AGENT_TYPES,
@@ -51,7 +51,7 @@ from app.agents.tool_registry import (
     execute_tool,
     tools_for,
 )
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, PolsiaError
+from app.core.errors import E_CONFIG, E_POLICY_DENIED, MeridianError
 from app.schemas import agent_outputs
 from app.schemas.agent_outputs import TaskSpec
 from app.services import capability_manifest, task_service
@@ -86,7 +86,7 @@ def test_every_dispatched_agent_class_matches_its_registry_entry():
     """class identity, declared type, schema identity and prompt are read from the CLASS."""
     for agent_type in AGENT_MAP:
         cls = get_agent_class(agent_type)
-        assert issubclass(cls, BasePolsiaAgent), f"{agent_type}: {cls.__name__} is not an agent"
+        assert issubclass(cls, BaseMeridianAgent), f"{agent_type}: {cls.__name__} is not an agent"
         assert cls.agent_type == agent_type, (
             f"{agent_type}: {cls.__name__}.agent_type is {cls.agent_type!r} — a run would be "
             "recorded under the wrong agent"
@@ -194,7 +194,7 @@ def test_a_task_the_target_agent_cannot_perform_is_refused_before_the_agent_is_b
     a task that merely *declared* the effect could be recorded completed).
     """
     task = {"id": 4242, "title": "refund a customer", "metadata": {"side_effect": "external_irreversible"}}
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         run_agent_for_task("business_planning", task, {})
     assert excinfo.value.code == E_POLICY_DENIED
     assert "external_irreversible" in excinfo.value.message
@@ -253,7 +253,7 @@ def test_an_unclassed_tool_is_refused_by_name_instead_of_running_as_a_read(monke
     monkeypatch.setitem(tool_registry._SPEC_BY_NAME, "future_tool", future)
     monkeypatch.setitem(tool_registry._RUNNERS, "future_tool",
                         lambda *, agent_type, arguments: {"ok": True, "ran": True})
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         tool_registry._tool_action_class("future_tool", {})
     assert excinfo.value.code == E_CONFIG
     payload = tool_registry._execute("future_tool", {}, agent_type="finance")
@@ -374,7 +374,7 @@ def test_every_registry_tool_names_at_least_one_consumer():
 # H. prompt claims vs the runtime branch that will run the agent
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 
-def _real_agent(agent_type: str) -> BasePolsiaAgent:
+def _real_agent(agent_type: str) -> BaseMeridianAgent:
     """The SHIPPED agent instance (no run, no I/O): its own prompt is what a model would see."""
     if agent_type in AGENT_MAP:
         return get_agent_class(agent_type)()

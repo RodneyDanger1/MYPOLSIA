@@ -12,7 +12,7 @@ Three A3 receipts named gaps in these files, and one carry that cannot be proved
     on the worker loop (the lease heartbeat) while the side effect is attempted on the run's
     THREAD, so a plain contextvar rebind cannot carry the verdict: `RUN_CANCELLED` publishes one
     MUTABLE guard before the run starts and the heartbeat latches it.  `decide()` refuses first,
-    by name (`E_RUN_CANCELLED` / POLSIA-E120), for `request_side_effect` and the registry tool gate
+    by name (`E_RUN_CANCELLED` / MERIDIAN-E120), for `request_side_effect` and the registry tool gate
     alike; with no cancellation the same request is allowed.
   * A2A6-03 / S3-2 — publisher confirmation and a visibility timeout longer than the 900 s claim
     lease.  There is no Redis or broker on this host, so the CONFIG VALUE is pinned (module + the
@@ -46,7 +46,7 @@ from app.agents import side_effects as se
 from app.agents import tool_registry as registry
 from app.agents.policy_firewall import ActionClass
 from app.config import settings
-from app.core.errors import E_CLI_TIMEOUT, PolsiaError
+from app.core.errors import E_CLI_TIMEOUT, MeridianError
 from celery_app.tasks._common import ACTION_KEY, stamp_rearmed
 
 SUMMARY_SCHEMA = {
@@ -137,7 +137,7 @@ def test_the_worker_publishes_the_measured_channel_counts_to_the_run(
 
     RED before the fix: `set_run_channel_sends` had no production caller, so the run observed
     `None` — `tool_registry._execute` then handed `decide()` no count, and every configured cap
-    answered `cap_unknown` (POLSIA-E114) while never charging.
+    answered `cap_unknown` (MERIDIAN-E114) while never charging.
 
     The measurement itself is REAL: one published twitter row counts, a draft in the same window
     must not (the A-T5 "counting drafts" trap), and a channel with no local rows is a MEASURED
@@ -310,7 +310,7 @@ def test_a_cancelled_run_is_refused_by_name_and_the_same_request_is_allowed_with
 
     assert pf.cancel_run("claim lease lost (E_TASK_CLAIMED)") is True
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         se.request_side_effect(sends_today=0, sends_this_hour=0, **EMAIL_ARGS)
     refusal = excinfo.value
     assert refusal.code == pf.E_RUN_CANCELLED, (
@@ -319,14 +319,14 @@ def test_a_cancelled_run_is_refused_by_name_and_the_same_request_is_allowed_with
     assert "lost its claim" in refusal.message
     assert "E_TASK_CLAIMED" in refusal.message, "the refusal must name the lease error"
     assert refusal.how_to_fix, "a named refusal always says how to proceed"
-    assert refusal.context["policy_code"] == "POLSIA-E120"
+    assert refusal.context["policy_code"] == "MERIDIAN-E120"
     assert refusal.context["cancelled"] is True
 
     # The SAME gate governs the model's tool path (`tool_registry._execute` -> `decide()`).
     tool_payload = json.loads(registry.execute_tool(
         "signals_read", {"topics": ["ai"]}, agent_type="social_media"))
     assert tool_payload["ok"] is False, "the registry tool gate must refuse a cancelled run"
-    assert tool_payload["error"]["context"]["policy_code"] == "POLSIA-E120"
+    assert tool_payload["error"]["context"]["policy_code"] == "MERIDIAN-E120"
     assert "lost its claim" in tool_payload["error"]["message"]
     assert tool_payload["error"]["how_to_fix"], "a named refusal always says how to proceed"
 
@@ -372,7 +372,7 @@ def test_the_worker_cancels_the_run_when_the_claim_lease_is_lost(
                 sends_this_hour=0,
                 sandbox_mode=False,   # the strictest leg: a real send was permitted here
             )
-        except PolsiaError as exc:
+        except MeridianError as exc:
             observed["refusal"] = exc.code
             observed["message"] = exc.message
         else:  # pragma: no cover - the defect this test exists for
@@ -451,7 +451,7 @@ def test_two_attempts_execute_the_tool_once_and_keep_one_record(
         if attempt == 1:
             # A SECOND execution would re-create this file on attempt 2.
             proof.unlink()
-            raise PolsiaError(E_CLI_TIMEOUT, "b1: test-only transport failure after the tool ran",
+            raise MeridianError(E_CLI_TIMEOUT, "b1: test-only transport failure after the tool ran",
                               context={ACTION_KEY: journal})
         return {"summary": "attempt 2 replayed the recorded call"}
 

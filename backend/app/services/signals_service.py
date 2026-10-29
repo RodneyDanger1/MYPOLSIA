@@ -53,7 +53,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.core.errors import E_UPSTREAM, E_VALIDATION, PolsiaError
+from app.core.errors import E_UPSTREAM, E_VALIDATION, MeridianError
 from app.core.timeutil import iso_utc, now_utc
 
 
@@ -222,7 +222,7 @@ def _parse(feed: Feed, raw: bytes) -> list[dict[str, Any]]:
         # `LookupError`, and a multi-byte/undecodable body raises `ValueError`.  All three mean
         # "this body could not be read as XML" and are THIS feed's named refusal, never a crash
         # that would take the sibling feed with it.
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{feed.label}: the feed body could not be parsed as XML ({type(exc).__name__}: {exc})",
             how_to_fix="retry; if it persists the publisher is serving a broken feed",
@@ -260,14 +260,14 @@ def _fetch(feed: Feed) -> dict[str, Any]:
         with _CLIENT(timeout=TIMEOUT_S, follow_redirects=True, headers=HEADERS) as client:
             response = client.get(feed.url)
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{feed.label}: the feed timed out after {TIMEOUT_S:g}s",
             how_to_fix="retry; if it persists the publisher is slow",
             context={"feed": feed.id},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{feed.label}: transport failure: {type(exc).__name__}",
             how_to_fix="check egress and retry",
@@ -275,7 +275,7 @@ def _fetch(feed: Feed) -> dict[str, Any]:
         ) from exc
 
     if response.status_code != 200:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{feed.label}: the feed answered HTTP {response.status_code}",
             how_to_fix="retry; if it persists the publisher's feed is unavailable",
@@ -284,7 +284,7 @@ def _fetch(feed: Feed) -> dict[str, Any]:
 
     items = _parse(feed, response.content)
     if not items:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{feed.label}: the feed answered HTTP 200 with no readable items",
             how_to_fix="retry; if it persists the feed's shape changed",
@@ -311,14 +311,14 @@ def _load(feed: Feed, now: float) -> tuple[dict[str, Any], bool]:
 def _limit(value: Any) -> int:
     """A caller's `limit` is an integer in 1..MAX_LIMIT; anything else is refused BY NAME."""
     if isinstance(value, bool) or not isinstance(value, int):
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             "signals limit must be an integer",
             how_to_fix=f"pass limit as an integer between 1 and {MAX_LIMIT}",
             context={"field": "limit"},
         )
     if not 1 <= value <= MAX_LIMIT:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"signals limit must be between 1 and {MAX_LIMIT}",
             how_to_fix=f"omit limit for {DEFAULT_LIMIT}, or pass 1..{MAX_LIMIT}",
@@ -345,7 +345,7 @@ def read(limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
     for feed in FEEDS:
         try:
             payload, cached = _load(feed, now)
-        except PolsiaError as exc:
+        except MeridianError as exc:
             sources.append(
                 {
                     "id": feed.id,

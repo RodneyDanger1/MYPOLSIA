@@ -25,7 +25,7 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.models.finance import RevenueSnapshot
 from app.services import finance_service
 
@@ -140,7 +140,7 @@ async def test_a_retry_that_omits_a_column_does_not_erase_a_same_day_measurement
 @pytest.mark.asyncio
 async def test_an_unknown_snapshot_key_is_the_named_validation_refusal(async_db_session):
     """A key with no column is refused BY NAME instead of dying inside the INSERT compiler."""
-    with pytest.raises(PolsiaError) as refused:
+    with pytest.raises(MeridianError) as refused:
         await finance_service.upsert_revenue_snapshot(
             async_db_session, snapshot_date=DAY, not_a_column=1
         )

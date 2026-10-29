@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.errors import E_VALIDATION, PolsiaError
+from app.core.errors import E_VALIDATION, MeridianError
 from app.services.task_service import (
     VALID_TASK_STATUSES,
     create_task,
@@ -91,7 +91,7 @@ async def test_update_task_status_refuses_an_unknown_value_and_leaves_the_row_un
     async_db_session,
 ):
     task = await _make_task(async_db_session)
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await update_task_status(async_db_session, task.id, "definitely_not_a_status")
 
     refusal = excinfo.value
@@ -113,7 +113,7 @@ async def test_update_task_status_still_accepts_every_value_in_the_set(async_db_
 
 @pytest.mark.asyncio
 async def test_create_task_refuses_an_unknown_status(async_db_session):
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await create_task(
             async_db_session, title="bogus", agent_type="finance", status="not_a_status"
         )
@@ -132,7 +132,7 @@ async def test_create_task_accepts_awaiting_approval(async_db_session):
 @pytest.mark.asyncio
 async def test_list_tasks_refuses_an_unknown_status(async_db_session):
     """`?status=complete` must not be indistinguishable from "no completed tasks"."""
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         await list_tasks(async_db_session, status="complete")
     refusal = excinfo.value
     assert refusal.code == E_VALIDATION

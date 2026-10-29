@@ -300,13 +300,13 @@ def test_every_gated_site_projects_the_exact_approved_payload(site):
     decision = PolicyDecision(
         Decision.REQUIRE_APPROVAL,
         "context tainted by untrusted content",
-        "POLSIA-E115",
+        "MERIDIAN-E115",
         require_token=True,
         audit={"fingerprint": fp},
     )
     outcome = SideEffectOutcome(
         allowed=False, sandboxed=False, requires_approval=True,
-        policy_code="POLSIA-E115", reason="needs a human",
+        policy_code="MERIDIAN-E115", reason="needs a human",
         audit={"fingerprint": fp}, decision=decision,
     )
     receipt = side_effect_receipt(

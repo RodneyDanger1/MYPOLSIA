@@ -11,7 +11,7 @@ What these tests pin beyond the happy path:
   served a previously truncated copy (the v1 plan bug);
 * `billed` is true only for a request that actually reached the provider and produced content; a
   cache hit is `billed:false`, `estimated_usd:0.0`, and makes no HTTP request at all;
-* failures never populate the cache, and every provider outcome is a NAMED `PolsiaError` — never a
+* failures never populate the cache, and every provider outcome is a NAMED `MeridianError` — never a
   raw `httpx`/`json` exception;
 * `max_chars` that is not an integer is `E_VALIDATION`, not a bare `TypeError`.
 
@@ -31,7 +31,7 @@ from app.core.errors import (
     E_RATE_LIMITED,
     E_UPSTREAM,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.services import research_fetch_service as service
 from app.services.research_fetch_service import E_BALANCE
@@ -193,7 +193,7 @@ def test_cache_is_bounded_to_128_full_bodies(monkeypatch):
 def test_provider_statuses_are_named_refusals(monkeypatch, status, code):
     _serve(monkeypatch, lambda r: httpx.Response(status, json={"error": {"message": "nope"}}))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == code
@@ -214,7 +214,7 @@ def test_a_provider_failure_is_never_cached(monkeypatch):
 
     seen = _serve(monkeypatch, responder)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
     assert excinfo.value.code == E_UPSTREAM
     assert service._CACHE == {}
@@ -233,7 +233,7 @@ def test_a_provider_failure_is_never_cached(monkeypatch):
 def test_malformed_urls_are_validation(monkeypatch, bad_url):
     seen = _serve(monkeypatch, lambda r: httpx.Response(200, json=_page()))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(bad_url)
 
     assert excinfo.value.code == E_VALIDATION
@@ -244,7 +244,7 @@ def test_malformed_urls_are_validation(monkeypatch, bad_url):
 def test_url_longer_than_the_documented_8192_is_refused(monkeypatch):
     seen = _serve(monkeypatch, lambda r: httpx.Response(200, json=_page()))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch("https://example.com/" + "a" * 8200)
 
     assert excinfo.value.code == E_VALIDATION
@@ -280,7 +280,7 @@ def test_max_chars_is_floored_at_1000_and_capped_at_40000(monkeypatch):
 def test_non_integer_max_chars_is_validation(monkeypatch, bad_cap):
     seen = _serve(monkeypatch, lambda r: httpx.Response(200, json=_page()))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL, max_chars=bad_cap)
 
     assert excinfo.value.code == E_VALIDATION
@@ -291,7 +291,7 @@ def test_non_integer_max_chars_is_validation(monkeypatch, bad_cap):
 def test_empty_content_is_not_found(monkeypatch):
     _serve(monkeypatch, lambda r: httpx.Response(200, json={"title": "Empty", "content": "   \n"}))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_NOT_FOUND
@@ -301,7 +301,7 @@ def test_empty_content_is_not_found(monkeypatch):
 def test_missing_content_key_is_not_found(monkeypatch):
     _serve(monkeypatch, lambda r: httpx.Response(200, json={"title": "No body"}))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_NOT_FOUND
@@ -310,7 +310,7 @@ def test_missing_content_key_is_not_found(monkeypatch):
 def test_non_object_payload_is_a_named_upstream_error(monkeypatch):
     _serve(monkeypatch, lambda r: httpx.Response(200, json=["not", "an", "object"]))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_UPSTREAM
@@ -320,7 +320,7 @@ def test_non_object_payload_is_a_named_upstream_error(monkeypatch):
 def test_non_json_body_is_a_named_upstream_error(monkeypatch):
     _serve(monkeypatch, lambda r: httpx.Response(200, text="<html>gateway</html>"))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_UPSTREAM
@@ -331,7 +331,7 @@ def test_missing_key_is_config_and_makes_no_request(monkeypatch):
     monkeypatch.setattr(service.secret_store, "get_deepseek_api_key", lambda: None)
     seen = _serve(monkeypatch, lambda r: httpx.Response(200, json=_page()))
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_CONFIG
@@ -357,7 +357,7 @@ def test_timeout_is_upstream(monkeypatch):
 
     _serve(monkeypatch, responder)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_UPSTREAM
@@ -371,7 +371,7 @@ def test_transport_failure_is_upstream(monkeypatch):
 
     _serve(monkeypatch, responder)
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         service.fetch(URL)
 
     assert excinfo.value.code == E_UPSTREAM

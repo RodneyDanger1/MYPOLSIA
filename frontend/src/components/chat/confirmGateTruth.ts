@@ -49,12 +49,12 @@ export function carriesConfirmInstruction(content: unknown): boolean {
   return typeof content === "string" && CONFIRM_INSTRUCTION.test(content);
 }
 
-/** Indexes of the `polsia` rows that carry the instruction, in the order given (oldest → newest). */
+/** Indexes of the `meridian` rows that carry the instruction, in the order given (oldest → newest). */
 export function confirmInstructionIndexes(items: ConfirmInstructionRow[]): number[] {
   const out: number[] = [];
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    if (!item || item.role !== "polsia") continue;
+    if (!item || item.role !== "meridian") continue;
     if (carriesConfirmInstruction(item.content)) out.push(index);
   }
   return out;

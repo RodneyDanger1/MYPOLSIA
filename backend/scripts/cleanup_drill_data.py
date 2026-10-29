@@ -65,7 +65,7 @@ USAGE
     python scripts/cleanup_drill_data.py                    # dry run (inside the backend image)
     python scripts/cleanup_drill_data.py --report           # counts only
     python scripts/cleanup_drill_data.py --apply --report   # before/after, then delete
-    python scripts/cleanup_drill_data.py --database-url sqlite+aiosqlite:///./polsia.db
+    python scripts/cleanup_drill_data.py --database-url sqlite+aiosqlite:///./meridian.db
 """
 from __future__ import annotations
 
@@ -347,17 +347,17 @@ async def _plan(conn: Any) -> dict[str, Any]:
 def _sites_root() -> Path:
     """`<backend>/data/sites` — the ONE root `site_service` writes; resolved at CALL time.
 
-    `POLSIA_SITES_DIR` is a test seam: the V28 cleanup test runs this script with `cwd=backend`,
+    `MERIDIAN_SITES_DIR` is a test seam: the V28 cleanup test runs this script with `cwd=backend`,
     so without an override an `--apply` would quarantine whatever real drill dirs a developer has
     there. Production/container runs leave it unset and get the real root.
     """
-    override = os.environ.get("POLSIA_SITES_DIR")
+    override = os.environ.get("MERIDIAN_SITES_DIR")
     return Path(override) if override else BACKEND / "data" / "sites"
 
 
 def _trash_root() -> Path:
     """`<backend>/data/trash` — BESIDE `sites/`, so the static mount can never serve a batch."""
-    override = os.environ.get("POLSIA_TRASH_DIR")
+    override = os.environ.get("MERIDIAN_TRASH_DIR")
     return Path(override) if override else BACKEND / "data" / "trash"
 
 

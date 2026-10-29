@@ -2,7 +2,7 @@
 
 WHAT THIS SOLVES
     The phone routes answer the UI, but the ORCHESTRATOR and the live activity feed only see what
-    is written to `activity_log` (and published on `polsia:activity`).  Without this tick the
+    is written to `activity_log` (and published on `meridian:activity`).  Without this tick the
     owner's phone is invisible to the agents.  Every ≤5 minutes this job reads the Phone Link
     store through `services.phone_link_service` and publishes the two events the amendment names:
 
@@ -50,7 +50,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.errors import E_STORAGE, PolsiaError
+from app.core.errors import E_STORAGE, MeridianError
 from app.services import phone_link_service as phone
 from app.services.activity_service import log_activity
 from celery_app.tasks._common import run_async
@@ -97,7 +97,7 @@ def _load_state() -> tuple[phone.PhoneWatermark, set[str]]:
         if not isinstance(published, list):
             raise ValueError("published is not a list")
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the phone activity state file is unreadable ({type(exc).__name__}), so the "
             "already-published event set cannot be checked",
@@ -160,7 +160,7 @@ def _save_state(watermark: phone.PhoneWatermark, published: set[str]) -> None:
             Path(raw).unlink(missing_ok=True)
             raise
     except OSError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_STORAGE,
             f"the phone activity state file could not be written ({type(exc).__name__}: {exc})",
             how_to_fix=f"check that {path.parent} exists and is writable, then let the next tick run",
@@ -227,13 +227,13 @@ async def _publish_phone_activity() -> dict[str, Any]:
     """One pass: read the store, publish the new events, advance the durable state."""
     try:
         watermark, published = _load_state()
-    except PolsiaError as exc:
+    except MeridianError as exc:
         logger.warning("phone activity: %s", exc.message)
         return {"status": "state_corrupt", "code": exc.code, "published": 0, "scanned": 0}
 
     try:
         rows = phone.activity_since(watermark)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # An absent mount is an expected state, not a worker fault: the named code rides the
         # result (the UI/login path surfaces the same code) and nothing is written.
         logger.warning("phone activity: store unavailable (%s: %s)", exc.code, exc.message)

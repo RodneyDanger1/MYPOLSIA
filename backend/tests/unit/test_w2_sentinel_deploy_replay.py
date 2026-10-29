@@ -8,7 +8,7 @@ THE SEAM.  `deploy_service._authorise_live_deploy` asks the stateless decision q
 (`enforce`, which verifies signature/TTL/fingerprint) and then SPENDS the approval through
 `policy_firewall.consume_approval_or_refuse` BEFORE the Render POST is opened.  Three properties are
 pinned below:
-  1. the second deploy with the same token is refused by name (`POLSIA-E121`, `already_used`) and
+  1. the second deploy with the same token is refused by name (`MERIDIAN-E121`, `already_used`) and
      makes NO second network call;
   2. an approval is spent by the ATTEMPT, not by success — a transport failure still spends it, so
      an approval that already produced an unknown-outcome request cannot be replayed;
@@ -29,7 +29,7 @@ import pytest
 
 from app.agents import policy_firewall
 from app.config import settings
-from app.core.errors import E_POLICY_DENIED, E_SANDBOX_BLOCKED, E_UPSTREAM, PolsiaError
+from app.core.errors import E_POLICY_DENIED, E_SANDBOX_BLOCKED, E_UPSTREAM, MeridianError
 from app.services import deploy_service, site_service
 
 APPROVAL_SECRET = b"w2-sentinel-deploy-secret-not-a-real-one"
@@ -68,7 +68,7 @@ def live_policy(monkeypatch):
     """The ALLOWING policy state: sandbox OFF, an approval channel, no kill switch."""
     monkeypatch.setattr(settings, "sandbox_mode", False)
     monkeypatch.setattr(settings, "approval_secret", APPROVAL_SECRET.decode())
-    monkeypatch.delenv("POLSIA_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
     monkeypatch.setattr(settings, "kill_switch", "")
 
 
@@ -135,7 +135,7 @@ async def test_one_approval_authorises_one_deploy_and_the_replay_is_refused(
     assert len(recorder.posts) == 1
     after_first = (site_dir / "meta.json").read_bytes()
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -150,7 +150,7 @@ async def test_one_approval_authorises_one_deploy_and_the_replay_is_refused(
     assert replay.code == E_POLICY_DENIED
     assert replay.context["reason"] == "already_used"
     assert replay.context["approval_replay"] is True
-    assert replay.context["policy_code"] == "POLSIA-E121"
+    assert replay.context["policy_code"] == "MERIDIAN-E121"
     assert "already used" in replay.message.lower()
     assert len(recorder.posts) == 1, "the replayed approval must not reach Render a second time"
     assert (site_dir / "meta.json").read_bytes() == after_first, (
@@ -194,7 +194,7 @@ async def test_a_transport_failure_still_spends_the_approval(
     _write_site(sites_root)
     token = _token()
 
-    with pytest.raises(PolsiaError) as failed:
+    with pytest.raises(MeridianError) as failed:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -205,7 +205,7 @@ async def test_a_transport_failure_still_spends_the_approval(
         )
     assert failed.value.code == E_UPSTREAM
 
-    with pytest.raises(PolsiaError) as replay:
+    with pytest.raises(MeridianError) as replay:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -230,7 +230,7 @@ async def test_a_sandbox_refusal_does_not_burn_the_token(
     token = _token()
 
     monkeypatch.setattr(settings, "sandbox_mode", True)
-    with pytest.raises(PolsiaError) as sandboxed:
+    with pytest.raises(MeridianError) as sandboxed:
         await deploy_service.deploy_site(
             "landing-page",
             dry_run=False,
@@ -303,7 +303,7 @@ def test_the_state_read_has_no_fingerprint_without_a_service_id(
 
 
 def test_deploy_fingerprint_refuses_a_missing_service_id() -> None:
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         deploy_service.deploy_fingerprint("landing-page", "")
     assert caught.value.code == "E_CONFIG"
     assert "fingerprint" in caught.value.message
@@ -363,6 +363,6 @@ async def test_http_deploy_with_an_already_spent_token_is_403_e_policy_denied(
     assert resp.headers["X-Meridian-Error-Code"] == E_POLICY_DENIED
     error = resp.json()["error"]
     assert error["context"]["reason"] == "already_used"
-    assert error["context"]["policy_code"] == "POLSIA-E121"
+    assert error["context"]["policy_code"] == "MERIDIAN-E121"
     assert error["context"]["approval_replay"] is True
     assert token not in resp.text, "a refusal must never echo the token"

@@ -83,7 +83,7 @@ from app.core.errors import (
     E_NOT_FOUND,
     E_UPSTREAM,
     E_VALIDATION,
-    PolsiaError,
+    MeridianError,
 )
 from app.services import secret_store
 
@@ -227,7 +227,7 @@ def require_provider(provider: Any) -> ProviderSpec:
     text = provider if isinstance(provider, str) else ""
     spec = PROVIDERS.get(text)
     if spec is None:
-        raise PolsiaError(
+        raise MeridianError(
             E_NOT_FOUND,
             f"integrations: unknown provider {text[:64]!r}; this surface ships exactly "
             f"{', '.join(PROVIDER_ORDER)}",
@@ -238,7 +238,7 @@ def require_provider(provider: Any) -> ProviderSpec:
 
 
 def _refuse_read_only(spec: ProviderSpec, action: str) -> None:
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"integrations: {spec.provider} is read-only in this panel — {action} is refused. "
         f"Its credentials are the existing settings {', '.join(spec.secrets)}, read from the "
@@ -254,7 +254,7 @@ def _refuse_read_only(spec: ProviderSpec, action: str) -> None:
 def _checked_values(spec: ProviderSpec, values: Any) -> dict[str, str]:
     """Only names this provider owns, only non-blank strings — validated BEFORE any write."""
     if not isinstance(values, Mapping) or not values:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"integrations: no values were supplied for {spec.provider}",
             how_to_fix=f"pass {{\"values\": {{...}}}} with at least one of: {', '.join(spec.secrets)}",
@@ -262,7 +262,7 @@ def _checked_values(spec: ProviderSpec, values: Any) -> dict[str, str]:
         )
     unknown = sorted(str(name) for name in values if name not in spec.secrets)
     if unknown:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"integrations: {spec.provider} has no secret(s) named {', '.join(unknown)}; "
             f"this provider owns exactly {', '.join(spec.secrets)}",
@@ -273,7 +273,7 @@ def _checked_values(spec: ProviderSpec, values: Any) -> dict[str, str]:
     blank = sorted(str(name) for name, value in values.items()
                    if not isinstance(value, str) or not value.strip())
     if blank:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"integrations: {spec.provider} value(s) {', '.join(blank)} are blank — a blank "
             "credential is not a credential; use the clear action to remove one",
@@ -346,7 +346,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "User-Agent": "polsia-integrations/1.0",
+        "User-Agent": "meridian-integrations/1.0",
     }
     try:
         # The timeout must sit on the constructor's own line: the perf pin scans for
@@ -365,7 +365,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
                 if len(body) > MAX_PROBE_BYTES:
-                    raise PolsiaError(
+                    raise MeridianError(
                         E_UPSTREAM,
                         f"{provider}: the probe answered past the {MAX_PROBE_BYTES}-byte "
                         "read cap",
@@ -376,14 +376,14 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
                     )
             raw = bytes(body)
     except httpx.TimeoutException as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{provider}: the read-only probe timed out after {PROBE_TIMEOUT_S:g}s",
             how_to_fix="retry once; if it persists check the provider's status page",
             context={"provider": provider, "timeout_s": PROBE_TIMEOUT_S},
         ) from exc
     except httpx.HTTPError as exc:
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             _scrub(
                 f"{provider}: the read-only probe failed at the transport layer: "
@@ -399,7 +399,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
         message = f"{provider}: the credential was refused (HTTP {status})"
         if detail:
             message += f": {detail}"
-        raise PolsiaError(
+        raise MeridianError(
             E_AUTH,
             _scrub(message, token),
             how_to_fix=(
@@ -413,7 +413,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
         message = f"{provider}: the probe answered HTTP {status}"
         if detail:
             message += f": {detail}"
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             _scrub(message, token),
             how_to_fix=(
@@ -427,7 +427,7 @@ async def _probe_json(provider: str, url: str, token: str) -> Any:
     try:
         return json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise PolsiaError(
+        raise MeridianError(
             E_UPSTREAM,
             f"{provider}: the probe answered 200 with a body that is not JSON — refusing "
             "rather than reporting a result nobody can read",
@@ -452,7 +452,7 @@ def _require_configured(spec: ProviderSpec) -> dict[str, str]:
         else:
             missing.append(name)
     if missing:
-        raise PolsiaError(
+        raise MeridianError(
             E_CONFIG,
             f"{spec.provider}: {', '.join(missing)} is not configured, so no test-connection "
             "probe can be made",
@@ -476,7 +476,7 @@ async def test_provider(provider: Any) -> dict[str, Any]:
         status = provider_status(spec)
         missing = [entry["name"] for entry in status["secrets"] if not entry["configured"]]
         if missing:
-            raise PolsiaError(
+            raise MeridianError(
                 E_CONFIG,
                 f"{spec.provider}: {', '.join(missing)} is not configured (and this build has "
                 "no read-only probe for it, so a test can only report the missing credential)",
@@ -486,7 +486,7 @@ async def test_provider(provider: Any) -> dict[str, Any]:
                 ),
                 context={"provider": spec.provider, "missing": missing},
             )
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"{spec.provider}: no read-only probe is wired in this build — refusing to "
             "fabricate a connection result. The masked status is all this surface can report.",
@@ -537,7 +537,7 @@ async def test_provider(provider: Any) -> dict[str, Any]:
             ),
         }
 
-    raise PolsiaError(
+    raise MeridianError(
         E_VALIDATION,
         f"{spec.provider}: this build names probe {spec.probe!r} but has no handler for it — "
         "refusing rather than reporting a result nobody can produce",

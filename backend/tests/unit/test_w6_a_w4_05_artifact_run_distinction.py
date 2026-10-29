@@ -38,7 +38,7 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.core.errors import E_DB, PolsiaError
+from app.core.errors import E_DB, MeridianError
 from app.models.task import AgentRun
 from app.services import artifact_service
 from app.services import run_service as runs_service
@@ -86,7 +86,7 @@ def test_workspace_exists_still_refuses_an_unsafe_id_by_name(tmp_path, monkeypat
     monkeypatch.setattr(settings, "code_workspace_dir", str(workspace))
 
     for run_id in ("..", "a/b", "a.b", "C:", "", "x" * 65):
-        with pytest.raises(PolsiaError) as caught:
+        with pytest.raises(MeridianError) as caught:
             artifact_service.workspace_exists(run_id)
         assert caught.value.code == "E_VALIDATION", run_id
 
@@ -97,7 +97,7 @@ def test_workspace_exists_propagates_a_misconfigured_workspace(tmp_path, monkeyp
     blocker.write_text("x", encoding="utf-8")
     monkeypatch.setattr(settings, "code_workspace_dir", str(blocker))
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         artifact_service.workspace_exists("301")
     assert caught.value.code == "E_CONFIG"
 
@@ -106,7 +106,7 @@ def test_the_no_workspace_refusal_names_its_kind(tmp_path, monkeypatch):
     """The existing service refusal keeps its message and gains the discriminator."""
     monkeypatch.setattr(settings, "code_workspace_dir", str(_workspace(tmp_path)))
 
-    with pytest.raises(PolsiaError) as caught:
+    with pytest.raises(MeridianError) as caught:
         artifact_service.run_dir("424242")
     refusal = caught.value
     assert refusal.code == "E_NOT_FOUND"
@@ -203,7 +203,7 @@ async def test_a_ledger_failure_is_never_reported_as_no_such_run(
     monkeypatch.setattr(settings, "code_workspace_dir", str(_workspace(tmp_path)))
 
     async def _unavailable(*_args, **_kwargs):
-        raise PolsiaError(E_DB, "run ledger is unavailable", how_to_fix="check DATABASE_URL")
+        raise MeridianError(E_DB, "run ledger is unavailable", how_to_fix="check DATABASE_URL")
 
     monkeypatch.setattr(runs_service, "get_run", _unavailable)
 

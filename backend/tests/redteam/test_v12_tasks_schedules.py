@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import func, select
 
-from app.core.errors import E_NOT_FOUND, E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_VALIDATION, MeridianError
 from app.models.schedule import TaskSchedule
 from app.models.task import Task
 
@@ -164,7 +164,7 @@ async def test_service_belt_refuses_boolean_hour_and_weekday(async_db_session):
     from app.services import schedule_service as schedules
 
     for kwargs in ({"hour": True}, {"hour": 9, "weekday": True}):
-        with pytest.raises(PolsiaError) as refusal:
+        with pytest.raises(MeridianError) as refusal:
             await schedules.create_schedule(
                 async_db_session, name="bool", prompt="p", cadence="daily", **kwargs
             )

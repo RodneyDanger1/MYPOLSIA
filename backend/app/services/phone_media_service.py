@@ -45,7 +45,7 @@ REFUSALS, BY NAME
                              unavailable store — never a silently short download).
     E_NOT_FOUND         404  no such part, or a part with no stored bytes (NULL/empty blob).
     E_VALIDATION        422  a part larger than `MEDIA_MAX_BYTES` (the documented stream cap).
-    Every route raises through `PolsiaError`; the shipped plumbing (`deps.refusal_guard` →
+    Every route raises through `MeridianError`; the shipped plumbing (`deps.refusal_guard` →
     `main`'s coded handlers) supplies the envelope and `X-Meridian-Error-Code`.  Nothing here
     hand-rolls a response.
 
@@ -61,7 +61,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.errors import E_NOT_FOUND, E_PHONE_UNAVAILABLE, E_VALIDATION, PolsiaError
+from app.core.errors import E_NOT_FOUND, E_PHONE_UNAVAILABLE, E_VALIDATION, MeridianError
 from app.services import phone_link_service as link
 
 logger = logging.getLogger(__name__)
@@ -143,14 +143,14 @@ WHERE mp.part_id = ?
 
 def _unavailable(
     message: str, *, how_to_fix: str = "", context: dict[str, Any] | None = None
-) -> PolsiaError:
+) -> MeridianError:
     """The store-fault refusal (`E_PHONE_UNAVAILABLE` 503) with the measured detail attached.
 
     `context` is a NAMED parameter, not `**kwargs`: passing `context={...}` into a `**context`
     catcher nests it one level deep (`{"context": {...}}`) and every caller that reads
     `error.context.part_id` then misses — a real defect this lane's own lying-size pin caught.
     """
-    return PolsiaError(
+    return MeridianError(
         E_PHONE_UNAVAILABLE,
         message,
         how_to_fix=how_to_fix
@@ -164,9 +164,9 @@ def _unavailable(
 
 def _not_found(
     part_id: int, *, reason: str, context: dict[str, Any] | None = None
-) -> PolsiaError:
+) -> MeridianError:
     """A part that does not exist AS A DOWNLOAD — named 404, never an empty 200."""
-    return PolsiaError(
+    return MeridianError(
         E_NOT_FOUND,
         f"phone media part {int(part_id)} has no downloadable bytes ({reason})",
         how_to_fix=(
@@ -333,7 +333,7 @@ def read_part(part_id: int, *, max_bytes: int | None = None) -> MediaPart:
         raise _not_found(part_id, reason="the stored blob is empty (an MMS text/SMIL body part)")
 
     if declared > cap:
-        raise PolsiaError(
+        raise MeridianError(
             E_VALIDATION,
             f"phone media part {int(part_id)} is {declared} bytes, over the {cap}-byte stream cap",
             how_to_fix=(

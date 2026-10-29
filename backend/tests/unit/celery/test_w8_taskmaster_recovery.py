@@ -28,7 +28,7 @@ from uuid import UUID
 
 import pytest
 
-from app.core.errors import E_DB, E_VALIDATION, PolsiaError
+from app.core.errors import E_DB, E_VALIDATION, MeridianError
 from celery_app.tasks import agent_tasks
 from celery_app.tasks._common import json_safe
 
@@ -140,7 +140,7 @@ def _activities(queue_db, action: str) -> list[dict]:
 
 def test_a_retryable_pre_run_failure_requeues_instead_of_wedging(queue_db, install_run_spy, execute_body, monkeypatch):
     spy = install_run_spy(delegate=False)
-    _fail_create_run(monkeypatch, PolsiaError(E_DB, "the ledger is unreachable", how_to_fix="retry"))
+    _fail_create_run(monkeypatch, MeridianError(E_DB, "the ledger is unreachable", how_to_fix="retry"))
     task_id = queue_db.create_task(agent_type="orchestrator")
 
     outcome = execute_body(task_id)
@@ -165,7 +165,7 @@ def test_a_retryable_pre_run_failure_requeues_instead_of_wedging(queue_db, insta
 def test_a_terminal_pre_run_failure_is_failed_by_name(queue_db, install_run_spy, execute_body, monkeypatch):
     install_run_spy(delegate=False)
     _fail_create_run(
-        monkeypatch, PolsiaError(E_VALIDATION, "the context is malformed", how_to_fix="fix it")
+        monkeypatch, MeridianError(E_VALIDATION, "the context is malformed", how_to_fix="fix it")
     )
     task_id = queue_db.create_task(agent_type="orchestrator")
 

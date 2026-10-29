@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.policy_firewall import configured_approval_secret, issue_approval
 from app.api.deps import get_db, refusal_guard, verify_api_key
-from app.core.errors import E_CONFIG, E_REDIS, PolsiaError
+from app.core.errors import E_CONFIG, E_REDIS, MeridianError
 from app.schemas.approval import ApprovalIssueRequest, ApprovalIssueResponse
 from app.services.activity_service import log_activity
 from app.services.task_service import attach_approval_token
@@ -161,7 +161,7 @@ async def _attach_and_requeue(
         # Load-bearing commit: `stamp_rearmed` only FLUSHES, and the request session is not
         # guaranteed to commit a path that raises right below.
         await db.commit()
-        raise PolsiaError(
+        raise MeridianError(
             E_REDIS,
             f"task #{task_id} was re-queued with its approval token but NOT dispatched: the "
             f"broker refused the hand-off ({exc.__class__.__name__}), so the row stays queued "
@@ -189,7 +189,7 @@ async def issue_approval_endpoint(
     with refusal_guard():
         secret = configured_approval_secret()
         if not secret:
-            raise PolsiaError(
+            raise MeridianError(
                 E_CONFIG,
                 "the approvals channel is not configured: APPROVAL_SECRET is unset, so no token "
                 "could ever verify",

@@ -26,7 +26,7 @@ import httpx
 import pytest
 
 from app.agents import accounting, claude_cli, deepseek_runtime, pricing
-from app.agents.base_agent import BasePolsiaAgent
+from app.agents.base_agent import BaseMeridianAgent
 
 SUMMARY_SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}},
                   "required": ["summary"]}
@@ -53,7 +53,7 @@ def _invoke(usage: dict) -> dict:
     return json.loads(result.stdout)
 
 
-class _Probe(BasePolsiaAgent):
+class _Probe(BaseMeridianAgent):
     agent_type = "finance"
 
     def run(self, task, context):  # pragma: no cover

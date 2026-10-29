@@ -41,7 +41,7 @@ import pytest
 
 import app.models  # noqa: F401  (register every table on Base.metadata before create_all)
 from app.core import timeutil
-from app.core.errors import E_CONFIG, PolsiaError
+from app.core.errors import E_CONFIG, MeridianError
 from app.orchestration.planner import build_plan
 from app.services import memory_service
 from celery_app.tasks import daily_cycle
@@ -148,7 +148,7 @@ def test_s04_invalid_company_timezone_is_a_named_refusal(monkeypatch):
     Old expectation (W3-refusals / S-04): with `settings.company_timezone = "Not/AZone"`,
     `company_tz()` returned `ZoneInfo("UTC")` and logged `code=invalid_company_timezone`
     naming the bad value.  New expectation (T4): the same input raises
-    `PolsiaError(E_CONFIG)`, whose message names the bad value — the raise IS the proof that
+    `MeridianError(E_CONFIG)`, whose message names the bad value — the raise IS the proof that
     no fallback value ever reaches a caller, so T2's morning window fails loudly instead of
     computing the wrong day.  Repair sanctioned by the S2-t4t14 brief (COMMON rule 4).
     """
@@ -156,7 +156,7 @@ def test_s04_invalid_company_timezone_is_a_named_refusal(monkeypatch):
 
     monkeypatch.setattr(settings, "company_timezone", "Not/AZone")
 
-    with pytest.raises(PolsiaError) as excinfo:
+    with pytest.raises(MeridianError) as excinfo:
         timeutil.company_tz()
 
     assert excinfo.value.code == E_CONFIG

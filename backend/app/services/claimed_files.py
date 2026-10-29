@@ -50,7 +50,7 @@ WHAT THIS MODULE DOES (and what it deliberately does not)
     identifiable payload) is reported as `unverified`, not as missing: "could not check" must
     never read as "did not write" / "the count is false".
 
-The seam is `BasePolsiaAgent.timed_run` (every dispatched run, planner runs included), which is
+The seam is `BaseMeridianAgent.timed_run` (every dispatched run, planner runs included), which is
 where the run's `summary` is finalised before the worker copies it into `tasks.result_summary`.
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.core.errors import PolsiaError
+from app.core.errors import MeridianError
 from app.services import artifact_service
 
 #: The result key carrying the file audit.  Written ONLY when the run claimed at least one path, so a
@@ -298,7 +298,7 @@ def audit_claimed_files(
 
     try:
         listing = artifact_service.list_run_artifacts(run_key, root)
-    except PolsiaError as exc:
+    except MeridianError as exc:
         # E_NOT_FOUND: the run has no workspace at all (nothing was written).  E_CONFIG/E_VALIDATION/
         # E_STORAGE: the workspace cannot be read or is not a run workspace — UNVERIFIABLE, which is
         # not the same claim as "not written".
