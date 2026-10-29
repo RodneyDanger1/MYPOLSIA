@@ -50,22 +50,22 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 | **API docs** | `/apidocs` | *V21* — the API's own **Swagger UI**, proxied by nginx to FastAPI's `/docs` (`/docs` itself stays with the Next app, which has no such page in this tree, so it answers 404). The schema is at `/openapi.json`. Explore/probe any route by hand: each protected operation shows an `X-API-Key` header field — use **Try it out**, paste the owner key, **Execute** (this app declares the key as a header parameter, not a security scheme, so there is no Authorize button). Auto-hidden (404) when `SANDBOX_MODE=false`. Needs the V21 nginx reload; `make smoke`'s `api-docs` check proves both URLs (USAGE §7.2) |
 
-### Current gate — wave 7 (measured 2026-10-29, before the wave-7 commit)
+### Current gate — wave 8 (measured 2026-10-29, before the wave-8 commit)
 
 The per-version tables below are **historical receipts for the commit in their heading**, not the
 current tree's numbers. The current measured gate is:
 
 | Gate | Result | Evidence |
 |---|---|---|
-| Backend | **5,253 tests / 0 failed / 0 errors / 12 skipped** (`EXIT=0`) | `polsia-work/build/swarm-2026-10-28/raw/wave7-GATE.xml` |
-| Frontend (jest) | **149 suites / 1,296 tests passed** | `polsia-work/build/swarm-2026-10-28/raw/wave7-jest.log` |
-| ruff, both pins | clean (`backend/.venv` + `uvx ruff==0.8.4`) | wave-7 receipt |
+| Backend | **5,425 tests / 0 failed / 0 errors / 16 skipped** (`EXIT=0`) | `polsia-work/build/swarm-2026-10-28/raw/wave8-GATE.xml` |
+| Frontend (jest) | **152 suites / 1,331 tests passed** | `polsia-work/build/swarm-2026-10-28/raw/wave8-jest.log` |
+| ruff, both pins | clean (`backend/.venv` + `uvx ruff==0.8.4`) | wave-8 receipt |
 | mypy | 196 files clean (`app/ celery_app/`) | `Success: no issues found in 196 source files` |
+| Migration | **0020** (a `sent` email row needs a non-blank provider id + `sent_at`), applied live; 0 rows changed | wave-8 receipt |
 
 The backend count is read from the JUnit XML (never from the `-q` summary); the frontend count is
 the jest run's own `Test Suites:` / `Tests:` lines. A skip is reported as a skip, not a pass.
-The wave-7 gate ran on the frozen wave-7 tree (migration 0019 included); the wave-6 gate was
-5,138/0/0/12 with 145 suites / 1,258 tests, and every historical block below keeps its own numbers.
+The wave-7 gate was 5,253/0/0/12 with 149 suites / 1,296 tests; every historical block keeps its own numbers.
 
 ### V28 hardening sweep — measured 2026-10-19 (historical receipt)
 
