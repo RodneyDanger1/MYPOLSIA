@@ -4,10 +4,14 @@ call them.
 
 The frozen interface the runtime (W-A) codes against:
 
-  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, exactly twelve frozen names:
-    `web_fetch`, `web_search`, `macro_snapshot`, `pricing_catalog`, `phone_read`,
+  * `TOOL_SPECS: list[dict]` — OpenAI function schemas, one per shipped tool.  The registry's
+    names are DERIVED, never typed here (a count in prose is how this line said "twelve" while
+    seventeen tools shipped): `web_fetch`, `web_search`, `macro_snapshot`, `pricing_catalog`,
+    `phone_read`, `research_fetch`, `fx_convert`, `signals_read`, `domain_health`, `link_status`,
     `code_write`, `code_read`, `code_list`, `github_repo`, `github_branch`, `github_commit`,
-    `github_pr`;
+    `github_pr`.  `_RUNNERS` and `TOOL_GUIDANCE` carry exactly the same names, and every name has
+    exactly ONE action-class entry (`_TOOL_ACTION_CLASS` for a write, `READ_ONLY_TOOLS` for a
+    read) — all three agreements are pinned by tests, not by this paragraph;
   * `def execute_tool(name, arguments, *, agent_type, task_title=None, run_id=None) -> str` —
     SYNC; returns the tool-result text (a JSON object). Unknown / denied / failed = a NAMED
     refusal payload (`E_*`), never a throw — the orchestrating loop must be able to finish
@@ -924,6 +928,33 @@ _TOOL_ACTION_CLASS: dict[str, ActionClass] = {
     "github_pr": ActionClass.EXTERNAL_IRREVERSIBLE,
 }
 
+#: The READ half of the class table (W4/CAPABILITY-AUDITOR) — the 13 tools whose only effect is a
+#: read (a page, a provider search, a local file read/listing, the macro/pricing/catalog readers,
+#: the owner's phone store, the signal feed, FX reference rates, DNS/TLS and link health, and the
+#: repository metadata read).
+#:
+#: WHY an explicit table instead of `READ` as the default: `_tool_action_class` used to answer
+#: `READ` for every name it did not know.  A NEW tool added to `TOOL_SPECS`/`_RUNNERS` without its
+#: class entry would therefore have been gated as a READ — a mutating tool opening with no channel,
+#: no cap slot and no approval, i.e. failing OPEN.  The two tables together must cover EXACTLY the
+#: registry's names: `execute_tool` refuses an unclassified name with a named `E_CONFIG`, and
+#: `tests/unit/test_w4_capability_census.py` fails on an omission before it can ship.
+READ_ONLY_TOOLS: frozenset[str] = frozenset({
+    "web_fetch",
+    "web_search",
+    "macro_snapshot",
+    "pricing_catalog",
+    "phone_read",
+    "research_fetch",
+    "fx_convert",
+    "signals_read",
+    "domain_health",
+    "link_status",
+    "code_read",
+    "code_list",
+    "github_repo",
+})
+
 #: The CHANNEL a mutating tool really acts on (A7-04).  A tool with no entry is not a channel
 #: send (a read, a local write) and carries `""` on purpose: `decide()` denies a channel the
 #: agent's capability does not name, so inventing one for a read would refuse it by accident.
@@ -1046,8 +1077,29 @@ def _tool_action_class(name: str, arguments: Any) -> ActionClass:
     `dry_run` is not explicitly `false` sends NOTHING (a plan — all three runners default
     `dry_run` to true).  A plan is therefore not an external action: it needs no cap slot and no
     human, exactly as the code agent's own `plan` action performs no `request_side_effect` at all.
+
+    W4/CAPABILITY-AUDITOR: a tool in NEITHER table (`_TOOL_ACTION_CLASS` / `READ_ONLY_TOOLS`) is a
+    named `E_CONFIG` refusal — never a silent `READ`.  The old default meant a new mutating tool
+    was gated as a read until somebody remembered the table (failing OPEN); `execute_tool`'s
+    contract ("unknown / denied / failed = a NAMED refusal") applies to an unclassified tool too.
     """
-    action_class = _TOOL_ACTION_CLASS.get(name) or ActionClass.READ
+    if name in _TOOL_ACTION_CLASS:
+        action_class = _TOOL_ACTION_CLASS[name]
+    elif name in READ_ONLY_TOOLS:
+        action_class = ActionClass.READ
+    else:
+        raise PolsiaError(
+            E_CONFIG,
+            f"tool {name!r} has no action-class entry: it is in neither "
+            "tool_registry._TOOL_ACTION_CLASS (writes) nor READ_ONLY_TOOLS (reads), so the "
+            "firewall cannot gate what it does",
+            how_to_fix=(
+                "add the tool to READ_ONLY_TOOLS if it only reads, or to _TOOL_ACTION_CLASS with "
+                "its real class if it writes; a tool is never gated as a read by default"
+            ),
+            context={"tool": name,
+                     "classed": sorted(set(_TOOL_ACTION_CLASS) | READ_ONLY_TOOLS)},
+        )
     if not isinstance(arguments, dict):
         return action_class           # malformed arguments are refused below, not guessed at
     if name == "github_branch" and _github_from_branch(arguments) is None:
@@ -1066,6 +1118,23 @@ def _execute(name: str, arguments: Any, *, agent_type: str) -> dict:
             how_to_fix=f"call one of: {known}",
             tool=name,
             agent=agent_type,
+        )
+    if name not in _TOOL_ACTION_CLASS and name not in READ_ONLY_TOOLS:
+        # W4/CAPABILITY-AUDITOR: a spec/runner added without its class entry.  Refuse HERE (before
+        # the firewall and before any I/O) with the named config refusal, instead of letting
+        # `_tool_action_class`'s raise be re-wrapped as E_INTEGRATION by `execute_tool`.
+        known = ", ".join(sorted(set(_TOOL_ACTION_CLASS) | READ_ONLY_TOOLS))
+        return named_refusal(
+            E_CONFIG,
+            f"tool {name!r} has no action-class entry in the registry (neither a write class nor "
+            "READ_ONLY_TOOLS), so the firewall cannot gate what it does; it was NOT executed",
+            how_to_fix=(
+                "classify the tool in tool_registry: READ_ONLY_TOOLS for a read, "
+                "_TOOL_ACTION_CLASS for a write. Unclassified tools never run"
+            ),
+            tool=name,
+            agent=agent_type,
+            classed=known,
         )
     action_class = _tool_action_class(name, arguments)
     # A7-04: ONE class table and ONE channel table, read by this path and by the agent's own
@@ -2865,6 +2934,7 @@ __all__ = [
     "PHONE_READ_LIMIT_DEFAULT",
     "PHONE_READ_LIMIT_MAX",
     "PHONE_READ_THREADS_MAX",
+    "READ_ONLY_TOOLS",
     "RUN_ID_MAX_CHARS",
     "RUN_RETENTION_KEEP_LATEST",
     "RUN_RETENTION_MAX_AGE_HOURS",

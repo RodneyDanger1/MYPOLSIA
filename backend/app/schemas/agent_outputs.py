@@ -2,8 +2,14 @@
 
 Lifted from lane 05's `SCHEMAS.py` (draft-07 bridge, local validator, samples) and aligned with
 lane 03's per-agent contracts (`SPEC-AGENTS.md` §3), which are keyed off the DB columns each
-agent feeds: `competitors.*`, `social_posts.*`, `prospects.*` / `email_logs.*`, `ad_campaigns.*`,
+agent feeds: `social_posts.*`, `prospects.*` / `email_logs.*`, `ad_campaigns.*`,
 `revenue_snapshots.*`, `expense_records.*`.
+
+W4/CAPABILITY-AUDITOR: `competitors.*` was in that list and is NOT fed — the `competitors` table
+has no writer in the worker (`_persist_run_artifacts` has no branch for it) and no reader beyond
+the generic `/data/{table}` dump; a competitor run's rows live on `agent_runs.output` only.  This
+list now says what the code does, and the producer/consumer decision is requested as
+`R-W4-CA-1` in the capability-auditor lane's REQUESTS.
 
 Two things make the schema the contract rather than decoration:
 
@@ -43,10 +49,21 @@ logger = logging.getLogger(__name__)
 AGENT_TYPES = ("orchestrator", "business_planning", "competitor_research", "social_media",
                "email_outreach", "customer_support", "ads_management", "code_generation",
                "finance")
+#: W4/CAPABILITY-AUDITOR — the agent types a TASK (a plan entry) may name: exactly the agents the
+#: dispatcher ships (`crew_factory.AGENT_MAP`, pinned by `tests/unit/test_w4_capability_census.py`).
+#:
+#: WHY this is a separate name from `ALL_AGENT_TYPES`: `deployment` is a DOCUMENTED agent the
+#: dispatcher does not ship (no AGENT_MAP entry, no model, no table, no route — contradiction row
+#: X-01), so a plan naming it was accepted here and then refused by `create_task` as an unknown
+#: agent type: the morning cycle spent a plan slot on work nothing could run (MEASURED, wave-4
+#: capability audit).  The plan contract is now the dispatchable set; `ALL_AGENT_TYPES` stays the
+#: SCHEMA surface so `DeploymentOutput`/`validate_agent_output("deployment", ...)` keep working
+#: for the documents that name it.
+TASK_AGENT_TYPES = AGENT_TYPES
 # `deployment` is documented (CLAUDE.md:5, docs/ACCEPTANCE_TESTING.md:110,140-149) but has no
 # registry entry, model, table or route; adding it to AGENT_MAP would break
-# `GET /agents/status == 9` (contradiction row X-01). TaskSpec therefore accepts it as a task
-# type, and its schema exists, while the dispatcher does not ship an agent for it.
+# `GET /agents/status == 9` (contradiction row X-01). `ALL_AGENT_TYPES` is the schema surface
+# (a registered schema exists for each name), NOT the task-assignment contract.
 ALL_AGENT_TYPES = AGENT_TYPES + ("deployment",)
 
 SCHEMA_VERSION: Final[Literal["1"]] = "1"
@@ -81,10 +98,15 @@ class TaskSpec(BaseModel):
     """One planned task. `depends_on` references other tasks by TITLE (a model cannot know
     content hashes). NOTE: the DAG planner that would resolve titles to node ids is currently
     unwired — `app/orchestration/planner.py` is labelled reference-only (wave U3, auditor
-    H-04) — and today the daily cycle dispatches plan entries flat (no DAG resolution)."""
+    H-04) — and today the daily cycle dispatches plan entries flat (no DAG resolution).
+
+    `agent_type` is restricted to the DISPATCHABLE fleet (`TASK_AGENT_TYPES`): a plan may only
+    name an agent the worker can actually start.  `deployment` stays a documented, unshipped
+    schema (`UNREGISTERED_SCHEMAS`) and is deliberately NOT assignable work.
+    """
 
     title: str = Field(min_length=3, max_length=512)
-    agent_type: Literal[ALL_AGENT_TYPES]  # type: ignore[valid-type]
+    agent_type: Literal[TASK_AGENT_TYPES]  # type: ignore[valid-type]
     priority: int = Field(ge=1, le=5, default=3)
     estimate_usd: float = Field(ge=0.0, le=25.0, default=0.10)
     estimate_seconds: int = Field(ge=5, le=7200, default=120)
@@ -134,7 +156,7 @@ class BusinessPlan(AgentEnvelope):
 
 
 # ---------------------------------------------------------------------------
-# 3. competitor research  (-> competitors table)
+# 3. competitor research  (-> agent_runs.output; the `competitors` TABLE has no writer — R-W4-CA-1)
 # ---------------------------------------------------------------------------
 
 class Competitor(BaseModel):
@@ -770,6 +792,7 @@ __all__ = [
     "AGENT_SCHEMAS",
     "AGENT_TYPES",
     "ALL_AGENT_TYPES",
+    "TASK_AGENT_TYPES",
     "FAILURE_TO_E_CODE",
     "REMEDIATION",
     "SCHEMA_VERSION",

@@ -201,6 +201,63 @@ def _spawn_facts() -> dict[str, Any]:
     }
 
 
+#: The `tasks.metadata` key a planned task's declared world-effect travels under (written by
+#: `daily_cycle._morning_cycle` from the plan's own `TaskSpec.side_effect`).
+TASK_SIDE_EFFECT_KEY = "side_effect"
+
+
+def _task_side_effect(task_dict: dict[str, Any] | None) -> str:
+    """The side effect THIS task declares (`""` when it declares none — the pre-W4 shape)."""
+    if not isinstance(task_dict, dict):
+        return ""
+    metadata = task_dict.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    raw = metadata.get(TASK_SIDE_EFFECT_KEY)
+    return raw.strip().lower() if isinstance(raw, str) else ""
+
+
+def task_capability_problems(agent_type: str, task_dict: dict[str, Any] | None) -> list[str]:
+    """The task's DECLARED side effect vs the agent's permitted action classes ([] = fine).
+
+    W4/CAPABILITY-AUDITOR — the missing task→agent capability leg.  A planned task carries
+    `metadata.side_effect` (the orchestrator's own claim about what the task does in the world,
+    validated by `TaskSpec.side_effect`).  Nothing compared that claim to the ACTION CLASSES the
+    target agent may take, so a plan could schedule "refund a customer" on `business_planning`
+    (read + internal_write only): the run was dispatched, spent its model call, and only the
+    agent's attempt at the action would meet the firewall — or, for a task that merely *declared*
+    the effect and never attempted it, nothing met it at all and the task was recorded completed.
+
+    The check is deliberately narrow and honest:
+      * no declaration, or a non-string one -> NO problem (every pre-W4 task, manual runs and the
+        fixed morning work, is unchanged);
+      * a declaration that is not one of the four action-class values -> a problem (the plan schema
+        constrains the value; anything else is a hand-written claim the firewall cannot map);
+      * a known agent whose class set lacks the declared class -> the problem, naming the class.
+    An unknown agent is NOT judged here — `get_agent_class` refuses it by name first.
+    """
+    declared = _task_side_effect(task_dict)
+    if not declared:
+        return []
+    try:
+        action_class = ActionClass(declared)
+    except ValueError:
+        return [
+            f"task declares side_effect {declared!r}, which is not an action class "
+            f"({', '.join(sorted(str(c) for c in ActionClass))})"
+        ]
+    capability = AGENT_CAPABILITIES.get(agent_type)
+    if capability is None:
+        return []
+    if action_class in capability.action_classes:
+        return []
+    permitted = ", ".join(sorted(str(c) for c in capability.action_classes)) or "none"
+    return [
+        f"task declares side_effect {declared!r} but agent {agent_type!r} may only take "
+        f"action classes [{permitted}] — the routed agent cannot perform this task"
+    ]
+
+
 def dispatch_preflight(agent_type: str, *, dispatch_paused: bool = False) -> list[str]:
     """Fleet-level gates that must stop dispatch BEFORE an agent is constructed.
 
@@ -271,7 +328,13 @@ def run_agent_for_task(
     task instruction or supply the missing input, never to re-spend on the identical prompt.
     """
     agent_class = get_agent_class(agent_type)          # ValueError("Unknown agent ...") here
+    capability = AGENT_CAPABILITIES.get(agent_type)
     problems = dispatch_preflight(agent_type, dispatch_paused=dispatch_paused)
+    # W4/CAPABILITY-AUDITOR — the task's own declared world-effect against the agent's permitted
+    # action classes.  Runs BEFORE the agent is constructed: a routed task the agent cannot
+    # perform is refused with no model call and no run row, instead of being discovered (if at
+    # all) after the spend.
+    problems.extend(task_capability_problems(agent_type, task_dict))
     if problems:
         raise PolsiaError(
             E_POLICY_DENIED,
@@ -281,7 +344,12 @@ def run_agent_for_task(
             # presence, auth verdict + why a leg did not apply) — a refusal a human reads must say
             # WHICH check refused, not just that one did (RD4 item 2).
             context={"agent_type": agent_type, "kill_grade": kill_grade_from_env(),
-                     "safety": _spawn_facts()},
+                     "safety": _spawn_facts(),
+                     # The task-level half: the measured class set, so the arithmetic that denied
+                     # the dispatch is never presented without it.
+                     "action_classes": sorted(str(c) for c in capability.action_classes)
+                     if capability else [],
+                     "task_side_effect": _task_side_effect(task_dict)},
         )
     agent = agent_class()
     if not isinstance(agent, BasePolsiaAgent):
@@ -348,10 +416,12 @@ __all__ = [
     "AGENT_MAP",
     "PARTIAL_SUMMARY_PREFIX",
     "PAYLOAD_STATUS_KEY",
+    "TASK_SIDE_EFFECT_KEY",
     "VALID_AGENT_TYPES",
     "dispatch_preflight",
     "get_agent_class",
     "refusal_reason",
     "resolve_dispatch_paused",
     "run_agent_for_task",
+    "task_capability_problems",
 ]

@@ -44,14 +44,32 @@ from app.core.errors import E_CONFIG, PolsiaError
 CAPABILITY_BLOCK_HEADER = "CAPABILITY MANIFEST"
 FLEET_MAP_HEADER = "FLEET CAPABILITY MAP"
 
+#: W4/CAPABILITY-AUDITOR — the routability markers the fleet map carries on EVERY line.
+#:
+#: WHY (measured defect, wave-4 capability audit): the map is the orchestrator's routing material,
+#: and it named every `AGENT_CAPABILITIES` entry as if a plan could target it.  Two entries cannot:
+#:
+#:   * `company_planner` is SERVICE-INVOKED (`planner_service` builds it directly; it is
+#:     deliberately not in `crew_factory.AGENT_MAP`) — and `TaskSpec.agent_type` (the plan's own
+#:     contract) does not accept it, so a plan that named it failed `OrchestratorPlan` validation
+#:     as a WHOLE: the morning plan was lost because the context advertised an unroutable target;
+#:   * `deployment` is documented-only (no class, no model, no route) and is not in the map at all.
+#:
+#: Routability is derived from the dispatcher's registry (`_routable_agent_types`), never typed.
+ROUTABLE_MARKER = "[ROUTABLE]"
+SERVICE_INVOKED_MARKER = "[SERVICE-INVOKED — NOT A PLAN TARGET]"
+
 __all__ = [
     "CAPABILITY_BLOCK_HEADER",
     "FLEET_MAP_HEADER",
+    "ROUTABLE_MARKER",
+    "SERVICE_INVOKED_MARKER",
     "agent_manifest_entry",
     "capability_manifest",
     "registry_tool_entries",
     "render_agent_capability_block",
     "render_fleet_capability_map",
+    "routable_agent_types",
     "tool_entries_for",
 ]
 
@@ -64,6 +82,19 @@ def _specs_by_name() -> dict[str, dict]:
     through every consumer below.
     """
     return {str(spec["function"]["name"]): spec for spec in TOOL_SPECS}
+
+
+def routable_agent_types() -> tuple[str, ...]:
+    """The agents a PLAN may name: the dispatcher's own registry, asked at call time.
+
+    `crew_factory.AGENT_MAP` is the ONE authority (the same tuple `task_service.VALID_AGENT_TYPES`
+    and `TaskSpec.agent_type` are pinned to by `tests/unit/test_w4_capability_census.py`).  It is
+    imported HERE, lazily, because `base_agent.layers_for` is itself imported by `crew_factory` —
+    at the moment this runs, every agent module is loaded, so the read cannot deadlock or cycle.
+    """
+    from app.agents.crew_factory import VALID_AGENT_TYPES
+
+    return tuple(VALID_AGENT_TYPES)
 
 
 def _tool_entry(name: str, spec: dict | None) -> dict[str, str]:
@@ -187,10 +218,20 @@ def render_fleet_capability_map(*, tools_callable: bool) -> str:
 
     One line per firewall agent: its permitted action classes, its external channels and its
     registry tools — the planning material for routing work to an agent that can carry it.
+
+    W4/CAPABILITY-AUDITOR: every line now states whether a PLAN may name that agent
+    (`ROUTABLE_MARKER` / `SERVICE_INVOKED_MARKER`), derived from `crew_factory.AGENT_MAP`.  The
+    map used to present a service-invoked agent (`company_planner`) as a routing target while the
+    plan's own schema (`TaskSpec.agent_type`) refused it — so a model that followed the map
+    produced a plan that failed validation as a whole.  The alternative (dropping the agent from
+    the map) would hide a real agent; stating the truth on the line keeps both facts visible.
     """
+    routable = set(routable_agent_types())
     lines = [
         f"{FLEET_MAP_HEADER} (every agent, derived live from the same registry + policy firewall "
         "— route work to what an agent can really do)",
+        f"- A plan may name ONLY the agents marked {ROUTABLE_MARKER}; an agent marked "
+        f"{SERVICE_INVOKED_MARKER} is started by a service and cannot be assigned a task.",
     ]
     for agent_type in sorted(AGENT_CAPABILITIES):
         capability = AGENT_CAPABILITIES[agent_type]
@@ -199,8 +240,10 @@ def render_fleet_capability_map(*, tools_callable: bool) -> str:
             tools_text = ", ".join(names) or "none"
         else:
             tools_text = "not on this runtime (the registry tool loop runs under DeepSeek)"
+        marker = ROUTABLE_MARKER if agent_type in routable else SERVICE_INVOKED_MARKER
         lines.append(
             f"- {agent_type}: actions [{_action_classes_text(capability)}]; "
-            f"channels [{', '.join(capability.channels) or 'none'}]; registry tools [{tools_text}]"
+            f"channels [{', '.join(capability.channels) or 'none'}]; registry tools [{tools_text}] "
+            f"{marker}"
         )
     return "\n".join(lines)

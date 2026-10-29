@@ -320,9 +320,13 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         #     source-control write for any of those would be privilege without a task.
         #   * Order is the use order (read -> branch -> commit -> PR); append-only, so the V24
         #     names keep their positions for every pre-V25 consumer.
-        #   * The mutation tools are gated `external_reversible` in
-        #     `tool_registry._TOOL_ACTION_CLASS`, so the firewall's sandbox/taint legs govern a
-        #     commit exactly as they govern a post; `dry_run` defaults to true on top of that.
+        #   * The mutation tools are gated `external_irreversible` in
+        #     `tool_registry._TOOL_ACTION_CLASS` — the SAME class this agent's own `open_pr` path
+        #     passes to `request_side_effect` (A7-04: one class, one human approval gate and one
+        #     `github` counter for both transports); only a call with `dry_run: false` is gated as
+        #     the mutation, and a plan (`dry_run` unset/true) is a READ.  (This line said
+        #     `external_reversible` until wave 4 — the table and the agent path both said
+        #     irreversible, so the prose was the odd one out.)
         agent_tools=("code_write", "code_read", "code_list",
                      "github_repo", "github_branch", "github_commit", "github_pr"),
     ),
