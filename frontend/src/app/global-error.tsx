@@ -72,6 +72,14 @@ const BEVEL_BUTTON: CSSProperties = {
   backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f2f2f2 45%, #dcdcdc 100%)",
 };
 
+/** Wave 8 — a NAMED refusal keeps its code + fix hint even at the root boundary.  Duck-typed for
+ *  the same reason as `app/error.tsx`: this surface may not depend on anything that could be the
+ *  thing that broke (and `ApiError` lives in a module that may itself have failed to load). */
+function refusalDisplay(error: Error): string | null {
+  const carried = (error as Error & { display?: unknown }).display;
+  return typeof carried === "string" && carried.trim() !== "" ? carried.trim() : null;
+}
+
 export default function GlobalError({
   error,
   reset,
@@ -79,6 +87,7 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const refusal = refusalDisplay(error);
   return (
     <html lang="en">
       <body
@@ -117,7 +126,9 @@ export default function GlobalError({
                 margin: "0 0 1rem",
               }}
             >
-              <p style={{ ...LABEL_STYLE, color: ALERT, margin: "0 0 0.25rem" }}>Error detail</p>
+              <p style={{ ...LABEL_STYLE, color: ALERT, margin: "0 0 0.25rem" }}>
+                {refusal ? "Refusal detail" : "Error detail"}
+              </p>
               <pre
                 data-testid="global-error-message"
                 style={{
@@ -129,7 +140,7 @@ export default function GlobalError({
                   wordBreak: "break-word",
                 }}
               >
-                {error.message || "Unknown error (no message was attached)"}
+                {refusal ?? (error.message || "Unknown error (no message was attached)")}
               </pre>
               {error.digest ? (
                 <p style={{ ...LABEL_STYLE, color: INK_MUTED, margin: "0.5rem 0 0" }}>

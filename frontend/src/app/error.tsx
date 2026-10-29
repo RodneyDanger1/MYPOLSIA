@@ -38,6 +38,19 @@ function requestIdOf(error: Error): string | null {
   return typeof carried === "string" && carried.trim() !== "" ? carried.trim() : null;
 }
 
+/** Wave 8 — a NAMED refusal that reached the boundary keeps its code and fix hint.
+ *
+ *  `ApiError.display` is `code: message — how_to_fix`; the boundary used to render `error.message`
+ *  alone, so an ApiError thrown during a render lost the `E_*` code (and the fix) at exactly the
+ *  screen an operator would copy-paste into a support request. Read STRUCTURALLY (no import): the
+ *  boundary must stay dependency-light, and a mocked `@/lib/api` may not export the class.
+ *  A blank `display` is absence, never an empty box.
+ */
+function displayOf(error: Error): string | null {
+  const carried = (error as Error & { display?: unknown }).display;
+  return typeof carried === "string" && carried.trim() !== "" ? carried.trim() : null;
+}
+
 export default function Error({
   error,
   reset,
@@ -51,24 +64,32 @@ export default function Error({
   }, [error]);
 
   const requestId = requestIdOf(error);
+  // A named refusal (code + fix) already says more than "something went wrong": the boundary
+  // renders ITS words under a refusal heading instead of the generic failure voice.
+  const refusal = displayOf(error);
 
   return (
     <div className="max-w-2xl space-y-4">
       <div className="border-b border-line pb-1">
-        <p className="ui-label text-ink-muted">Unexpected failure</p>
-        <h1 className="text-3xl font-bold leading-tight text-ink">Something went wrong</h1>
+        <p className="ui-label text-ink-muted">
+          {refusal ? "Named refusal" : "Unexpected failure"}
+        </p>
+        <h1 className="text-3xl font-bold leading-tight text-ink">
+          {refusal ? "The server refused this request" : "Something went wrong"}
+        </h1>
       </div>
       <p className="text-sm text-ink">
-        This screen failed to render. The app did not hide the failure behind an empty page —
-        the details below are what it actually received.
+        {refusal
+          ? "This screen could not be rendered because the server refused a request it made. The refusal below is the server's own code, message and fix hint — nothing was rewritten into a friendlier sentence."
+          : "This screen failed to render. The app did not hide the failure behind an empty page — the details below are what it actually received."}
       </p>
       <div role="alert" className="border border-alert bg-surface p-3">
-        <p className="ui-label text-alert">Error detail</p>
+        <p className="ui-label text-alert">{refusal ? "Refusal detail" : "Error detail"}</p>
         <pre
           data-testid="error-message"
           className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-ink"
         >
-          {error.message || "Unknown error (no message was attached)"}
+          {refusal ?? (error.message || "Unknown error (no message was attached)")}
         </pre>
         {error.digest ? (
           <p className="ui-label mt-2 text-ink-muted">Digest: {error.digest}</p>

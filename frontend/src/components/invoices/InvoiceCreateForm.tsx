@@ -117,9 +117,17 @@ export function InvoiceCreateForm({
 
     const net = money(netDays);
     // Non-blank net days ALWAYS ride the body (S2-F3, wave v14): an out-of-range value is refused
-    // BY NAME by the request model (`InvoiceCreateRequest.net_days`, `ge=0, le=365`, →
-    // E_VALIDATION) and that refusal is rendered above — it is never silently dropped so the
-    // service can apply its own default.
+    // by the request model (`InvoiceCreateRequest.net_days`, `ge=0, le=365`) and rendered above —
+    // it is never silently dropped so the service can apply its own default.
+    //
+    // WAVE 8 CORRECTION (measured live 2026-10-29): that refusal is NOT a named `E_VALIDATION`
+    // envelope.  The request model raises pydantic's `RequestValidationError`, and the backend's
+    // handler deliberately keeps FastAPI's UNCODED `{"detail":[{loc,msg,type}]}` shape for
+    // serializable errors (`main.py`; pinned by `test_refusal_unify`).  The old comment claimed a
+    // code the wire never carried.  What the screen shows now is the client's readable rendering of
+    // that array — `E_HTTP_422: body.net_days: Input should be less than or equal to 365` — from
+    // `lib/api.ts::validationErrorsText`, with the JSON never printed.  A server that DOES name a
+    // refusal (a service-level `E_VALIDATION`) still renders its own code + fix hint first.
     if (net !== undefined) body.net_days = net;
 
     const subtotalValue = money(subtotal);

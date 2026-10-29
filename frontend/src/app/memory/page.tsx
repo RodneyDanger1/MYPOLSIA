@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api, type ApiFetchOptions } from "@/lib/api";
 import { Button, Chip } from "@/components/ui";
+import { MemoryTags } from "@/components/memory/MemoryTags";
 import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
 
 /**
@@ -14,6 +15,13 @@ import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
  * WARMING_AFTER_MS in flight the page says the index is warming (it is not a failure), because the
  * first search against a cold store can outlive the client default — measured >30 s on this host
  * (G-e2e-pages/RECEIPT.md §3; the lab proxy caps at 30 s on a cold Chroma load).
+ *
+ * F-42 (wave 8): the page ALSO offers an explicit "Recent entries" read — the LIST branch of the
+ * same endpoint (`GET /memory?limit=…`, no `q`), which is the branch that carries each row's stored
+ * `tags`. The screen used to serve only the semantic branch, whose hits carry none, so every stored
+ * tag was invisible on the one surface built to inspect memory. Both reads are click-only and share
+ * one in-flight guard; the disclosure under the list states which read answered it (a semantic
+ * search serves no total; the list read declares `X-Polsia-Total`).
  *
  * Q-11: Enter used to bypass the button's disabled guard, so two searches could overlap and the
  * older response could land last. `search()` now self-guards on a synchronous `inFlight` ref (the
@@ -55,6 +63,12 @@ export type Memory = {
    *  the only thing that lets the operator tell the two apart (a keyword scan must not pass as a
    *  semantic match). */
   fallback?: string | null;
+  /** F-42 (wave 8): the row's stored tags (`MemoryItem.tags`, `list[str] | None`). The LIST branch
+   *  (`GET /memory?limit=…`, no `q`) carries them — measured live 2026-10-29 on 50/50 rows — while
+   *  the SEMANTIC branch is built from Chroma metadata and carries none today
+   *  (`memory_service.search_memory`). Absent is absence: the row renders no tag claim for it
+   *  (see `MemoryTags`). */
+  tags?: string[] | null;
 };
 
 /** Honest label for a degraded hit.  An unknown marker is shown as-is rather than hidden: the
@@ -101,6 +115,10 @@ const WARM_SEARCH_OPTIONS: ApiFetchOptions = { timeoutMs: 120_000 };
 const WARMING_AFTER_MS = 10_000;
 /** The read's page size (backend default; the label below discloses a full page, Q-12's idiom). */
 const MEMORY_SEARCH_LIMIT = 20;
+/** F-42: the browse read's page size and path — the LIST branch, which carries each row's tags.
+ *  No `q` key at all: `?q=` is the semantic branch and it serves no tags today. */
+const MEMORY_BROWSE_LIMIT = 20;
+const MEMORY_BROWSE_PATH = `/memory?limit=${MEMORY_BROWSE_LIMIT}`;
 
 /** The house error idiom (`ApiError.display`), with a truly honest fallback: a non-Error throw is
  *  rendered as its JSON when it serializes — never laundered into "[object Object]". */
@@ -143,6 +161,13 @@ export default function MemoryPage() {
    *  input happens to contain now (the failure named a specific read; the retry must be the same
    *  read). */
   const [failedQuery, setFailedQuery] = useState<string | null>(null);
+  /** F-42: which read produced what is on screen. `browse` is the explicit LIST read (newest
+   *  stored rows, each with its own tags); `search` is the semantic hit list. The disclosure text
+   *  must say the truth that belongs to the mode — a search serves no total, the list read does. */
+  const [mode, setMode] = useState<"search" | "browse" | null>(null);
+  const [browseTotal, setBrowseTotal] = useState<number | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
 
   // ── V15/W1 (4-05(c)): add-form state — local drafts only; no request fires before Store. ──
   const [addOpen, setAddOpen] = useState(false);
@@ -182,6 +207,9 @@ export default function MemoryPage() {
     setError(null);
     setFailedQuery(null);
     setWarming(false);
+    // F-42: a search answer replaces a stale browse failure — the alert names the READ that
+    // failed, and this is a newer read of the same screen.
+    setBrowseError(null);
     // The timer is the state machine's "slow, not failed" edge; it is cleared on every settle.
     const warmingTimer = setTimeout(() => {
       if (mounted.current && seq === requestSeq.current) setWarming(true);
@@ -200,11 +228,15 @@ export default function MemoryPage() {
       }
       setResults(data);
       setSearched(true);
+      setMode("search");
+      setBrowseTotal(null);
+      setBrowseError(null);
     } catch (e: unknown) {
       if (!mounted.current || seq !== requestSeq.current) return;
       setError(errorText(e));
       setFailedQuery(q);
       setResults(null);
+      setMode(null);
     } finally {
       clearTimeout(warmingTimer);
       inFlight.current = false;
@@ -212,6 +244,58 @@ export default function MemoryPage() {
         setWarming(false);
         setLoading(false);
       }
+    }
+  };
+
+  /**
+   * F-42 (wave 8) — the explicit LIST read: the newest stored entries, each with the tags the row
+   * stores. This is the branch of `GET /memory` that actually carries `tags` (the semantic branch
+   * does not today, measured 2026-10-29), so the screen can show them without inventing a join the
+   * wire does not support.
+   *
+   * It is CLICK-ONLY, like the search: the page still fires no read on mount. It shares the one
+   * `inFlight` guard with the search, so two result reads can never interleave and an older answer
+   * can never land over a newer one. The declared total comes from THIS response's
+   * `X-Polsia-Total` header (the same read the rows came from), and a missing/unreadable header is
+   * `null` — the label then says only what the page length proves.
+   */
+  const browse = async () => {
+    if (inFlight.current) return; // one result read at a time (the search shares this guard)
+    inFlight.current = true;
+    setBrowseLoading(true);
+    setBrowseError(null);
+    setError(null); // a browse answer replaces the search alert: this read is the newer intent
+    setFailedQuery(null);
+    setWarming(false);
+    let total: number | null = null;
+    try {
+      const data = await api.get<Memory[]>(MEMORY_BROWSE_PATH, {
+        onHeaders: (headers) => {
+          const raw = headers.get("X-Polsia-Total");
+          const parsed = raw === null || raw === "" ? Number.NaN : Number(raw);
+          total = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+        },
+      });
+      if (!mounted.current) return;
+      if (!Array.isArray(data)) {
+        // A non-list payload is a broken contract, not "no entries" — say so.
+        throw new Error(
+          `the server answered with ${data === null ? "null" : typeof data} instead of a list of entries`,
+        );
+      }
+      setResults(data);
+      setSearched(true);
+      setMode("browse");
+      setBrowseTotal(total);
+    } catch (e: unknown) {
+      if (!mounted.current) return;
+      setBrowseError(errorText(e));
+      setResults(null);
+      setMode(null);
+      setBrowseTotal(null);
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBrowseLoading(false);
     }
   };
 
@@ -256,9 +340,12 @@ export default function MemoryPage() {
       setAddTitle("");
       setAddContent("");
       setAddTags("");
-      // A search is on screen and is now stale: refresh the SAME query (an explicit refresh of a
-      // displayed result set, not a surprise search).
-      if (query.trim() !== "" && searched) {
+      // A displayed result set is now stale: refresh the SAME read (an explicit refresh of what is
+      // on screen, not a surprise search). F-42: the browse read refreshes itself, so a stored row's
+      // new tags cannot be left out of the view that shows tags.
+      if (mode === "browse") {
+        void browse();
+      } else if (query.trim() !== "" && searched) {
         void search();
       }
     } catch (e: unknown) {
@@ -321,10 +408,25 @@ export default function MemoryPage() {
             className="mt-1 h-[49px] w-full border border-line-strong bg-surface px-3 text-sm text-ink"
           />
         </div>
-        <Button variant="glossy" onClick={() => void search()} disabled={loading}>
+        <Button variant="glossy" onClick={() => void search()} disabled={loading || browseLoading}>
           {loading ? "Searching…" : "Search"}
         </Button>
+        {/* F-42: the explicit LIST read. Search answers the semantic index (whose hits carry no
+            tags on this server); the browse read serves the newest stored rows WITH their tags. */}
+        <Button
+          data-testid="memory-browse"
+          onClick={() => void browse()}
+          disabled={loading || browseLoading}
+          title="Read the newest stored entries — the list branch, which carries each row's tags"
+        >
+          {browseLoading ? "Loading…" : "Recent entries"}
+        </Button>
       </div>
+      <p className="ui-label text-ink-muted" data-testid="memory-browse-note">
+        Recent entries reads the stored rows themselves, so each shows its own stored tags;
+        the semantic search above answers from the memory index, whose hits carry no tags on this
+        server.
+      </p>
 
       {/* V15/W1 (4-05(c)): the owner's REAL write path — POST /memory. Collapsed until asked;
           nothing is requested while it is closed. */}
@@ -431,7 +533,10 @@ export default function MemoryPage() {
         ) : null}
       </section>
 
-      <div aria-busy={loading ? true : undefined} className="space-y-3">
+      <div
+        aria-busy={loading || browseLoading ? true : undefined}
+        className="space-y-3"
+      >
         {error ? (
           <div role="alert" className="border border-alert bg-surface p-3">
             <p className="ui-label text-alert">Search failed</p>
@@ -444,6 +549,27 @@ export default function MemoryPage() {
               data-testid="memory-search-retry"
               onClick={() => void search(failedQuery ?? undefined)}
               disabled={loading}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+
+        {/* F-42: the browse read's own failure — named, and never rendered as "no entries". */}
+        {browseError ? (
+          <div
+            role="alert"
+            data-testid="memory-browse-error"
+            className="border border-alert bg-surface p-3"
+          >
+            <p className="ui-label text-alert">Could not load recent entries</p>
+            <p className="mt-1 text-sm text-ink">{browseError}</p>
+            <button
+              type="button"
+              className="link ui-label mt-2"
+              data-testid="memory-browse-retry"
+              onClick={() => void browse()}
+              disabled={browseLoading || loading}
             >
               Retry
             </button>
@@ -478,21 +604,35 @@ export default function MemoryPage() {
           </p>
         ) : null}
 
-        {!searched && !loading && !error ? (
-          <p className="ui-label text-ink-muted">
-            Search company memory to see what the agents have recorded. The first search after a
-            restart can take a while while the index warms up.
+        {browseLoading ? (
+          <p role="status" data-testid="memory-browse-loading" className="ui-label text-ink-muted">
+            Reading the newest stored entries…
           </p>
         ) : null}
 
-        {searched && !error && results !== null && results.length === 0 ? (
+        {!searched && !loading && !browseLoading && !error && !browseError ? (
+          <p className="ui-label text-ink-muted">
+            Search company memory to see what the agents have recorded, or open Recent entries to
+            read the newest stored rows with their tags. The first search after a restart can take
+            a while while the index warms up.
+          </p>
+        ) : null}
+
+        {mode === "search" && !error && results !== null && results.length === 0 ? (
           // Q-26: the empty state says what to do next.
           <p className="ui-label text-ink-muted">
             No entries matched that search. Try a broader word — agents record memory as they work.
           </p>
         ) : null}
 
-        {results !== null && results.length === MEMORY_SEARCH_LIMIT ? (
+        {mode === "browse" && results !== null && results.length === 0 ? (
+          <p className="ui-label text-ink-muted" data-testid="memory-browse-empty">
+            No memory entries are stored yet, so there is nothing to browse. Agents record memory
+            as they work.
+          </p>
+        ) : null}
+
+        {mode === "search" && results !== null && results.length === MEMORY_SEARCH_LIMIT ? (
           // Q-12's idiom, memory-sized: a full page is disclosed, never presented as the whole
           // list. Precise wording (V22/L3, W1 GAP-1b): the SEMANTIC branch (`?q=`) serves no
           // total by design (`backend/app/api/v1/memory.py:43-46` — a hit list is not a table
@@ -501,6 +641,26 @@ export default function MemoryPage() {
           <p className="ui-label text-ink-muted">
             Showing the first {MEMORY_SEARCH_LIMIT} matches — this semantic search serves no
             total, so more may exist.
+          </p>
+        ) : null}
+
+        {/* F-42: the browse read's disclosure. The list branch DOES declare a total
+            (`X-Polsia-Total`, `backend/app/api/v1/memory.py:57`), so a truncated browse is
+            distinguishable from the whole table; a missing/unreadable header says only what the
+            page length proves. */}
+        {mode === "browse" && results !== null && browseTotal !== null ? (
+          <p className="ui-label text-ink-muted" data-testid="memory-browse-total">
+            {results.length >= browseTotal
+              ? `Showing all ${browseTotal} stored ${browseTotal === 1 ? "entry" : "entries"}.`
+              : `Showing the newest ${results.length} of ${browseTotal} stored entries — ${
+                  browseTotal - results.length
+                } older ${browseTotal - results.length === 1 ? "entry is" : "entries are"} not shown.`}
+          </p>
+        ) : null}
+        {mode === "browse" && results !== null && browseTotal === null ? (
+          <p className="ui-label text-ink-muted" data-testid="memory-browse-no-total">
+            Showing the newest {results.length} {results.length === 1 ? "entry" : "entries"} — this
+            read declared no total, so more may exist.
           </p>
         ) : null}
 
@@ -571,6 +731,10 @@ export default function MemoryPage() {
                   {/* A null title (the metadata may simply not carry one) is named "untitled", never an
                       empty line and never the literal word "null". */}
                   <p className="mt-1 font-bold text-ink">{m.title ?? "untitled"}</p>
+                  {/* F-42: the row's own stored tags — rendered when the wire carries them (the
+                      list branch), absent on a search hit that does not carry them. Bounded: see
+                      `MemoryTags` (6 chips + "+N more"). */}
+                  <MemoryTags tags={m.tags} />
                   <p className="mt-1 text-sm text-ink">{m.content ?? "No content recorded."}</p>
                 </li>
               );

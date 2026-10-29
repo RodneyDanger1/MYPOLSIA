@@ -4,6 +4,11 @@ import { useState } from "react";
 import { Composer } from "@/components/chat/Composer";
 import { ConfirmCard } from "@/components/chat/ConfirmCard";
 import { useChat, type ChatItem, type ChatRefusal } from "@/components/chat/useChat";
+import {
+  confirmInstructionIndexes,
+  gateStatement,
+  liveGateIndex,
+} from "@/components/chat/confirmGateTruth";
 import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
 import { PanelError, PanelSkeleton } from "@/components/dashboard/states";
 import { Button } from "@/components/ui";
@@ -32,7 +37,26 @@ function refusalDisplay(refusal: ChatRefusal): string {
 
 const ROLE_LABEL: Record<string, string> = { owner: "You", polsia: "Polsia" };
 
-function MessageRow({ item }: { item: ChatItem }) {
+/** F-46 — one stored instruction that is NOT the live gate says so, at the row it belongs to.
+ *
+ *  The transcript keeps the server's text verbatim (history is never rewritten); this line adds
+ *  the one fact the text cannot carry: whether a CONFIRM is still offered for it.  It names the
+ *  three ways a gate ends — the server cannot tell a row which one happened (the history read
+ *  carries no per-row state), so it names all three instead of guessing one. */
+function InactiveGateNote() {
+  return (
+    <p
+      data-testid="chat-confirm-inactive"
+      className="mt-2 rounded-sm border border-[#E3E3E3] bg-[#FAFAFA] px-2 py-1.5 font-mono text-[10px] leading-relaxed text-[#6e6e6e]"
+    >
+      No live confirm gate — this reply&apos;s single-use window has closed, a newer proposal
+      superseded it, or it was already confirmed. No CONFIRM is offered for it and it cannot queue
+      anything.
+    </p>
+  );
+}
+
+function MessageRow({ item, inactiveGate }: { item: ChatItem; inactiveGate?: boolean }) {
   const isOwner = item.role === "owner";
   return (
     <li
@@ -63,6 +87,7 @@ function MessageRow({ item }: { item: ChatItem }) {
           </span>
         ) : null}
       </div>
+      {inactiveGate ? <InactiveGateNote /> : null}
       {item.refusal ? (
         <p className="mt-2 rounded-sm border border-red-200 bg-red-50 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-red-800">
           {refusalDisplay(item.refusal)}
@@ -93,6 +118,18 @@ export function ChatRail() {
   // count has to account for them instead of printing "SHOWING 52 OF 50".
   const unconfirmed = chat.unconfirmed;
   const countedRows = chat.items.length - unconfirmed;
+
+  // F-46 — one live gate at most. The newest instruction-bearing reply is the live one while a
+  // gate offers CONFIRM; every other instruction on screen is history and says so at the row.
+  const instructionIndexes = confirmInstructionIndexes(chat.items);
+  const liveIndex = liveGateIndex(chat.items, gate);
+  const inactiveIndexes = new Set(instructionIndexes.filter((index) => index !== liveIndex));
+  const gateTruth = gateStatement({
+    instructionCount: instructionIndexes.length,
+    liveIndex,
+    confirmed: gate !== null && gate.status === "confirmed",
+    confirmedTaskId: gate !== null && typeof gate.taskId === "number" ? gate.taskId : null,
+  });
 
   return (
     <section
@@ -140,11 +177,24 @@ export function ChatRail() {
 
         {chat.items.length > 0 && (
           <ul className="space-y-2 pb-2">
-            {chat.items.map((item) => (
-              <MessageRow key={item.key} item={item} />
+            {chat.items.map((item, index) => (
+              <MessageRow key={item.key} item={item} inactiveGate={inactiveIndexes.has(index)} />
             ))}
           </ul>
         )}
+
+        {/* F-46 — the ONE-live-gate fact, stated in words next to the gate it describes. A stored
+            instruction row can never be rewritten (history), so the surface states the current
+            truth instead: how many instructions the transcript holds, and that only the newest can
+            ever be confirmed while its single-use window is open. */}
+        {gateTruth !== null ? (
+          <p
+            data-testid="chat-gate-truth"
+            className="mb-2 border-t border-[#E3E3E3] pt-2 font-mono text-[10px] leading-relaxed text-[#6e6e6e]"
+          >
+            {gateTruth}
+          </p>
+        ) : null}
 
         {gate ? (
           <ConfirmCard gate={gate} onConfirm={() => void chat.confirmAction(gate.token)} />

@@ -72,6 +72,61 @@ export class ApiError extends Error {
  *  `detail` payload WITHOUT a `code` (plain 422s, incidental HTTPExceptions) stays a generic `E_HTTP_*`
  *  — those are not refusals and must not pretend to be.
  */
+/** The most field errors one rendered message may name (bounded on purpose: a hostile body can
+ *  carry hundreds of entries, and an error surface that scrolls for a page is not a message). */
+const VALIDATION_FIELDS_SHOWN = 3;
+/** Per-field message cap.  The server's own `msg` is the content; this only stops a hostile body
+ *  from turning the alert into an essay. */
+const VALIDATION_FIELD_CHARS = 300;
+
+/** FastAPI's REQUEST-VALIDATION shape (`{"detail": [{loc, msg, type, ...}]}`), rendered readably.
+ *
+ *  WHY (wave 8, measured live 2026-10-29): the backend keeps this shape UNCODED BY DESIGN
+ *  (`main.py::request_validation_error_handler` returns FastAPI's default array byte-for-byte for
+ *  serializable errors, pinned by `test_refusal_unify`), and the client used to hand the raw JSON
+ *  to the user as the message — `E_HTTP_422: {"detail":[{"type":"less_than_equal","loc":
+ *  ["body","net_days"],"msg":"Input should be less than or equal to 365","input":999,…}]}`. That
+ *  is a wall of machine JSON in an error box, and the echoed `input` can carry anything the caller
+ *  sent (`app/models` secrets included).
+ *
+ *  So: no code is invented (the server sent none — the code stays `E_HTTP_<status>`), the JSON is
+ *  never printed, and the SERVER'S OWN field names + messages are rendered: `net_days: Input should
+ *  be less than or equal to 365`.  An empty/unrecognisable array is `null` so the caller keeps its
+ *  existing generic fallback.
+ */
+function validationErrorsText(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (!Array.isArray(detail) || detail.length === 0) return null;
+  const parts: string[] = [];
+  for (const entry of detail) {
+    if (!entry || typeof entry !== "object") continue;
+    const bag = entry as { loc?: unknown; msg?: unknown };
+    if (typeof bag.msg !== "string" || bag.msg.trim() === "") continue;
+    // `loc` is `("body", "net_days")`, `("body", "line_items", 0, "quantity")`, or `("query", …)`.
+    // "body" is the transport container, not a form field — drop it; keep the rest VERBATIM so the
+    // field the server refused is the field the user sees.
+    const loc = Array.isArray(bag.loc)
+      ? bag.loc
+          .filter((part) => typeof part === "string" || typeof part === "number")
+          .map(String)
+          .filter((part) => part !== "body")
+      : [];
+    const where = loc.length > 0 ? `${loc.join(".")}: ` : "";
+    const msg =
+      bag.msg.length > VALIDATION_FIELD_CHARS
+        ? `${bag.msg.slice(0, VALIDATION_FIELD_CHARS)}…`
+        : bag.msg;
+    parts.push(`${where}${msg}`);
+    if (parts.length === VALIDATION_FIELDS_SHOWN) break;
+  }
+  if (parts.length === 0) return null;
+  const hidden = detail.length - parts.length;
+  return hidden > 0
+    ? `${parts.join("; ")}; and ${hidden} more field error${hidden === 1 ? "" : "s"}`
+    : parts.join("; ");
+}
+
 function refusalFrom(body: unknown): ApiRefusal | null {
   if (!body || typeof body !== "object") return null;
   const b = body as { ok?: unknown; error?: unknown; detail?: unknown };
@@ -205,12 +260,27 @@ async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise
             requestId,
           );
         }
+        // A request-model 422 (FastAPI's uncoded `detail` array) is rendered from the SERVER'S own
+        // field names and messages instead of the raw JSON blob (wave 8; see
+        // `validationErrorsText`).  The code stays the generic HTTP class because the server did
+        // not name one — the client does not invent a refusal code.  An array that names no usable
+        // message still never prints JSON: it says what class of refusal it was and that the
+        // payload named no field.
+        const isValidationArray =
+          !!parsed &&
+          typeof parsed === "object" &&
+          Array.isArray((parsed as { detail?: unknown }).detail) &&
+          ((parsed as { detail: unknown[] }).detail.length > 0);
+        const validationText = validationErrorsText(parsed);
         const err = new ApiError(
           res.status,
-          text || res.statusText,
+          validationText ??
+            (isValidationArray
+              ? "the server rejected the request body as invalid, but its validation payload named no field message"
+              : text || res.statusText),
           `E_HTTP_${res.status}`,
           "",
-          undefined,
+          parsed,
           requestId,
         );
         // A 5xx on a read is worth one more try, if the budget still fits it; a 4xx never is.
