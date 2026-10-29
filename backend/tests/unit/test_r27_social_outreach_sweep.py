@@ -51,7 +51,7 @@ from app.services.channel_service import channel_sends_snapshot
 _COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
                           "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
                           "website_url": "https://acme.example"},
-               "suppressed": []}
+               "suppressed": [], "send_time_verified": True}
 
 # A fixed mid-day anchor, exactly the pattern test_channel_sends/test_send_cap_producer_e2e use:
 # the company-local day and the trailing hour are deterministic and producer writes are pinned to it.
@@ -408,11 +408,23 @@ async def test_create_prospect_refuses_unusable_addresses(async_db_session):
 
 
 async def test_create_prospect_strips_the_address_and_keeps_optional_fields(async_db_session):
+    """WHITESPACE is stripped and the optional fields survive — the rule this test was written for.
+
+    W7 DELIBERATE RE-PIN (2026-10-29; `outreach_service.normalize_address`): the CASE half of the
+    old assertion is reversed on purpose.  OLD: `prospect.email == "Ada@Example.com"` ("stripped,
+    case preserved").  NEW: `prospect.email == "ada@example.com"` ("stripped AND lowercased").
+    WHY: `prospects.email`'s unique index is case-sensitive, so preserving case let
+    `Ada@Example.com` and `ada@example.com` become TWO rows for ONE mailbox — one subscribed, one
+    unsubscribed — which split the send dedupe and let a later send miss the opt-out (measured:
+    `send_compliant_email` reads the suppression row with `lower(email) = …`).  One mailbox is one
+    consent, and the opt-out producer already stored `strip().lower()`.  The strip behaviour the
+    test pins is unchanged; only the case assertion moved.
+    """
     db = async_db_session
     prospect = await outreach_service.create_prospect(
         db, "  Ada@Example.com  ", first_name="Ada", company="Analytical", source="directory",
     )
-    assert prospect.email == "Ada@Example.com"                  # stripped, case preserved
+    assert prospect.email == "ada@example.com"                  # stripped AND lowercased
     assert (prospect.first_name, prospect.company, prospect.source) == ("Ada", "Analytical",
                                                                         "directory")
     assert prospect.status == "new"

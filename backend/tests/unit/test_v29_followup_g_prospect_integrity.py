@@ -156,10 +156,16 @@ async def test_a_prospect_with_send_history_is_left_as_residual_never_cascaded(
     async_db_session.add(prospect)
     await async_db_session.flush()
     prospect_id = prospect.id
+    # W7: the fixture's intent is SEND history ("First touch" / "Follow-up"), so it states the
+    # send state explicitly.  Migration 0019 moved `email_logs.status`'s default to `draft` (a row
+    # that states no status must not claim a performed send), so an unstated row is no longer a
+    # send; the assertion below (`email_logs == 2`) is unchanged.
     async_db_session.add_all(
         [
-            EmailLog(prospect_id=prospect_id, subject="First touch"),
-            EmailLog(prospect_id=prospect_id, subject="Follow-up"),
+            EmailLog(prospect_id=prospect_id, subject="First touch", status="sent",
+                     sendgrid_id="sg-v29g-first"),
+            EmailLog(prospect_id=prospect_id, subject="Follow-up", status="sent",
+                     sendgrid_id="sg-v29g-follow"),
         ]
     )
     await async_db_session.commit()

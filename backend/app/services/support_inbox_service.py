@@ -85,6 +85,10 @@ MAX_INBOUND_PROVIDER_CHARS = 64
 INBOUND_AUDIT_ACTION = "support_inbox_inbound"
 INBOUND_AUDIT_AGENT = "system"
 
+#: WAVE 7 — the stable action a reply-driven opt-out writes (the footer's reply route honored:
+#: see `email_compliance.is_opt_out_reply`).  IDs and flags only, never the customer's text.
+OPT_OUT_AUDIT_ACTION = "support_inbox_opt_out"
+
 
 @dataclass(frozen=True, slots=True)
 class InboundIngestResult:
@@ -159,19 +163,30 @@ async def stamp_prospect_replied(
     error — an inbound message from a non-prospect is simply not a chain event, and the
     report says so: `{"matched": False, "prospect_id": None, "stamped": 0}`.  Flush only —
     the caller commits (this service's transaction discipline).
+
+    WAVE 7 — LEGACY CASE-VARIANTS.  The old lookup took `.limit(1)` of the case-insensitive
+    match, so two rows for one mailbox (`Ada@Example.COM` beside `ada@example.com`, which the
+    case-sensitive unique index allowed before `outreach_service.normalize_address` landed) left
+    one of them unstamped: the reply stopped half a chain.  Every matching prospect is stamped
+    now, and the report names them — `prospect_ids` is present only when there was more than one,
+    so the long-standing three-key shape of a normal reply is unchanged.
     """
     address = (from_address or "").strip().lower()
     if not address:
         return {"matched": False, "prospect_id": None, "stamped": 0}
-    prospect_id = (
-        await db.execute(select(Prospect.id).where(func.lower(Prospect.email) == address).limit(1))
-    ).scalar_one_or_none()
-    if prospect_id is None:
+    prospect_ids = (
+        await db.execute(
+            select(Prospect.id)
+            .where(func.lower(Prospect.email) == address)
+            .order_by(Prospect.id.asc())
+        )
+    ).scalars().all()
+    if not prospect_ids:
         return {"matched": False, "prospect_id": None, "stamped": 0}
     stamped_ids = (
         await db.execute(
             update(EmailLog)
-            .where(EmailLog.prospect_id == prospect_id, EmailLog.replied_at.is_(None))
+            .where(EmailLog.prospect_id.in_(list(prospect_ids)), EmailLog.replied_at.is_(None))
             .values(replied_at=as_bound_instant(now or now_utc(), db))
             .returning(EmailLog.id)
             .execution_options(synchronize_session=False)
@@ -181,7 +196,14 @@ async def stamp_prospect_replied(
         "reply from prospect %s: %d email log(s) stamped replied_at — the follow-up chain stops",
         address, len(stamped_ids),
     )
-    return {"matched": True, "prospect_id": int(prospect_id), "stamped": len(stamped_ids)}
+    report: dict[str, Any] = {
+        "matched": True,
+        "prospect_id": int(prospect_ids[0]),
+        "stamped": len(stamped_ids),
+    }
+    if len(prospect_ids) > 1:
+        report["prospect_ids"] = [int(pid) for pid in prospect_ids]
+    return report
 
 
 async def submit_item(
@@ -243,7 +265,38 @@ async def submit_item(
         # in the SAME transaction as the ingest, so `replied_at` can never lag the reply it
         # reports (the every-3h follow-up sweep filters on that column).  A duplicate delivery
         # (the `existing` branch below) never re-stamps: it is not a new reply.
-        await stamp_prospect_replied(db, from_address=from_addr)
+        reply = await stamp_prospect_replied(db, from_address=from_addr)
+        if reply.get("matched"):
+            # WAVE 7 — the footer's reply-to-opt-out route (`email_compliance.OPT_OUT_LINE`)
+            # was a PROMISE with no executable half: the reply stopped this chain but stored no
+            # suppression, so the next campaign mailed the same person again.  A reply that
+            # exercises the route now records the durable opt-out through the ONE producer
+            # (`outreach_service.unsubscribe_prospect`), in this same transaction, and the
+            # event is audited with IDs and flags only — never the customer's text.
+            # Lazy imports: this module loads in the worker/beat path and must not drag the
+            # compliance module (and through it `app.agents`) into that import graph.
+            from app.services.email_compliance import is_opt_out_reply
+
+            if is_opt_out_reply(subj, text):
+                from app.services.outreach_service import unsubscribe_prospect
+
+                opt_out = await unsubscribe_prospect(db, from_addr)
+                await log_activity(
+                    db,
+                    INBOUND_AUDIT_AGENT,
+                    OPT_OUT_AUDIT_ACTION,
+                    summary=(
+                        f"support inbox: reply from prospect {reply.get('prospect_id')} "
+                        "requested opt-out; suppression recorded"
+                    ),
+                    detail={
+                        "prospect_id": reply.get("prospect_id"),
+                        "item_id": int(created.id),
+                        "stamped_logs": reply.get("stamped", 0),
+                        "was": opt_out.get("was"),
+                        "already": bool(opt_out.get("already")),
+                    },
+                )
         return created
 
     existing = (
@@ -554,6 +607,7 @@ __all__ = [
     "MAX_INBOUND_BODY_CHARS",
     "MAX_INBOUND_PROVIDER_CHARS",
     "MAX_PROVIDER_MESSAGE_ID_LEN",
+    "OPT_OUT_AUDIT_ACTION",
     "VALID_STATUSES",
     "InboundIngestResult",
     "attach_pending",

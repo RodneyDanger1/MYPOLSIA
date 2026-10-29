@@ -147,6 +147,8 @@ def _preflight(suppressed: list[str] | None = None) -> dict[str, Any]:
         "company": {"sender_legal_name": LEGAL_NAME, "sender_postal_address": POSTAL_ADDRESS,
                     "website_url": WEBSITE},
         "suppressed": list(suppressed or []),
+        # W7/R1 contract: the real worker preflight asserts the send-time verification.
+        "send_time_verified": True,
     }
 
 

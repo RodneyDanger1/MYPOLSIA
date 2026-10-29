@@ -48,7 +48,8 @@ def _provider(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def _preflight(suppressed: Any) -> dict[str, Any]:
-    return {"company": dict(COMPANY), "suppressed": suppressed}
+    # W7/R1 contract: a producer that HAS verified suppression at send time for this send.
+    return {"company": dict(COMPANY), "suppressed": suppressed, "send_time_verified": True}
 
 
 def _preflight_without_suppressed() -> dict[str, Any]:

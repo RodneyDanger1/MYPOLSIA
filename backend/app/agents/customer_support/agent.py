@@ -43,6 +43,12 @@ from app.agents.side_effects import (
 from app.config import settings
 from app.core.errors import E_NOT_FOUND, E_RATE_LIMITED, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.schemas.agent_outputs import CustomerSupportOutput
+from app.services.email_lifecycle import (
+    provider_accepted,
+    provider_message_id,
+    provider_status_code,
+    refusal_for_unaccepted,
+)
 
 ROLE = """You are the Customer Support agent of an autonomous company. You read the support inbox
 and answer customers.
@@ -334,18 +340,28 @@ class CustomerSupportAgent(BasePolsiaAgent):
                     receipts.append(receipt)
                     continue
                 receipt["integration"] = result
-                if result.get("ok"):
+                # WAVE 7: the same provider-acceptance rule as email_outreach — ONE rule for both
+                # producers (`services.email_lifecycle.provider_accepted`).  A non-2xx answer or an
+                # unevidenced result is `failed` with a named refusal, never "sent".
+                if provider_accepted(result):
                     reply["status"] = "sent"
+                    reply["provider_status"] = provider_status_code(result)
                     performed += 1
                     # RD14 follow-up: the email cap's producer (`record_sent_emails`, called by
                     # the worker for this agent — see `agent_tasks._persist_run_artifacts`) dedupes
                     # on the provider's OWN per-message id; without it a CS reply would never count
                     # against the email cap.  Empty when the provider returned none — the producer
                     # then refuses to count it (its honest status/id gate).
-                    reply["sendgrid_id"] = str((result.get("result") or {}).get("message_id") or "")
+                    reply["sendgrid_id"] = provider_message_id(result)
                 else:
                     reply["status"] = "failed"
-                    payload.setdefault("refusals", []).append(result)
+                    reply["provider_status"] = provider_status_code(result)
+                    if isinstance(result, dict) and result.get("ok") is not True:
+                        payload.setdefault("refusals", []).append(result)
+                    else:
+                        payload.setdefault("refusals", []).append(
+                            refusal_for_unaccepted(result, to=ref)
+                        )
             else:
                 reply["status"] = "draft"
                 if outcome.sandboxed:

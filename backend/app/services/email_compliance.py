@@ -32,6 +32,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 from typing import Any, Final
 
 from sqlalchemy import func, select
@@ -41,7 +42,7 @@ from app.agents import integrations
 from app.config import settings
 from app.core.errors import E_CONFIG, E_POLICY_DENIED, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.models.outreach import Prospect
-from app.services.query_helpers import fetch_scalar
+from app.services.query_helpers import fetch_scalars
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,63 @@ AI_ASSISTANCE_DISCLOSURE: Final[str] = (
 OPT_OUT_LINE: Final[str] = (
     'To opt out: reply to this email with "unsubscribe" and we will stop within 10 business days.'
 )
+
+#: WAVE 7 — the reply-to-opt-out route the line above PROMISES, made executable.  The line said
+#: "reply with unsubscribe"; nothing read the reply, so the promise was prose: an inbound reply
+#: stamped `replied_at` (stopping THIS chain) but stored no suppression, so the next campaign
+#: would mail the same person again.  Two shapes are recognised, and they are deliberately narrow
+#: (a free-form "please take me off your list" is NOT guessed at — it still stops the chain via
+#: `replied_at`, and the operator sees the item in the inbox):
+#:   * the subject is "unsubscribe" (optionally prefixed by "Re:"), or
+#:   * the FIRST substantive line of the body is an unsubscribe/opt-out request.
+#: QUOTED HISTORY IS NOT THE CUSTOMER'S ASK, and the rule is fail-SAFE in the direction that
+#: matters: a misread reply would PERMANENTLY suppress a live prospect (a fabricated consent
+#: withdrawal about a person), while a miss is visible in the inbox and the one-click link still
+#: works.  So a `>`-prefixed line is skipped, and an ATTRIBUTION line ("On … wrote:",
+#: "-----Original Message-----", "From:") ends the scan entirely — everything under it is the
+#: quoted original, which is where our own footer (containing "unsubscribe") lives.  Found by the
+#: logic-debugger lane's W7 matrix (REQUESTS-W7 R3) against the first cut of this rule.
+_OPT_OUT_SUBJECT: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:re|fwd?)\s*:\s*(?:unsubscribe|opt[\s\-]?out)\s*$", re.IGNORECASE
+)
+_OPT_OUT_LINE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:please\s+)?(?:unsubscribe|opt[\s\-]?out)\b", re.IGNORECASE
+)
+#: An attribution line: whatever follows is quoted history.
+_ATTRIBUTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*on\b.+\bwrote:\s*$", re.IGNORECASE
+)
+_ATTRIBUTION_PREFIXES: Final[tuple[str, ...]] = (
+    "-----original",
+    "----- original",
+    "from:",
+    "sent from my",
+)
+
+
+def is_opt_out_reply(subject: str | None, body: str | None) -> bool:
+    """Does this inbound message EXERCISE the footer's reply-to-opt-out route?
+
+    See the module comment above `_OPT_OUT_SUBJECT` for the exact (deliberately narrow) shapes,
+    including why an attribution line STOPS the scan.  A pure function: it reads only its
+    arguments, so a caller can preview the rule.
+    """
+    head = str(subject or "").strip()
+    if head and _OPT_OUT_SUBJECT.match(head):
+        return True
+    if head.strip().lower() in {"unsubscribe", "opt out", "opt-out"}:
+        return True
+    for raw_line in str(body or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if _ATTRIBUTION_RE.match(line) or lowered.startswith(_ATTRIBUTION_PREFIXES):
+            return False                 # quoted history follows: not the customer's ask
+        if line.startswith(">"):
+            continue                     # a quoted line inside the customer's own text
+        return bool(_OPT_OUT_LINE.match(line))
+    return False
 
 #: The privacy link is derived, never invented: `website_url` + this path.
 PRIVACY_PATH: Final[str] = "/privacy"
@@ -328,12 +386,22 @@ async def send_compliant_email(
         opt_out_url=_opt_out_url_or_none(_field(company, "website_url"), address),
     )
 
-    prospect = await fetch_scalar(
+    # R4 (wave 7): the unique index on prospects.email is CASE-SENSITIVE, so a legacy pair
+    # (Ada@Example.COM subscribed, ada@example.com unsubscribed) is TWO rows for ONE mailbox.
+    # Reading one row with no ORDER BY could read the subscribed one and mail a person who
+    # opted out. Read EVERY row for the normalised address; ANY unsubscribed row suppresses.
+    rows = await fetch_scalars(
         db,
-        select(Prospect).where(func.lower(Prospect.email) == address.lower()),
-        what=f"prospect {address!r}",
+        select(Prospect)
+        .where(func.lower(Prospect.email) == address.lower())
+        .order_by(Prospect.id.asc()),
+        what=f"prospects {address!r}",
     )
-    if prospect is not None and (prospect.status or "").strip().lower() == "unsubscribed":
+    suppressed_rows = [
+        row for row in rows if (row.status or "").strip().lower() == "unsubscribed"
+    ]
+    if suppressed_rows:
+        first = suppressed_rows[0]
         raise PolsiaError(
             E_POLICY_DENIED,
             f"outreach to {address!r} is suppressed: prospect status is 'unsubscribed'",
@@ -341,7 +409,11 @@ async def send_compliant_email(
                 "honor the opt-out; clear it only at the prospect's own request "
                 "(update prospects.status), then retry"
             ),
-            context={"prospect_id": int(prospect.id), "status": prospect.status},
+            context={
+                "prospect_id": int(first.id),
+                "status": first.status,
+                "matching_rows": len(rows),
+            },
         )
 
     composed = "\n\n".join(part for part in (body.strip(), footer) if part)
@@ -428,6 +500,23 @@ def _session_free_send(
                 "source": "run context compliance preflight",
             },
         )
+    # R1 (wave 7): the compliance preflight is a SNAPSHOT taken when the run started. An opt-out
+    # that lands DURING the run is invisible here, and a session-free caller has no DB handle to
+    # re-read it. Sending against a stale snapshot can mail a person who has just unsubscribed, so
+    # the session-free path requires the producer to assert a send-time verification for THIS
+    # send; otherwise it refuses by name (fail closed).
+    if preflight.get("send_time_verified") is not True:
+        raise PolsiaError(
+            E_POLICY_DENIED,
+            "the session-free send path cannot re-verify suppression at send time: the "
+            "run-context preflight is a snapshot and this call holds no database session",
+            how_to_fix=(
+                "resolve the suppression state at send time (the worker must pass "
+                "preflight['send_time_verified']=True only after a fresh read for this recipient) "
+                "and retry; never mail against a stale snapshot"
+            ),
+            context={"to": address, "preflight": "snapshot (send-time unverified)"},
+        )
     composed = "\n\n".join(part for part in (body.strip(), footer) if part)
     return integrations.send_email(to=address, subject=subject, body=composed)
 
@@ -439,6 +528,7 @@ __all__ = [
     "SENDER_UNCONFIGURED_MESSAGE",
     "UNSUBSCRIBE_PATH",
     "footer_for_company",
+    "is_opt_out_reply",
     "opt_out_line",
     "send_compliant_email",
     "unsubscribe_token",

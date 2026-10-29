@@ -231,7 +231,14 @@ MODELS_DIR = Path(__file__).resolve().parents[2] / "app" / "models"
 # e54f2a725a9816f54619d6e1f96f99b776db9e6b9d1bbdf6a87441a36d670a09 ->
 # 2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035 (the new single-use
 # consumed_approvals ledger: token_id UNIQUE, jti UNIQUE, three indexes).
-DDL_SHA256 = "2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035"
+# W7 DELIBERATE RE-PIN (2026-10-29; migration 0019): old
+# 2a7899449306990e6c804c546e06cb4e512744bfcf3205cd32ed5ba507c34035 ->
+# 0c013b1f293de221ae3d973416151084146a5150909b52309aa2adc11cef83b3 — ONE table's ONE column
+# default moved: `email_logs.status` `DEFAULT 'sent'` -> `DEFAULT 'draft'` (a row that states no
+# status may no longer claim a performed send).  No table/index was added or removed; the
+# PostgreSQL-only sent-requires-provider-id CHECK is migration-side, exactly like 0017's state
+# CHECK (SQLite cannot ALTER-ADD a constraint).
+DDL_SHA256 = "0c013b1f293de221ae3d973416151084146a5150909b52309aa2adc11cef83b3"
 
 # generated from probes/ddl_before.columns.tsv (pre-migration ORM create_all)
 FROZEN_TABLE_NAMES = (
@@ -459,7 +466,12 @@ FROZEN_COLUMNS = {
         # PHASE-3 L2-08: migration 0005's partial unique (unnamed-column autoindex is not used
         # because the index is partial), mapped so create_all carries the same natural key
         ('sendgrid_id', 'VARCHAR(255)', True, '', '', 'uq_email_logs_sendgrid_id', True),
-        ('status', 'VARCHAR(50)', True, "'sent'", 'sent', '', False),
+        # WAVE 7 DELIBERATE RE-PIN (2026-10-29; migration `0019`): the status default moved
+        # OLD "'sent'"/"sent" -> NEW "'draft'"/"draft".  WHY: a row that states no status was
+        # recorded as a performed send the email cap counts; `draft` claims the least, and the
+        # provider-acceptance CHECK (PostgreSQL-only, see migration 0019) now refuses a `sent`
+        # row without a provider message id.
+        ('status', 'VARCHAR(50)', True, "'draft'", 'draft', '', False),
         ('sent_at', 'DATETIME', True, '', '', '', False),
         ('opened_at', 'DATETIME', True, '', '', '', False),
         ('replied_at', 'DATETIME', True, '', '', '', False),

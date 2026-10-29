@@ -28,9 +28,28 @@ from app.core.database import utcnow
 from app.core.errors import E_DB, E_VALIDATION, ERROR_HINTS, PolsiaError
 from app.core.timeutil import as_bound_instant, dialect_name
 from app.models.outreach import EmailLog, Prospect
+from app.models.support import SupportInboxItem
+from app.services.email_lifecycle import (
+    PROVIDER_ACCEPTED_MAX,
+    PROVIDER_ACCEPTED_MIN,
+    coerce_status_code,
+)
 from app.services.query_helpers import db_refusal, fetch_scalar, fetch_scalars
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_address(address: object) -> str:
+    """The ONE stored form of an address: `strip().lower()` (V11/W1's opt-out rule, widened).
+
+    WHY every writer normalises: `prospects.email`'s unique index is CASE-SENSITIVE, so
+    `Ada@Example.COM` and `ada@example.com` used to become two rows for ONE mailbox — one
+    subscribed, one unsubscribed.  That split the dedupe (a re-send created a second prospect)
+    and the suppression list (`send_compliant_email` reads it with `lower(email) = …` and took
+    the FIRST match, so a send to the other case could miss the opt-out).  The opt-out producer
+    already stored `strip().lower()`; the send path did not.  One mailbox is one consent.
+    """
+    return str(address or "").strip().lower()
 
 
 async def list_prospects(
@@ -46,8 +65,13 @@ async def list_prospects(
 
 
 async def create_prospect(db: AsyncSession, email: str, **values: Any) -> Prospect:
-    """Insert a prospect; a duplicate address is a named refusal, not a 500."""
-    address = (email or "").strip()
+    """Insert a prospect; a duplicate address is a named refusal, not a 500.
+
+    The address is STORED normalised (`normalize_address`): one mailbox, one row — otherwise the
+    case-sensitive unique index lets a second casing in and the suppression list stops covering
+    the person (see `normalize_address`).
+    """
+    address = normalize_address(email)
     if "@" not in address or address.startswith("@") or address.endswith("@"):
         raise PolsiaError(
             E_VALIDATION,
@@ -82,20 +106,27 @@ async def _find_or_create_prospect(db: AsyncSession, address: str) -> tuple[Pros
     scopes the rollback to the failed insert, the caller's pending work survives, and the
     duplicate refusal is re-resolved by re-selecting. Anything other than an `already exists`
     refusal is re-raised — never swallowed. `flush` only; the worker owns the commit.
+
+    WAVE 7: the lookup is CASE-INSENSITIVE and ordered by id, and the row is created stored
+    normalised — so a legacy mixed-case row is FOUND rather than duplicated, and the
+    suppression check `send_compliant_email` runs has one row to answer from.
     """
-    existing = await fetch_scalar(
-        db, select(Prospect).where(Prospect.email == address), what=f"prospect {address!r}"
+    normalized = normalize_address(address)
+    lookup = (
+        select(Prospect)
+        .where(func.lower(Prospect.email) == normalized)
+        .order_by(Prospect.id.asc())
+        .limit(1)
     )
+    existing = await fetch_scalar(db, lookup, what=f"prospect {normalized!r}")
     if existing is not None:
         return existing, False
     try:
         async with db.begin_nested():
-            return await create_prospect(db, address), True
+            return await create_prospect(db, normalized), True
     except PolsiaError as exc:
         if exc.code == E_VALIDATION and "already exists" in exc.message:
-            again = await fetch_scalar(
-                db, select(Prospect).where(Prospect.email == address), what=f"prospect {address!r}"
-            )
+            again = await fetch_scalar(db, lookup, what=f"prospect {normalized!r}")
             if again is not None:
                 return again, False
         raise
@@ -175,6 +206,18 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
     the EARLIEST `due_in_days` the output's `follow_ups[]` states for its prospect — the number
     the every-3h follow-up sweep (`celery_app/tasks/followups.py`) reads.  No stated chain ->
     NULL, never a guessed date.
+
+    WAVE 7 (two additions, both additive to the report):
+
+    * the PROVIDER-ACCEPTANCE gate — an item that claims `status="sent"` while stating a
+      `provider_status` outside 2xx is skipped BY NAME (`rejected_provider_status`) and never
+      becomes a row, so the ledger cannot hold a send the provider rejected;
+    * the FOUND-PROSPECTS leg — when the output states `prospects[]` (it always does for a real
+      email_outreach run), the people the run found are persisted too, idempotently.  Before this,
+      an `action="find"` run wrote NOTHING (only a sent email created a prospect as a side
+      effect), so the agent's first documented duty was a lost write.  Counts ride
+      `found_prospects_written` / `found_prospects_existing`, and an unusable address is a named
+      `skipped_found_prospects` entry (never a silent drop, never a poisoned session).
     """
     report: dict[str, Any] = {
         "ok": True,
@@ -191,6 +234,37 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
             sendgrid_id = str(item.get("sendgrid_id") or "").strip()
             if str(item.get("status") or "") != "sent" or not sendgrid_id:
                 # Not a performed send (draft / failed / no provider id): nothing to record.
+                continue
+            # WAVE 7 — the provider-acceptance gate.  A "sent" claim that CONTRADICTS the
+            # provider's own stated answer (a 4xx/5xx) is not a send this writer may count: the
+            # row is skipped BY NAME instead of being written, so a pre-fix (or replayed) output
+            # that said "sent" over a rejected call cannot fabricate a counted send.  The
+            # agent already refuses to claim "sent" in that case; this is the second lock, on
+            # the ledger's own writer.
+            stated_status = coerce_status_code(item.get("provider_status"))
+            if stated_status is not None and not (
+                PROVIDER_ACCEPTED_MIN <= stated_status <= PROVIDER_ACCEPTED_MAX
+            ):
+                logger.warning(
+                    "code=email_log_skipped_provider_rejected: item %d (sendgrid_id=%s) claims "
+                    "'sent' but the provider answered HTTP %s — no row written",
+                    index, sendgrid_id, stated_status,
+                )
+                report.setdefault("rejected_provider_status", []).append({
+                    "index": index,
+                    "prospect_email": normalize_address(item.get("prospect_email")),
+                    "sendgrid_id": sendgrid_id,
+                    "provider_status": stated_status,
+                })
+                if report["ok"]:                   # the first skip names the report's error
+                    report["ok"] = False
+                    report["error"] = {
+                        "code": E_VALIDATION,
+                        "message": (
+                            f"send {sendgrid_id!r} claims status 'sent' but the provider "
+                            f"answered HTTP {stated_status}; the send is not counted"
+                        ),
+                    }
                 continue
             existing = await fetch_scalar(
                 db,
@@ -238,6 +312,24 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
             # as the OUTERMOST transaction commits on SQLite (pysqlite legacy control), which
             # would break the "flush only — the worker owns the commit" contract.
             sent_at = utcnow()
+            # R2 (wave 7): a fast reply/auto-responder can be ingested BEFORE this send is
+            # recorded. The log is then born with replied_at NULL and a follow_up_due, and the 3h
+            # sweep mints a follow-up for someone who already answered. Consult the inbox for this
+            # address at WRITE time: an already-arrived reply stamps the row and suppresses the chain.
+            inbound = await fetch_scalar(
+                db,
+                select(SupportInboxItem)
+                .where(func.lower(SupportInboxItem.from_address) == normalize_address(address))
+                .order_by(SupportInboxItem.id.desc())
+                .limit(1),
+                what=f"inbound reply for {address!r}",
+            )
+            if inbound is not None:
+                replied_at = inbound.received_at or inbound.created_at or sent_at
+                follow_up_due = None
+            else:
+                replied_at = None
+                follow_up_due = _follow_up_due_at(result, item, sent_at, db)
             created_id = (
                 await db.execute(
                     insert_fn(EmailLog)
@@ -248,7 +340,8 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                         sendgrid_id=sendgrid_id,
                         status="sent",
                         sent_at=sent_at,
-                        follow_up_due=_follow_up_due_at(result, item, sent_at, db),
+                        replied_at=replied_at,
+                        follow_up_due=follow_up_due,
                     )
                     .on_conflict_do_nothing(
                         index_elements=["sendgrid_id"],
@@ -262,6 +355,58 @@ async def record_sent_emails(db: AsyncSession, result: dict[str, Any]) -> dict[s
                 report["duplicates_skipped"] += 1
                 continue
             report["emails_written"] += 1
+
+        found = (result or {}).get("prospects")
+        if isinstance(found, list):
+            # WAVE 7 — the LOST WRITE.  A find run's prospects were never persisted: only the
+            # side effect of a SENT email created a prospect row, so an `action="find"` run (the
+            # outreach agent's first documented duty) wrote NOTHING and the outreach page's "the
+            # outreach agent finds prospects when it runs" copy was false.  Persist what the run
+            # really found, idempotently: the lookup is case-insensitive and the row is stored
+            # normalised, so a re-persisted run writes no duplicate; an existing row is never
+            # overwritten (the owner may have corrected it).
+            written = 0
+            existing_found = 0
+            skipped_found: list[dict[str, Any]] = []
+            for found_index, found_item in enumerate(found):
+                if not isinstance(found_item, dict):
+                    continue
+                raw_address = str(found_item.get("email") or "")
+                try:
+                    prospect, created = await _find_or_create_prospect(db, raw_address)
+                except PolsiaError as exc:
+                    if exc.code != E_VALIDATION or "is not a usable address" not in exc.message:
+                        raise
+                    logger.warning(
+                        "code=found_prospect_skipped_malformed_address: item %d cannot become a "
+                        "prospect row: %s",
+                        found_index, exc.message,
+                    )
+                    skipped_found.append({
+                        "index": found_index,
+                        "email": raw_address,
+                        "code": exc.code,
+                        "message": exc.message,
+                    })
+                    continue
+                if not created:
+                    existing_found += 1
+                    continue
+                for field_name in ("first_name", "last_name", "company", "title", "source"):
+                    value = found_item.get(field_name)
+                    if isinstance(value, str) and value.strip():
+                        setattr(prospect, field_name, value.strip())
+                written += 1
+            report["found_prospects_written"] = written
+            report["found_prospects_existing"] = existing_found
+            if skipped_found:
+                report["skipped_found_prospects"] = skipped_found
+                if report["ok"]:                   # the first skip names the report's error
+                    report["ok"] = False
+                    report["error"] = {
+                        "code": E_VALIDATION,
+                        "message": skipped_found[0]["message"],
+                    }
     except PolsiaError as exc:
         report["ok"] = False
         report["error"] = {"code": exc.code, "message": exc.message}
@@ -301,6 +446,11 @@ async def compliance_preflight(db: AsyncSession) -> dict[str, Any]:
         what="suppressed prospect addresses",
     )
     return {
+        # R1 (wave 7): this preflight is a SNAPSHOT resolved once per run. The session-free send
+        # refuses unless the producer asserts a send-time suppression verification for THIS send;
+        # the worker adds that assertion at dispatch (agent_tasks._with_compliance_preflight). A
+        # bare preflight therefore fails closed; a per-SEND refresh is the wave-8 carry.
+        "send_time_verified": False,
         "company": {
             "sender_legal_name": str(getattr(company, "sender_legal_name", "") or ""),
             "sender_postal_address": str(getattr(company, "sender_postal_address", "") or ""),
@@ -358,6 +508,7 @@ __all__ = [
     "compliance_preflight",
     "create_prospect",
     "list_prospects",
+    "normalize_address",
     "record_sent_emails",
     "unsubscribe_prospect",
 ]

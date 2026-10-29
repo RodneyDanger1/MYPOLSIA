@@ -296,6 +296,8 @@ async def test_a_worker_resolved_preflight_sends_without_any_database(monkeypatc
         "company": {"sender_legal_name": LEGAL_NAME, "sender_postal_address": POSTAL_ADDRESS,
                     "website_url": WEBSITE},
         "suppressed": [],
+        # W7/R1 contract: the real worker must assert it verified suppression for THIS send.
+        "send_time_verified": True,
     }
     out = _run(_stub_collection(EmailOutreachAgent(), _send_payload()),
                {"compliance": preflight})

@@ -47,7 +47,7 @@ from app.services.channel_service import channel_sends_snapshot
 _COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
                           "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
                           "website_url": "https://acme.example"},
-               "suppressed": []}
+               "suppressed": [], "send_time_verified": True}
 
 # A fixed mid-day anchor, like test_channel_sends: the company-local day and the trailing hour are
 # both deterministic, and producer writes are pinned to it via the patched `utcnow`.

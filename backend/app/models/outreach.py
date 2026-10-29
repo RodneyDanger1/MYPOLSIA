@@ -60,8 +60,15 @@ class EmailLog(Base):
     subject: Mapped[str | None] = mapped_column(String(512))
     body: Mapped[str | None] = mapped_column(Text)
     sendgrid_id: Mapped[str | None] = mapped_column(String(255))
+    #: WAVE 7: the state vocabulary is `draft | queued | sent | failed` (`services.email_lifecycle`),
+    #: and the DEFAULT is `draft` — the state that claims the least.  It shipped as `"sent"` at
+    #: both the ORM and the server, so any writer that forgot to state a status (a data import, a
+    #: raw INSERT, a future producer) fabricated a PERFORMED SEND with no provider id, which the
+    #: email cap would then count.  Migration 0019 changes the server default and adds the
+    #: PostgreSQL check `status <> 'sent' OR sendgrid_id IS NOT NULL`; `record_sent_emails` is the
+    #: only writer that ever sets `sent`, and it requires the provider's own message id.
     status: Mapped[str | None] = mapped_column(
-        String(50), server_default="sent", default="sent"
+        String(50), server_default="draft", default="draft"
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

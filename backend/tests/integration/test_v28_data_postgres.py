@@ -25,7 +25,10 @@ from alembic import config as alembic_config
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # W2 DELIBERATE RE-PIN (2026-10-28): head 0017 -> 0018 (`0018_consumed_approvals.py`), table count
 # 25 -> 26 (the single-use approval-token ledger).  PG-ONLY: not executed on this host.
-HEAD = "0018"
+# W7 DELIBERATE RE-PIN (2026-10-29): head 0018 -> 0019
+# (`0019_email_sent_requires_provider_id.py`: the email status default + the PG-only CHECK; no new
+# table, so the count stays 26).
+HEAD = "0019"
 EXPECTED_TABLE_COUNT = 26
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]

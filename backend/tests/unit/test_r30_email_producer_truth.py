@@ -45,7 +45,7 @@ from app.services.channel_service import channel_sends_snapshot
 _COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
                           "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
                           "website_url": "https://acme.example"},
-               "suppressed": []}
+               "suppressed": [], "send_time_verified": True}
 
 NOW = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
 

@@ -48,7 +48,7 @@ from app.core.errors import E_POLICY_DENIED, E_RATE_LIMITED, PolsiaError
 _COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
                           "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
                           "website_url": "https://acme.example"},
-               "suppressed": []}
+               "suppressed": [], "send_time_verified": True}
 
 # --------------------------------------------------------------------------- helpers
 

@@ -11,9 +11,12 @@ The tick, exactly:
 * fires every 3 h — beat entry `email-followups` (`crontab(minute=0, hour="*/3")`, `expires`
   one full period: a tick delivered after its own slot collapses into the next one, the
   periodic-sweep rule every entry in `beat_schedule.py` follows);
-* selects `email_logs WHERE follow_up_due <= now AND replied_at IS NULL AND status = 'sent'`,
-  oldest due first (`follow_up_due ASC, id ASC` — deterministic on both dialects; the bound
-  goes through `as_bound_instant`, the claim path's dialect rule);
+* selects `email_logs WHERE follow_up_due <= now AND replied_at IS NULL AND status = 'sent'`
+  AND the prospect has NOT opted out (`prospects.status` lowercased is not `unsubscribed`,
+  WAVE 7 — the suppression list outranks a due step, so a task is never minted for an address
+  the sender would have to refuse), oldest due first (`follow_up_due ASC, id ASC` —
+  deterministic on both dialects; the bound goes through `as_bound_instant`, the claim path's
+  dialect rule); the due-but-suppressed count rides the result as `suppressed` when non-zero;
 * creates ONE task per PROSPECT per tick, the NEWEST-angle rule stated for the agent in the
   task description.  A prospect with several due steps gets the OLDEST step whose dedupe task
   does not exist yet — dedupe key **`followup:<email_logs.id>`**, the V9-frozen shape — so a
@@ -72,7 +75,7 @@ def run_follow_up_sweep() -> dict[str, Any]:
 
 async def _run_follow_up_sweep() -> dict[str, Any]:
     """The async body of `run_follow_up_sweep` (runs on the process loop)."""
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from app.core.database import get_session_factory
     from app.models.outreach import EmailLog, Prospect
@@ -95,6 +98,12 @@ async def _run_follow_up_sweep() -> dict[str, Any]:
     created_ids: list[int] = []
     deduped = 0
     due_count = 0
+    suppressed_due = 0
+    #: The prospect status that OUTRANKS "a step is due" (WAVE 7): an address that opted out must
+    #: never be handed to the send path, and a task minted for it is work the guarded sender can
+    #: only refuse.  The sweep is where the chain is created, so the opt-out is enforced HERE —
+    #: `replied_at IS NULL` already stops an answered chain; this stops a SUPPRESSED one.
+    suppressed_status = "unsubscribed"
     async with session_factory() as db:
         due = (
             await db.execute(
@@ -105,11 +114,39 @@ async def _run_follow_up_sweep() -> dict[str, Any]:
                     EmailLog.follow_up_due <= as_bound_instant(moment, db),
                     EmailLog.replied_at.is_(None),
                     EmailLog.status == "sent",
+                    func.coalesce(func.lower(Prospect.status), "") != suppressed_status,
                 )
                 .order_by(EmailLog.follow_up_due.asc(), EmailLog.id.asc())
             )
         ).all()
         due_count = len(due)
+        if not due_count:
+            # The named-skip half (the `count_expired_pending` pattern): when nothing fires, say
+            # how many due steps the suppression list absorbed — a drop that is counted, never
+            # silent.  The key is present only when there is something to report, so the
+            # long-standing no-work result shape is unchanged.
+            suppressed_due = int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(EmailLog)
+                        .join(Prospect, Prospect.id == EmailLog.prospect_id)
+                        .where(
+                            EmailLog.follow_up_due.is_not(None),
+                            EmailLog.follow_up_due <= as_bound_instant(moment, db),
+                            EmailLog.replied_at.is_(None),
+                            EmailLog.status == "sent",
+                            func.coalesce(func.lower(Prospect.status), "") == suppressed_status,
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            if suppressed_due:
+                logger.info(
+                    "outreach follow-up sweep: %d due step(s) withheld — their prospects opted out",
+                    suppressed_due,
+                )
         handled: set[int] = set()  # ONE task per prospect per tick
         for log, prospect_email in due:
             if log.prospect_id in handled:
@@ -167,6 +204,10 @@ async def _run_follow_up_sweep() -> dict[str, Any]:
         "deduped": deduped,
         "task_ids": created_ids,
     }
+    if suppressed_due:
+        # WAVE 7: the due-but-suppressed count rides the result (only when non-zero, so the
+        # frozen no-work shape is unchanged).  `due` counts only rows the chain may act on.
+        result["suppressed"] = suppressed_due
     logger.info("outreach follow-up sweep: %s", result)
     return result
 

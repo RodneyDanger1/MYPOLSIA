@@ -85,7 +85,7 @@ class _FakeSendGrid:
 _COMPLIANCE = {"company": {"sender_legal_name": "Acme Robotics LLC",
                           "sender_postal_address": "123 Main St, Minneapolis, MN 55401, USA",
                           "website_url": "https://acme.example"},
-               "suppressed": []}
+               "suppressed": [], "send_time_verified": True}
 
 
 def _arm_email(monkeypatch, payload: dict[str, Any], *, send_ids: bool) -> _FakeSendGrid:

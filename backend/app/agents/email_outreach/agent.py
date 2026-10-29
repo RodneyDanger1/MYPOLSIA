@@ -40,6 +40,12 @@ from app.agents.side_effects import capped_item_refusal, request_side_effect, si
 from app.config import settings
 from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.schemas.agent_outputs import EmailOutreachOutput
+from app.services.email_lifecycle import (
+    provider_accepted,
+    provider_message_id,
+    provider_status_code,
+    refusal_for_unaccepted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,15 +187,22 @@ class EmailOutreachAgent(BasePolsiaAgent):
                     receipts.append(receipt)
                     continue
                 receipt["integration"] = result
-                if result.get("ok"):
+                # WAVE 7: "sent" is a claim about the PROVIDER's answer, not about our request
+                # having been made.  `provider_accepted` is the one rule (2xx stated, else the
+                # provider's own message id); a 4xx/5xx answer or an unevidenced result is
+                # recorded `failed` with a NAMED refusal — never "sent", never silence.  Before
+                # this gate `result.get("ok")` alone decided, so an adapter that did not raise on
+                # a non-2xx answer (or a double that returned one) manufactured a send.
+                if provider_accepted(result):
                     email["status"] = "sent"
+                    email["provider_status"] = provider_status_code(result)
                     performed += 1
                     # RD30/RD14: the cap's dedupe key is the provider's OWN per-message id — the
                     # SAME capture as the CS producer (customer_support/agent.py) so the two
                     # cannot drift apart again. A status code is not an id: the old
                     # `message_id or status_code` fallback keyed every no-header send on "202",
                     # so distinct real sends collapsed onto ONE counted row (R27 M3, measured).
-                    sendgrid_id = str((result.get("result") or {}).get("message_id") or "")
+                    sendgrid_id = provider_message_id(result)
                     email["sendgrid_id"] = sendgrid_id
                     if not sendgrid_id:
                         # Performed but provably uncountable: name the gap — never fake a key
@@ -208,7 +221,17 @@ class EmailOutreachAgent(BasePolsiaAgent):
                         })
                 else:
                     email["status"] = "failed"
-                    payload.setdefault("refusals", []).append(result)
+                    email["sendgrid_id"] = None
+                    email["provider_status"] = provider_status_code(result)
+                    if isinstance(result, dict) and result.get("ok") is not True:
+                        # the adapter's own named refusal (missing credentials, library, a
+                        # provider exception): carried verbatim, it already names the code
+                        payload.setdefault("refusals", []).append(result)
+                    else:
+                        # the provider ANSWERED and said no: its status is the refusal's evidence
+                        payload.setdefault("refusals", []).append(
+                            refusal_for_unaccepted(result, to=to)
+                        )
             else:
                 # Refused (sandbox / cap / approval): the honest representation is a draft.
                 email["status"] = "draft"
