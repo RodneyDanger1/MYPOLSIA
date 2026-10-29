@@ -77,7 +77,11 @@ API_ONLY: dict[tuple[str, str], str] = {
 
 #: Settings read through a COMPUTED attribute name (invisible to a literal scan).  Empty today:
 #: deploy_service reads its two fields by literal name.  Any future entry must carry a reason.
-DYNAMIC_READERS: dict[str, str] = {}
+DYNAMIC_READERS: dict[str, str] = {
+    # W7/F-W7-01: the ONE resolver is `secret_store.get_secret("SENDGRID_FROM_EMAIL")` (stored >
+    # environment > Settings); the attribute name is computed, so the read is declared here.
+    "sendgrid_from_email": "secret_store.get_secret('SENDGRID_FROM_EMAIL') in integrations",
+}
 
 #: Agent types that production starts WITHOUT `crew_factory.AGENT_MAP` — a service instantiates
 #: them directly, so their capabilities/tools are still reachable.

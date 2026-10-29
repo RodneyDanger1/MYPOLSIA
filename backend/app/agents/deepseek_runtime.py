@@ -192,6 +192,68 @@ def _subtype_for_status(status_code: int) -> str:
     return "error_server_error" if status_code >= 500 else "error_invalid_request"
 
 
+#: Provider-terminal HTTP answers: the provider ANSWERED, and the answer says the ACCOUNT or the
+#: CREDENTIAL is the problem.  Both are documented DeepSeek statuses — 401/403 = an invalid key,
+#: 402 = insufficient balance (also delivered as the `error_insufficient_balance` subtype).
+#: No retry can fix either; a human must (enter a key / top up the account).
+AUTH_REJECTED_STATUSES = (401, 403)
+BALANCE_REJECTED_STATUSES = (402,)
+INSUFFICIENT_BALANCE_SUBTYPE = "error_insufficient_balance"
+
+
+def failure_guidance(*, provider: str, subtype: str, api_status: int | None) -> str | None:
+    """The `how_to_fix` for a failure THIS provider reported, or None when the envelope is not our.
+
+    WHY this exists (wave 7, auth call path): every failure envelope is classified by
+    `structured_output.REMEDIATION`, which is written for the `claude` SPAWN path — it tells the
+    operator to run `claude login` and states that "an API key is NOT a supported fix".  Applied
+    to a DeepSeek 401 that sentence is the OPPOSITE of the truth: the fix IS the provider API key,
+    no CLI session is involved, and there is no `claude` process in this path at all.  A 402 fell
+    through to a generic "branch on subtype" sentence that never named the account's balance.
+    The runtime stamps `provider: "deepseek"` on every envelope it builds (`_failure_result`), so
+    the consumer asks the provider that answered for its own guidance first and keeps the CLI text
+    for envelopes with no DeepSeek stamp (the CLI's own failures, and every unparsed stdout).
+    """
+    if str(provider or "") != "deepseek":
+        return None
+    if api_status in AUTH_REJECTED_STATUSES:
+        return (
+            f"DeepSeek rejected the API key in use (HTTP {api_status} from the chat-completions "
+            "API): enter a valid key in Settings (PUT /api/v1/config/deepseek-key, or set "
+            "DEEPSEEK_API_KEY) and re-run. A rejected key cannot be fixed by retrying, and every "
+            "request of this run was refused before a model saw it"
+        )
+    if api_status in BALANCE_REJECTED_STATUSES or str(subtype or "") == INSUFFICIENT_BALANCE_SUBTYPE:
+        return (
+            "the DeepSeek account has insufficient balance (HTTP 402, "
+            "`error_insufficient_balance`): top up the account at platform.deepseek.com and "
+            "re-run. This is an ACCOUNT condition — not a bad key, not a task defect, and not "
+            "fixed by retrying"
+        )
+    return None
+
+
+def operator_action_required(*, provider: str, subtype: str, api_status: int | None) -> bool:
+    """True when the provider's answer needs a HUMAN (auth/balance) and no retry can help.
+
+    The two retry ladders must agree.  `claude_cli.is_retryable_failure` already refuses to retry
+    an auth failure inside the run, while the task-level ladder (`agent_tasks.is_retryable`)
+    classified it RETRYABLE because it shares the generic `E_CLI_EXIT` code with transient exits —
+    so a rejected key was requeued `agent_max_retries` more times, each attempt doomed by
+    construction.  A DeepSeek envelope marked here makes the run's refusal declare itself
+    non-retryable (`context["retryable"] = False`), and the task ladder reads that verdict instead
+    of the code table.  Scoped to this provider on purpose: the CLI's envelope carries no
+    `provider` stamp, so its ladder keeps exactly the behaviour it had.
+    """
+    if str(provider or "") != "deepseek":
+        return False
+    return (
+        api_status in AUTH_REJECTED_STATUSES
+        or api_status in BALANCE_REJECTED_STATUSES
+        or str(subtype or "") == INSUFFICIENT_BALANCE_SUBTYPE
+    )
+
+
 #: `finish_reason` values that mean the completion is NOT the model's finished answer: the named
 #: failure subtype each maps to, plus why. Docs enum: stop | length | content_filter | tool_calls |
 #: insufficient_system_resource | aborted. `error_overloaded` carries the `overloaded` marker, so
@@ -2008,14 +2070,18 @@ __all__ = [
     "TOOL_LOOP_MAX_ITERATIONS",
     "TOOL_LOOP_MAX_ITERATIONS_CAP",
     "TOOL_LOOP_MIN_ITERATIONS",
+    "AUTH_REJECTED_STATUSES",
+    "BALANCE_REJECTED_STATUSES",
     "VISION_ALLOWED_MIME",
     "VISION_MAX_IMAGE_BYTES",
     "VISION_MAX_TOTAL_BYTES",
     "available",
     "call_key",
     "configured_model",
+    "failure_guidance",
     "has_session",
     "invoke",
+    "operator_action_required",
     "plan_from_invocation",
     "replay_index",
 ]

@@ -98,6 +98,23 @@ def named_refusal(code: str, message: str, *, how_to_fix: str = "", **context: A
     }
 
 
+class ProviderTransportError(Exception):
+    """A provider call that produced NO answer: transport fault, timeout, connection reset.
+
+    WHY a distinct class (W7, provider call paths): `integration_call` used to flatten every
+    exception into the same "the call failed" refusal.  That is honest for a provider that
+    ANSWERED with an error, and misleading for one that never answered — for a MUTATION the
+    effect may already have happened before the connection died, so calling it a bare failure
+    invites a blind re-send (a duplicate email, a second refund).  Adapters raise this ONLY when
+    they can prove no answer arrived (the SDK exception carries no HTTP status); the generic
+    handler keeps every other exception, including a provider 4xx/5xx.
+    """
+
+    def __init__(self, message: str, *, timeout_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.timeout_seconds = timeout_seconds
+
+
 @dataclass
 class SideEffectOutcome:
     """What the firewall said about one attempted side effect."""
@@ -212,6 +229,7 @@ def integration_call(
     agent_type: str,
     install_hint: str,
     call: Any = None,
+    may_have_applied: bool = False,
     **kwargs: Any,
 ) -> dict:
     """Lazily import a third-party integration and make one call, honestly.
@@ -219,7 +237,11 @@ def integration_call(
     Returns `{"ok": True, "result": ...}` or a named refusal:
       * `E_INTEGRATION` when the library is not installed or its credentials are unset — the
         deployment is not configured for this action, which is NOT a success;
-      * `E_INTEGRATION` when the provider call itself fails, with the exception text and hint.
+      * `E_INTEGRATION` when the provider call itself fails, with the exception text and hint;
+      * `E_INTEGRATION` with `context.outcome_unknown: True` when the call produced NO answer
+        (`ProviderTransportError`) AND the caller declared `may_have_applied=True` — the honest
+        statement for a mutation whose effect may already exist.  A caller that knows the call is
+        a read (or otherwise safe to repeat) leaves the flag off and gets the plain refusal.
 
     Lazy import is mandatory (CLAUDE.md:116): importing tweepy/stripe/sendgrid at module import
     time would break every unit test that touches the registry.
@@ -246,6 +268,25 @@ def integration_call(
         )
     try:
         result = target(**kwargs)
+    except ProviderTransportError as exc:
+        # No answer arrived. For a mutation the effect may already have happened; saying only
+        # "failed" would invite a blind re-send, so the ambiguity is NAMED when the caller
+        # declared that the call can have an effect.
+        message = f"{agent_type}: {module_name}.{attribute} produced no answer: {exc}"
+        if may_have_applied:
+            message += (
+                " — the request may have reached the provider before the connection failed; "
+                "check the provider's own activity log before retrying, because a retry can "
+                "perform the action twice"
+            )
+        return named_refusal(
+            E_INTEGRATION,
+            message,
+            how_to_fix=ERROR_HINTS[E_INTEGRATION],
+            module=module_name,
+            attribute=attribute,
+            **({"outcome_unknown": True} if may_have_applied else {}),
+        )
     except Exception as exc:  # provider failure: named, never swallowed
         return named_refusal(
             E_INTEGRATION,
@@ -255,6 +296,7 @@ def integration_call(
             attribute=attribute,
         )
     return {"ok": True, "result": result}
+
 
 
 def evaluate_side_effect(
@@ -393,6 +435,7 @@ def assert_not_reporting_real_side_effect(payload: dict, *, agent_type: str, key
 
 
 __all__ = [
+    "ProviderTransportError",
     "SideEffectOutcome",
     "assert_not_reporting_real_side_effect",
     "capped_item_refusal",

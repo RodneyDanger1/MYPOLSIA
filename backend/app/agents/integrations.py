@@ -19,15 +19,22 @@ action first and the agent records a labelled draft instead.
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.agents.side_effects import integration_call, named_refusal
+from app.agents.side_effects import (
+    ProviderTransportError,
+    integration_call,
+    named_refusal,
+)
 from app.agents.tool_registry import egress_policy_refusal
 from app.config import settings
 from app.core.errors import E_INTEGRATION, E_VALIDATION
 from app.core.timeutil import now_utc, today_utc
+
+logger = logging.getLogger(__name__)
 
 _TWEEPY_HINT = "pip install tweepy==4.14.0 and set TWITTER_API_KEY/TWITTER_API_SECRET/TWITTER_ACCESS_TOKEN/TWITTER_ACCESS_SECRET"
 _SENDGRID_HINT = "pip install sendgrid and set SENDGRID_API_KEY/SENDGRID_FROM_EMAIL"
@@ -553,11 +560,32 @@ def post_tweet(text: str, *, platform: str = "twitter", image_url: str = "",
     return adapter(text, image_url=image_url)
 
 
+def _sendgrid_credentials() -> tuple[str, str]:
+    """The SendGrid pair from the SAME source the Settings card writes: stored > env > Settings.
+
+    F-W7-01 (wave 7): this function used to read `settings.sendgrid_api_key` only, while
+    Settings -> Integrations wrote the value into the secret store — so a saved key showed
+    "Configured" while every send refused "configuration missing". One resolver, one truth.
+    """
+    from app.services.secret_store import get_secret
+
+    return (
+        (get_secret("SENDGRID_API_KEY") or "").strip(),
+        (get_secret("SENDGRID_FROM_EMAIL") or "").strip(),
+    )
+
+
 def send_email(*, to: str, subject: str, body: str) -> dict:
-    """Send one email through SendGrid."""
+    """Send one email through SendGrid.
+
+    `may_have_applied=True` on the call below: an email is a MUTATION, and a transport failure
+    after the request was written can leave the message delivered while we never saw the 202.
+    The refusal then names that ambiguity instead of reporting a definite "failed" (W7).
+    """
+    api_key, from_email = _sendgrid_credentials()
     missing = _missing_config(
-        ("SENDGRID_API_KEY", settings.sendgrid_api_key),
-        ("SENDGRID_FROM_EMAIL", settings.sendgrid_from_email),
+        ("SENDGRID_API_KEY", api_key),
+        ("SENDGRID_FROM_EMAIL", from_email),
     )
     if missing:
         return named_refusal(
@@ -566,18 +594,70 @@ def send_email(*, to: str, subject: str, body: str) -> dict:
         )
     return integration_call(
         "sendgrid", "SendGridAPIClient", agent_type="email_outreach", install_hint=_SENDGRID_HINT,
-        call=_sendgrid_send, to=to, subject=subject, body=body,
+        call=_sendgrid_send, may_have_applied=True, to=to, subject=subject, body=body,
+        api_key=api_key, from_email=from_email,
     )
 
 
-def _sendgrid_send(*, to: str, subject: str, body: str) -> Any:  # pragma: no cover - provider
+#: The SendGrid SDK ships NO default socket timeout: `SendGridAPIClient` builds a
+#: `python_http_client.Client(timeout=None)` and every request then calls
+#: `urlopen(..., timeout=None)`, which waits until the OS gives up on the connection — for a
+#: half-open socket that is effectively forever, and one hung send would pin a Celery worker
+#: slot. 20 s is the same bound the deploy (`DEPLOY_TIMEOUT_SECONDS`) and GitHub
+#: (`GITHUB_TIMEOUT_S`) adapters already use.
+SENDGRID_TIMEOUT_SECONDS = 20.0
+
+#: SendGrid's documented success answer is 202 Accepted; 200/201 are accepted too rather than
+#: inventing a refusal for a success. ANY other status is a refusal, never a recorded send.
+SENDGRID_ACCEPTED_STATUSES = (200, 201, 202)
+
+
+def _sendgrid_send(
+    *, to: str, subject: str, body: str, api_key: str, from_email: str
+) -> Any:  # pragma: no cover - provider
     from sendgrid import SendGridAPIClient
     from sendgrid.helpers.mail import Mail
 
-    client = SendGridAPIClient(settings.sendgrid_api_key)
-    message = Mail(from_email=settings.sendgrid_from_email, to_emails=to,
+    client = SendGridAPIClient(api_key)
+    # The SDK exposes no timeout parameter; its underlying client reads `.timeout` on every
+    # request (`python_http_client.client.Client._make_request`), so this is the ONE lever that
+    # bounds the call (W7: measured — the pre-fix value was None). The `getattr` guard is not
+    # licence to skip it: a pinned-contract test builds the REAL 6.11.0 client and asserts the
+    # attribute exists, so an SDK bump that moved it fails THAT test instead of silently
+    # restoring an unbounded send. A test double that models only `send()` still exercises the
+    # adapter; when the lever is genuinely absent the miss is LOGGED, never swallowed.
+    inner = getattr(client, "client", None)
+    if inner is not None:
+        inner.timeout = SENDGRID_TIMEOUT_SECONDS
+    else:  # pragma: no cover - the pinned SDK always has one; a bump would land here
+        logger.warning(
+            "sendgrid: the installed SDK object exposes no `.client` to bound the call; this "
+            "send is UNBOUNDED until the adapter is updated for the new SDK shape"
+        )
+    message = Mail(from_email=from_email, to_emails=to,
                    subject=subject, plain_text_content=body)
-    response = client.send(message)
+    try:
+        response = client.send(message)
+    except Exception as exc:
+        # `python_http_client` attaches `status_code` to every typed HTTPError — the provider
+        # ANSWERED (a 401/403/429/5xx is a real answer, and the generic handler reports it as
+        # one). An exception with no status is a transport fault: the request may have been
+        # applied and no answer came back, so it is raised as the distinct ambiguity class.
+        if getattr(exc, "status_code", None) is None:
+            raise ProviderTransportError(
+                f"SendGrid did not answer (transport fault or timeout after "
+                f"{SENDGRID_TIMEOUT_SECONDS:g}s): {type(exc).__name__}: {exc}",
+                timeout_seconds=SENDGRID_TIMEOUT_SECONDS,
+            ) from exc
+        raise
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status not in SENDGRID_ACCEPTED_STATUSES:
+        # Defence in depth for a client build that RETURNS an error response instead of raising:
+        # `integration_call` turns this into the named E_INTEGRATION refusal, never a success.
+        raise RuntimeError(
+            f"SendGrid answered HTTP {status}, which is not an accepted send status "
+            f"{SENDGRID_ACCEPTED_STATUSES}"
+        )
     headers = getattr(response, "headers", None) or {}
     # WHY (RD14): the send caps' producer (`outreach_service.record_sent_emails`) dedupes on
     # `email_logs.sendgrid_id`, and SendGrid's per-message id is the `X-Message-Id` response
@@ -1140,6 +1220,8 @@ def read_revenue_facts(*, days: int = 30) -> dict[str, Any]:
 
 
 __all__ = [
+    "SENDGRID_ACCEPTED_STATUSES",
+    "SENDGRID_TIMEOUT_SECONDS",
     "open_pull_request",
     "post_tweet",
     "read_ad_metrics",

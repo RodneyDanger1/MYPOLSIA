@@ -181,6 +181,26 @@ export function ProviderCard({
         </p>
       ) : null}
 
+      {/* F-W7-01 (wave 7, email call path): the card is the only surface where a SAVED credential
+          could read as "ready". The dead wire was measured (a stored key invisible to the send
+          path, which read the environment field only) and FIXED: `integrations.send_email` now
+          resolves the same resolver as this card (secret_store.get_secret: stored > environment >
+          Settings). One gap remains honest on the card: the send path also needs
+          `SENDGRID_FROM_EMAIL`, which this panel does not carry, so saving the key alone cannot
+          make a send succeed. */}
+      {status.provider === "sendgrid" ? (
+        <p
+          data-testid="integration-send-path-sendgrid"
+          className="border border-line-strong bg-surface-sunk p-2 text-xs text-ink-muted"
+        >
+          Outbound email is <strong>draft-only</strong> until sending is configured. The send path
+          resolves the same store as this card (stored &gt; environment &gt; Settings) and
+          requires both SENDGRID_API_KEY and SENDGRID_FROM_EMAIL; a send without the pair is
+          refused by name (E_INTEGRATION names the missing variables), and nothing is ever sent
+          silently.
+        </p>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         {status.read_only ? null : (
           <Button variant="glossy" size="sm" onClick={save} disabled={!canSave}>

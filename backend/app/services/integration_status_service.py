@@ -136,8 +136,11 @@ PROVIDERS: dict[str, ProviderSpec] = {
         "render", "Render", ("RENDER_API_KEY", "RENDER_SERVICE_ID"), False, _PROBE_RENDER,
         ("RENDER_API_KEY", "RENDER_SERVICE_ID"),
     ),
+    # W7/F-47: the SendGrid send path refuses without BOTH values, and a value the card cannot store
+    # can never configure it — so the from-address is a first-class secret here, not a hidden env var.
     "sendgrid": ProviderSpec(
-        "sendgrid", "SendGrid", ("SENDGRID_API_KEY",), False, _PROBE_SENDGRID, ("SENDGRID_API_KEY",)
+        "sendgrid", "SendGrid", ("SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL"), False, _PROBE_SENDGRID,
+        ("SENDGRID_API_KEY",),
     ),
     "stripe": ProviderSpec(
         "stripe", "Stripe", ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"), True, _PROBE_STRIPE,
