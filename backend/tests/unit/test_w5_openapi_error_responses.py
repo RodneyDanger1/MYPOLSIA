@@ -84,7 +84,19 @@ def test_the_unauthenticated_operations_are_exactly_the_public_five(operations: 
 
 
 def test_every_addressed_operation_declares_not_found(operations: dict) -> None:
-    """A `{param}` path is resource-addressed, so an absent run/task/row is a real 404."""
+    """A `{param}` path is resource-addressed, so an absent run/task/row is a real 404.
+
+    REPAIRED PIN (wave 6 / SV-W6-03): the original assertion was `pathless_404 == []` — "a
+    collection read cannot 404".  That heuristic was too strong for five operations whose request
+    names a row/plan WITHOUT a path parameter, and wave 6's raise-site trace declared their real
+    404 (app/core/openapi_errors.OPERATION_EXTRA_STATUSES):
+
+      old arithmetic: 31 path-addressed 404s, 0 pathless by construction;
+      new arithmetic: 31 path-addressed + 5 body/query-addressed = 36 declared 404s.
+
+    The five are pinned by name here and in tests/unit/test_w6_domain_statuses.py, so a sixth
+    pathless 404 still fails this test.
+    """
     missing = sorted(
         f"{m} {p}"
         for (m, p), op in operations.items()
@@ -96,7 +108,16 @@ def test_every_addressed_operation_declares_not_found(operations: dict) -> None:
         for (m, p), op in operations.items()
         if "{" not in p and "404" in _codes(op)
     )
-    assert pathless_404 == [], f"a collection read cannot 404, yet declares it: {pathless_404}"
+    assert pathless_404 == sorted(
+        f"{method} {path}"
+        for method, path in {
+            ("POST", "/api/v1/approvals"),
+            ("POST", "/api/v1/planner/propose"),
+            ("POST", "/api/v1/planner/confirm"),
+            ("POST", "/api/v1/vision/describe"),
+            ("GET", "/api/v1/site/package/download"),
+        }
+    ), pathless_404
 
 
 def test_the_declared_envelope_schema_is_real(schema: dict, operations: dict) -> None:
