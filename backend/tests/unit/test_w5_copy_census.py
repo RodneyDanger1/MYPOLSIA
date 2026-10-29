@@ -145,6 +145,7 @@ def test_every_banned_claim_in_the_decision_is_present() -> None:
         "astm",  # ASTM / F2058 / F2417 (blocked until R1)
         "fire_safe",  # fire-safe (blocked until R1)
         "safety_block",  # printed safety block (blocked until R1)
+        "compliant",  # compliant / ready to ship (14 ids total, BRAND-KIT §8.2)
     }
     banned_ids = {term.id for term in copy_claims.BANNED_TERMS}
     assert required <= banned_ids, f"the ban list lost term(s): {sorted(required - banned_ids)}"
@@ -159,6 +160,37 @@ def test_every_allowed_claim_censuses_clean(claim_id: str, example: str, why: st
     """The supplier-supported claims must NOT be flagged — an over-broad ban blocks real copy."""
     findings = copy_claims.census_text(example, where="test")
     assert findings == [], f"allowed claim {claim_id} ({why}) was flagged: {findings}"
+
+
+@pytest.mark.parametrize(
+    ("family", "copy"),
+    [
+        ("cosmetic_claim", "Moisturising and antibacterial, with aromatherapy benefits."),
+        ("cosmetic_claim", "This candle cures insomnia and treats anxiety."),
+        ("unattested", "Certified organic, fair-trade and handmade."),
+        ("unattested", "Dermatologist-tested and clinically tested."),
+        ("soap_offer", "Our cold-process soap, $14."),
+        ("soap_offer", "Buy our cold process soap today."),
+    ],
+)
+def test_the_new_banned_families_fire(family: str, copy: str) -> None:
+    """BRAND-KIT §8.2/§8.3 claimed these families were censused; before this test they fired 0."""
+    findings = copy_claims.census_text(copy, where="test")
+    assert family in {finding.term_id for finding in findings if finding.kind == "banned"}, findings
+    assert copy_claims.blocking(findings), "a banned family must block a publish"
+
+
+def test_a_banned_excerpt_never_reproduces_a_private_value() -> None:
+    """The banned-claim excerpt is a window: a mixed field could include an address too."""
+    findings = copy_claims.census_text(
+        "Our coconut-soy blend is poured at 42 Example Lane, Springfield, IL 62704.",
+        where="test",
+    )
+    banned = [finding for finding in findings if finding.kind == "banned"]
+    assert banned, "the banned claim itself must still fire"
+    for finding in banned:
+        assert "42 Example Lane" not in finding.excerpt
+        assert "62704" not in finding.excerpt
 
 
 def test_no_allowed_example_matches_any_banned_or_private_pattern() -> None:
@@ -201,9 +233,11 @@ def test_term_ids_are_unique() -> None:
 def test_the_applied_correction_censuses_clean_except_the_documented_soap_watch() -> None:
     """The live profile's corrected copy: zero banned, zero private, and the known H4 watch.
 
-    `cold-process` is a soap PROCESS claim that wave 4 left in place (`BRAND-KIT §8`: soap claims
-    are unchanged and still `[HUMAN-VERIFY]`).  It is asserted as an EXPECTED unverified finding —
-    the honest state — instead of being silently absent from the vocabulary.
+    `cold-process` is the supplier's own published `product_type` (W5-S1/S2), so wave 6 answered H4 as
+    ALLOWED-AS-PLAN (`BRAND-KIT §8.3`) while keeping it in the `unverified` class: the vocabulary
+    cannot express "only in a future/conditional sentence", so every run still makes a human read the
+    sentence once.  It is asserted as an EXPECTED unverified finding — the honest state — instead of
+    being silently absent from the vocabulary.
     """
     findings = copy_claims.census_profile(_company())
     counts = copy_claims.summarise(findings)

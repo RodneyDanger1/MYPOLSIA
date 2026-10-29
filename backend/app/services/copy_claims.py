@@ -16,8 +16,11 @@ against three lists and says where a claim or a private value was found:
   non-toxic / clean-burning / eco-friendly, "our formula", and — until R1 is proven — ASTM /
   compliant / fire-safe / a printed safety block);
 * ``unverified`` — a claim that needs a human sign-off before it can be stated as fact
-  (the `BRAND-KIT` H-register: a net-weight assertion H3, "cold-process" soap H4, "Made in
-  Arizona" H5, a burn-time claim that belongs to the supplier's product page);
+  (the `BRAND-KIT` H-register: a net-weight assertion H3, "cold-process" soap H4 — ALLOWED as a
+  PLAN-level descriptor since wave 6 because it is the supplier's own published `product_type`
+  (W5-S1/S2) and the live sentences already read as future/conditional, BANNED as an offer until a
+  soap SKU and a supplier contract exist — "Made in Arizona" H5, a burn-time claim that belongs to
+  the supplier's product page);
 * ``private`` — the owner's home address and legal name, the exact values F-38 exposed; a private
   match anywhere is a publication blocker regardless of which field it sits in.
 
@@ -284,6 +287,50 @@ BANNED_TERMS: tuple[ClaimTerm, ...] = (
         source="BRAND-KIT §8 / H1, H2 / R1",
         example="A real safety block on every unit.",
     ),
+    ClaimTerm(
+        id="cosmetic_claim",
+        kind=BANNED,
+        pattern=(
+            r"moisturis|moisturiz|antibacterial|anti-bacterial|aromatherap|therapeutic"
+            r"|sleep\s*aid|\bcures?\b|\btreats?\b"
+        ),
+        reason=(
+            "no soap SKU exists and no cosmetic/therapeutic claim has any evidence; a body-care "
+            "claim is regulated copy"
+        ),
+        source="BRAND-KIT §8.2 / W6-S1 (cosmetic family, proven unenforced before this term)",
+        example="Moisturising and aromatherapy benefits.",
+    ),
+    ClaimTerm(
+        id="unattested",
+        kind=BANNED,
+        pattern=(
+            r"\borganic\b|fair[\s-]*trade|\bhandmade\b|dermatologist[\s-]*tested"
+            r"|clinically\s+tested"
+        ),
+        reason=(
+            "organic/fair-trade/handmade/dermatologist-tested are certifications or third-party "
+            "tests no supplier has provided for this line"
+        ),
+        source="BRAND-KIT §8.2 / W6-S1 (unattested family, proven unenforced before this term)",
+        example="Certified organic, fair-trade and handmade.",
+    ),
+    ClaimTerm(
+        id="soap_offer",
+        kind=BANNED,
+        pattern=(
+            # An OFFER means a price/sale shape attached to the soap itself. "made-to-order ... cold-process
+            # soap next" is the allowed PLAN sentence and must not match (bridge W6 false-positive check).
+            r"cold[\s-]*process(?:\s+\w+){0,4}\s+soap[^.\n]{0,60}?(?:\$\s?\d|\bfor\s+sale\b|\bavailable\s+now\b|\bin\s+stock\b|\bshop\s+now\b)"
+            r"|\b(?:buy|order|shop)\s+(?:our|the|a|these|this)?\s*cold[\s-]*process\s+soap"
+        ),
+        reason=(
+            "H4: cold-process soap is allowed as a PLAN only; no soap SKU is contracted, so "
+            "offering it (price/order/buy) is a claim the business cannot fulfil"
+        ),
+        source="BRAND-KIT §8.3 / H4 (bridge W6: the offer ban was not executable before this term)",
+        example="Our cold-process soap, $14.",
+    ),
 )
 
 UNVERIFIED_TERMS: tuple[ClaimTerm, ...] = (
@@ -306,10 +353,15 @@ UNVERIFIED_TERMS: tuple[ClaimTerm, ...] = (
         kind=UNVERIFIED,
         pattern=r"cold[\s-]*process",
         reason=(
-            "no soap supplier has been sourced in wave 4; a soap process claim is H4 and must be "
-            "signed off before it is published as fact"
+            "the term is the supplier's own published product type (W5-S1/S2), so it is true as a "
+            "PLAN-level descriptor and the live sentences read as future/conditional; but this brand "
+            "has no soap SKU and no supplier contract, so it is valid only in a plan sentence and "
+            "must never appear in an offer sentence — and never with an origin, net-weight, ingredient "
+            "or cosmetic claim (BRAND-KIT §8.3, H4)"
         ),
-        source="BRAND-KIT §8 (soap claims unchanged, [HUMAN-VERIFY]) / H4",
+        source=(
+            "BRAND-KIT §8.3 (cold-process: ALLOWED as a plan, BANNED as an offer) / W5-S1, W5-S2 / H4"
+        ),
         example="Cold-process soap next.",
     ),
     ClaimTerm(
@@ -412,6 +464,25 @@ ALLOWED_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "Same soy wax, same label, smaller pour.",
         "a size comparison, not a hand-poured claim — the false-positive this vocabulary avoids",
     ),
+    # [W5] the final allowed list (`bridge/BRAND-KIT.md` §8.1) gained three product sentences that
+    # the recorded reads support: the two vessel descriptions (W4-S2's published catalogue) and the
+    # inquiry-only ordering sentence the generated site already prints.  Each is pinned clean by
+    # `test_every_allowed_claim_censuses_clean` (the parametrised test grows with this tuple).
+    (
+        "vessel_9oz",
+        "9 oz straight-sided glass",
+        "the supplier's published vessel for the hero SKU (W4-S2; BRAND-KIT §8.1 [W5])",
+    ),
+    (
+        "vessel_4oz",
+        "4 oz amber glass with a cork lid",
+        "the supplier's published vessel for the 4 oz SKU (W4-S2; BRAND-KIT §8.1 [W5])",
+    ),
+    (
+        "orders_by_inquiry",
+        "Orders are by inquiry.",
+        "the site's own ordering sentence while no contact email exists (BRAND-KIT §8.1 [W5])",
+    ),
 )
 
 #: Public names.  The live census script and the data-level test import this module (not a copy).
@@ -444,6 +515,11 @@ def _excerpt(text: str, start: int, end: int, kind: str) -> str:
     left = max(0, start - 40)
     right = min(len(text), end + 40)
     window = re.sub(r"\s+", " ", text[left:right]).strip()
+    # A banned-claim excerpt is a WINDOW around the match: it can also contain a private value
+    # from a mixed field. Neither this module nor its callers may reproduce that value, so the
+    # same GENERIC private detectors are applied to the window before it is returned.
+    for private_term in PRIVATE_TERMS:
+        window = private_term.regex().sub("[redacted]", window)
     return ("…" if left > 0 else "") + window + ("…" if right < len(text) else "")
 
 
