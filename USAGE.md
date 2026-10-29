@@ -18,7 +18,7 @@ generation — under a policy firewall, a sandbox, cost budgets, and an approval
 nginx (127.0.0.1:80)
   /      → Next.js 14 (frontend)
   /api/  → FastAPI (backend, REST + WebSocket /ws/activity)
-              ├── PostgreSQL 16        (22 tables: tasks, runs, reports, invoices,
+              ├── PostgreSQL 16        (26 tables: tasks, runs, reports, invoices,
               │                         memory rows, company config, activity_log, …)
               ├── Redis + Celery       (broker + task queue: `agents`, `scheduler`,
               │                         `maintenance` queues + beat)
