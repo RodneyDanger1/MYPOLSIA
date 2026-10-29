@@ -298,14 +298,33 @@ export type ActivityEvent = {
   created_at: string | null;
 };
 
+/**
+ * TS-4 (`GET /dashboard/summary`): the MEASURED counterpart of the configured KPI bag, read from
+ * the newest `revenue_snapshots` row (`backend/app/schemas/report.py::DashboardMeasuredFinance`).
+ * `null` inside is UNMEASURED — never 0 — and `provenance` names the row's coverage
+ * (`complete` / `partial` / `unmeasured`). Optional here because an older server omits the block;
+ * the panel says so instead of inventing a reading.
+ */
+export type DashboardMeasuredFinance = {
+  mrr_cents: number | null;
+  active_subscribers: number | null;
+  last_snapshot_date: string | null;
+  provenance: string;
+};
+
 export type DashboardSummary = {
   tasks_today_total: number;
   tasks_today_completed: number;
   tasks_today_pending: number;
   tasks_today_failed: number;
   active_agents: string[];
+  /** The owner's CONFIGURED values (Settings), served verbatim — not a ledger measurement. */
   kpis: Record<string, unknown>;
   last_report_date: string | null;
+  /** TS-4: what the server says the KPI bag is ("configured"). Absent on a pre-TS-4 server. */
+  kpis_provenance?: string;
+  /** TS-4: the measured finance headline beside the configured bag (absent on a pre-TS-4 server). */
+  measured_finance?: DashboardMeasuredFinance | null;
 };
 
 export type Task = {

@@ -302,7 +302,19 @@ describe("BusinessPanel (Q-09)", () => {
     render(<BusinessPanel />);
 
     expect(await screen.findByText("0")).toBeInTheDocument(); // measured zero, not a dash
-    expect(screen.getAllByText("—")).toHaveLength(2); // absent MRR + absent churn rate
+    // OLD pin (pre-TS-4 panel): `getAllByText("—")` had length 2 — one "MRR" row and one "Churn
+    // rate" row, both fed by the configured bag. NEW (F-W3-1 / TS-4): the panel separates a
+    // MEASURED section (MRR / active subscribers; this payload has no `measured_finance`, so both
+    // are the em dash) from a CONFIGURED section (configured MRR / churn absent -> em dash,
+    // configured active customers 0 -> "0"). The bare em-dash COUNT is no longer a reading — it
+    // counts labels, not measurements — so each row is pinned by its own node instead.
+    expect(screen.getByTestId("measured-mrr")).toHaveTextContent("—");
+    expect(screen.getByTestId("measured-active-customers")).toHaveTextContent("—");
+    expect(screen.getByTestId("configured-mrr")).toHaveTextContent("—");
+    expect(screen.getByTestId("configured-churn")).toHaveTextContent("—");
+    // The real 0 stays a reading (configured, and labelled as such) — never a dash.
+    expect(screen.getByTestId("configured-active-customers")).toHaveTextContent("0");
+    expect(screen.getByTestId("configured-active-customers")).not.toHaveTextContent("—");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

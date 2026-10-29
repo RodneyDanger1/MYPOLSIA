@@ -63,6 +63,7 @@ from app.schemas.report import (
     ReportsListResponse,
 )
 from app.services.activity_service import get_recent_activity
+from app.services.company_service import kpis_provenance
 from app.services.finance_service import SNAPSHOT_MEASUREMENT_COLUMNS, snapshot_provenance
 from app.services.query_helpers import agent_rollup_expr, fetch_one, fetch_scalars
 from app.services.report_service import (
@@ -259,7 +260,10 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
         active_agents=_split_agents(row.agents),
         kpis=kpis,
         last_report_date=row.last_report_date,
-        kpis_provenance="configured",
+        # F-W3-1 (wave 4): the SAME provenance rule the agent context uses
+        # (`company_service.kpis_provenance`) — `unset` when the row holds no KPI values, so an
+        # empty dict is not presented as "configured values", and the two surfaces cannot drift.
+        kpis_provenance=kpis_provenance(kpis),
         measured_finance=measured_finance,
         report_cycle=report_cycle,
     )

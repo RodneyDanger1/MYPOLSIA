@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { Card } from "@/components/ui";
+import { centsText, countText } from "@/components/finance/format";
 import { api, type DashboardSummary } from "@/lib/api";
 
 import { NOT_MEASURED, kpiText, moneyText, percentText } from "./format";
@@ -30,6 +31,59 @@ function marginPercentText(value: number): string {
 }
 
 /**
+ * TS-4 / F-W3-1 — the MEASURED finance block as this panel reads it (`DashboardMeasuredFinance`).
+ *
+ * `null` in every field means UNMEASURED (the backend serves `None`, never a fabricated 0), and a
+ * measured `0` is kept as 0. `provenance` is the row's coverage word; `null` says the server did
+ * not declare one — never invented here.
+ */
+type MeasuredBlock = {
+  mrr_cents: number | null;
+  active_subscribers: number | null;
+  last_snapshot_date: string | null;
+  provenance: string | null;
+};
+
+/** The wire block narrowed defensively; `null` when the server did not serve one at all. */
+function measuredFinance(summary: DashboardSummary): MeasuredBlock | null {
+  const block = summary.measured_finance;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+  const record = block as Record<string, unknown>;
+  const measuredNumber = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  return {
+    mrr_cents: measuredNumber(record.mrr_cents),
+    active_subscribers: measuredNumber(record.active_subscribers),
+    last_snapshot_date:
+      typeof record.last_snapshot_date === "string" ? record.last_snapshot_date : null,
+    provenance:
+      typeof record.provenance === "string" && record.provenance.trim() !== ""
+        ? record.provenance
+        : null,
+  };
+}
+
+/** One label/value line; `testId` names the node so a test pins a READING, not a text count. */
+function ValueRow({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string | number;
+  testId?: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="ui-label text-ink-muted">{label}</dt>
+      <dd className="ui-label text-ink" data-testid={testId}>
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+/**
  * The left rail's business mini-panel — the live `Business` widget's slot, fed by
  * `GET /dashboard/summary` (today's task counts, the active agents, the company KPIs and the date
  * of the last daily report, all from that one endpoint).
@@ -39,6 +93,24 @@ function marginPercentText(value: number): string {
  * this panel the failure REPLACES the value rows — with `error` set, no label/value row is rendered
  * at all. The em dash survives only for a genuinely absent KPI on a SUCCESSFUL read, where "not
  * measured" is the truth (a real 0 still renders as 0).
+ *
+ * F-W3-1 / TS-4 fixed here. `kpis` is the OWNER'S CONFIGURED bag (`company_config.kpis`, typed in
+ * Settings) and the panel used to print it under the bare labels "MRR / Active customers / Churn
+ * rate" — so a configured `mrr_usd: 0` read as a measured `$0.00` on a stack where
+ * `GET /finance/summary` correctly answered `mrr_cents: null`. The response now declares
+ * `kpis_provenance` and carries `measured_finance`; this panel keeps them strictly apart:
+ *
+ *   * a MEASURED section prints the ledger's MRR / active subscribers (from the newest revenue
+ *     snapshot), `—` when unmeasured, plus the snapshot date and coverage word;
+ *   * a CONFIGURED section prints the Settings values under labels that say "configured", headed
+ *     "SETTINGS VALUES, NOT MEASURED" — a configured zero can no longer be the only thing a reader
+ *     sees, and it never sits under a measured-looking label;
+ *   * a server that predates TS-4 (no `measured_finance` / no `kpis_provenance`) gets an explicit
+ *     "did not serve a measured finance block" sentence — not a silently-measured-looking bag.
+ *
+ * There is deliberately NO measured churn rate: the ledger stores `churned_today` (a count), and
+ * dividing it would be arithmetic the data does not support (backend `DashboardMeasuredFinance`
+ * docstring) — so churn lives only in the configured section and says so.
  */
 export function BusinessPanel() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -128,14 +200,22 @@ function BusinessRows({
   // The response model defaults `kpis` to `{}` server-side; the belt-and-braces `?? {}` only guards
   // against a transport that dropped the key entirely (a missing group must not throw).
   const kpis: Record<string, unknown> = summary.kpis ?? {};
+  const measured = measuredFinance(summary);
+  const kpiProvenance =
+    typeof summary.kpis_provenance === "string" && summary.kpis_provenance.trim() !== ""
+      ? summary.kpis_provenance
+      : null;
+  const measuredUnmeasured =
+    measured !== null &&
+    (measured.mrr_cents === null || measured.active_subscribers === null);
+
+  // The COUNT rows are measured from the task ledger — the labels stay bare because the values
+  // really are readings (an absent count is the em dash).  The KPI bag moved out of this list.
   const rows: Array<{ label: string; value: string | number }> = [
     { label: "Tasks today", value: summary.tasks_today_total },
     { label: "Completed", value: summary.tasks_today_completed },
     { label: "Failed", value: summary.tasks_today_failed },
     { label: "Active agents", value: summary.active_agents.length },
-    { label: "MRR", value: moneyText(kpis.mrr_usd) },
-    { label: "Active customers", value: kpiText(kpis.active_customers) },
-    { label: "Churn rate", value: percentText(kpis.churn_rate) },
     // `last_report_date` is the max report date the summary read found; a null means no report row
     // exists at all, which is a fact to state — not a dash to hide behind.
     { label: "Last report", value: summary.last_report_date ?? "no report yet" },
@@ -173,6 +253,69 @@ function BusinessRows({
           Gross margin is not measured yet — {margin.reason ?? "the planning inputs have not been measured yet"}.
         </p>
       ) : null}
+
+      {/* ── F-W3-1 / TS-4: the MEASURED revenue reading ─────────────────────────────────────── */}
+      <p className="ui-label mt-3 border-t border-line pt-2 text-ink-muted">
+        Measured — from the finance ledger
+      </p>
+      <dl className="space-y-1" data-testid="measured-kpis">
+        <ValueRow
+          label="MRR (measured)"
+          value={measured === null ? NOT_MEASURED : centsText(measured.mrr_cents)}
+          testId="measured-mrr"
+        />
+        <ValueRow
+          label="Active customers (measured)"
+          value={measured === null ? NOT_MEASURED : countText(measured.active_subscribers)}
+          testId="measured-active-customers"
+        />
+      </dl>
+      {measured === null ? (
+        <p className="mt-1 text-xs text-ink-muted" data-testid="measured-finance-unavailable">
+          This server did not serve a measured finance block, so no measured revenue reading is
+          shown. The configured values below are the owner&rsquo;s inputs, not a measurement.
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-ink-muted" data-testid="measured-provenance">
+          Coverage: {measured.provenance ?? "not declared by the server"} · snapshot{" "}
+          {measured.last_snapshot_date ?? "none recorded"}
+        </p>
+      )}
+      {measuredUnmeasured ? (
+        <p className="mt-1 text-xs text-ink-muted" data-testid="measured-unmeasured-note">
+          A dash means the ledger holds no measured value for that reading — it is not a zero. The
+          configured value below is a Settings input, not a measurement.
+        </p>
+      ) : null}
+
+      {/* ── F-W3-1 / TS-4: the CONFIGURED bag, labelled as configured ───────────────────────── */}
+      <p className="ui-label mt-3 border-t border-line pt-2 text-ink-muted">
+        Configured KPIs — Settings values, not measured
+      </p>
+      <dl className="space-y-1" data-testid="configured-kpis">
+        <ValueRow
+          label="MRR (configured)"
+          value={moneyText(kpis.mrr_usd)}
+          testId="configured-mrr"
+        />
+        <ValueRow
+          label="Active customers (configured)"
+          value={kpiText(kpis.active_customers)}
+          testId="configured-active-customers"
+        />
+        <ValueRow
+          label="Churn rate (configured)"
+          value={percentText(kpis.churn_rate)}
+          testId="configured-churn"
+        />
+      </dl>
+      <p className="mt-1 text-xs text-ink-muted" data-testid="kpi-provenance-note">
+        {kpiProvenance === "configured"
+          ? "The server declares these values configured (the company profile / Settings) — no ledger measured them."
+          : kpiProvenance !== null
+            ? `The server declares the KPI provenance “${kpiProvenance}”; they are not a measured reading.`
+            : "This server did not declare the KPI provenance; these are the values stored in the company profile, not a measurement."}
+      </p>
     </>
   );
 }
