@@ -286,7 +286,10 @@ async def test_webhook_tolerance_setting_is_live(api_client, webhook_secret, mon
     from app.config import settings
 
     body = _body(id="evt_r28_tol", type="probe", data={"object": {"amount": 1}})
-    header = _sign(body, ts=NOW - 120)
+    # Capture the signed timestamp at CALL time, not at module import: a slow/ordered full gate can
+    # reach this test minutes after collection, and a fixed NOW makes a valid signature look stale
+    # (400 "Timestamp outside the tolerance zone"). The tolerance window is what is under test here.
+    header = _sign(body, ts=int(time.time()) - 120)
 
     accepted = await _post_webhook(api_client, body, header)
     assert accepted.status_code == 200, accepted.text
