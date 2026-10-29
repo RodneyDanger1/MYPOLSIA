@@ -33,6 +33,7 @@ from app.config import settings
 from app.core.errors import E_VALIDATION, PolsiaError
 from app.core.timeutil import today_utc
 from app.schemas.agent_outputs import FinanceOutput
+from app.services.cost_basis_service import cost_basis_from_context
 
 #: The task-metadata key carrying the failed-payment records this run may act on (see
 #: `failed_payments_extra_context`).  The producer is the worker-side attach: the morning cycle
@@ -207,6 +208,13 @@ Rules:
   records the real write.
 - `expenses` entries are single real costs with category, vendor and amount in cents; never roll up
   guessed infrastructure spend.
+- When the context carries a "RECORDED UNIT ECONOMICS" block, those per-SKU cost inputs were
+  RECORDED on the company profile (each line names its own provenance) and the contribution /
+  break-even lines were DERIVED from them by the runtime.  Use them: quote a derived line AS
+  derived arithmetic from the recorded inputs, never as a measurement; a line marked UNMEASURED is
+  absent, not 0, so a per-SKU figure that depends on it stays unmeasured and is named in `alerts`.
+  When the block is missing entirely, say COGS is unmeasured — never infer or invent a supplier
+  cost from memory or from the retail price.
 - `failed_payments` lists the failed charges you actually saw, each with the charge's amount and
   its `payment_intent_id` (the Stripe PaymentIntent id, `pi_…`).  When this task carries a
   "FAILED STRIPE PAYMENTS" block, those records are the failed charges the platform already
@@ -239,8 +247,15 @@ class FinanceAgent(BasePolsiaAgent):
         # V15/4-03: the MEASUREMENT path rides the same layer — the worker-attached Stripe read
         # (metadata.revenue_facts) is what lets the snapshot fields come from measured facts
         # instead of invention (a refusal is named into the prompt; nothing is estimated).
+        # WAVE 4 (COGS seam): the RECORDED UNIT ECONOMICS block rides here too — the per-SKU cost
+        # inputs recorded on the company profile, with their provenance and the arithmetic derived
+        # from them.  Before it, every sourced supplier price lived in documents the agent cannot
+        # read and run 313 refused a break-even it could not compute (correctly — nothing anywhere
+        # carried a cost).  First in the list so a budget cut can never be the reason it vanishes:
+        # the block is small, deterministic and the whole point of the seam.
         extra_blocks = [
             block for block in (
+                cost_basis_from_context(context or {}),
                 failed_payments_extra_context(task or {}),
                 revenue_facts_extra_context(task or {}),
             ) if block

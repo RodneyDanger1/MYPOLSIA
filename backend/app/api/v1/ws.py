@@ -71,15 +71,17 @@ WS_CLOSE_POLICY = 1008      # credential refused (and, since F-46, a key sent in
 WS_CLOSE_FAULT = 1011       # a backend fault: the session did NOT end normally
 WS_CLOSE_CAPACITY = 1013    # this client already holds the maximum number of sockets
 
-#: Test seams / operator knobs, read from settings with defaults so no deployment needs a new env
-#: var (and an unset setting keeps the shipped behaviour).
-_TICKET_TTL_SECONDS = int(getattr(settings, "ws_ticket_ttl_seconds", 30))
-_MAX_SOCKETS_PER_CLIENT = int(getattr(settings, "ws_max_sockets_per_client", 4))
+#: Operator knobs.  SV-W4-05 (wave 4): these used to be `getattr(settings, name, default)` over
+#: names that were NOT `Settings` fields, so an env var was silently ignored and the hardcoded
+#: default always won.  They are declared fields now (`app/config.py`) and read directly, so a
+#: deleted field is an import-time failure, never a silent revert to a default.
+_TICKET_TTL_SECONDS = int(settings.ws_ticket_ttl_seconds)
+_MAX_SOCKETS_PER_CLIENT = int(settings.ws_max_sockets_per_client)
 #: The install-wide bound, per authenticated operator (R-W03-1).  Generous on purpose: the browser
 #: mints ONE ticket per connection, so this is "how many activity sockets can this install hold at
 #: once" — 32 pages, far above real use, and still a real bound on a leaked/reconnecting client.
-_MAX_SOCKETS_PER_OPERATOR = int(getattr(settings, "ws_max_sockets_per_operator", 32))
-_HEARTBEAT_SECONDS = float(getattr(settings, "ws_heartbeat_seconds", 20.0))
+_MAX_SOCKETS_PER_OPERATOR = int(settings.ws_max_sockets_per_operator)
+_HEARTBEAT_SECONDS = float(settings.ws_heartbeat_seconds)
 
 #: Query parameters that are CREDENTIALS: refused as auth, and scrubbed from the scope before the
 #: server can log them.  `ticket` is deliberately NOT here — a ticket is the supported URL form and

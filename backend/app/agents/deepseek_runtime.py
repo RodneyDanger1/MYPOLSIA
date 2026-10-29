@@ -124,9 +124,13 @@ DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300
 DEEPSEEK_DEFAULT_MAX_TOKENS = 8192
 CHAT_COMPLETIONS_PATH = "/chat/completions"
 
-#: reasoning_effort canonical values + the documented aliases (docs: minimal->low, medium/xhigh->high).
+#: reasoning_effort canonical values + the documented aliases (docs: minimal->low, medium/xhigh->high,
+#: ultra->max — api-docs.deepseek.com/guides/thinking_mode, retrieved 2026-10-29).  SV-W4-06: `ultra`
+#: was missing, so the vendor's own alias was refused as an unknown value.
 REASONING_EFFORT_CANONICAL = ("none", "low", "high", "max")
-REASONING_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
+REASONING_EFFORT_ALIASES = {
+    "minimal": "low", "medium": "high", "xhigh": "high", "ultra": "max",
+}
 
 #: Bounded in-process session store: DeepSeek's API is STATELESS, so replaying `--resume`ed
 #: conversations is what lets the repair ladder's R1/R2 re-prompts reference the previous answer
@@ -1268,8 +1272,9 @@ def _reasoning_effort() -> str:
         raise PolsiaError(
             E_VALIDATION,
             f"deepseek reasoning_effort {raw!r} is not one of {'|'.join(REASONING_EFFORT_CANONICAL)} "
-            "(documented aliases: minimal, medium, xhigh)",
-            how_to_fix="set DEEPSEEK_REASONING_EFFORT to none|low|high|max",
+            "(documented aliases: minimal, medium, xhigh, ultra)",
+            how_to_fix="set DEEPSEEK_REASONING_EFFORT to none|low|high|max "
+            "(aliases: minimal, medium, xhigh, ultra)",
             context={"value": raw},
         )
     return value

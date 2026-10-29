@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.common import ORMModel, UtcDatetime
+from app.services.cost_basis_service import cost_input_errors
 
 #: The FREE-FORM JSON columns of `company_config`.  They carry caller/model data (an idea's
 #: price band, goals, KPIs, checklist state) and their inner numbers are NOT typed by pydantic,
@@ -304,6 +305,13 @@ class CompanyConfigUpdate(BaseModel):
         with no reason, and every consumer inherited a non-finite number.  The S4-F1 rule — a
         non-finite number is not a measurement — is enforced HERE for the same reason it exists on
         `invoices.py`'s money fields: the write boundary is cheaper than any repair.
+
+        Wave 4 (COGS seam) adds the second rule to the same boundary: a `pricing_model` may carry
+        per-SKU `unit_cost` inputs, and an ambiguous/unprovenanced one is refused BY PATH
+        (`cost_basis_service.cost_input_errors`).  A bare `unit_cost: 9.4` is refused because
+        dollars-vs-cents cannot be guessed safely — record the object with `amount_cents` and a
+        provenance (`kind: "sourced"` with a source + observed date, or `kind: "estimate"`); `null`
+        clears it (unmeasured).  This is the ONE writer of the row, so it is the right place.
         """
         for field in JSON_FIELDS:
             paths = non_finite_paths(getattr(self, field, None), field)
@@ -312,4 +320,7 @@ class CompanyConfigUpdate(BaseModel):
                     f"{', '.join(paths)} carries NaN/Infinity — not valid JSON and not a "
                     "measurement; send finite numbers (or null for unmeasured)"
                 )
+        cost_errors = cost_input_errors(getattr(self, "pricing_model", None))
+        if cost_errors:
+            raise ValueError("; ".join(cost_errors))
         return self

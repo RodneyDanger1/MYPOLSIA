@@ -71,6 +71,24 @@ IDEA_CONFIRMED = "confirmed"
 IDEA_STALE = "stale"
 IDEA_UNVERIFIED = "unverified"
 
+#: ── F-W3-1 (wave 4): KPI PROVENANCE, stated where the KPIs are RENDERED ───────────────────────
+#:
+#: `company_config.kpis` holds values the OWNER typed into Settings.  They are CONFIGURED data —
+#: targets and bookkeeping, not measurements — but three surfaces rendered them as bare numbers:
+#: the agent prompt's `business_state` layer (`KPIs:\n- mrr_usd: 0`), `build_context_prompt`, and
+#: (before its TS-4 fix) the dashboard card.  Live evidence: finance run 313 reported *"Company KPI
+#: active_customers = 0"* as a fact, and the same stack's `/finance/summary` said MRR/subscribers
+#: were UNMEASURED (`mrr_cents: null`).  A configured zero and a measured zero are different facts;
+#: the only measured money in this app lives in `revenue_snapshots`, read by the finance agent's
+#: revenue-facts block and by `/finance/summary`.
+#:
+#: So the rendering now carries the source: `configured` when the row holds at least one KPI key,
+#: `unset` when it holds none (an empty dict is not "configured values"), and the prompt label says
+#: out loud that a configured KPI is NOT a measurement.  ONE helper so the wire, the prompt and the
+#: CLI fallback cannot drift.
+KPI_PROVENANCE_UNSET = "unset"
+KPI_PROVENANCE_CONFIGURED = "configured"
+
 #: How long a computed context may be reused.  Deliberately short: the agent
 #: prompt is built from it, so staleness is bounded and visible within a cycle.
 CONTEXT_CACHE_TTL_SECONDS: float = 30.0
@@ -119,6 +137,21 @@ def cache_info() -> dict[str, Any]:
             }
         )
     return {"entries": len(entries), "ttl_seconds": _cache_ttl(), "live": entries}
+
+
+def kpis_provenance(kpis: Any) -> str:
+    """Where the KPI values on a surface came from — the ONE rule (F-W3-1, wave 4).
+
+    `configured` when the company row holds at least one KPI key (owner-typed Settings values);
+    `unset` when it holds none.  There is no `measured` state HERE on purpose: this app has no
+    measured-KPI source, and the measured money facts are the finance reads
+    (`revenue_snapshots` → `/finance/summary`, `measured_finance` on the dashboard).  A caller that
+    ever gains one must add the state to this function so every surface moves together.
+
+    A non-mapping (a JSON list stored by an old client) is `unset`, the same reading the dashboard
+    already applies when it coerces a mis-shaped `kpis` cell to `{}`.
+    """
+    return KPI_PROVENANCE_CONFIGURED if isinstance(kpis, dict) and kpis else KPI_PROVENANCE_UNSET
 
 
 async def get_company(db: AsyncSession) -> CompanyConfig | None:
@@ -278,8 +311,16 @@ async def get_full_context(
             "industry": company.industry,
             "timezone": company.timezone,
             "daily_cycle_hour": company.daily_cycle_hour,
+            # F-W3-1 (wave 4): the owner's recorded LAUNCH budget (NUMERIC(10,2) at rest, so it
+            # arrives as `Decimal`).  It is configured data — the break-even denominator the money
+            # agent may use — and it was previously not in any agent's context at all (run 313 got
+            # the $125 from its task text instead).  None means "never set", never 0.
+            "owner_budget_usd": company.owner_budget_usd,
         },
         "kpis": company.kpis or {},
+        # F-W3-1: the KPI values above are CONFIGURED (owner-entered Settings data) — this key is
+        # what lets every prompt say so, instead of printing an owner-typed 0 as a measurement.
+        "kpis_provenance": kpis_provenance(company.kpis),
         "goals": company.goals or {},
         "yesterday_summary": evening_summary,
         "todays_tasks": todays_tasks,
@@ -421,10 +462,19 @@ def build_context_prompt(context: dict[str, Any] | None) -> str:
 
     kpis = context.get("kpis") or {}
     if kpis:
+        # F-W3-1: a configured KPI is the OWNER's number, not a measurement.  Printing it under a
+        # bare "KPIS:" heading is how an owner-typed `mrr_usd: 0` becomes "MRR is $0.00" in a
+        # prompt an agent then quotes as a fact.
         lines.append("")
-        lines.append("KPIS:")
+        lines.append(
+            "KPIS (CONFIGURED - owner-entered Settings values, NOT measurements):"
+        )
         for key, value in kpis.items():
             lines.append(f"- {key}: {value}")
+        lines.append(
+            "  A configured KPI is not revenue or subscriber data read from Stripe; it must "
+            "never be reported as a measured figure."
+        )
 
     goals = context.get("goals") or company.get("goals") or {}
     if goals:
@@ -519,6 +569,8 @@ __all__ = [
     "IDEA_NONE",
     "IDEA_STALE",
     "IDEA_UNVERIFIED",
+    "KPI_PROVENANCE_CONFIGURED",
+    "KPI_PROVENANCE_UNSET",
     "NO_CONTEXT",
     "build_context_prompt",
     "cache_info",
@@ -528,5 +580,6 @@ __all__ = [
     "get_full_context",
     "idea_brief_state",
     "invalidate_company_context",
+    "kpis_provenance",
     "measured_human_hourly_rate",
 ]

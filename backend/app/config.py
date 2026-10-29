@@ -110,6 +110,17 @@ class Settings(BaseSettings):
     agent_max_retries: int = 2
     agent_retry_backoff_seconds: float = 1.5
 
+    # --- activity websocket (R-W03-1; SV-W4-05: these used to be `getattr`-only names) ---
+    # `app/api/v1/ws.py` read all four as `getattr(settings, "<name>", <default>)`.  `Settings` is
+    # `extra="ignore"`, so the names were NOT fields: `WS_MAX_SOCKETS_PER_OPERATOR=1` in the
+    # environment was silently discarded and the code always ran the hardcoded default — a tunable
+    # bound no deployment could set.  They are real fields now (the ws module reads them directly,
+    # so deleting one fails at import instead of silently reverting to a default).
+    ws_ticket_ttl_seconds: int = 30
+    ws_max_sockets_per_client: int = 4
+    ws_max_sockets_per_operator: int = 32
+    ws_heartbeat_seconds: float = 20.0
+
     # --- kill switch (fleet dispatch gate; registry D4 — the switch was settings-dead) ---
     # "" = run; "throttle" = agents with external actions pause (reads continue); "freeze" = all
     # dispatch refused.  policy_firewall.kill_grade_from_env() reads POLSIA_KILL_SWITCH from the
@@ -195,6 +206,12 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-flash"
     deepseek_reasoning_effort: str = "none"
     deepseek_timeout_seconds: int = 300
+    # SV-W4-07 (wave 4): the per-call output bound.  `deepseek_runtime._max_tokens()` read this name
+    # via `getattr(settings, ..., 8192)`, but it was NOT a field, so `DEEPSEEK_MAX_TOKENS` in `.env`
+    # was silently ignored (`extra="ignore"`) and every call stayed at 8,192.  The vendor documents
+    # 1..393216 (default 8K non-thinking / 64K thinking / 128K at effort `max`), so the ceiling is
+    # deliberately NOT raised by default — this makes the shipped bound SETTABLE, not unbounded.
+    deepseek_max_tokens: int = 8192
 
     # --- phone link (wave V16, E5: the owner's phone, read-only) ---
     # The Phone Link store directory (phone.db/calling.db/contacts.db — the Windows Phone Link

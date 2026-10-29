@@ -678,7 +678,11 @@ class BasePolsiaAgent(ABC):
             f"TARGET MARKET: {company.get('target_market') or 'n/a'}",
             f"PRICING MODEL: {company.get('pricing_model') or 'n/a'}",
         ]))
-        business_state = business_state_lines(kpis, goals)
+        # F-W3-1: the KPI list's own provenance rides the layer, so a configured `0` can never
+        # print as a measurement of the company's money.
+        business_state = business_state_lines(
+            kpis, goals, (context or {}).get("kpis_provenance")
+        )
         yesterday = "\n".join(filter(None, [
             str((context or {}).get("yesterday_summary") or ""),
         ]))
@@ -726,15 +730,22 @@ class BasePolsiaAgent(ABC):
             ours = [item for item in items if item.company_scope != SCOPE_FOREIGN]
             withheld = len(items) - len(ours)
             ranked = rank_memories(ours, query_terms=task_title_terms(task), k=30)
-            memory_layer.entries = [render_memory_entry(m) for m in ranked]
+            # W4-F24-1 (wave 4, found live on the rebuilt app): the SCOPE key and the WITHHOLDING
+            # COUNT ride at the HEAD of the entries.  They used to be inserted first / appended
+            # last, and the assembler's over-budget pass drops TRAILING entries — a live prompt with
+            # 20 memories dropped 13 entries for budget and the dropped tail was the withheld count,
+            # so the model was told nothing had been withheld.  Head lines cannot be dropped that
+            # way; only ranked memories (the real tail) can.
+            header: list[str] = []
             note = memory_scope_note(ranked)
             if note:
-                memory_layer.entries.insert(0, note)
+                header.append(note)
             if withheld:
-                memory_layer.entries.append(
+                header.append(
                     f"- ({withheld} stored memories from a different company were withheld from "
                     "this brief)"
                 )
+            memory_layer.entries = header + [render_memory_entry(m) for m in ranked]
 
         return {
             "identity": Layer("identity", 0, text=identity, pinned=True),
@@ -1779,11 +1790,32 @@ def usage_from_outcome(
     return usage if isinstance(usage, dict) else {}
 
 
-def business_state_lines(kpis: dict, goals: Any) -> str:
+def business_state_lines(kpis: dict, goals: Any, kpi_provenance: str | None = None) -> str:
+    """The `business_state` layer: KPIs, then goals — with the KPIs' PROVENANCE stated (F-W3-1).
+
+    `company_config.kpis` is owner-entered Settings data (`company_service.kpis_provenance` ->
+    `configured`), and this layer used to print it under a bare "KPIs:" heading.  Measured live:
+    finance run 313 reported *"Company KPI active_customers = 0"* as a company fact while the same
+    stack's `/finance/summary` correctly said MRR/subscribers were unmeasured.  A configured zero
+    is not a measured zero, so the heading now names the source and one line says what a configured
+    KPI may never be used as.
+
+    Behaviour is unchanged when there are no KPI values (the "unmeasured" line is already honest)
+    and for a caller that passes no provenance: the only writer of KPIs in this app is the company
+    profile, so an unlabelled KPI list is still configured data — never presented as measured.
+    """
     lines = ["KPIs:"]
     if isinstance(kpis, dict) and kpis:
+        if kpi_provenance == "measured":
+            lines[0] = "KPIs (MEASURED):"
+        else:
+            lines[0] = "KPIs (CONFIGURED - owner-entered Settings values, NOT measurements):"
         for key in sorted(kpis):
             lines.append(f"- {key}: {kpis[key]}")
+        lines.append(
+            "  A configured KPI is not revenue or subscriber data read from Stripe; never report "
+            "it as a measured figure."
+        )
     else:
         lines.append("- unmeasured (no KPI values in context)")
     if isinstance(goals, dict) and goals:
