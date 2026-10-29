@@ -29,10 +29,12 @@ previews and dry-runs — it is pure and reads only the values handed to it.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, Final
 
 from sqlalchemy import func, select
@@ -40,11 +42,106 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import integrations
 from app.config import settings
-from app.core.errors import E_CONFIG, E_POLICY_DENIED, E_VALIDATION, ERROR_HINTS, PolsiaError
+from app.core.errors import (
+    E_CONFIG,
+    E_DB,
+    E_POLICY_DENIED,
+    E_VALIDATION,
+    ERROR_HINTS,
+    PolsiaError,
+)
 from app.models.outreach import Prospect
 from app.services.query_helpers import fetch_scalars
 
 logger = logging.getLogger(__name__)
+
+# ── the per-SEND compliance re-verification seam (wave 9, R13) ──────────────────────────────
+# WHAT WAS WRONG (measured by the wave-7/8 contract, matrix row R13): the worker asserts
+# `send_time_verified` when it RESOLVES the preflight at dispatch, and the session-free send then
+# trusts that assertion for every message the run sends.  An opt-out that lands BETWEEN dispatch
+# and the send loop (an unsubscribe webhook, one second later) is invisible to that snapshot, so
+# the run still mails a person who has just opted out.
+#
+# THE FIX: the send path asks a RESOLVER for the recipient's suppression state immediately before
+# the provider call.  The worker publishes it for its run; the resolver re-reads the database, so
+# it sees opt-outs that landed after the snapshot.  Three properties this seam keeps:
+#
+#   * a ContextVar, the same pattern as `run_progress`'s usage sink: the worker installs it in the
+#     task's context, `asyncio.to_thread` COPIES that context into the agent thread, and it dies
+#     with the run — one run's resolver can never answer for another;
+#   * adding it to the run CONTEXT dict was deliberately rejected: that dict is JSON-serialized
+#     onto `agent_runs.input_context` (wave 8's live Decimal wedge lives there), so a callable
+#     would be stringified on the way to the ledger;
+#   * FAIL CLOSED on the read.  A resolver that raises is a database we could not consult, which
+#     is `E_DB` and never a send — "could not check" must not read as "not suppressed".
+SendTimeSuppressionResolver = Callable[[str], bool]
+
+#: The worker-installed resolver for the CURRENT run.  `None` = no per-send re-verification is
+#: available (a direct caller, or a worker whose preflight producer failed); the send then takes
+#: the documented marker-only path and says so in the log.
+_SEND_TIME_RESOLVER: contextvars.ContextVar[SendTimeSuppressionResolver | None] = (
+    contextvars.ContextVar("polsia_send_time_suppression_resolver", default=None)
+)
+
+
+def set_send_time_resolver(
+    resolver: SendTimeSuppressionResolver | None,
+) -> contextvars.Token[SendTimeSuppressionResolver | None]:
+    """Install the per-send suppression resolver for THIS run; returns the reset token."""
+    return _SEND_TIME_RESOLVER.set(resolver)
+
+
+def reset_send_time_resolver(
+    token: contextvars.Token[SendTimeSuppressionResolver | None],
+) -> None:
+    """Undo exactly the `set_send_time_resolver` call `token` came from."""
+    _SEND_TIME_RESOLVER.reset(token)
+
+
+def clear_send_time_resolver() -> None:
+    """Drop whatever resolver is installed in the current context (the worker's `finally`)."""
+    _SEND_TIME_RESOLVER.set(None)
+
+
+def current_send_time_resolver() -> SendTimeSuppressionResolver | None:
+    """The resolver the CURRENT run installed, or `None`."""
+    return _SEND_TIME_RESOLVER.get()
+
+
+async def suppression_status_at_send_time(engine: Any, address: str) -> bool:
+    """Is `address` suppressed RIGHT NOW?  The read behind `SendTimeSuppressionResolver`.
+
+    `engine` is the CALLER's `AsyncEngine` (the worker's), never a session: it opens its own short
+    session and closes it, so it works long after the dispatch-time session is gone.  Suppression
+    is the same rule `send_compliant_email`'s session mode applies — EVERY row for the normalised
+    address is read and ANY `unsubscribed` row suppresses (the unique index is case-sensitive, so
+    a legacy pair can hold two rows for one mailbox).  A read failure raises (the send path turns
+    it into `E_DB` and refuses): an unread suppression list must never be treated as empty.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    if engine is None:
+        raise PolsiaError(
+            E_CONFIG,
+            "the send-time suppression resolver has no database engine to read",
+            how_to_fix=(
+                "publish the resolver from a worker that holds a database session "
+                "(celery_app.tasks.agent_tasks._with_compliance_preflight does); a resolver with "
+                "no engine cannot verify suppression and must not be installed"
+            ),
+            context={"source": "send_time_resolver"},
+        )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as db:
+        rows = await fetch_scalars(
+            db,
+            select(Prospect)
+            .where(func.lower(Prospect.email) == (address or "").strip().lower())
+            .order_by(Prospect.id.asc()),
+            what=f"prospects {address!r} at send time",
+        )
+    return any((row.status or "").strip().lower() == "unsubscribed" for row in rows)
+
 
 
 #: The one sourced AI-assistance disclosure line (plan Appendix A4, self-checked 2026-10-14):
@@ -331,6 +428,7 @@ async def send_compliant_email(
     body: str,
     include_ai_disclosure: bool = True,
     preflight: dict[str, Any] | None = None,
+    resolver: SendTimeSuppressionResolver | None = None,
 ) -> dict[str, Any]:
     """The guarded sender path: footer + suppression checks, THEN the provider call.
 
@@ -374,6 +472,7 @@ async def send_compliant_email(
         return _session_free_send(
             address=address, subject=subject, body=body,
             include_ai_disclosure=include_ai_disclosure, preflight=preflight,
+            resolver=resolver,
         )
 
     company = await get_company(db)
@@ -427,6 +526,7 @@ def _session_free_send(
     body: str,
     include_ai_disclosure: bool,
     preflight: dict[str, Any] | None,
+    resolver: SendTimeSuppressionResolver | None = None,
 ) -> dict[str, Any]:
     """`send_compliant_email(db=None)`'s arm: the same three steps on a WORKER-RESOLVED preflight.
 
@@ -516,6 +616,56 @@ def _session_free_send(
                 "and retry; never mail against a stale snapshot"
             ),
             context={"to": address, "preflight": "snapshot (send-time unverified)"},
+        )
+    # R13 (wave 9): the marker above is a statement about DISPATCH.  The authority for THIS send
+    # is a fresh read, performed by the resolver the worker published for this run — that is what
+    # catches an opt-out that landed between dispatch and now.  Read the resolver at call time (a
+    # caller that passes one explicitly wins, so tests and a direct caller can be explicit).
+    effective_resolver = resolver if resolver is not None else current_send_time_resolver()
+    if effective_resolver is not None:
+        try:
+            suppressed_now = effective_resolver(address)
+        except PolsiaError:
+            # A resolver that refuses by name is already the honest answer (E_DB when the
+            # database cannot be read, E_CONFIG when it has no engine): no send, no guessing.
+            raise
+        except Exception as exc:  # noqa: BLE001 — an unreadable suppression list is E_DB, never a send
+            raise PolsiaError(
+                E_DB,
+                f"the per-send compliance re-verification failed for {address!r} "
+                f"({type(exc).__name__}: {exc}); refusing to send with the suppression check "
+                "unread",
+                how_to_fix=(
+                    "fix the database read (the resolver reads prospects.status at send time) and "
+                    "retry; an unread suppression list is not an empty one"
+                ),
+                context={"to": address, "source": "send_time_reverification"},
+            ) from exc
+        if suppressed_now:
+            raise PolsiaError(
+                E_POLICY_DENIED,
+                f"outreach to {address!r} is suppressed: the prospect opted out AFTER this run "
+                "was dispatched (per-send re-verification)",
+                how_to_fix=(
+                    "honor the opt-out; the dispatch-time snapshot said 'subscribed', the "
+                    "send-time read says 'unsubscribed' — clear it only at the prospect's own "
+                    "request (update prospects.status), then retry"
+                ),
+                context={
+                    "to": address,
+                    "source": "send_time_reverification",
+                    "preflight": "snapshot (verified at dispatch, stale by send time)",
+                },
+            )
+    else:
+        # Observable degradation, never silent: without a resolver this send rests on the
+        # dispatch-time snapshot alone (the wave-7 contract), and an operator reading the log can
+        # see which sends were exposed to the gap.
+        logger.warning(
+            "code=send_time_reverification_unavailable recipient=%s: no per-send suppression "
+            "resolver is installed for this run, so this message rests on the dispatch-time "
+            "snapshot only",
+            address,
         )
     composed = "\n\n".join(part for part in (body.strip(), footer) if part)
     return integrations.send_email(to=address, subject=subject, body=composed)

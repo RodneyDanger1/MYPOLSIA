@@ -490,12 +490,24 @@ def create_app() -> FastAPI:
 
     @application.exception_handler(PolsiaError)
     async def polsia_error_handler(request: Request, exc: PolsiaError) -> JSONResponse:
-        """Every named failure reaches the client as a named refusal, never as a bare 500."""
-        logger.warning("%s on %s %s: %s", exc.code, request.method, request.url.path, exc.message)
+        """Every named failure reaches the client as a named refusal, never as a bare 500.
+
+        W8-LD-05: the log line carries the SAME correlation id the response header and (for a 500)
+        the envelope carry.  The id is minted by `request_id_from_scope`, which memoizes it on the
+        ASGI scope, so the handler and the `correlation_and_timing` middleware that stamps the
+        response header are guaranteed to name one string.  Before this line a route/dependency
+        refusal was logged WITHOUT the id: a caller quoting X-Request-ID and an operator reading
+        the log could not be matched, which is the only reason the id exists.
+        """
+        request_id = request_id_from_scope(request.scope)
+        logger.warning(
+            "%s on %s %s [request_id=%s]: %s",
+            exc.code, request.method, request.url.path, request_id, exc.message,
+        )
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers=_refusal_headers(exc),
+            headers={"X-Request-ID": request_id, **_refusal_headers(exc)},
         )
 
     @application.exception_handler(StarletteHTTPException)
@@ -520,8 +532,8 @@ def create_app() -> FastAPI:
             if refusal is None:
                 return await http_exception_handler(request, exc)
             logger.warning(
-                "%s on %s %s: %s", refusal.code, request.method, request.url.path,
-                refusal.message,
+                "%s on %s %s [request_id=%s]: %s", refusal.code, request.method, request.url.path,
+                request_id_from_scope(request.scope), refusal.message,
             )
             headers = dict(exc.headers or {})
             headers.setdefault("X-Polsia-Error-Code", refusal.code)
@@ -529,8 +541,8 @@ def create_app() -> FastAPI:
                 status_code=exc.status_code, content=to_http_detail(refusal), headers=headers
             )
         logger.warning(
-            "%s on %s %s: %s", envelope["error"]["code"], request.method, request.url.path,
-            envelope["error"]["message"],
+            "%s on %s %s [request_id=%s]: %s", envelope["error"]["code"], request.method,
+            request.url.path, request_id_from_scope(request.scope), envelope["error"]["message"],
         )
         # L1-04: the header `_refusal_headers` attaches for a `PolsiaError` must travel on this
         # path too.  The coded raises in tasks.py/config.py carry no `headers=` of their own, so
@@ -568,10 +580,11 @@ def create_app() -> FastAPI:
         if not _contains_non_finite(exc.errors()):
             return JSONResponse(status_code=422, content={"detail": errors})
         logger.warning(
-            "non-finite values in %s %s — named E_VALIDATION 422 (the default responder "
-            "would have crashed on this input)",
+            "non-finite values in %s %s [request_id=%s] — named E_VALIDATION 422 (the default "
+            "responder would have crashed on this input)",
             request.method,
             request.url.path,
+            request_id_from_scope(request.scope),
         )
         return JSONResponse(
             status_code=422,
@@ -605,7 +618,10 @@ def create_app() -> FastAPI:
         travels in the standard envelope; the real exception text is kept in `context` so
         nothing is lost.
         """
-        logger.warning("integer overflow on %s %s: %s", request.method, request.url.path, exc)
+        logger.warning(
+            "integer overflow on %s %s [request_id=%s]: %s",
+            request.method, request.url.path, request_id_from_scope(request.scope), exc,
+        )
         err = PolsiaError(
             E_VALIDATION,
             f"integer value out of supported range on {request.method} {request.url.path}: {exc}",

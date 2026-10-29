@@ -31,7 +31,7 @@ import logging
 from typing import Any, Final
 
 from app.agents.base_agent import _run_coroutine_sync  # the repo's own sync->async bridge
-from app.services.email_compliance import send_compliant_email
+from app.services.email_compliance import current_send_time_resolver, send_compliant_email
 from app.services.query_helpers import db_refusal
 
 logger = logging.getLogger(__name__)
@@ -54,11 +54,18 @@ def send_outreach_email(
     `E_DB` refusal it is — never as a plausible-looking `{"ok": False}` the caller might retry blind.
     """
     preflight = (context or {}).get(PREFLIGHT_KEY)
+    # R13 (wave 9): read the run's per-send suppression resolver HERE, on the sending thread — the
+    # worker installed it in the task's context, `asyncio.to_thread` copied that context into this
+    # thread, and the guarded sender then re-verifies suppression immediately before the provider
+    # call.  Captured (not passed as an import) so the coroutine that runs on its own loop gets
+    # the same object; `None` keeps the pre-wave-9 marker-only path, and the sender logs that.
+    resolver = current_send_time_resolver()
     try:
         if isinstance(preflight, dict) and preflight:
             return _run_coroutine_sync(
                 send_compliant_email(
-                    None, to=to, subject=subject, body=body, preflight=preflight
+                    None, to=to, subject=subject, body=body, preflight=preflight,
+                    resolver=resolver,
                 )
             )
         return _run_coroutine_sync(_send_on_own_session(to=to, subject=subject, body=body))

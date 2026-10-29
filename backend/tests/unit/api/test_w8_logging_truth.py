@@ -28,8 +28,6 @@ import ast
 import logging
 from pathlib import Path
 
-import pytest
-
 from app.core.errors import E_DB, E_INTEGRATION, E_NOT_FOUND, PolsiaError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -73,22 +71,21 @@ async def test_e02_a_pre_route_refusal_logs_its_code_and_answers_with_an_id(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OPEN (W8-LD-05, filed as REQUESTS-W8 R4): the CORRELATION ID is minted in the "
-        "`correlation_and_timing` middleware, but every route/dependency `PolsiaError` is answered "
-        "by the exception handler INSIDE that middleware — so the only log line an operator gets "
-        "for a refusal ('E_DB on GET /api/v1/tasks: …', app/main.py:494) carries NO request id, "
-        "and the middleware branch that WOULD add it ('request %s failed: %s') is unreachable for "
-        "route/dependency refusals.  A client can quote X-Request-ID and the log cannot be matched "
-        "to it.  Fix = pass the id into the handler's log line (app/main.py) — outside this seat's "
-        "three-file territory."
-    ),
-)
 async def test_e02b_the_refusals_log_line_carries_the_same_request_id(
     api_client, auth_headers, caplog, monkeypatch
 ):
+    """W8-LD-05, CLOSED in wave 9 (the strict xfail was removed when this row went green).
+
+    The defect: the correlation id is minted in the `correlation_and_timing` middleware, but every
+    route/dependency `PolsiaError` is answered by the exception handler INSIDE that middleware — so
+    the log line an operator got for a refusal carried NO request id, and the middleware branch
+    that would have added it was unreachable for those refusals.  A client quoting its
+    `X-Request-ID` and the server log could not be matched, which is the one thing the id is for.
+
+    The fix passes `request_id_from_scope(request.scope)` (the memoized, same-on-every-path rule)
+    into every refusal log line.  Both wire classes are driven here: the handler's own route
+    refusal (a failing `get_db` dependency) and the framework's 404 route miss.
+    """
     from app.core.database import get_db
     from app.main import app as application
 
@@ -103,6 +100,17 @@ async def test_e02b_the_refusals_log_line_carries_the_same_request_id(
     assert any(E_DB in line and request_id in line for line in records), (
         f"the operator cannot tie this refusal to the caller's id: {records}"
     )
+
+    # the SAME id rule on the framework-refusal path (a different handler, one id)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        miss = await api_client.get("/api/v1/definitely-not-a-route", headers=auth_headers)
+    miss_id = miss.headers["x-request-id"]
+    miss_records = [record.getMessage() for record in caplog.records]
+    assert any(E_NOT_FOUND in line and miss_id in line for line in miss_records), (
+        f"a framework refusal must be correlatable too: {miss_records}"
+    )
+    assert miss_id != "", "the response carries an id even when the request minted one"
 
 
 # ── E3: the named code reaches the LEDGER, not only the log ────────────────────────────────

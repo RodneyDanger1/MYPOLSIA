@@ -395,22 +395,24 @@ def test_r12c_cs_mode2_refuses_a_suppressed_address(file_database, provider):
     assert provider.calls == []
 
 
-# ── R13: the residual the wave-8 carry owns: an opt-out AFTER dispatch ──────────────────
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OPEN residual, NAMED by the wave-7 contract and carried into wave 8: the worker asserts "
-        "send_time_verified at DISPATCH, but the session-free send is a SNAPSHOT — an opt-out that "
-        "lands between dispatch and the agent's send loop is invisible to it, so this send still "
-        "reaches the provider.  The fix is the per-SEND refresh (`agent_tasks._with_compliance_"
-        "preflight` / `compliance_send.send_outreach_email` re-reading suppression at provider "
-        "time); it is the wave-8 carry owned by the email lane, not this seat."
-    ),
-)
+# ── R13: an opt-out AFTER dispatch (CLOSED in wave 9 by the per-SEND re-verification) ────
 @pytest.mark.asyncio
 async def test_r13_an_opt_out_after_dispatch_must_not_still_receive_mail(
     async_db_session, provider
 ):
+    """W8 carry / R13, CLOSED in wave 9 (the strict xfail was removed when this row went green).
+
+    The defect: `send_time_verified` is asserted at DISPATCH, so an opt-out that lands between
+    dispatch and the send loop is invisible to the session-free send — the mail still went out.
+
+    The fix: `_with_compliance_preflight` installs a run-scoped RESOLVER (contextvar, the
+    `run_progress` usage-sink pattern) that re-reads `prospects.status` at SEND time through the
+    worker's own engine on the worker's own loop; `send_outreach_email` captures it and
+    `email_compliance.send_compliant_email` consults it immediately before the provider call.  The
+    refusal is `E_POLICY_DENIED` — a policy refusal, not a database error — and the provider is
+    never reached.  The marker's dispatch-time meaning is unchanged; it is simply no longer the
+    authority for one send.
+    """
     from app.agents.email_outreach.compliance_send import send_outreach_email
     from celery_app.tasks.agent_tasks import _with_compliance_preflight
 
@@ -422,9 +424,81 @@ async def test_r13_an_opt_out_after_dispatch_must_not_still_receive_mail(
     prospect.status = "unsubscribed"
     await async_db_session.flush()
 
-    with pytest.raises(PolsiaError):
+    with pytest.raises(PolsiaError) as caught:
         send_outreach_email(to=ADDRESS, subject="s", body="b", context=context)
+    assert caught.value.code == E_POLICY_DENIED, (
+        "an opt-out that landed after dispatch is a POLICY refusal, not a database error — the "
+        f"send must be stopped for the reason it was stopped: {caught.value.code}"
+    )
+    assert caught.value.context.get("source") == "send_time_reverification", (
+        "the refusal must say WHICH read found the opt-out (the per-send re-verification)"
+    )
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_r13b_a_run_without_a_resolver_still_sends_and_says_it_could_not_reverify(
+    async_db_session, provider, caplog
+):
+    """The seam degrades OBSERVABLY, not silently: no resolver installed -> marker-only send.
+
+    This is the documented residual (a direct caller that never went through the worker's
+    preflight hook — e.g. the invoice path), and it must stay visible in the log rather than
+    pretend it re-verified.  The worker path installs a resolver, so a run dispatched by
+    `run_agent_task` is covered by R13 itself.
+    """
+    import logging
+
+    from app.agents.email_outreach.compliance_send import send_outreach_email
+    from app.services import email_compliance as compliance
+
+    compliance.clear_send_time_resolver()
+    preflight = await outreach_service.compliance_preflight(async_db_session)
+    context = {"compliance": {**preflight, "send_time_verified": True}}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.email_compliance"):
+        result = send_outreach_email(to=ADDRESS, subject="s", body="body", context=context)
+
+    assert result["ok"] is True, "without a resolver the documented marker-only path still sends"
+    assert len(provider.calls) == 1
+    assert any(
+        "send_time_reverification_unavailable" in record.getMessage()
+        for record in caplog.records
+    ), "the unverified send must be named in the log, never silent"
+
+
+@pytest.mark.asyncio
+async def test_r13c_a_failing_send_time_read_refuses_instead_of_sending(async_db_session, provider):
+    """FAIL CLOSED: a resolver that cannot read the database must stop the send (E_DB), never pass."""
+    from app.agents.email_outreach.compliance_send import send_outreach_email
+    from app.services import email_compliance as compliance
+
+    preflight = await outreach_service.compliance_preflight(async_db_session)
+    context = {"compliance": {**preflight, "send_time_verified": True}}
+    token = compliance.set_send_time_resolver(_raising_resolver)
+    try:
+        with pytest.raises(PolsiaError) as caught:
+            send_outreach_email(to=ADDRESS, subject="s", body="b", context=context)
+    finally:
+        compliance.reset_send_time_resolver(token)
+
+    assert caught.value.code == E_DB, "an unread suppression list is E_DB, not a send"
+    assert provider.calls == [], "could-not-check must never read as not-suppressed"
+
+
+def _raising_resolver(_address: str) -> bool:
+    raise RuntimeError("planted: the database is unreachable at send time")
+
+
+def test_r13d_the_resolver_is_run_scoped_and_clears_to_none():
+    """The seam is a contextvar, not a module global: set -> read -> clear -> gone."""
+    from app.services import email_compliance as compliance
+
+    assert compliance.current_send_time_resolver() is None
+    token = compliance.set_send_time_resolver(_raising_resolver)
+    assert compliance.current_send_time_resolver() is _raising_resolver
+    compliance.reset_send_time_resolver(token)
+    assert compliance.current_send_time_resolver() is None
 
 
 # ── R14: the worker's preflight carries no credential / no token ─────────────────────────

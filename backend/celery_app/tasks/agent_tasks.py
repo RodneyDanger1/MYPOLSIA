@@ -446,14 +446,34 @@ async def _with_compliance_preflight(
     if agent_type not in ("email_outreach", "customer_support"):
         return context
     from app.agents.email_outreach.compliance_send import PREFLIGHT_KEY
+    from app.services.email_compliance import (
+        set_send_time_resolver,
+        suppression_status_at_send_time,
+    )
     from app.services.outreach_service import compliance_preflight
 
     try:
         preflight = await compliance_preflight(db)
         # R1 (wave 7): the producer assertion the session-free send requires. This resolution runs
-        # immediately before the agent is dispatched; a per-SEND refresh inside a long run is the
-        # wave-8 carry, so the assertion is scoped to "resolved at dispatch", not "fresh forever".
+        # immediately before the agent is dispatched.
         preflight = {**preflight, "send_time_verified": True}
+        # R13 (wave 9): that marker is a DISPATCH-time statement, so the guarded sender also
+        # re-verifies suppression immediately before EVERY provider call — through the resolver
+        # installed here, for THIS run only.  A ContextVar (the `run_progress` usage-sink pattern):
+        # `asyncio.to_thread` copies this context into the agent thread, and the worker's `finally`
+        # clears it, so one run's resolver can never answer for another.  The engine is the
+        # worker's own, and the read is submitted to the ONE process loop its database lives on —
+        # the resolver therefore still works long after the dispatch-time session is closed.
+        engine = getattr(db, "bind", None)
+        if engine is None:
+            get_bind = getattr(db, "get_bind", None)
+            engine = get_bind() if callable(get_bind) else None
+
+        def _send_time_resolver(address: str, _engine: Any = engine) -> bool:
+            """Is `address` suppressed RIGHT NOW?  Submitted to the worker's ONE process loop."""
+            return run_async(suppression_status_at_send_time(_engine, address))
+
+        set_send_time_resolver(_send_time_resolver)
     except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated identity
         logger.warning(
             "code=compliance_preflight_unavailable: %s runs without a worker-resolved "
@@ -2561,10 +2581,12 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         set_run_channel_sends,
     )
     from app.agents.run_progress import reset_run_usage_sink, set_run_usage_sink
+    from app.services.email_compliance import clear_send_time_resolver
 
+    # R13 (wave 9): the per-send compliance resolver (`clear_send_time_resolver`) is a run-scoped
+    # publish too, cleared in the same `finally` that clears the approval/channel/cancellation scope.
     set_run_channel_sends(context.get("channel_sends"))
     begin_run_cancellation()
-
     # ── 3. heartbeat the lease while the agent runs ──────────────────────────
     stop_heartbeat = asyncio.Event()
     lease_lost = asyncio.Event()
@@ -2673,6 +2695,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         reset_run_approval()
         reset_run_channel_sends()
         end_run_cancellation()
+        # R13 (wave 9): the per-send suppression resolver is run-scoped too — a later run must not
+        # inherit this run's recipient checks (and its engine may be gone).
+        clear_send_time_resolver()
         # F-26: the live usage sink dies with the run (the thread that reported through it has
         # returned; anything later would be another run's numbers in this process).
         reset_run_usage_sink(usage_sink_token)

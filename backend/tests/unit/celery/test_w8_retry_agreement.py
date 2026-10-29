@@ -4,9 +4,10 @@ The system has THREE retry/timeout ladders and ONE kill ceiling, declared in thr
 places:
 
   1. the IN-RUN ladder (`claude_cli.run_with_retries`, shared by the Claude-CLI runtime and the
-     DeepSeek runtime through `base_agent`) — attempts = 1 + `agent_max_retries`, each a full
-     per-call timeout (`claude_timeout_seconds` / `deepseek_timeout_seconds`), plus jittered
-     exponential backoff;
+     DeepSeek runtime through `base_agent`) — attempts = 1 + `agent_max_retries`, each a provider
+     call bounded by `claude_timeout_seconds` AND by what is left of the run's OWN wall clock
+     (`claude_cli.run_wall_clock_budget`, derived from the worker's soft limit — W8-LD-02), plus
+     jittered exponential backoff;
   2. the TASK ladder (Celery `max_retries` + `agent_tasks.run_agent_task`'s own retry decision +
      `task_service.requeue_stale_claims`'s terminal rule against `task_max_attempts`);
   3. the BEAT/SWEEP ladders (claim-lease sweep every 300 s vs a 900 s lease; stale-run close;
@@ -138,43 +139,135 @@ def test_b05_the_deepseek_runtime_reads_the_SAME_ladder_and_the_same_call_bound(
 
 
 # ── 2. the in-run ladder vs the worker's kill ceiling ─────────────────────────────────────
-def test_b06_the_in_run_worst_case_wall_clock_is_derived_from_the_measured_attempts():
+def test_b06_the_in_run_worst_case_is_derived_from_the_runs_OWN_budget():
+    """The worst case is no longer `attempts x per-call`: it is the run's own budget (W8-LD-02).
+
+    ARITHMETIC CHANGED IN WAVE 9 — old and new, both from the shipped numbers:
+
+      OLD (wave 8, measured open defect): attempts x claude_timeout_seconds + backoff
+          = 3 x 300 s + 4.5 s = **904.5 s**   ->  904.5 > 840 s soft limit (row B07 was xfail)
+      NEW (this fix): the run carries ONE deadline, `claude_cli.run_wall_clock_budget()`
+          budget = soft - settle_reserve - backoff = 840 - 60 - 4.5 = **775.5 s**
+          worst  = budget + backoff                = 775.5 + 4.5   = **780.0 s**
+        and every provider call is clamped to what is LEFT of the budget (B07b measures the
+        clamp itself, so this is not a comment).
+
+    Neither the per-call ceiling nor the attempt count changed: a single call may still use the
+    full `claude_timeout_seconds`, and the ladder still makes 1 + agent_max_retries attempts.
+    What changed is that the attempts SHARE one wall clock derived from the worker's own kill
+    ceiling, so the worst case is a consequence of the configuration instead of a second opinion.
+    """
     attempts = _in_run_budget()
-    backoff_total = sum(
-        min(30.0, settings.agent_retry_backoff_seconds * 2**attempt) for attempt in range(attempts - 1)
+    backoff_total = claude_cli.ladder_backoff_total_seconds(attempts)
+    budget = claude_cli.run_wall_clock_budget()
+    reserve = claude_cli.settle_reserve_seconds()
+
+    assert budget == pytest.approx(
+        settings.celery_soft_time_limit - reserve - backoff_total
+    ), "the run budget must be DERIVED from the soft limit, not a literal"
+    assert budget == pytest.approx(775.5), (
+        f"the derived run budget changed ({budget}); re-measure the agreement rows"
     )
-    worst = attempts * settings.claude_timeout_seconds + backoff_total
-    assert worst == pytest.approx(904.5), (
-        "the worst case changed; re-measure it (this is the number the agreement rows use): "
-        f"{worst}"
-    )
-    assert worst > settings.celery_soft_time_limit, (
-        "if this is no longer true the open disagreement below has been CLOSED — remove the xfail"
+    worst = budget + backoff_total
+    assert worst == pytest.approx(780.0), (
+        f"the in-run worst case changed; re-measure it (old 904.5 -> new {worst})"
     )
 
+    # the budget reaches the ONE invocation builder every agent uses ...
+    inv = claude_cli.build_invocation(prompt="budget probe", timeout_s=settings.claude_timeout_seconds)
+    assert inv.run_budget_seconds == pytest.approx(budget)
+    assert inv.remaining_seconds() is not None and inv.remaining_seconds() <= budget
+    # ... and the per-call ceiling is untouched (capability is not what was traded away)
+    assert inv.timeout_s == settings.claude_timeout_seconds
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OPEN (W8-LD-02, filed as REQUESTS-W8 R2): the in-run ladder's declared worst case is "
-        "3 x 300 s + backoff = 904.5 s, but Celery's SOFT time limit is 840 s (60 s before the "
-        "900 s hard kill).  A run that reaches its third provider timeout therefore CANNOT settle "
-        "inside its own worker: SoftTimeLimitExceeded fires first, the task row stays in_progress "
-        "until the 900 s lease sweep, and the agent_runs row stays `running` until the 2 h "
-        "stale-run reaper.  Owner: the runtime/queue configuration (app/agents/claude_cli.py or "
-        "celery_app/celery_config.py) — outside this seat's three-file territory."
-    ),
-)
+
 def test_b07_the_in_run_ladder_fits_inside_the_worker_that_runs_it():
+    """W8-LD-02, closed: the run's worst case fits inside the worker, settle reserve included."""
     attempts = _in_run_budget()
-    backoff_total = sum(
-        min(30.0, settings.agent_retry_backoff_seconds * 2**attempt) for attempt in range(attempts - 1)
-    )
-    worst = attempts * settings.claude_timeout_seconds + backoff_total
-    assert worst <= settings.celery_soft_time_limit, (
+    backoff_total = claude_cli.ladder_backoff_total_seconds(attempts)
+    budget = claude_cli.run_wall_clock_budget()
+    reserve = claude_cli.settle_reserve_seconds()
+    worst = budget + backoff_total
+
+    assert worst <= settings.celery_soft_time_limit + 1e-6, (
         f"the in-run ladder needs {worst:.1f}s but the worker kills it at "
         f"{settings.celery_soft_time_limit}s"
     )
+    assert worst + reserve <= settings.celery_soft_time_limit + 1e-6, (
+        f"the run must also be able to SETTLE after its last call: worst {worst:.1f}s + settle "
+        f"reserve {reserve:.1f}s > soft limit {settings.celery_soft_time_limit}s — the task row "
+        "would wait for the lease sweep and the run row for the stale-run reaper"
+    )
+
+
+def test_b07b_the_run_budget_is_ENFORCED_by_both_runtimes_not_just_declared():
+    """The bound has to bite: a spent budget refuses BY NAME and never reaches the provider.
+
+    Legs (each measured, now that the arithmetic in B06/B07 is only a declaration without them):
+      a. `claude_cli.invoke` with a spent budget raises `E_CLI_TIMEOUT` and does NOT spawn;
+      b. `claude_cli.invoke` with 5 s left of the budget hands the SPAWN exactly that bound
+         (not the 300 s ceiling), so a hung CLI cannot outlive the run;
+      c. `deepseek_runtime.invoke` with a spent budget raises the same code and makes ZERO
+         provider calls (the tool loop's multiplier is therefore bounded, not just the first call).
+    """
+    import time
+
+    import httpx
+
+    from app.core.errors import E_CLI_TIMEOUT
+
+    # (a) spent budget -> named refusal, no spawn
+    spent = claude_cli.Invocation(
+        argv=["claude", "-p", "x"],
+        timeout_s=settings.claude_timeout_seconds,
+        run_budget_seconds=1.0,
+        deadline_monotonic=time.monotonic() - 1.0,
+    )
+    spawned: list[tuple] = []
+    with pytest.raises(PolsiaError) as caught:
+        claude_cli.invoke(spent, spawn=lambda *args: spawned.append(args) or ("{}", 0))
+    assert caught.value.code == E_CLI_TIMEOUT
+    assert caught.value.context["remaining_seconds"] < 0
+    assert spawned == [], "a spent budget must never spawn a CLI (that is the 904.5 s defect)"
+
+    # (b) 5 s left -> the spawn receives at most 5 s, never the 300 s ceiling
+    live = claude_cli.Invocation(
+        argv=["claude", "-p", "x"],
+        timeout_s=settings.claude_timeout_seconds,
+        run_budget_seconds=5.0,
+        deadline_monotonic=time.monotonic() + 5.0,
+    )
+    seen: dict[str, float] = {}
+
+    def _spawn(_argv, _stdin, _env, timeout_s):
+        seen["timeout"] = timeout_s
+        return '{"result": "ok"}', 0
+
+    claude_cli.invoke(live, spawn=_spawn)
+    assert 1 <= seen["timeout"] <= 5, (
+        f"the enforced call bound was {seen['timeout']}s with 5 s of run budget left"
+    )
+
+    # (c) the DeepSeek runtime refuses before the provider is reachable
+    calls: list[httpx.Request] = []
+    transport = httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200))
+    client = httpx.Client(transport=transport)
+    try:
+        with pytest.raises(PolsiaError) as caught_http:
+            deepseek_runtime.invoke(
+                claude_cli.Invocation(
+                    argv=["claude", "-p", "x"],
+                    timeout_s=settings.claude_timeout_seconds,
+                    run_budget_seconds=1.0,
+                    deadline_monotonic=time.monotonic() - 1.0,
+                ),
+                client=client,
+                api_key="probe-key",
+            )
+    finally:
+        client.close()
+    assert caught_http.value.code == E_CLI_TIMEOUT
+    assert calls == [], "a spent budget must never reach the provider"
 
 
 # ── 3. the task ladder, measured ──────────────────────────────────────────────────────────

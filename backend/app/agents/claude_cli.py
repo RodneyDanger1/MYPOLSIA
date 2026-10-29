@@ -349,9 +349,24 @@ class Invocation:
     prompt_file: str | None = None       # written by the caller when transport == file-ref
     system_prompt_file_content: str | None = None
     schema_name: str = ""                   # bookkeeping: which agent schema rides in the argv
+    #: W8-LD-02: the wall clock this WHOLE logical run may take — every provider call of its tool
+    #: loop, and (because `run_with_retries` re-dispatches the SAME invocation) every attempt of
+    #: the in-run ladder see what is LEFT of it.  `None` = no run-level deadline: a hand-built
+    #: `Invocation` keeps the pre-wave-9 contract (`timeout_s` per call, nothing above it).
+    run_budget_seconds: float | None = None
+    #: The absolute `time.monotonic()` instant that budget expires at.  Set by
+    #: `build_invocation` (the ONE builder every agent uses) from the worker's soft time limit —
+    #: see `run_wall_clock_budget`.
+    deadline_monotonic: float | None = None
 
     def estimated_command_line_chars(self) -> int:
         return sum(len(a) + 1 for a in self.argv)
+
+    def remaining_seconds(self, now: float | None = None) -> float | None:
+        """Seconds left of the run budget; `None` when this invocation has no run deadline."""
+        if self.deadline_monotonic is None:
+            return None
+        return float(self.deadline_monotonic) - (time.monotonic() if now is None else now)
 
     def redacted_preview(self) -> str:
         """Shell-quote the argv for logs; secrets never ride on argv (auth lives in ~/.claude)."""
@@ -361,6 +376,93 @@ class Invocation:
 def cli_path() -> str:
     """`settings.claude_cli_path`, with the `CLAUDE_CLI_PATH` env override (README:77)."""
     return (os.getenv("CLAUDE_CLI_PATH") or settings.claude_cli_path or "claude").strip()
+
+
+# ── the run's wall-clock budget (W8-LD-02) ──────────────────────────────────────────────────
+# WHAT WAS WRONG (measured by wave-8's matrix, row B07): one logical run's worst case was
+# `attempts x claude_timeout_seconds + backoff` = 3 x 300 s + 4.5 s = **904.5 s**, but Celery's
+# SOFT time limit in this deployment is **840 s** (hard kill 900 s).  A run that reached its
+# third provider timeout therefore could NOT settle inside the worker that ran it:
+# `SoftTimeLimitExceeded` fired first, the task row stayed `in_progress` until the 900 s lease
+# sweep and the `agent_runs` row stayed `running` until the 2 h stale-run reaper.  The binding
+# promise of this module's ladder ("the run always settles itself") was false in exactly the
+# case the ladder exists for.
+#
+# WHAT THIS SECTION CHANGES.  The ladder's arithmetic is no longer a claim in a docstring: the
+# run gets ONE wall-clock budget, DERIVED from the worker's own kill ceiling, and both runtimes
+# enforce it (every provider call is clamped to what is left; a spent budget is the named
+# `E_CLI_TIMEOUT` refusal instead of a kill):
+#
+#     budget  = soft_limit - settle_reserve - ladder_backoff_total
+#     worst   = budget + ladder_backoff_total            (the sleeps after the budget is spent)
+#             = soft_limit - settle_reserve             <= soft_limit          [B07]
+#
+# At the shipped numbers: soft 840 s, hard 900 s, retries 2, backoff 1.5 s ->
+#     settle_reserve   = max(30, 900 - 840)      = 60 s
+#     backoff_total    = 1.5 + 3.0               = 4.5 s
+#     budget           = 840 - 60 - 4.5          = 775.5 s
+#     worst            = 775.5 + 4.5             = 780 s   (840 - 60, 60 s left to settle)
+#
+# WHY A BUDGET AND NOT A SMALLER PER-CALL TIMEOUT.  The alternative (clamp each call to
+# `(soft - reserve) / attempts` = 258 s) also fits the ladder, but it shrinks EVERY call — and it
+# still leaves the DeepSeek tool loop (up to `deepseek_tool_loop_max_iterations` = 4 provider
+# calls in ONE dispatch) at 4 x 258 = 1032 s > 840 s.  A run-level deadline bounds the ladder AND
+# the tool loop with the same number, keeps a single call's full 300 s ceiling, and stays correct
+# if an operator retunes `CELERY_SOFT_TIME_LIMIT` (the budget is derived, never a literal).
+
+#: The smallest settle window this module will accept, even when an operator sets the soft limit
+#: EQUAL to the hard limit (the platform then gives a run no grace at all after
+#: `SoftTimeLimitExceeded`, which is itself the defect this floor keeps visible).
+MIN_SETTLE_RESERVE_SECONDS = 30.0
+
+#: The deepest ladder sleep a run may pay, matching `backoff_delay`'s own cap.
+MAX_BACKOFF_SECONDS = 30.0
+
+
+def settle_reserve_seconds() -> float:
+    """The wall clock a run needs AFTER its last provider call to settle inside its worker.
+
+    Derived from the platform's own two clocks — the gap between the soft and the hard limit is
+    exactly how long Celery lets a task keep running after `SoftTimeLimitExceeded` — floored at
+    `MIN_SETTLE_RESERVE_SECONDS` so an `soft == hard` deployment cannot silently get a 0 s
+    reserve (a settle that needs the write it cannot finish is the wedge this bounds).
+    """
+    gap = float(settings.celery_task_time_limit) - float(settings.celery_soft_time_limit)
+    return max(MIN_SETTLE_RESERVE_SECONDS, gap)
+
+
+def ladder_backoff_total_seconds(attempts: int | None = None) -> float:
+    """The most a whole ladder can SLEEP between its attempts (`backoff_delay`'s upper bound).
+
+    `attempts` is the ATTEMPT count (1 + retries), the same unit `run_with_retries` measures and
+    returns — NOT the retry count, which is one less.  `None` means the configured ladder
+    (`1 + settings.agent_max_retries`).
+    """
+    total_attempts = max(1, 1 + int(settings.agent_max_retries) if attempts is None else int(attempts))
+    return float(
+        sum(
+            min(MAX_BACKOFF_SECONDS, float(settings.agent_retry_backoff_seconds) * 2**attempt)
+            for attempt in range(total_attempts - 1)
+        )
+    )
+
+
+def run_wall_clock_budget(*, soft_limit_s: float | None = None) -> float:
+    """The wall clock ONE logical run (all its attempts and tool-loop calls) may take.
+
+    `soft_limit - settle_reserve - ladder_backoff_total`, floored at 1 s: a run must always be
+    allowed at least one provider call, and an operator who configures a soft limit below the
+    ladder's own sleep budget gets a bounded run rather than a division by zero or a negative
+    timeout.  Per-call bounds are NOT changed by this number (a single call keeps
+    `claude_timeout_seconds`); it is the aggregate ceiling the runtimes enforce.
+    """
+    soft = float(settings.celery_soft_time_limit if soft_limit_s is None else soft_limit_s)
+    # W9-LD-02 hardening: an operator may configure soft >= hard (nothing else validates it); the
+    # run budget must still finish INSIDE the hard kill, so the effective ceiling is min(soft, hard).
+    hard = float(settings.celery_task_time_limit)
+    soft = min(soft, hard)
+    return max(1.0, soft - settle_reserve_seconds() - ladder_backoff_total_seconds())
+
 
 
 def argv_budget(max_argv_chars: int | None = None) -> int:
@@ -426,6 +528,7 @@ def build_invocation(
             f"(safe modes: {', '.join(SAFE_PERMISSION_MODES)}; bypassPermissions is banned)"
         )
     budget = argv_budget(max_argv_chars)
+    run_budget = run_wall_clock_budget()
     via_stdin_default = bool(settings.claude_prompt_via_stdin)
     want_stdin = via_stdin_default if prompt_via_stdin is None else bool(prompt_via_stdin)
 
@@ -527,6 +630,11 @@ def build_invocation(
             system_prompt_file_content=sys_prompt_file,
             timeout_s=int(timeout_s or settings.claude_timeout_seconds),
             schema_name=schema_name,
+            # W8-LD-02: ONE wall clock for the whole run, derived from the worker's soft limit.
+            # `run_with_retries` re-dispatches this SAME invocation, so a later attempt inherits
+            # what the earlier one left — the ladder cannot multiply the budget.
+            run_budget_seconds=run_budget,
+            deadline_monotonic=time.monotonic() + run_budget,
         )
 
     inv = _assemble(prompt, "argv", None)
@@ -593,6 +701,34 @@ class InvokeResult:
     transport: str = "argv"
 
 
+def _call_timeout(inv: Invocation, *, now: float | None = None) -> int:
+    """The wall clock THIS provider call may take: the per-call ceiling, capped by the run budget.
+
+    Raises the named `E_CLI_TIMEOUT` refusal when the run's budget is already spent — a spent
+    budget must never become a fresh `timeout_s` (that is the defect: three 300 s calls inside an
+    840 s worker).  `timeout_s` itself is untouched, so a single call keeps its full ceiling.
+    """
+    remaining = inv.remaining_seconds(now)
+    if remaining is None:
+        return int(inv.timeout_s)
+    if remaining <= 0:
+        raise PolsiaError(
+            E_CLI_TIMEOUT,
+            (
+                f"the run's wall-clock budget ({inv.run_budget_seconds or 0:.1f}s, derived from "
+                "the worker's soft time limit) is spent; refusing to start another provider call"
+            ),
+            how_to_fix=ERROR_HINTS[E_CLI_TIMEOUT],
+            context={
+                "run_budget_seconds": inv.run_budget_seconds,
+                "remaining_seconds": round(remaining, 3),
+                "timeout_s": int(inv.timeout_s),
+                "transport": inv.transport,
+            },
+        )
+    return max(1, int(min(float(inv.timeout_s), remaining)))
+
+
 def invoke(
     inv: Invocation,
     *,
@@ -605,10 +741,17 @@ def invoke(
 
     `spawn(argv, stdin_text, env, timeout)` is injectable so tests can exercise the transport
     without a CLI binary on the host.
+
+    W8-LD-02: this call's wall clock is `min(inv.timeout_s, what is left of the run budget)`.  A
+    run whose budget is already spent refuses BY NAME (`E_CLI_TIMEOUT`, "the run's wall-clock
+    budget is spent") WITHOUT spawning — the run then settles itself inside its worker instead of
+    being killed by Celery's soft/hard limit and left for the reapers.
     """
     argv = list(inv.argv)
     argv[0] = executable or cli_path()
     env = child_environment(env_overrides=inv.env_overrides, extra_env=extra_env)
+    # W8-LD-02: refuse a spent budget BEFORE any filesystem side effect or spawn.
+    timeout_s = _call_timeout(inv)
     # AC-02 — NEVER spawn with cwd=None (the pre-fix code passed `cwd=inv.cwd`, which was None for
     # every agent, so the child inherited the BACKEND directory and could open `.env`,
     # `data/secrets.json` and `data/deepseek_api_key.json`).  An invocation built by a hand-rolled
@@ -630,7 +773,7 @@ def invoke(
         gate = concurrency_gate()
         with gate:
             if spawn is not None:
-                stdout, code = spawn(argv, inv.stdin_text, env, inv.timeout_s)
+                stdout, code = spawn(argv, inv.stdin_text, env, timeout_s)
                 return InvokeResult(stdout, "", int(code), 0.0, inv.transport)
             started = time.monotonic()
             proc = subprocess.Popen(  # noqa: S603 - argv list, no shell
@@ -648,14 +791,19 @@ def invoke(
                 start_new_session=(os.name == "posix"),
             )
             try:
-                stdout, stderr = proc.communicate(input=inv.stdin_text, timeout=inv.timeout_s)
+                stdout, stderr = proc.communicate(input=inv.stdin_text, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc)
                 raise PolsiaError(
                     E_CLI_TIMEOUT,
-                    f"claude CLI exceeded {inv.timeout_s}s (killed; the in-flight turn is unfinished)",
+                    f"claude CLI exceeded {timeout_s}s (killed; the in-flight turn is unfinished)",
                     how_to_fix=ERROR_HINTS[E_CLI_TIMEOUT],
-                    context={"timeout_s": inv.timeout_s, "transport": inv.transport},
+                    context={
+                        "timeout_s": timeout_s,
+                        "ceiling_s": int(inv.timeout_s),
+                        "run_budget_seconds": inv.run_budget_seconds,
+                        "transport": inv.transport,
+                    },
                 ) from None
             return InvokeResult(
                 stdout or "", stderr or "", int(proc.returncode), time.monotonic() - started,
@@ -808,6 +956,8 @@ __all__ = [
     "ClaudeCLIError",
     "Invocation",
     "InvokeResult",
+    "MAX_BACKOFF_SECONDS",
+    "MIN_SETTLE_RESERVE_SECONDS",
     "SAFE_ENV_PASSTHROUGH",
     "SAFE_PERMISSION_MODES",
     "SIGTERM_EXIT_CODE",
@@ -825,9 +975,12 @@ __all__ = [
     "ensure_run_workspace",
     "invoke",
     "is_retryable_failure",
+    "ladder_backoff_total_seconds",
     "planned_run_workspace",
+    "run_wall_clock_budget",
     "run_with_retries",
     "safety_preflight",
     "secret_store_paths",
+    "settle_reserve_seconds",
     "workspace_refusal",
 ]

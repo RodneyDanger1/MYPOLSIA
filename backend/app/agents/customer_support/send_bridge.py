@@ -38,7 +38,7 @@ from app.agents.base_agent import _run_coroutine_sync  # the repo's own sync->as
 from app.agents.email_outreach.compliance_send import (
     PREFLIGHT_KEY as _OUTREACH_PREFLIGHT_KEY,
 )
-from app.services.email_compliance import send_compliant_email
+from app.services.email_compliance import current_send_time_resolver, send_compliant_email
 from app.services.query_helpers import db_refusal
 
 logger = logging.getLogger(__name__)
@@ -64,11 +64,15 @@ def send_cs_reply(
     retry blind.
     """
     preflight = (context or {}).get(PREFLIGHT_KEY)
+    # R13 (wave 9): the same per-send suppression resolver the outreach bridge captures — CS
+    # shares the key, the producer and the guarded sender, so it shares the re-verification too.
+    resolver = current_send_time_resolver()
     try:
         if isinstance(preflight, dict) and preflight:
             return _run_coroutine_sync(
                 send_compliant_email(
-                    None, to=to, subject=subject, body=body, preflight=preflight
+                    None, to=to, subject=subject, body=body, preflight=preflight,
+                    resolver=resolver,
                 )
             )
         return _run_coroutine_sync(_send_on_own_session(to=to, subject=subject, body=body))

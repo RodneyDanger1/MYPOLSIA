@@ -467,20 +467,23 @@ def test_a24_the_envelope_helper_matches_what_the_handlers_emit():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OPEN (W8-LD-03, filed as REQUESTS-W8 R3), MEASURED LIVE on the rebuilt stack: "
-        "GET /api/v1/tasks/9223372036854775808 answers 503 E_DB (a PostgreSQL int32-range "
-        "DBAPIError through query_helpers.db_refusal) instead of 422 E_VALIDATION — caller input "
-        "reported as a database outage — and the client message embeds the compiled statement "
-        "(`[SQL: SELECT tasks.id, …]`).  The SQLite fixture's OverflowError handler masks this "
-        "(422), which is why the wave-13 pin passes in unit tests and the live wire disagrees.  "
-        "Fix = classify a data/range error at the DB boundary as E_VALIDATION and redact the SQL "
-        "(app/services/query_helpers.py) — outside this seat's three-file territory."
-    ),
-)
 def test_a26_an_out_of_range_id_is_caller_input_not_a_db_outage():
+    """W8-LD-03, CLOSED in wave 9 (the strict xfail was removed when this row went green).
+
+    The defect (measured LIVE on the rebuilt wave-8 stack): `GET
+    /api/v1/tasks/9223372036854775808` answered 503 `E_DB` for a PostgreSQL int32-range
+    DBAPIError raised inside `query_helpers.db_refusal`, and the client message embedded the
+    compiled statement.  A wave-13 route-level pin passed because the SQLite fixture raises
+    `OverflowError` instead (handler 422), which is exactly why the live wire disagreed.
+
+    The fix is at the DB boundary (`db_refusal` now classifies a data/range failure as
+    `E_VALIDATION` 422 and strips the SQL from the wire text); this row drives the two shapes a
+    caller can produce — an out-of-range integer and a malformed date — plus the genuine-outage
+    control that must STILL be `E_DB`, so "classify caller input" cannot quietly turn every
+    database failure into a 422.
+    """
+    from sqlalchemy.exc import DataError
+
     from app.services.query_helpers import db_refusal
 
     class _AsyncpgStyleDataError(Exception):
@@ -498,6 +501,30 @@ def test_a26_an_out_of_range_id_is_caller_input_not_a_db_outage():
     assert "SELECT" not in refusal.message and "[SQL:" not in refusal.message, (
         "the client-facing message must never carry the server's compiled statement"
     )
+    assert "[SQL:" not in refusal.context.get("detail", ""), (
+        "the driver's parameter echo is part of the statement disclosure and must be redacted too"
+    )
+    assert "SELECT" not in refusal.context.get("detail", "")
+    # the driver's OWN sentence survives the redaction (an operator still learns the cause)
+    assert "data/range error" in refusal.message
+
+    # a SQLAlchemy-wrapped DataError (the real PostgreSQL shape: DBAPIError whose `orig` is the
+    # driver's data error) classifies the same way, without needing the message to say it.
+    wrapped = DataError(
+        "SELECT 1", {}, Exception("invalid input syntax for type integer: \"9223372036854775808\"")
+    )
+    assert db_refusal("task 9223372036854775808", wrapped).code == E_VALIDATION
+
+    # CONTROL: a genuine outage is still E_DB 503 — the SQL is redacted, the code is not moved.
+    outage = db_refusal(
+        "task 7",
+        ConnectionRefusedError(
+            "connection refused\n[SQL: SELECT tasks.id FROM tasks WHERE tasks.id = 7]"
+        ),
+    )
+    assert outage.code == E_DB, "a database that is down must still read as a database outage"
+    assert "[SQL:" not in outage.message and "SELECT" not in outage.message
+    assert "connection refused" in outage.message
 
 
 @pytest.mark.parametrize(
