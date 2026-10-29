@@ -1,7 +1,8 @@
 # SECRETS — what holds a credential, and how to rotate it
 
-Written by the SENTINEL lane (wave 5, 2026-10-28) after a live re-scan of the rebuilt stack. Every
-statement here is measured against the running deployment; the commands are the ones used.
+Written by the SENTINEL lane (wave 5, 2026-10-28); containment re-measured in wave 6 (2026-10-29)
+against the rebuilt wave-6 image. Every statement here is measured against the running deployment;
+the commands are the ones used.
 
 Two facts frame everything below:
 
@@ -18,7 +19,7 @@ Two facts frame everything below:
 
 Nothing in this file prints a secret value. Rotation steps use placeholders.
 
-## Inventory (live, 2026-10-28)
+## Inventory (live, re-measured 2026-10-29)
 
 | Secret | Where it lives | What it opens | Blast radius if leaked |
 |---|---|---|---|
@@ -26,16 +27,40 @@ Nothing in this file prints a secret value. Rotation steps use placeholders.
 | `APPROVAL_SECRET` | `.env` | mints/verifies approval tokens for gated (irreversible) actions | can mint an approval for any fingerprint it can compute → authorise one irreversible action per token |
 | `POSTGRES_PASSWORD` | `.env` + committed default in compose/config/.env.example | the database over the compose network | read/write every table, incl. the append-only audit ledger |
 | `DEEPSEEK_API_KEY` | `backend/data/deepseek_api_key.json` inside the `backend_data` volume (entered in Settings) + optional `.env` | paid model calls | spend on the owner's account |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `.env` | payment reads, webhook signature | read financial data / forge webhooks |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `.env`; the webhook secret ALSO has a leaked copy in `wave-v10/stripe-lab/listen.log` (W6-S1) | payment reads, webhook signature | read financial data / forge webhooks |
 | `RENDER_API_KEY`, `RENDER_SERVICE_ID` | `.env` (unset today) | live deploys of generated sites | deploy/replace the owner's sites |
 | `SENDGRID_API_KEY` | `.env` (unset today) | outbound email | send as the owner's domain |
 | `POLSIA_INBOUND_SECRET` | `.env` (blank = not configured) | the inbound-mail webhook | inject fake inbound email into the support inbox |
 | `WS` tickets | derived (HMAC of a domain-separated `API_KEY`), 30 s TTL, never stored | one activity socket | nothing after 30 s; cannot be turned back into the key |
 
-Containment status measured in wave 5: the DeepSeek key, `APPROVAL_SECRET`, both Stripe secrets and
-the API key appear **nowhere outside their own store** — not in logs, not in the export archive, not
-in any lane folder; `.env` is git-ignored (`.gitignore:36`). The two exposures that DO exist are the
-inlined key (design, above) and the committed Postgres default (above).
+Containment status measured in wave 6 (2026-10-29, wave-6 build live; 1,084 tracked files + the
+lane's 59,398 artefacts + 3 × 20,000 log lines + the 45 built chunks):
+
+* **Clean outside their own store:** `APPROVAL_SECRET`, the **current** `DEEPSEEK_API_KEY`,
+  `STRIPE_SECRET_KEY`, `SENDGRID_API_KEY`, `RENDER_API_KEY` — **0 hits** each.
+* **`API_KEY`** is the documented default `dev-key` **and** inlined in the served bundle
+  (`/_next/static/chunks/919-*.js`, HTTP 200, 8,907 B, verified again this wave). The chunk name is
+  build-specific: re-scan `/_next/static/chunks/*.js` after any frontend build. The default value
+  also appears in docs/tests/compose by design.
+* **`POSTGRES_PASSWORD`** is still the committed default (`polsia_password`), in compose/config/
+  `.env.example`/tests and copies — the known P3.
+* **`STRIPE_WEBHOOK_SECRET` is LEAKED to disk (wave-6 finding):** the live value (70 chars,
+  sha256_8 `ac7cab10`) appears verbatim in `wave-v10/stripe-lab/listen.log` — a git-ignored,
+  repo-local lab log (plus helper scripts beside it). Treat as leaked: rotate the webhook secret in
+  the Stripe dashboard, update `.env`, recreate `backend`/`celery_worker`, then delete the lab log.
+* **`backups/` (git-ignored, repo-local) is a secret+PII store (wave-6 finding):**
+  `backend_data.tgz` holds the **previous DeepSeek key** (35 chars, different from the live key) and
+  the ten **un-redacted legacy `contact.html` pages**; the three `polsia-*.sql` dumps hold the
+  owner's street/locality/legal name from before the profile correction. Nothing here is committed,
+  but a backup copied off-host carries them: revoke the old DeepSeek key at the provider if it is
+  still live, keep the archives encrypted, and never attach them to a receipt.
+* **Credential in a query string is written to the access logs.** `_redact_query_string`
+  (`app/api/v1/ws.py`) scrubs the WS route only; `GET /api/v1/sites?api_key=…` is refused with
+  `401 E_AUTH` but uvicorn and nginx still log the full query. Today the only value in those log
+  lines is the public default; after rotating, never put the new key in a URL (send `X-API-Key`).
+  This is a design gap filed for wave 7 (scrub the ASGI scope for every request, not only WS).
+* `.env` is git-ignored (`.gitignore:36`); the lane's redaction backup (`raw/w6/redaction-backup`)
+  is the byte-exact **owner-gated** restore source and must not be deleted with scratch.
 
 ## Rotate `API_KEY` (and keep the dashboard working)
 
@@ -52,8 +77,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 # 2. Rebuild the frontend (the key is inlined; an env change alone does nothing):
 docker compose build frontend
-docker compose up -d frontend backend worker
-#    (backend/worker also read API_KEY at boot; both restart to pick up .env)
+docker compose up -d frontend backend celery_worker
+#    (backend and celery_worker also read API_KEY at boot; both restart to pick up .env)
 
 # 3. Verify from the SERVER (no header):  GET /api/v1/health  -> 200  (unauthenticated by design)
 #    Verify with the NEW key:             GET /api/v1/artifacts -H "X-API-Key: <new>"  -> 200
@@ -67,7 +92,8 @@ docker compose up -d frontend backend worker
 #    * every outstanding ws ticket dies instantly (they are HMAC-derived from API_KEY) — harmless,
 #      they live 30 s;
 #    * the browser's open sockets reconnect and mint fresh tickets;
-#    * nothing else stores the API key.
+#    * nothing else stores the API key (the new frontend build inlines the new value; only old
+#      query-string log lines could still hold the OLD value — see W6-S3);
 ```
 
 **Do not** "fix" a mismatch by setting the frontend key back to the old value; that re-publishes the
@@ -92,7 +118,7 @@ docker compose exec postgres psql -U polsia -d polsia -c \
 
 # 2. .env: POSTGRES_PASSWORD=<new>   (DATABASE_URL is composed from it in docker-compose.yml)
 # 3. Recreate the services that read it:
-docker compose up -d --force-recreate backend worker
+docker compose up -d --force-recreate backend celery_worker
 # 4. Verify: /api/v1/ready -> 200 with checks.database = "ok"; alembic current shows 0018.
 # 5. Drop the committed default from docker-compose.yml / .env.example / app/config.py so a fresh
 #    clone cannot start with a known password (owner action: it also affects the backup sidecar,
@@ -105,7 +131,7 @@ database — do not do that to rotate.
 ## Rotate `APPROVAL_SECRET`
 
 ```bash
-# generate a new 64-hex value, put it in .env, `docker compose up -d --force-recreate backend worker`.
+# generate a new 64-hex value, put it in .env, `docker compose up -d --force-recreate backend celery_worker`.
 # Effect: every unspent approval token stops verifying (fail closed).  Parked tasks keep their
 # fingerprint and need a FRESH mint — that is the documented "one approval, one attempt" direction,
 # not a regression.  In-flight approvals are expected to be re-minted; there is no way to migrate
@@ -125,7 +151,8 @@ DeepSeek console first, then re-enter.
 * `.env` is git-ignored; `.env.example` carries placeholders only.
 * Secrets are read at runtime from env / the secret store; none is hard-coded in a route or an agent.
 * Refusals and errors carry the `E_*` code and the fix hint, never the credential; `_redact_query_string`
-  scrubs credential-bearing query pairs out of the ASGI scope before uvicorn can log them.
+  scrubs credential-bearing query pairs out of the **WS** ASGI scope before uvicorn can log them
+  (HTTP routes are not scrubbed — W6-S3; the key belongs in `X-API-Key`, never a URL).
 * The data export excludes the key store; the activity ledger records approvals by fingerprint and
   jti, never by token.
 
@@ -136,3 +163,6 @@ DeepSeek console first, then re-enter.
 | R-W4-S2 / W5 | `API_KEY` is the guessable default `dev-key` **and** inlined in the served bundle | P2 (design) | owner: rotate, then plan the BFF (wave 7) |
 | R-W4-S3 | committed `POSTGRES_PASSWORD` default in compose/config/.env.example | P3 | owner |
 | W5 | `POSTGRES_PASSWORD` is also quoted (name + value) in three lane folders' evidence under `polsia-work/`; not usable without network access | P4 (info) | owner/integrator: acceptance, not a runtime leak |
+| **W6-S1** | **live `STRIPE_WEBHOOK_SECRET` in `wave-v10/stripe-lab/listen.log`** (git-ignored, repo-local); helper scripts beside it | **P2 (leak)** | owner: rotate at Stripe first, update `.env`, recreate backend/celery_worker, delete the lab log |
+| **W6-S2** | `backups/backend_data.tgz` holds the **previous DeepSeek key** and the ten un-redacted legacy `contact.html` pages; `backups/polsia-*.sql` hold the pre-correction owner address/legal name | P2 (leak, offline) | owner: revoke the old DeepSeek key if still live, encrypt/rotate the archives, never publish them |
+| **W6-S3** | a credential in a **query string** is written verbatim to uvicorn/nginx access logs (the scrub covers the WS scope only) | P3 (design) | wave 7: scrub every request's ASGI scope; until then never put the key in a URL |

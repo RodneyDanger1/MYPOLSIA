@@ -50,20 +50,22 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 | **Capabilities** | `/capabilities` | *Live (V16)* — read-only map of every agent's real tools, action classes and channels (derived from the registry, never hand-copied); linked from Settings; `GET /api/v1/ops/capabilities` |
 | **API docs** | `/apidocs` | *V21* — the API's own **Swagger UI**, proxied by nginx to FastAPI's `/docs` (`/docs` itself stays with the Next app, which has no such page in this tree, so it answers 404). The schema is at `/openapi.json`. Explore/probe any route by hand: each protected operation shows an `X-API-Key` header field — use **Try it out**, paste the owner key, **Execute** (this app declares the key as a header parameter, not a security scheme, so there is no Authorize button). Auto-hidden (404) when `SANDBOX_MODE=false`. Needs the V21 nginx reload; `make smoke`'s `api-docs` check proves both URLs (USAGE §7.2) |
 
-### Current gate — HEAD `7b81f56` (wave 4, measured 2026-10-28)
+### Current gate — HEAD `01bbbf7` (wave 5, measured 2026-10-28)
 
 The per-version tables below are **historical receipts for the commit in their heading**, not the
 current tree's numbers. The current measured gate is:
 
 | Gate | Result | Evidence |
 |---|---|---|
-| Backend | **4,753 tests / 0 failed / 0 errors / 12 skipped** (`EXIT=0`) | `polsia-work/build/swarm-2026-10-28/raw/wave4-GATE.xml` |
-| Frontend (jest) | **140 suites / 1,231 tests passed** | `polsia-work/build/swarm-2026-10-28/raw/wave4-jest.log` |
-| ruff, both pins | clean (`backend/.venv` + `uvx ruff==0.8.4`) | `polsia-work/build/swarm-2026-10-28/WAVE4-RECEIPT.md` |
-| mypy | 191 files clean | same receipt |
+| Backend | **4,966 tests / 0 failed / 0 errors / 12 skipped** (`EXIT=0`) | `polsia-work/build/swarm-2026-10-28/raw/wave5-GATE.xml` |
+| Frontend (jest) | **143 suites / 1,246 tests passed** | `polsia-work/build/swarm-2026-10-28/raw/wave5-jest-final.log` |
+| ruff, both pins | clean (`backend/.venv` + `uvx ruff==0.8.4`) | `polsia-work/build/swarm-2026-10-28/WAVE5-RECEIPT.md` |
+| mypy | 193 files clean (`app/ celery_app/`) | same receipt |
 
 The backend count is read from the JUnit XML (never from the `-q` summary); the frontend count is
 the jest run's own `Test Suites:` / `Tests:` lines. A skip is reported as a skip, not a pass.
+The wave-5 gate ran on the frozen tree; the last wave-5 commit `01bbbf7` is test-only, and the
+wave-6 tree (its own additions included) is gated by the integrator, not by this block.
 
 ### V28 hardening sweep — measured 2026-10-19 (historical receipt)
 
