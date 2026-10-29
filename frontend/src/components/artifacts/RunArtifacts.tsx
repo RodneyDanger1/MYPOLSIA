@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import {
+  ARTIFACT_PATH_STYLE,
   type ArtifactSelection,
   bytesText,
   useArtifactContent,
@@ -31,6 +32,11 @@ import { Button, Card } from "@/components/ui";
  *     provenance, and can be DOWNLOADed byte-for-byte.
  *
  * It reads on mount and on its own Refresh only; no page poll drives it, and nothing here writes.
+ *
+ * F-35 (wave 5) pins the CASE: the file control, the preview header and the download notice print
+ * the server's path/filename with `ARTIFACT_PATH_STYLE` (`text-transform: none`, from the shared
+ * reader) — the `.ui-label` voice uppercased them, and an uppercased path 404s where the real one
+ * is 200.  The open/download requests always carried the DOM's exact path; now the screen agrees.
  */
 export function RunArtifacts({
   runId,
@@ -112,6 +118,7 @@ export function RunArtifacts({
                 <button
                   type="button"
                   className="ui-label text-link text-left hover:underline"
+                  style={ARTIFACT_PATH_STYLE}
                   data-testid={`run-artifact-file-${position}`}
                   title={`open ${file.path}`}
                   onClick={() => {
@@ -135,7 +142,13 @@ export function RunArtifacts({
         <div className="mt-2 border border-line bg-surface p-2" data-testid="run-artifact-preview">
           <div className="flex flex-wrap items-center gap-2">
             <p className="ui-label text-ink">
-              run {selection.runId} / {selection.path}
+              run {selection.runId} /{" "}
+              <span
+                style={ARTIFACT_PATH_STYLE}
+                data-testid="run-artifact-selection-path"
+              >
+                {selection.path}
+              </span>
             </p>
             <Button
               size="sm"
@@ -186,7 +199,11 @@ export function RunArtifacts({
           ) : null}
 
           {downloadNotice !== null ? (
-            <p className="ui-label mt-1 text-ink-muted" data-testid="run-artifact-download-notice">
+            <p
+              className="ui-label mt-1 text-ink-muted"
+              style={ARTIFACT_PATH_STYLE}
+              data-testid="run-artifact-download-notice"
+            >
               {downloadNotice}
             </p>
           ) : null}

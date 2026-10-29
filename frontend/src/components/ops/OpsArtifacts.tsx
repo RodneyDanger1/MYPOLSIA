@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 import {
+  ARTIFACT_PATH_STYLE,
   type ArtifactSelection,
   bytesText,
   useArtifactContent,
@@ -43,6 +44,10 @@ import { Button, Card, Chip } from "@/components/ui";
  * It reads its index on mount and on its own Refresh only (not on the page's poll tick): the
  * workspace walk is a disk scan and should not fan out every 15 s. No write/upload/delete exists:
  * `code_write` stays the only writer and `/ops` retention the only deleter.
+ *
+ * F-35 (wave 5): the path button, the preview header and the download notice print the server's
+ * exact path/name via `ARTIFACT_PATH_STYLE` from the shared reader — `ui-label`'s CSS uppercased
+ * them, and `BRAND/BRAND-ONE-PAGER.MD` 404s where `brand/brand-one-pager.md` is 200.
  */
 
 export function OpsArtifacts() {
@@ -194,6 +199,7 @@ export function OpsArtifacts() {
                               <button
                                 type="button"
                                 className="ui-label text-link text-left hover:underline"
+                                style={ARTIFACT_PATH_STYLE}
                                 data-testid={`ops-artifact-file-${run.run_id}-${position}`}
                                 title={`open ${file.path}`}
                                 onClick={() => {
@@ -231,7 +237,10 @@ export function OpsArtifacts() {
         <div className="mt-3 border border-line bg-surface p-2" data-testid="ops-artifact-preview">
           <div className="flex flex-wrap items-center gap-2">
             <p className="ui-label text-ink">
-              {openFile.runId} / {openFile.path}
+              {openFile.runId} /{" "}
+              <span style={ARTIFACT_PATH_STYLE} data-testid="ops-artifact-selection-path">
+                {openFile.path}
+              </span>
             </p>
             <Button size="sm" onClick={() => void download(openFile.runId, openFile.path)} data-testid="ops-artifact-download">
               Download
@@ -278,7 +287,11 @@ export function OpsArtifacts() {
           ) : null}
 
           {downloadNotice !== null ? (
-            <p className="ui-label mt-1 text-ink-muted" data-testid="ops-artifact-download-notice">
+            <p
+              className="ui-label mt-1 text-ink-muted"
+              style={ARTIFACT_PATH_STYLE}
+              data-testid="ops-artifact-download-notice"
+            >
               {downloadNotice}
             </p>
           ) : null}

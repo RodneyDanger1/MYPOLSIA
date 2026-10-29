@@ -11,6 +11,7 @@ import { NOT_MEASURED, absoluteStamp } from "./format";
 import { usdText } from "@/components/finance/format";
 
 import { DocumentsOverlay } from "./DocumentsOverlay";
+import { type ReportCycle, asReportCycle } from "./reportCycle";
 import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /**
@@ -40,21 +41,12 @@ type DailyReport = {
  * (`DashboardReportCycle`, `backend/app/schemas/report.py:82-145`). Every field is read from
  * committed rows (`activity_log.cycle_claimed`, `daily_reports.evening_summary`, the last named
  * skip) — the shape carries `scheduler_observable: false` plus the reason, because the API cannot
- * see the beat process. Declared locally because the shared api module does not carry it.
+ * see the beat process.
+ *
+ * F-37 (wave 5): the type and the defensive parse moved to `./reportCycle` — the Business panel
+ * now reads the same block for its "last completed report" row, and two local copies would be two
+ * dialects of one wire fact. This file keeps the state VOCABULARY it renders.
  */
-type ReportCycle = {
-  state: string;
-  state_reason: string | null;
-  last_claim_at: string | null;
-  last_claim_cycle: string | null;
-  last_claim_day: string | null;
-  last_evening_claim_day: string | null;
-  last_completed_report_date: string | null;
-  last_skip_reason: string | null;
-  claims_retained_since: string | null;
-  scheduler_observable: boolean;
-  scheduler_reason: string | null;
-};
 
 type CycleRead =
   | { kind: "loading" }
@@ -74,29 +66,6 @@ const CYCLE_HEADLINES: Record<string, string> = {
   report_missing: "The report cycle started and never finished — this is the broken signature",
   unknown: "The report cycle's state could not be determined",
 };
-
-function asReportCycle(summary: unknown): ReportCycle | null {
-  if (summary === null || typeof summary !== "object" || Array.isArray(summary)) return null;
-  const raw = (summary as { report_cycle?: unknown }).report_cycle;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const cycle = raw as Record<string, unknown>;
-  if (typeof cycle.state !== "string" || cycle.state.trim() === "") return null;
-  const text = (value: unknown): string | null =>
-    typeof value === "string" && value !== "" ? value : null;
-  return {
-    state: cycle.state,
-    state_reason: text(cycle.state_reason),
-    last_claim_at: text(cycle.last_claim_at),
-    last_claim_cycle: text(cycle.last_claim_cycle),
-    last_claim_day: text(cycle.last_claim_day),
-    last_evening_claim_day: text(cycle.last_evening_claim_day),
-    last_completed_report_date: text(cycle.last_completed_report_date),
-    last_skip_reason: text(cycle.last_skip_reason),
-    claims_retained_since: text(cycle.claims_retained_since),
-    scheduler_observable: cycle.scheduler_observable === true,
-    scheduler_reason: text(cycle.scheduler_reason),
-  };
-}
 
 /** The cash block's wire shape (plan §9 B2): money inputs are nullable-with-a-reason. Money here is
  *  DOLLARS, not cents — the house names every cents field `*_cents` (mrr_cents, amount_cents,

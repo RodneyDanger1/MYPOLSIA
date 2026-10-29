@@ -7,6 +7,7 @@ import { centsText, countText } from "@/components/finance/format";
 import { api, type DashboardSummary } from "@/lib/api";
 
 import { NOT_MEASURED, kpiText, moneyText, percentText } from "./format";
+import { type ReportCycle, asReportCycle } from "./reportCycle";
 import { PanelError, PanelSkeleton, readErrorText } from "./states";
 
 /** The planning view's margin template, as `GET /finance/planning` serves it (plan §9 B2). Typed
@@ -81,6 +82,34 @@ function ValueRow({
       </dd>
     </div>
   );
+}
+
+/**
+ * F-37 — WHAT "LAST REPORT" MEANS.  `last_report_date` is the newest `daily_reports.report_date`,
+ * and that row is created by the MORNING cycle (`save_morning_plan`); the report itself is written
+ * by the EVENING cycle (`save_evening_summary`).  The live row for 2026-10-20 carries a morning
+ * plan and no evening summary, so a bare "Last report" label claimed a written report that does not
+ * exist while the Daily Report panel beside it correctly said 2026-10-19.  The row is now labelled
+ * for what the wire actually is (a report ROW) and the panel states the cycle's
+ * `last_completed_report_date` beside it, naming both dates and the difference when they disagree.
+ * A server without the block says so; a cycle with no completed report says "never" — no date is
+ * invented either way.
+ */
+function lastReportNote(lastRow: string | null, cycle: ReportCycle | null): string {
+  if (cycle === null) {
+    return "This server did not serve a report-cycle block, so the last completed report cannot be named — the newest report row above is not proof that a report was written.";
+  }
+  const completed = cycle.last_completed_report_date;
+  if (completed === null) {
+    return "No completed report (a report with an evening summary) is recorded yet.";
+  }
+  if (lastRow === null) {
+    return `The report cycle names a completed report on ${completed}, but no report row was read — the two records disagree.`;
+  }
+  if (lastRow === completed) {
+    return `The newest report row is also the last completed report (${completed}).`;
+  }
+  return `The newest report row (${lastRow}) is not a completed report — the last completed one is ${completed}. A morning plan alone is a row, not a written report.`;
 }
 
 /**
@@ -211,14 +240,27 @@ function BusinessRows({
 
   // The COUNT rows are measured from the task ledger — the labels stay bare because the values
   // really are readings (an absent count is the em dash).  The KPI bag moved out of this list.
-  const rows: Array<{ label: string; value: string | number }> = [
+  //
+  // F-37: the report rows are TWO facts and are labelled as such.  `last_report_date` is the newest
+  // `daily_reports` ROW (written by the morning cycle); `report_cycle.last_completed_report_date`
+  // is the newest report with an evening summary — the figure the Daily Report panel shows.  A bare
+  // "last report" here claimed a written report for a morning-plan-only row (live: 2026-10-20 vs
+  // 2026-10-19), so the row was renamed and the cycle's completed date is stated beside it.
+  const cycle = asReportCycle(summary);
+  const lastRow = summary.last_report_date ?? null;
+  const completedReport =
+    cycle === null
+      ? "not declared by this server"
+      : (cycle.last_completed_report_date ?? "never — no completed report recorded");
+  const rows: Array<{ label: string; value: string | number; testId?: string }> = [
     { label: "Tasks today", value: summary.tasks_today_total },
     { label: "Completed", value: summary.tasks_today_completed },
     { label: "Failed", value: summary.tasks_today_failed },
     { label: "Active agents", value: summary.active_agents.length },
     // `last_report_date` is the max report date the summary read found; a null means no report row
     // exists at all, which is a fact to state — not a dash to hide behind.
-    { label: "Last report", value: summary.last_report_date ?? "no report yet" },
+    { label: "Newest report row", value: summary.last_report_date ?? "no report yet", testId: "last-report-row" },
+    { label: "Last completed report", value: completedReport, testId: "last-completed-report" },
   ];
 
   return (
@@ -227,7 +269,9 @@ function BusinessRows({
         {rows.map((row) => (
           <div key={row.label} className="flex items-baseline justify-between gap-3">
             <dt className="ui-label text-ink-muted">{row.label}</dt>
-            <dd className="ui-label text-ink">{row.value}</dd>
+            <dd className="ui-label text-ink" data-testid={row.testId}>
+              {row.value}
+            </dd>
           </div>
         ))}
         {/* V9 v1.1 — the GROSS MARGIN row. Its input is the planning view's margin template
@@ -241,6 +285,9 @@ function BusinessRows({
           </dd>
         </div>
       </dl>
+      <p className="mt-1 text-xs text-ink-muted" data-testid="last-report-note">
+        {lastReportNote(lastRow, cycle)}
+      </p>
       {margin.error !== null ? (
         <p className="mt-2 text-xs text-ink-muted" data-testid="margin-read-error">
           Gross margin could not be read: {margin.error}

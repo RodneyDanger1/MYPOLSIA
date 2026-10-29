@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 
 import { API_KEY, API_URL, ApiError, api } from "@/lib/api";
 
@@ -31,7 +31,26 @@ import { API_KEY, API_URL, ApiError, api } from "@/lib/api";
  * index is a disk walk; the run list is one `stat`-bounded walk of one directory.  No write,
  * upload or delete exists here: `code_write` stays the only writer and `/ops` retention the only
  * deleter.
+ *
+ * F-35 (wave 5) — A PATH IS NOT A LABEL.  Every surface prints an artifact path inside the
+ * product's micro-label voice (`.ui-label`), whose CSS is `text-transform: uppercase`.  A path is
+ * case-sensitive on this server (`brand/brand-one-pager.md` is 200; the uppercased rendering
+ * `BRAND/BRAND-ONE-PAGER.MD` is 404 `E_NOT_FOUND`), so a reader copying the screen was copying a
+ * name that cannot be fetched.  The surfaces now print every path (and the saved file name in the
+ * download notice) with `ARTIFACT_PATH_STYLE`, applied INLINE: `text-transform: none` on the node
+ * itself beats the class no matter how stylesheets are layered, and jsdom can assert the computed
+ * value, so the rule is testable rather than a comment.  There is ONE definition here because all
+ * three surfaces read this module — a second copy could drift back to uppercase.
  */
+
+/**
+ * The inline typography fix for any text that must print a server path VERBATIM (F-35).
+ *
+ * `text-transform` is inherited and inline declarations outrank every stylesheet rule without
+ * `!important`, so this is the one guarantee a CSS-class re-order cannot break.  Surfaces keep
+ * `.ui-label` for the mono/size/letter-spacing voice; only the case transform is neutralised.
+ */
+export const ARTIFACT_PATH_STYLE: CSSProperties = { textTransform: "none" };
 
 export type RunSummary = {
   run_id: string;

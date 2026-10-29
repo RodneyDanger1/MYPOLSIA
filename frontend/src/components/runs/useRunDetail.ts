@@ -26,6 +26,13 @@ import { api } from "@/lib/api";
  *
  * Reads go through the shared `api.get` + `errorText` (the `useFinanceRead` idiom) so the failure
  * vocabulary cannot fork.  A 2xx body that is not a run is a BROKEN READ and is named as one.
+ *
+ * F-36 (wave 5) — THE INTERRUPTION MARKERS.  `GET /runs/{id}` also carries SV-W4-04's F-26 fields
+ * `cost_scope` (`"unmeasured"` / `"in_flight_partial"`) and `interrupted_reason` (`"E_RUN_STALE"`),
+ * both `null` when the row carries no interruption marker.  Until wave 5 no screen read them, so a
+ * sweep-closed run's `COST —` was indistinguishable from "not measured yet".  They are read with
+ * the same junk rule as every other field: a missing key (a pre-SV-W4-04 server), a non-string or
+ * an empty string reads `null` — never coerced into a marker this build would then explain.
  */
 
 export type RunDetailRow = RunsRow & {
@@ -35,6 +42,10 @@ export type RunDetailRow = RunsRow & {
   is_error: boolean | null;
   /** Stored `agent_runs.tools_used` (V22); `null` = never recorded, `[]` = recorded and none ran. */
   tools_used: string[] | null;
+  /** F-26 marker (SV-W4-04): what the interrupted run's cost covers; absent/`null` = no marker. */
+  cost_scope?: string | null;
+  /** F-26 marker: the coded interruption reason (e.g. `E_RUN_STALE`); absent/`null` = none. */
+  interrupted_reason?: string | null;
 };
 
 export type RunDetailRead = {
@@ -53,6 +64,11 @@ function asCount(value: unknown): number | null {
 /** A stored flag: a real boolean, or `null`. `"no"`/0/1 are not booleans. */
 function asFlag(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+/** A stored marker string (F-36): a non-empty string, or `null`.  Numbers/arrays/`""` are junk. */
+function asMarker(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
 }
 
 /**
@@ -104,6 +120,8 @@ export function useRunDetail(runId: number | null, reloadKey: number): RunDetail
           num_turns: asCount(record.num_turns),
           is_error: asFlag(record.is_error),
           tools_used: asToolsUsed(record.tools_used),
+          cost_scope: asMarker(record.cost_scope),
+          interrupted_reason: asMarker(record.interrupted_reason),
         });
       })
       .catch((e: unknown) => {
