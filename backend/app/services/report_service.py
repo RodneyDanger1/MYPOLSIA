@@ -307,6 +307,7 @@ class DayDigest:
     cancelled: int
     requeued: int
     reaped_approvals: int
+    ended: int = 0
     reason: str | None = None
 
     def headline(self) -> str:
@@ -325,6 +326,8 @@ class DayDigest:
         ]
         if self.requeued:
             parts.append(f"{self.requeued} stalled claim(s) requeued")
+        if self.ended:
+            parts.append(f"{self.ended} stalled claim(s) ended at the attempt bound")
         if self.reaped_approvals:
             parts.append(f"{self.reaped_approvals} parked approval(s) reaped")
         return ", ".join(parts) + " today"
@@ -340,6 +343,7 @@ class DayDigest:
             "failed": [row.as_dict() for row in self.failed],
             "cancelled": self.cancelled,
             "requeued": self.requeued,
+            "ended": self.ended,
             "reaped_approvals": self.reaped_approvals,
             "headline": self.headline(),
         }
@@ -420,15 +424,18 @@ async def build_day_digest(
             .group_by(Task.status),
             what=f"day digest created counts {day}",
         )
+        # W9/R1: `stale_claims_requeued` is written for BOTH outcomes (requeued and terminal
+        # ended).  Grouping on the action alone made the headline claim "N requeued" for rows the
+        # ladder ENDED.  Read the detail and split the two; a legacy row with no outcome stays in
+        # the requeued count (the pre-W9 writer's only meaning) and is named in the comment.
         activity = await fetch_rows(
             db,
-            select(ActivityLog.action, func.count())
+            select(ActivityLog.action, ActivityLog.detail)
             .where(
                 ActivityLog.created_at >= start,
                 ActivityLog.created_at < end,
                 ActivityLog.action.in_(("stale_claims_requeued", "stale_approvals_reaped")),
-            )
-            .group_by(ActivityLog.action),
+            ),
             what=f"day digest recovery counts {day}",
         )
     except PolsiaError as exc:
@@ -463,7 +470,19 @@ async def build_day_digest(
         )
     completed = [row for row in digest_rows if row.status == "completed"]
     failed = [row for row in digest_rows if row.status == "failed"]
-    recovery = {str(action): int(count) for action, count in activity}
+    recovery = {"stale_approvals_reaped": 0}
+    requeued_count = 0
+    ended_count = 0
+    for action, detail in activity:
+        if str(action) == "stale_approvals_reaped":
+            recovery["stale_approvals_reaped"] += 1
+            continue
+        outcome = (detail or {}).get("outcome") if isinstance(detail, dict) else None
+        if outcome == "failed":
+            ended_count += 1
+        else:
+            # "requeued" and legacy rows without an outcome (the pre-W9 writer had only this meaning)
+            requeued_count += 1
     return DayDigest(
         day=day,
         status="measured" if (digest_rows or cancelled) else "empty",
@@ -471,7 +490,8 @@ async def build_day_digest(
         completed=completed,
         failed=failed,
         cancelled=cancelled,
-        requeued=recovery.get("stale_claims_requeued", 0),
+        requeued=requeued_count,
+        ended=ended_count,
         reaped_approvals=recovery.get("stale_approvals_reaped", 0),
     )
 

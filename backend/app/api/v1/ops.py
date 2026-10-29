@@ -216,6 +216,13 @@ async def _agent_quality_rows(db: AsyncSession) -> list[dict[str, Any]]:
     for agent_type, last_failure_at in failure_rows:
         stats.setdefault(str(agent_type), _blank_stats())["last_failure_at"] = last_failure_at
 
+    # W9 (capability audit II): the quality surface is the FLEET.  A labelled drill run
+    # (`taskmaster_drill`, a generic probe type) must not appear as a peer agent, and the
+    # weekly watch must not order it worst-first.  Keep exactly the fleet the factory knows
+    # plus the planner, which runs through the planner service rather than AGENT_MAP.
+    fleet = set(AGENT_MAP) | {"company_planner"}
+    stats = {agent_type: entry for agent_type, entry in stats.items() if agent_type in fleet}
+
     rows: list[dict[str, Any]] = []
     for agent_type in sorted(stats):
         entry = stats[agent_type]

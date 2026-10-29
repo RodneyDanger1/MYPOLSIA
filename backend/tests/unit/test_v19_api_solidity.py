@@ -233,12 +233,15 @@ async def test_runs_csv_datetimes_match_the_list_wire(api_client, async_db_sessi
 
 async def test_ops_agent_quality_last_failure_is_utc_with_an_offset(api_client, async_db_session):
     """The one hand-rolled `.isoformat()` in the ops read must carry the offset too."""
-    async_db_session.add(AgentRun(task_id=None, agent_type="social", run_type="task", status="failed",
+    # W9 (ops agent-quality fleet filter): seed a REAL fleet agent. OLD "social" is not in
+    # AGENT_MAP, so that row was admitted only by setdefault and no longer appears — the
+    # surface is the fleet; no assertion is weakened.
+    async_db_session.add(AgentRun(task_id=None, agent_type="social_media", run_type="task", status="failed",
                                  started_at=STAMP, ended_at=STAMP))
     await async_db_session.commit()
     async_db_session.expire_all()
     body = (await api_client.get("/api/v1/ops/agent-quality", headers=HEADERS)).json()
-    entry = next(row for row in body["agents"] if row["agent_type"] == "social")
+    entry = next(row for row in body["agents"] if row["agent_type"] == "social_media")
     _assert_offset(entry["last_failure_at"], "agents[social].last_failure_at")
 
 
