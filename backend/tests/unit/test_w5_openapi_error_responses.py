@@ -169,8 +169,37 @@ def test_the_documented_operation_specific_exceptions(operations: dict) -> None:
     )
 
 
-def test_the_validation_error_keeps_the_framework_schema(operations: dict) -> None:
-    """422 is the framework's `{"detail": [...]}` array — not the envelope, and still declared."""
+def test_the_validation_error_declares_both_documented_shapes(operations: dict) -> None:
+    """REPAIRED PIN (wave 8 / SV-W6-02): 422 has TWO bodies on the SAME operation, so the schema
+    declares both.
+
+    Wave 7 measured the contradiction live (`systems-validator/raw/w7/live-w7-422-shapes.txt`):
+    `POST /api/v1/tasks` answers `{"detail": [...]}` for a malformed body AND the refusal envelope
+    (`E_AGENT_UNKNOWN`) for a bad `agent_type` — one status, two shapes.  The assertion below used to
+    pin the array as the operation's ONLY shape: right about the wire it looked at, wrong about the
+    contract, because the route's own coded `HTTPException` and the `E_VALIDATION` raises in
+    `app.services.task_service` (a direct import) reach `main.coded_http_exception_handler` /
+    `main.polsia_error_handler`, both of which answer 422 with the envelope.
+
+      old arithmetic: 111 x 422 = 111 x $ref HTTPValidationError                  (array only)
+      new arithmetic: 111 x 422 = 109 x anyOf(HTTPValidationError, PolsiaErrorEnvelope)  [wave-8 ruling
+    SV-W8-01: anyOf — HTTPValidationError has no `required`, so an envelope body validates
+    under BOTH branches and oneOf would reject the real coded 422]
+                                +   2 x $ref HTTPValidationError                  (pricing, ws/ticket)
+
+    `POST /api/v1/tasks` is one of the 109, so its body is the oneOf.  The array is still DECLARED
+    (as the first branch, and alone on the two operations that cannot answer the envelope) — this
+    is not a narrowing; the runtime array body is still pinned by
+    `tests/unit/test_v14_money_fixes.py::test_ordinary_validation_errors_keep_the_uncoded_default_shape`
+    and `tests/unit/api/test_w8_error_envelopes.py::test_a08_…`.
+    """
     op = operations[("POST", "/api/v1/tasks")]
     schema = op["responses"]["422"]["content"]["application/json"]["schema"]
-    assert schema["$ref"].endswith("HTTPValidationError"), schema
+    assert [part.get("$ref") for part in schema["anyOf"]] == [
+        "#/components/schemas/HTTPValidationError",
+        "#/components/schemas/PolsiaErrorEnvelope",
+    ], schema
+    # the two operations with no reachable coded refusal keep the framework array ALONE
+    for target in (("GET", "/api/v1/pricing"), ("POST", "/api/v1/ws/ticket")):
+        array = operations[target]["responses"]["422"]["content"]["application/json"]["schema"]
+        assert array["$ref"].endswith("HTTPValidationError"), (target, array)

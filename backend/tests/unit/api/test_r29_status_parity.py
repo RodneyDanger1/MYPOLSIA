@@ -12,7 +12,7 @@ refusal, two different wires.
 
 Pinned here, through the REAL shipped app (`api_client` → ASGITransport → the request middleware +
 both exception handlers), for the nine codes plus fourteen controls and one deliberately-unmapped
-code (`E_DEEPSEEK_KEY`):
+code (`E_INTERNAL`):
 
   * pre-route vs in-route → identical status, identical full header set (modulo the per-request
     timing measurement), identical envelope — and the status equals the documented canonical value,
@@ -57,8 +57,11 @@ from app.core.errors import (
     E_CONFIG,
     E_DB,
     E_DEEPSEEK_KEY,
+    # W8-LD-01 (wave 8): E_DEEPSEEK_KEY is a MAPPED 503 now (operator-fixable configuration),
+    # so the parity matrix treats it as a mapped control; E_INTERNAL stays the unmapped one.
     E_EGRESS_BLOCKED,
     E_INTEGRATION,
+    E_INTERNAL,
     E_METHOD_NOT_ALLOWED,
     E_NOT_FOUND,
     E_PHONE_UNAVAILABLE,
@@ -117,9 +120,9 @@ CONTROLS = [
     E_METHOD_NOT_ALLOWED,
 ]
 
-#: `E_DEEPSEEK_KEY` is deliberately unmapped in BOTH tables (it refuses inside the agent runtime,
+#: `E_INTERNAL` is deliberately unmapped in BOTH tables (it refuses inside the runner,
 #: not at an HTTP boundary today) — it must still be parity-consistent: 500 + code header, both paths.
-MATRIX_CODES = DIVERGING + CONTROLS + [E_DEEPSEEK_KEY]
+MATRIX_CODES = DIVERGING + CONTROLS + [E_INTERNAL]
 
 #: The exact canonical mapping, pinned as a literal: a code added to (or removed from) either table
 #: without updating this census fails `test_the_status_tables_agree_exactly_and_match_the_census`.
@@ -159,6 +162,7 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     # wave A3 (§4.15/F-27): the egress floor refused a private/loopback/link-local/RFC 6598
     # address or a non-web port — the caller asked for it, so 403, never a 5xx.
     E_EGRESS_BLOCKED: 403,
+    E_DEEPSEEK_KEY: 503,  # W8-LD-01: configuration, not an internal fault
 }
 #: The census is EXACTLY the 26 rows above (`test_the_status_tables_agree_exactly_and_match_the_census`).
 
@@ -263,8 +267,8 @@ def test_the_status_tables_agree_exactly_and_match_the_census():
 
 
 def test_unmapped_codes_still_fall_back_to_500_on_both_helpers():
-    """An unmapped code is a 500 on BOTH paths — one rule, not two (E_DEEPSEEK_KEY today)."""
-    for code in (E_DEEPSEEK_KEY, "E_NOT_A_CODE"):
+    """An unmapped code is a 500 on BOTH paths — one rule, not two (E_INTERNAL today)."""
+    for code in (E_INTERNAL, "E_NOT_A_CODE"):
         assert code not in errors.HTTP_STATUS_BY_CODE, f"{code} unexpectedly mapped"
         assert errors.http_status_for(code) == 500 == deps.refusal_status(code)
 

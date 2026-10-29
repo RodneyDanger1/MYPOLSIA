@@ -210,6 +210,7 @@ HTTP_STATUS_BY_CODE: dict[str, int] = {
     E_DB: 503,            # database unavailable / unreadable — same class as E_REDIS
     E_STORAGE: 503,       # filesystem or secret-store failure — same class
     E_CLI_MISSING: 503,   # the agent runtime cannot take work until the CLI exists
+    E_DEEPSEEK_KEY: 503,  # W8-LD-01: operator-fixable configuration — 503, never an unmapped 500
     E_CLI_TIMEOUT: 504,   # CLI exceeded its deadline — the gateway-timeout analogue
     E_CLI_EXIT: 502,      # CLI exited non-zero — an upstream-gateway fault
     E_CLI_JSON: 502,      # CLI output was not the documented envelope — same upstream class

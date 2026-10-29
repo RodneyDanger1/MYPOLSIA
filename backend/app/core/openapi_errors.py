@@ -49,10 +49,13 @@ DOCUMENTED EXCEPTIONS (pinned by `tests/unit/test_w5_openapi_error_responses.py`
   * `DELETE /api/v1/data` — 403 `E_POLICY_DENIED` (the approval-token gate in `data.py`).
   * `POST /api/v1/tasks/{task_id}/run`, `PATCH /api/v1/tasks/{task_id}/status` — 409
     (`E_TASK_NOT_RUNNABLE`, `tasks.py`).
-  * The 422 validation body keeps the framework's `{"detail": [...]}` shape (auto-declared by
-    FastAPI; `main.py` deliberately preserves it) — it is not the refusal envelope, so it is not
-    re-declared here.  A CODED 422 (E_VALIDATION through `refusal_guard`) is a DIFFERENT body and
-    is named as a residual finding (SV-W6-02): the schema's 422 `$ref` is the framework model only.
+  * 422 has TWO wire shapes and is declared as such (SV-W6-02, executed in wave 8 — the
+    `CODED_422_OPERATIONS` section below).  On the 109 operations whose handler path can reach a
+    422-mapped named refusal (`E_VALIDATION` / `E_AGENT_UNKNOWN` -> `errors.HTTP_STATUS_BY_CODE`)
+    the body is `anyOf(HTTPValidationError, PolsiaErrorEnvelope)`; on the two that cannot
+    (`GET /api/v1/pricing`, `POST /api/v1/ws/ticket`) it keeps FastAPI's automatic
+    `$ref HTTPValidationError` array.  Runtime is untouched: both shapes are produced by exception
+    handlers that never read this schema.
 
 DOMAIN STATUSES (SV-W5-01, wave 6) — DECLARED FROM RAISE SITES, NOT GUESSED
 -------------------------------------------------------------------------
@@ -90,6 +93,61 @@ an operation only when a raise site is reachable from that operation's handler.
     sends (provider refusal), the deploy (Render) and `GET /attachments/{id}` (a vanished blob).
     `E_BALANCE` is NOT a 402 anywhere: it is an unlisted tool-level code (500), raised only inside
     the research-fetch/deepseek tool seam, so no operation declares it.
+
+THE 422 DECLARATION (SV-W6-02, ACCEPTED BY THE LEAD IN WAVE 7 AND EXECUTED IN WAVE 8)
+-------------------------------------------------------------------------------------
+Measured live in wave 7 (`systems-validator/raw/w7/live-w7-422-shapes.txt`): ONE status, TWO bodies,
+on the SAME operation.  `GET /api/v1/support/inbox?status=bogus` answers the refusal envelope
+(`E_VALIDATION`, `X-Polsia-Error-Code: E_VALIDATION`) while `GET /api/v1/support/inbox?limit=0`
+answers FastAPI's `{"detail": [...]}` array.  The envelope comes from `main.polsia_error_handler`
+(via `HTTP_STATUS_BY_CODE[E_VALIDATION] == 422`) and from `main.coded_http_exception_handler`; the
+array comes from the `RequestValidationError` path.  Declaring 422 as the array alone was therefore
+an untrue contract on every operation that can also reach a named refusal.
+
+The set below is a CENSUS, not a wish-list.  Wave-8 re-measured it on the current tree
+(`systems-validator/raw/w8/coded422_census_w8.py` -> `coded422-census-w8.json`):
+
+  operations 114 · declare_422 111 · coded-422 reachable 109 · framework-array only 2
+
+Method (direct-import over-approximation, and deliberately conservative): an operation is CODED when
+the module that DEFINES the handler, or one of its direct `app.*` imports (module-level
+`import`/`from … import`, no dynamic imports), raises `E_VALIDATION` / `E_AGENT_UNKNOWN` through
+`PolsiaError(...)` / `named_refusal(...)` / `raise`.  Two facts keep the set defensible:
+
+  * the two exclusions are exact in the STRONG direction: `GET /api/v1/pricing` and
+    `POST /api/v1/ws/ticket` have NO 422-mapped raise site anywhere in their transitive `app.*`
+    import closure either (their only 422 is the framework's own; their refusals are `E_CONFIG`
+    503 and `E_RATE_LIMITED` 429);
+  * the transitive closure over `app.*` yields the SAME 109 on this tree — the direct-import rule
+    under-approximates nothing here.
+
+`declarations_for` looks the set up PER METHOD (`any`), not through the single `target` key the rest
+of the module uses, because a route object can serve several operations that share ONE `responses`
+dict.  Today all 18 multi-method paths are uniformly coded, so the distinction cannot change a
+declaration; a future mixed path is unrepresentable at the route level and
+`tests/unit/test_w8_coded_422_openapi.py` pins the uniformity so it cannot arrive silently.  The
+`anyOf` is attached with no `model` (the module already relies on that for the webhook 400): the
+entry lands verbatim, and FastAPI's automatic 422 is suppressed because the status is already in
+`operation["responses"]` (fastapi 0.115.6, `openapi/utils.py:353-411`).
+
+AMENDED BY RULING ON SV-W8-01 (wave 8): the accepted `oneOf` was measured WRONG here
+------------------------------------------------------------------------------------------------
+`HTTPValidationError` is FastAPI's own component and declares NO `required`, so EVERY JSON object
+validates against it.  The envelope body therefore validates against BOTH branches, and `oneOf` means
+EXACTLY ONE — so a strict validator rejects two of the three bodies this app really sends (the
+envelope, and the envelope+detail non-finite body).  Measured with `jsonschema==4.23.0` against the
+bodies captured from the running ASGI app (`raw/w8/prove-422.json`, `raw/w8/oneOf.json`):
+
+  oneOf: array body VALID · envelope body INVALID ("valid under each of …") · non-finite body INVALID
+  anyOf: all three bodies VALID.  RULING (Lead, 2026-10-29): the intent is "one of these possible
+  shapes" — a UNION, not disjointness — so this module ships `anyOf`; the two array-only
+  operations keep `$ref`.
+  anyOf: all three VALID
+
+The document is still strictly more truthful than the array-only declaration it replaces, and the
+description below tells a client how to discriminate.  `anyOf` is the semantically correct combinator;
+the Lead accepted `oneOf` in wave 7 before this measurement, so changing it is the Lead's call, not
+this module's (see `REPORT-W8.md` SV-W8-01 for the one-word diff and the evidence).
 """
 from __future__ import annotations
 
@@ -185,6 +243,166 @@ SHARED_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
         "E_CLI_TIMEOUT — the model/runtime step exceeded its deadline; the attempt may still be "
         "unwinding server-side, so a retry costs the timeout again"
     ),
+}
+
+#: ── 422: ONE status, TWO bodies (SV-W6-02 — accepted by the Lead in wave 7, executed in wave 8) ──
+#: The operations whose handler path can reach a 422-mapped NAMED refusal.  `E_VALIDATION` and
+#: `E_AGENT_UNKNOWN` are the only codes `errors.HTTP_STATUS_BY_CODE` maps to 422, and both reach the
+#: wire through `main.polsia_error_handler` (a raised `PolsiaError`) or
+#: `main.coded_http_exception_handler` (a coded `HTTPException` detail -> the same envelope).  Those
+#: operations can answer the refusal envelope on 422, so the declaration must say so.
+#:
+#: Census (wave 8, re-measured on this tree — `systems-validator/raw/w8/coded422_census_w8.py`,
+#: `coded422-census-w8.json`):  114 operations · 111 declare 422 · **109 coded (this set)** ·
+#: 2 array-only.  The two absent operations are deliberate:
+#:   GET /api/v1/pricing, POST /api/v1/ws/ticket
+#: — neither has a 422-mapped raise site in the handler module, in its direct `app.*` imports, or
+#: anywhere in its transitive `app.*` closure (their refusals are `E_CONFIG` 503 and
+#: `E_RATE_LIMITED` 429), so they keep FastAPI's automatic `$ref HTTPValidationError` array.
+#:
+#: Method: the module that DEFINES the handler + its direct `app.*` imports (module docstring,
+#: "THE 422 DECLARATION").  THE SET MOVES ONLY WITH A CENSUS: a new route, or a new `E_VALIDATION`
+#: raise site in a module some handler imports, must be added here deliberately —
+#: `tests/unit/test_w8_coded_422_openapi.py` recomputes the census on every run and fails until the
+#: set, the generated schema and this comment agree.  Order here is (path, method) so the methods of
+#: one path sit together and a mixed path is visible.
+CODED_422_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/api/v1/ads/campaigns"),
+        ("GET", "/api/v1/ads/campaigns/{campaign_id}/metrics"),
+        ("GET", "/api/v1/agents/status"),
+        ("POST", "/api/v1/agents/{agent_type}/trigger"),
+        ("POST", "/api/v1/approvals"),
+        ("GET", "/api/v1/artifacts"),
+        ("GET", "/api/v1/artifacts/{run_id}"),
+        ("GET", "/api/v1/artifacts/{run_id}/content"),
+        ("GET", "/api/v1/artifacts/{run_id}/download"),
+        ("DELETE", "/api/v1/attachments/{attachment_id}"),
+        ("GET", "/api/v1/attachments/{attachment_id}"),
+        ("DELETE", "/api/v1/auto-mode"),
+        ("GET", "/api/v1/auto-mode"),
+        ("POST", "/api/v1/auto-mode"),
+        ("GET", "/api/v1/channels/caps"),
+        ("GET", "/api/v1/chat"),
+        ("POST", "/api/v1/chat"),
+        ("POST", "/api/v1/chat/confirm"),
+        ("GET", "/api/v1/config"),
+        ("PUT", "/api/v1/config"),
+        ("DELETE", "/api/v1/config/deepseek-key"),
+        ("GET", "/api/v1/config/deepseek-key"),
+        ("PUT", "/api/v1/config/deepseek-key"),
+        ("POST", "/api/v1/config/deepseek-key/verify"),
+        ("GET", "/api/v1/config/phone"),
+        ("GET", "/api/v1/dashboard/activity"),
+        ("GET", "/api/v1/dashboard/reports"),
+        ("GET", "/api/v1/dashboard/reports/daily"),
+        ("GET", "/api/v1/dashboard/summary"),
+        ("DELETE", "/api/v1/data"),
+        ("GET", "/api/v1/data/export"),
+        ("GET", "/api/v1/economics/context"),
+        ("GET", "/api/v1/economics/convert"),
+        ("GET", "/api/v1/finance/events"),
+        ("GET", "/api/v1/finance/expenses"),
+        ("GET", "/api/v1/finance/planning"),
+        ("GET", "/api/v1/finance/revenue"),
+        ("GET", "/api/v1/finance/summary"),
+        ("GET", "/api/v1/integrations"),
+        ("DELETE", "/api/v1/integrations/{provider}"),
+        ("GET", "/api/v1/integrations/{provider}"),
+        ("PUT", "/api/v1/integrations/{provider}"),
+        ("POST", "/api/v1/integrations/{provider}/test"),
+        ("GET", "/api/v1/invoices"),
+        ("POST", "/api/v1/invoices"),
+        ("GET", "/api/v1/invoices/{invoice_id}"),
+        ("POST", "/api/v1/invoices/{invoice_id}/send"),
+        ("POST", "/api/v1/invoices/{invoice_id}/void"),
+        ("GET", "/api/v1/memory"),
+        ("POST", "/api/v1/memory"),
+        ("DELETE", "/api/v1/memory/{memory_id}"),
+        ("GET", "/api/v1/notifications"),
+        ("GET", "/api/v1/ops/activity-publish"),
+        ("GET", "/api/v1/ops/agent-quality"),
+        ("GET", "/api/v1/ops/capabilities"),
+        ("POST", "/api/v1/ops/events/reset"),
+        ("GET", "/api/v1/ops/events/stats"),
+        ("GET", "/api/v1/ops/run-workspace-cleanup"),
+        ("POST", "/api/v1/ops/run-workspace-cleanup"),
+        ("GET", "/api/v1/ops/sandbox"),
+        ("GET", "/api/v1/outreach/prospects"),
+        ("GET", "/api/v1/outreach/unsubscribe"),
+        ("GET", "/api/v1/phone/calls"),
+        ("GET", "/api/v1/phone/codes"),
+        ("GET", "/api/v1/phone/export"),
+        ("GET", "/api/v1/phone/media"),
+        ("GET", "/api/v1/phone/media/{part_id}"),
+        ("GET", "/api/v1/phone/messages"),
+        ("POST", "/api/v1/phone/send"),
+        ("GET", "/api/v1/phone/summary"),
+        ("POST", "/api/v1/planner/confirm"),
+        ("POST", "/api/v1/planner/propose"),
+        ("GET", "/api/v1/planner/status"),
+        ("GET", "/api/v1/prospects"),
+        ("POST", "/api/v1/prospects"),
+        ("DELETE", "/api/v1/prospects/{prospect_id}"),
+        ("GET", "/api/v1/prospects/{prospect_id}"),
+        ("PATCH", "/api/v1/prospects/{prospect_id}"),
+        ("GET", "/api/v1/runs"),
+        ("GET", "/api/v1/runs/export"),
+        ("GET", "/api/v1/runs/{run_id}"),
+        ("GET", "/api/v1/schedules"),
+        ("POST", "/api/v1/schedules"),
+        ("DELETE", "/api/v1/schedules/{schedule_id}"),
+        ("PATCH", "/api/v1/schedules/{schedule_id}"),
+        ("GET", "/api/v1/signals"),
+        ("POST", "/api/v1/site/package"),
+        ("GET", "/api/v1/site/package/download"),
+        ("GET", "/api/v1/sites"),
+        ("POST", "/api/v1/sites"),
+        ("DELETE", "/api/v1/sites/{slug}"),
+        ("GET", "/api/v1/sites/{slug}/deploy"),
+        ("POST", "/api/v1/sites/{slug}/deploy"),
+        ("POST", "/api/v1/sites/{slug}/regenerate"),
+        ("GET", "/api/v1/social/posts"),
+        ("GET", "/api/v1/support/inbox"),
+        ("POST", "/api/v1/support/inbox"),
+        ("POST", "/api/v1/support/inbox/inbound"),
+        ("GET", "/api/v1/tasks"),
+        ("POST", "/api/v1/tasks"),
+        ("GET", "/api/v1/tasks/{task_id}"),
+        ("GET", "/api/v1/tasks/{task_id}/attachments"),
+        ("POST", "/api/v1/tasks/{task_id}/attachments"),
+        ("POST", "/api/v1/tasks/{task_id}/run"),
+        ("PATCH", "/api/v1/tasks/{task_id}/status"),
+        ("GET", "/api/v1/trust/domain"),
+        ("GET", "/api/v1/trust/link"),
+        ("POST", "/api/v1/vision/describe"),
+        ("GET", "/api/v1/vision/descriptions"),
+    }
+)
+
+#: The 422 entry for every operation above: BOTH wire shapes in one declaration.  No `"model"` on
+#: purpose — a oneOf of two components is not a pydantic model, and an entry WITHOUT `model` already
+#: has a precedent in this module (the Stripe webhook's 400): FastAPI merges `description` + `content`
+#: verbatim, creates no `response_field`, and — because 422 is now present in the operation's
+#: responses — skips its automatic `$ref HTTPValidationError` entry (fastapi 0.115.6,
+#: `openapi/utils.py:353-411`).  The two components stay defined because the two array-only
+#: operations above still trigger the automatic entry (`:404-418`); the pin asserts no dangling $ref.
+_CODED_422_ENTRY: dict[str, Any] = {
+    "description": (
+        "validation refused the request — this status has TWO documented wire shapes.  (1) "
+        "FastAPI's {\"detail\": [{loc, msg, type, …}]} array: a parameter/body validation error, "
+        "with no product code and no X-Polsia-Error-Code header.  (2) The product refusal envelope "
+        "{\"ok\": false, \"error\": {code: \"E_VALIDATION\" | \"E_AGENT_UNKNOWN\", message, "
+        "how_to_fix, context}}: a named refusal, with X-Polsia-Error-Code repeating the code.  "
+        "Discriminate on the BODY: a top-level `error` object means the envelope.  One narrow "
+        "input class (a body carrying NaN/Infinity) answers the envelope PLUS the sanitized "
+        "pydantic array under `detail` (main.request_validation_error_handler), so read `error` "
+        "first rather than requiring `detail` to be absent."
+    ),
+    "content": {"application/json": {"schema": {"anyOf": [
+        {"$ref": "#/components/schemas/HTTPValidationError"},
+        {"$ref": "#/components/schemas/PolsiaErrorEnvelope"},
+    ]}}},
 }
 
 #: Operation-specific refusals, each traced to the code that raises it (wave-6 census:
@@ -343,6 +561,12 @@ def declarations_for(route: APIRoute) -> dict[int, dict[str, Any]]:
         statuses.update(OPERATION_EXTRA_STATUSES.get((method, route.path), ()))
 
     out: dict[int, dict[str, Any]] = {}
+    # SV-W6-02: 422 is not in `statuses` (no shared entry, no raise-site table) — it is a BODY-SHAPE
+    # declaration on the operations the census reached.  Looked up per METHOD: a route object can
+    # serve several operations that share ONE `responses` dict, so `target` (the alphabetically
+    # first method) is the wrong key here.  Added before the loop so the sorted() statuses follow.
+    if any((method, route.path) in CODED_422_OPERATIONS for method in methods):
+        out[422] = dict(_CODED_422_ENTRY)
     for status in sorted(statuses):
         if status == 400 and target == ("POST", "/api/v1/finance/stripe/webhook"):
             # The webhook's bad-signature body is the framework's plain {"detail": <string>} (and
@@ -441,6 +665,7 @@ def declare_error_responses(app: FastAPI) -> int:
 
 
 __all__ = [
+    "CODED_422_OPERATIONS",
     "DOMAIN_STATUS_EXCEPTIONS",
     "NO_UNAVAILABLE_OPERATION",
     "OPERATION_EXTRA_STATUSES",

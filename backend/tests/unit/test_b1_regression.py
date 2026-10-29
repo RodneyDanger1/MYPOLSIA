@@ -119,7 +119,7 @@ def test_every_error_constant_has_a_hint_and_a_deliberate_status():
     unmapped_by_design = {
         "E_INTERNAL",                  # F-01: a bug we did not name -> 500 is the answer
         "E_ACTION_REPLAY_UNAVAILABLE",  # §4.13: a corrupt journal is not the caller's request
-        "E_DEEPSEEK_KEY",               # refuses inside the runtime, never at the HTTP boundary
+        # W8-LD-01: E_DEEPSEEK_KEY now maps to 503 (operator-fixable configuration).
     }
     codes = {
         value
