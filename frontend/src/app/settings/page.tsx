@@ -743,7 +743,14 @@ export default function SettingsPage() {
               className="space-y-4"
             >
               {EMAIL_FIELDS.map((field) => fieldRow(field))}
-              <EmailsSection values={notifyValues} onChange={setNotify} />
+              {/* Wave 7: the SAVED recipient rides in from this page's one GET /config, so the
+                  section can name the no-address state instead of letting a switch read ON while
+                  the funnel silently skips every outcome. */}
+              <EmailsSection
+                values={notifyValues}
+                onChange={setNotify}
+                notificationEmail={config.notification_email ?? null}
+              />
             </div>
           ) : null}
 

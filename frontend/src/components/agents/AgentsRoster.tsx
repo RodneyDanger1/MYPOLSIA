@@ -14,6 +14,14 @@ import { useAgentToolbox, type AgentToolboxRead } from "./useAgentToolbox";
  * audited so (Q-20: 9/9 match `task_service.VALID_AGENT_TYPES`; agents-page.md §2). A type this
  * map does not know renders NO paragraph — an unknown agent never gets a blank line (Q-20's
  * `?? ""` fix).
+ *
+ * `email_outreach` (wave 7): the old line said the agent "sends personalized cold emails", which is
+ * false on every unconfigured install — the send leg refuses at THREE gates before a provider is
+ * reached (`email_compliance.footer_for_company` E_CONFIG while the sender identity is unset,
+ * `integrations.send_email` E_INTEGRATION while SENDGRID_API_KEY/SENDGRID_FROM_EMAIL are absent,
+ * and the sandbox firewall E_SANDBOX_BLOCKED while SANDBOX_MODE is on). What the agent really does
+ * is find prospects and write labelled drafts; the line now says that, and names what has to be
+ * configured before a send is possible.
  */
 export const AGENT_DESCRIPTIONS: Record<string, string> = {
   orchestrator: "Generates daily task plans and evening summaries",
@@ -21,7 +29,8 @@ export const AGENT_DESCRIPTIONS: Record<string, string> = {
   competitor_research: "Researches competitors and market positioning",
   social_media: "Drafts and posts updates across platforms",
   ads_management: "Manages Google and Meta ad campaigns",
-  email_outreach: "Finds prospects and sends personalized cold emails",
+  email_outreach:
+    "Finds prospects and drafts cold emails — sending stays draft-only until the sender identity and SendGrid credentials are configured",
   code_generation: "Writes code, commits to GitHub, deploys",
   customer_support: "Reads inbox and drafts customer replies",
   finance: "Monitors Stripe revenue, expenses, and alerts",

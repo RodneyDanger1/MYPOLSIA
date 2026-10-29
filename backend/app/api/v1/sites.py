@@ -141,7 +141,16 @@ class SiteDeletedResponse(BaseModel):
 
 
 class SiteRegeneratedResponse(BaseModel):
-    """`POST /sites/{slug}/regenerate` — the rebuilt site's record, with its identity preserved."""
+    """`POST /sites/{slug}/regenerate` — the rebuilt site's record, with its identity preserved.
+
+    ADDITIVE (wave 7, R-W6-A3): `publishing_warnings` — the SAME copy-census list the create path
+    serves (`site_service.publishing_warnings(company)`), computed against the profile this rebuild
+    rendered from. A regenerate re-publishes every page, so it can introduce exactly what create
+    warns about; serving nothing here let a rebuild publish in silence. The field defaults to `[]`
+    so an older producer (or a clean profile) answers the same key, and the frozen keys above are
+    unchanged — a client written against the pre-wave-7 shape deserializes it as before. Advisory,
+    not a gate: the rebuild is not withheld (the create path's contract).
+    """
 
     slug: str
     url: str
@@ -151,6 +160,7 @@ class SiteRegeneratedResponse(BaseModel):
     pages: list[str]
     template: str
     custom_domain: str | None = None
+    publishing_warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DeployRequest(BaseModel):

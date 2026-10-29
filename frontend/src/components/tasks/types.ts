@@ -165,6 +165,43 @@ export type TaskRow = Task & {
    */
   execution_status?: string | null;
   needs_attention?: boolean | null;
+  /**
+   * F-41 — the LIVE execution counter (`agent_tasks.attempts`, a real column; the server's
+   * `TaskResponse.attempts`). It says how many deliveries this row has had. A real `0` means "no
+   * delivery recorded" and is NOT an unknown; an absent key (an older server) is unknown and renders
+   * no counter. Read it through `attemptsText` (`attemptHistory.ts`), never formatted inline.
+   */
+  attempts?: number | null;
+  /**
+   * F-41 — the RETIRED failure history: the error a SUPERSEDED attempt recorded, which
+   * `task_service._retire_error_message` moved into `tasks.metadata.last_attempt_error` when a later
+   * write COMPLETED the row (so the current `error_message` is cleared and the two can never
+   * disagree). The server computes it from exactly that one bag key (`schemas/task.py:336-395`),
+   * bounds it to 2,000 characters and types it (`TaskLastAttemptError`); `metadata.approval_token`
+   * and the rest of the bag stay off the wire.
+   *
+   * It is HISTORY, not a current failure — `retired_on_status` names the transition that ended it.
+   * Declared `unknown` on purpose: the source is a hand-editable JSON bag, so the consumer narrows
+   * it defensively (`retiredAttemptError`) and a junk value reads as ABSENCE, never as a half-record
+   * presented as fact.
+   */
+  last_attempt_error?: RetiredAttemptErrorWire | string | number | boolean | unknown[] | null;
+};
+
+/**
+ * The wire shape of `TaskLastAttemptError` (`backend/app/schemas/task.py:103-130`), as served.
+ * Every field is the server's own: `message_chars` is the STORED length, `truncated` says the READ
+ * cut the text, and the `retired_*` trio is the retirement provenance. The optional fields are the
+ * ones the writer may omit (a record with no `attempts` never invents one).
+ */
+export type RetiredAttemptErrorWire = {
+  message: string;
+  message_chars: number;
+  truncated: boolean;
+  attempts?: number | null;
+  retired_at?: string | null;
+  retired_by?: string | null;
+  retired_on_status?: string | null;
 };
 
 /** `POST /agents/{agent_type}/trigger` (agents.py:54-58, 202). */

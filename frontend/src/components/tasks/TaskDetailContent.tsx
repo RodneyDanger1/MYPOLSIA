@@ -10,6 +10,12 @@ import { api } from "@/lib/api";
 
 import { runThisTask } from "./actions";
 import { fingerprintsForTask } from "./approval";
+import {
+  attemptsText,
+  hasAttemptHistory,
+  retiredAttemptError,
+  type RetiredAttemptError,
+} from "./attemptHistory";
 import { ExecutionVerdictChip } from "./ExecutionVerdictChip";
 import { recoveryFor } from "./recovery";
 import { costUsdText, tokenText } from "./runTruth";
@@ -110,6 +116,13 @@ export function TaskDetailContent({
    *  that server answered "a cycle was recorded" without naming it, and the sheet says so
    *  instead of borrowing the declared dependency titles for a fact they do not carry. */
   const planCycleNames = row.plan ? planCycleMembers(row.plan) : [];
+  /** F-41 — the attempt counter and the RETIRED failure history. Both are wire facts the backend
+   *  has served since A-W4-02 and this screen had no consumer for (visuals F-41, live
+   *  `/tasks/313`). `retired` is null unless the row really carries the bag record; `attempts`
+   *  is null unless the wire carried a usable integer — absence stays absence. */
+  const attempts = attemptsText(row.attempts);
+  const retired: RetiredAttemptError | null = retiredAttemptError(row);
+  const historyVisible = hasAttemptHistory(row);
   /** One line for "Depends on". Titles are NAMES; ids are only ever printed when no title exists,
    *  and a dropped cycle edge is said to be dropped — it is not a live dependency. When the wire
    *  serves the cycle's members they lead the line: naming WHAT the task could never wait for is
@@ -329,6 +342,93 @@ export function TaskDetailContent({
           is never a zero.
         </p>
       </section>
+
+      {/* ── F-41: the attempt history ──────────────────────────────────────────────────────
+          Two wire facts that had no consumer until this wave: the live counter
+          (`agent_tasks.attempts`) and the RETIRED attempt error (`last_attempt_error`, computed
+          from one `tasks.metadata` key). The retirement is a REPAIR, not a failure: when a later
+          write completed the row, `task_service._retire_error_message` moved the superseded text
+          out of `error_message` and into the bag so the completed row stops serving an earlier
+          attempt's error as its current one. So this block is deliberately NEUTRAL (no
+          `role="alert"`, no alert border, no FAILED badge) and says in words that it is history —
+          rendering it as a live error would re-create the very lie the retirement fixed.
+          Bounded on screen by a scroll box, and every cut is STATED from the server's own numbers
+          (`message_chars`, `truncated`); this surface never invents a second truncation. */}
+      {historyVisible ? (
+        <section className="mt-3" data-testid="task-attempt-history">
+          <p className="ui-label text-ink-muted">Attempt history</p>
+          <div
+            className="mt-1 space-y-2 border border-line bg-surface-sunk p-3"
+            data-attempt-history="retired-attempt-error"
+          >
+            {attempts !== null ? (
+              <MetaRow label="Attempts">
+                <span title="agent_tasks.attempts — how many deliveries this row has had (0 means none was recorded)">
+                  {attempts}
+                </span>
+              </MetaRow>
+            ) : null}
+            {retired !== null ? (
+              <>
+                <p
+                  className="ui-label text-ink-muted"
+                  data-testid="task-retired-attempt-label"
+                >
+                  Retired attempt error
+                </p>
+                <p className="text-xs text-ink-muted" data-testid="task-retired-attempt-note">
+                  History, not a current failure — this is the error a superseded attempt recorded,
+                  retired{" "}
+                  {retired.retiredOnStatus
+                    ? `when the row moved to ${retired.retiredOnStatus}`
+                    : "when a later write finished the row"}
+                  . {row.status ? `The task's current status is ${row.status}` : "The task's current status is not recorded"}
+                  {row.error_message
+                    ? "; a current error is recorded separately below."
+                    : " and its current error is none."}
+                </p>
+                <pre
+                  data-testid="task-retired-attempt-message"
+                  className="max-h-48 overflow-auto whitespace-pre-wrap break-words border border-line bg-surface p-2 font-mono text-xs text-ink"
+                >
+                  {retired.message}
+                </pre>
+                <dl className="space-y-1">
+                  {retired.retiredAt !== null ? (
+                    <MetaRow label="Retired">
+                      <span title={absoluteStamp(retired.retiredAt)}>
+                        {relativeTime(retired.retiredAt)}
+                      </span>
+                    </MetaRow>
+                  ) : null}
+                  {retired.retiredBy !== null ? (
+                    <MetaRow label="Retired by">{retired.retiredBy}</MetaRow>
+                  ) : null}
+                  {retired.attempts !== null ? (
+                    <MetaRow label="Counter then">
+                      <span title="the execution counter at the moment the failure was retired">
+                        {attemptsText(retired.attempts)} — the counter when this failure was retired
+                      </span>
+                    </MetaRow>
+                  ) : null}
+                  <MetaRow label="Message size">
+                    {`${retired.messageChars.toLocaleString("en-US")} characters stored${
+                      retired.truncated
+                        ? " — the task read cut the text at 2,000 characters"
+                        : ""
+                    }`}
+                  </MetaRow>
+                </dl>
+              </>
+            ) : (
+              <p className="text-xs text-ink-muted" data-testid="task-no-retired-attempt-error">
+                No retired attempt error is recorded on this row — the counter above is the only
+                attempt history the server serves for it.
+              </p>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       {descriptionLines.length > 0 ? (
         <section className="mt-3">

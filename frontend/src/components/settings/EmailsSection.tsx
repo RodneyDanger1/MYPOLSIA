@@ -68,9 +68,15 @@ const CYCLE_REPORT_HELPER =
 export function EmailsSection({
   values,
   onChange,
+  notificationEmail,
 }: {
   values: Record<NotifyKey, boolean>;
   onChange: (key: NotifyKey, next: boolean) => void;
+  /** The SAVED recipient (`company_config.notification_email`, from the page's one GET /config).
+   *  `null`/blank means no address is configured — the funnel the four switches feed is then a
+   *  named no-op (see the note below), and the screen must say so instead of letting a switch read
+   *  ON while no email can ever leave. */
+  notificationEmail?: string | null;
 }) {
   // `null` = not read yet. The control is not rendered until GET /config has answered, so the UI
   // never shows a fabricated OFF while the real value is still unknown.
@@ -79,6 +85,12 @@ export function EmailsSection({
   const [cycleReportReadError, setCycleReportReadError] = useState<string | null>(null);
   const [cycleReportSaving, setCycleReportSaving] = useState(false);
   const [cycleReportSaveError, setCycleReportSaveError] = useState<string | null>(null);
+
+  /** Wave 7 (email call-path honesty): is a notification ADDRESS saved? Blank/absent is "no
+   *  recipient", which is the server's own reading of the column (`notification_service.
+   *  _configured_recipient` strips it and answers None). */
+  const addressConfigured =
+    typeof notificationEmail === "string" && notificationEmail.trim() !== "";
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -139,6 +151,28 @@ export function EmailsSection({
 
   return (
     <div className="space-y-4 border-t border-line pt-4">
+      {/* Wave 7 — the state that used to be invisible. The four `notify_on_*` switches are stored
+          flags the notification funnel reads AFTER it resolves a recipient
+          (`notification_service.notify_owner` -> `_configured_recipient`): with the address blank
+          the funnel returns before composing anything, so a switch can read ON while NO email can
+          ever leave and NOTHING is recorded in the activity feed (unlike the cycle-report control
+          below, whose skip IS recorded). Saying it here is the difference between "off by choice"
+          and "on but dead". */}
+      {!addressConfigured ? (
+        <div
+          data-testid="settings-emails-no-address"
+          className="border border-line-strong bg-surface-sunk p-3"
+        >
+          <p className="ui-label text-ink">No notification address is saved</p>
+          <p className="mt-1 text-sm text-ink">
+            Notification Email above is blank, and the server stores blank as &ldquo;not
+            configured&rdquo;. None of the switches below can send anything until an address is
+            saved: the notification funnel stops before it composes a message, so no email is sent
+            and no activity row records the skip.
+          </p>
+        </div>
+      ) : null}
+
       {NOTIFY_ROWS.map((row) => (
         <div key={row.key} className="flex items-start justify-between gap-3">
           <div>

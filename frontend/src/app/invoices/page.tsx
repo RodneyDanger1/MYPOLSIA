@@ -63,6 +63,27 @@ function terminalReason(status: string): string {
   return `send and void are closed: ${status} is a terminal state — the server has no legal transition out of it`;
 }
 
+/** The fact a row with no bill-to address carries (wave 7, email call path).
+ *
+ *  `invoice_service._recipient` REFUSES a send whose `bill_to` carries no usable email
+ *  (`E_VALIDATION` "no bill_to.email; the notice cannot be addressed"). This surface does NOT
+ *  disable Send for it: this page's rule, pinned by `v19-fe-contract.test.tsx` §5, is that the
+ *  client mirrors only the STATUS matrix and the backend stays the arbiter of every other refusal
+ *  (the client must not invent a refusal it cannot know). What the client CAN know is the fact the
+ *  row carries, so it is stated in words beside the control — the honest half of "no dead controls"
+ *  without a second, competing refusal grammar. */
+function noRecipientNotice(number: string): string {
+  return `Sending this invoice is refused at the sender-identity gate first (E_CONFIG: sender_legal_name, sender_postal_address and website_url must be configured), and invoice ${number} also carries no bill_to.email, so even with a sender it cannot be addressed (E_VALIDATION: no bill_to.email).`;
+}
+
+/** The bill-to address the send path will use — read exactly as `_recipient` reads it
+ *  (`bill_to["email"]`, a non-blank string). `null` is a real answer: no address recorded. */
+function billToEmail(row: Invoice): string | null {
+  const billTo = row.bill_to;
+  const email = billTo !== null && typeof billTo === "object" ? billTo["email"] : null;
+  return typeof email === "string" && email.trim() !== "" ? email.trim() : null;
+}
+
 /** The bill-to display name, safely off the free-form `bill_to` JSON (null -> em dash). */
 function billToName(row: Invoice): string {
   const billTo = row.bill_to;
@@ -319,8 +340,12 @@ export default function InvoicesPage() {
           <div className="divide-y divide-line">
             {rows.map((row) => {
               // The client-side mirror of the server's matrix. `!knownStatus` keeps an unknown
-              // word OUT of the guess: both controls stay live and the backend decides.
+              // word OUT of the guess: both controls stay live and the backend decides. Wave 7
+              // adds only the RECIPIENT FACT the send will use (`_recipient`'s bill_to.email): it
+              // is stated beside the control when absent, and never turns into a second refusal
+              // grammar of our own (the pin in v19-fe-contract §5).
               const knownStatus = KNOWN_STATUSES.has(row.status);
+              const recipient = billToEmail(row);
               const canSend = !knownStatus || SENDABLE.has(row.status);
               const canVoid = !knownStatus || VOIDABLE.has(row.status);
               const terminal = knownStatus && !canVoid;
@@ -359,7 +384,15 @@ export default function InvoicesPage() {
                     size="sm"
                     onClick={() => void send(row)}
                     disabled={busy !== null || !canSend}
-                    title={canSend ? undefined : terminal ? terminalReason(row.status) : sendClosedReason(row.status)}
+                    title={
+                      canSend && recipient !== null
+                        ? `Emails invoice ${row.number} to ${recipient} (POST /invoices/${row.id}/send)`
+                        : canSend
+                          ? noRecipientNotice(row.number)
+                          : terminal
+                            ? terminalReason(row.status)
+                            : sendClosedReason(row.status)
+                    }
                   >
                     Send
                   </Button>
@@ -400,6 +433,18 @@ export default function InvoicesPage() {
                     data-testid={`invoice-send-reason-${row.id}`}
                   >
                     {sendClosedReason(row.status)}
+                  </p>
+                ) : null}
+                {/* Wave 7: the recipient FACT the send will use, stated before the click. The
+                    control stays live on purpose (the backend is the arbiter, v19-fe-contract §5);
+                    this line is the disclosure that used to be invisible until the refusal came
+                    back — the live draft INV-2026-007 has no bill_to at all. */}
+                {recipient === null && !terminal ? (
+                  <p
+                    className="ui-label text-ink-muted"
+                    data-testid={`invoice-no-recipient-${row.id}`}
+                  >
+                    {noRecipientNotice(row.number)}
                   </p>
                 ) : null}
                 {terminal ? (

@@ -1597,6 +1597,13 @@ async def regenerate_site(
         "pages": list(PAGES),
         "template": template,
         "custom_domain": domain,
+        # F-32/R-W6-A3 (wave 7): the SAME copy census the create path serves, computed against the
+        # profile this rebuild just rendered from. A regenerate re-publishes every page, so it can
+        # introduce exactly what create warns about — serving no warnings here would let a rebuild
+        # publish a banned/private value with the census's silence. ADDITIVE: the frozen keys above
+        # are unchanged and an older client ignores it. Advisory, not a gate: nothing is withheld
+        # from the rebuild (the create path's contract, pinned by tests).
+        "publishing_warnings": publishing_warnings(company),
     }
 
 

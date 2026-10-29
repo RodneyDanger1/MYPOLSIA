@@ -44,8 +44,15 @@ export type SiteCreated = {
 };
 
 /** The 201 body's warnings, narrowed defensively. A malformed entry is DROPPED rather than
- *  rendered as half a warning; an absent/non-list value is `[]` (an older server). */
-export function sitePublishingWarnings(created: SiteCreated | null | undefined): PublishingWarning[] {
+ *  rendered as half a warning; an absent/non-list value is `[]` (an older server).
+ *
+ *  Accepts any body that CARRIES the optional key: the create response (`SiteCreated`) and, since
+ *  wave 7 / R-W6-A3, the regenerate response (`SiteRegenerated`) — the rebuild now serves the same
+ *  census because it re-publishes every page. The parameter is the structural shape the two share,
+ *  so ONE narrowing rule stays authoritative for both call sites. */
+export function sitePublishingWarnings(
+  created: { publishing_warnings?: unknown } | null | undefined,
+): PublishingWarning[] {
   const raw = created?.publishing_warnings;
   if (!Array.isArray(raw)) return [];
   const warnings: PublishingWarning[] = [];
@@ -250,7 +257,12 @@ export type SiteDeleted = {
 
 /** `POST /api/v1/sites/{slug}/regenerate` — the rebuilt site's record.
  *  `slug`, `title`, `created_at`, `template` and `custom_domain` are preserved by the server;
- *  `bytes` is the real total of the files it just rewrote. */
+ *  `bytes` is the real total of the files it just rewrote.
+ *
+ *  Wave 7 / R-W6-A3: the body also serves `publishing_warnings` (ADDITIVE) — the same census the
+ *  create path carries, because a rebuild re-publishes every page. Typed `unknown` and narrowed by
+ *  `sitePublishingWarnings`, so a pre-wave-7 server (key absent) reads as "declared nothing"
+ *  instead of an invented empty claim. */
 export type SiteRegenerated = {
   slug: string;
   url: string;
@@ -260,6 +272,7 @@ export type SiteRegenerated = {
   pages: string[];
   template: string;
   custom_domain: string | null;
+  publishing_warnings?: unknown;
 };
 
 /** The absolute URL for Open/Copy: the API serves a site-root-relative path (`/sites/<slug>/`). */

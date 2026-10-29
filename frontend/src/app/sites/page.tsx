@@ -167,6 +167,13 @@ export default function SitesPage() {
   const [lifecycleBusyKind, setLifecycleBusyKind] = useState<"regenerate" | "delete" | null>(null);
   const [lifecycleErrors, setLifecycleErrors] = useState<Record<string, string>>({});
   const [lifecycleNotice, setLifecycleNotice] = useState<string | null>(null);
+  /** Wave 7 / R-W6-A3 — the census warnings the LAST regenerate returned. A rebuild re-publishes
+   *  every page, so it gets the same `publishing_warnings` the create path serves; rendering them
+   *  here is what stops the additive field from being write-only (the A-W4-02 defect class). */
+  const [regenerateWarnings, setRegenerateWarnings] = useState<{
+    slug: string;
+    warnings: PublishingWarning[];
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -418,6 +425,7 @@ export default function SitesPage() {
     setLifecycleBusyKind("regenerate");
     setLifecycleErrors((prev) => withoutKey(prev, slug));
     setLifecycleNotice(null);
+    setRegenerateWarnings(null);
     setDeleteArmed(null);
     try {
       const result = await api.post<SiteRegenerated>(`/sites/${slug}/regenerate`);
@@ -432,6 +440,10 @@ export default function SitesPage() {
         `${result.title || result.slug} regenerated from the current company profile — ` +
           `${result.pages.length} pages and sitemap.xml rewritten (${bytesText(result.bytes)}).`,
       );
+      // ADDITIVE (R-W6-A3): the same census the create path returns. An older server omits the key
+      // and `sitePublishingWarnings` answers [] — "declared nothing", never an invented clean bill.
+      const warnings = sitePublishingWarnings(result);
+      setRegenerateWarnings(warnings.length > 0 ? { slug: result.slug, warnings } : null);
       reload();
     } catch (error: unknown) {
       setLifecycleErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
@@ -467,6 +479,8 @@ export default function SitesPage() {
       setDeployErrors((prev) => withoutKey(prev, slug));
       setCopied((prev) => (prev?.slug === slug ? null : prev));
       setLifecycleNotice(`${result.slug} deleted — its directory and meta.json are gone.`);
+      // A deleted site's regenerate warnings describe pages that no longer exist.
+      setRegenerateWarnings((prev) => (prev !== null && prev.slug === slug ? null : prev));
       reload();
     } catch (error: unknown) {
       setLifecycleErrors((prev) => ({ ...prev, [slug]: describeError(error) }));
@@ -658,6 +672,38 @@ export default function SitesPage() {
         <p data-testid="sites-lifecycle-notice" aria-live="polite" className="text-sm text-ink-muted">
           {lifecycleNotice}
         </p>
+      ) : null}
+
+      {/* Wave 7 / R-W6-A3: a regenerate re-publishes every page, so it serves the same copy-census
+          warnings a create does. Advisory, not a gate — the rebuild already happened; this states
+          what it published. A clean profile (or a pre-wave-7 server) renders nothing at all. */}
+      {regenerateWarnings !== null ? (
+        <div
+          data-testid="sites-regenerate-warnings"
+          className="border border-amber-300 bg-amber-50 px-3 py-2"
+        >
+          <p className="ui-label text-ink">
+            REGENERATE PUBLISHED WHAT THE CENSUS FLAGS · {regenerateWarnings.slug}
+          </p>
+          {regenerateWarnings.warnings.map((warning) => (
+            <div
+              key={warning.code}
+              data-testid={`sites-regenerate-warning-${warning.code}`}
+              className="mt-2"
+            >
+              <p className="ui-label text-ink">PUBLISHING WARNING · {warning.code}</p>
+              <p className="mt-1 text-sm text-ink">{warning.message}</p>
+              {warning.fields.length > 0 ? (
+                <p className="ui-label mt-1 text-ink-muted">
+                  published fields: {warning.fields.join(", ")}
+                </p>
+              ) : null}
+              {warning.how_to_fix ? (
+                <p className="mt-1 text-xs text-ink-muted">{warning.how_to_fix}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
       ) : null}
 
       {rows !== null && readError === null && !brokenBody && rows.length > 0 ? (
