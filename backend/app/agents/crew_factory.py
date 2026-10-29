@@ -35,6 +35,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from app.agents import accounting
 from app.agents.base_agent import BasePolsiaAgent, is_mock_mode
 from app.agents.claude_cli import cli_path, safety_preflight
 from app.agents.policy_firewall import AGENT_CAPABILITIES, ActionClass, kill_grade_from_env
@@ -349,7 +350,15 @@ def run_agent_for_task(
                      # the dispatch is never presented without it.
                      "action_classes": sorted(str(c) for c in capability.action_classes)
                      if capability else [],
-                     "task_side_effect": _task_side_effect(task_dict)},
+                     "task_side_effect": _task_side_effect(task_dict),
+                     # F-W4-TM-1: this refusal is raised BEFORE the agent exists, so it is a
+                     # ZERO-model-provider-call outcome by construction.  Stating the count lets the
+                     # worker settle a MEASURED $0.0000 for the failed run it created instead of a
+                     # NULL that makes the whole UTC day unmeasurable (the run row exists: the
+                     # worker creates it before calling here).  A run whose calls were made and
+                     # whose usage was lost carries no such declaration and keeps its NULL.
+                     accounting.PROVIDER_CALLS_KEY: 0,
+                     accounting.PROVIDER_CALLS_SOURCE_KEY: "dispatch_preflight"},
         )
     agent = agent_class()
     if not isinstance(agent, BasePolsiaAgent):
@@ -357,7 +366,11 @@ def run_agent_for_task(
             E_POLICY_DENIED,
             f"agent class for {agent_type!r} is not a BasePolsiaAgent",
             how_to_fix="check AGENT_MAP; every entry must be a BasePolsiaAgent subclass",
-            context={"agent_type": agent_type, "class": type(agent).__name__},
+            # Same zero-call declaration as the preflight refusal above: nothing was constructed
+            # or called, so the failed run this refusal produces is a measured $0.0000 (F-W4-TM-1).
+            context={"agent_type": agent_type, "class": type(agent).__name__,
+                     accounting.PROVIDER_CALLS_KEY: 0,
+                     accounting.PROVIDER_CALLS_SOURCE_KEY: "agent_class_preflight"},
         )
     result = agent.timed_run(task_dict or {}, context or {})
     if not isinstance(result, dict):

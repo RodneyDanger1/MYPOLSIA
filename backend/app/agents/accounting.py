@@ -78,6 +78,64 @@ def bounded_tools_used(value: Any) -> list[str] | None:
 
 
 # ---------------------------------------------------------------------------
+# Zero-provider-call settlement (F-W4-TM-1)
+# ---------------------------------------------------------------------------
+#
+# MEASURED DEFECT (live, 2026-10-28): run 318 (task 324, the approval-replay drill) finished with
+# ZERO model provider calls — the replay performs the STORED approved actions and never asks the
+# model — so nothing was measured and `agent_runs.cost_usd` stayed NULL.  The day-spend doctrine
+# cannot tell "no provider call -> $0.0000" from "a call happened and its cost was lost", so it
+# treated the whole UTC day as UNMEASURED and `planner_service._gate_planner_budget` refused every
+# paid planner dispatch for the rest of the day.  The refusal was SAFE but operationally wrong:
+# one model-free run blocked the cap.
+#
+# THE RULE THIS CONTRACT ENFORCES: a NULL cost may only become a measured 0 when the run's own
+# path DECLARES zero calls.  Absence of usage is NOT such a declaration — that is exactly the
+# F-19/F-20 shape (a provider call whose measurement was lost), and those runs must keep refusing
+# by name.  A declaration is `provider_calls: 0` (+ the originating path in
+# `provider_calls_source`) on the run's outcome dict, or on a refusal's `context` for a path that
+# refuses before it can produce an outcome.  Only a non-negative, non-bool `int` counts; a string
+# "0", a float, a negative or a missing key is UNKNOWN and settles nothing.
+#
+# `agent_runs.cost_usd` measures MODEL provider spend (the column the day cap sums).  A replay may
+# still perform a real SIDE-EFFECT send through a non-model provider; that is not model spend and
+# is recorded by the artifact ledger, not here.
+
+#: The outcome/refusal key a run path uses to DECLARE its own model-provider call count.
+PROVIDER_CALLS_KEY = "provider_calls"
+#: The companion key naming WHICH path declared the count (`approval_replay`,
+#: `dispatch_preflight`, …) — the audit trail behind a settlement that is a derivation, not a
+#: provider report.
+PROVIDER_CALLS_SOURCE_KEY = "provider_calls_source"
+#: `usage_json.cost_source` label for a settled measured zero (the F-W4-TM-1 fix).  A stored cost
+#: is always attributable; this label says "$0.0000 because the run made zero model provider
+#: calls", never "we looked and found nothing".
+NO_PROVIDER_CALLS_COST_SOURCE = "no_provider_calls"
+
+
+def provider_call_declaration(payload: Any) -> tuple[int, str] | None:
+    """The model-provider call count a run path DECLARED in `payload`, or None (unknown).
+
+    POSITIVE declarations only.  The caller passes the run's outcome dict, or a refusal's
+    `context` for a path that refuses before it can produce an outcome (the dispatch preflight,
+    which raises before the agent exists — zero calls by construction).
+
+    Absence is UNKNOWN, never zero: a run whose provider call happened but whose usage never
+    reached the ledger must keep its NULL cost (and keep refusing the day cap), which is the whole
+    reason this function returns None instead of defaulting.  Junk (a string, a float, a bool, a
+    negative) is UNKNOWN too — never coerced into a number a settlement could act on.
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw_calls = payload.get(PROVIDER_CALLS_KEY)
+    if isinstance(raw_calls, bool) or not isinstance(raw_calls, int) or raw_calls < 0:
+        return None
+    raw_source = payload.get(PROVIDER_CALLS_SOURCE_KEY)
+    source = raw_source.strip() if isinstance(raw_source, str) and raw_source.strip() else ""
+    return raw_calls, source or "declared"
+
+
+# ---------------------------------------------------------------------------
 # Envelope -> usage record
 # ---------------------------------------------------------------------------
 
@@ -684,6 +742,9 @@ def unit_economics(spend_by_agent: dict[str, float], completed_by_agent: dict[st
 
 __all__ = [
     "COST_GUARD_EPSILON_USD",
+    "NO_PROVIDER_CALLS_COST_SOURCE",
+    "PROVIDER_CALLS_KEY",
+    "PROVIDER_CALLS_SOURCE_KEY",
     "TOOLS_USED_MAX",
     "TOOLS_USED_TRUNCATION",
     "BudgetPolicy",
@@ -699,6 +760,7 @@ __all__ = [
     "cli_budget_flag",
     "compute_run_delta",
     "per_run_cost_cap_usd",
+    "provider_call_declaration",
     "spend_summary",
     "unit_economics",
     "usage_from_envelope",

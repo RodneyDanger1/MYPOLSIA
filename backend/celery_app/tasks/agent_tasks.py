@@ -28,6 +28,7 @@ import socket
 import time
 from typing import Any
 
+from app.agents import accounting
 from app.config import settings
 from app.core.errors import (
     E_ACTION_REPLAY_UNAVAILABLE,
@@ -99,12 +100,66 @@ RETRYABLE_CODES = frozenset(
 # somebody else now.
 _SKIP_CLAIM_CODES = (E_TASK_CLAIMED, E_TASK_NOT_RUNNABLE)
 
+#: The `tasks.status` values that END a row's life (wave 5, W5-LD-03).  A COPY of
+#: `task_service._TERMINAL_TASK_STATUSES` — that set is private to the service, and the caller's
+#: service-import set is a pinned contract (`test_service_contract`), so the vocabulary crosses as a
+#: literal the same way the metadata key literals do.  The two sets being equal is pinned by
+#: `tests/unit/celery/test_w5_logic_state_machine.py::test_the_terminal_vocabulary_matches_the_service`
+#: so the copy cannot drift.
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "rejected"})
+
 #: The `tasks.metadata` key the pause gate stamps on a row it RELEASED (wave v15/3-03, decision
 #: #2 + BUG-DIGEST §B7).  Producer here; the consumer is the `rearm_paused_released_tasks`
 #: maintenance tick (`celery_app.tasks.maintenance`), which re-dispatches marked `pending` rows
 #: exactly once after resume — the producer/consumer split `metadata.inbox_item` and
 #: `metadata.approval_token` already use.
 PAUSED_RELEASE_KEY = "paused_release"
+
+# ── F-W4-TM-1: a run that PROVABLY made no model provider call settles a MEASURED zero ────────
+#
+# The contract (the declaration keys + the `no_provider_calls` label) lives in
+# `app.agents.accounting` — the module that owns "measured or unknown, never fabricated" — so the
+# producer (`_replay_approved_actions` below, the dispatch preflight, a future runtime) and this
+# settlement boundary cannot drift apart.  This file owns only the ROW WRITE.
+
+def _settle_no_provider_calls(run_row: Any, *, source: str) -> None:
+    """Write the MEASURED $0.0000 a zero-call run owes the ledger, with its own provenance.
+
+    Called only when `accounting.provider_call_declaration` returned exactly 0 for this run's
+    outcome (or its refusal context).  `cost_usd` is the column the day cap sums, so it must be a
+    number the cap can trust: a measured zero (`Numeric(14,4)` 0.0000, written through the
+    service's one money boundary) instead of a NULL that makes the whole day unmeasurable.
+    `usage_json` carries `cost_source="no_provider_calls"` plus the declaration record, so a
+    reader can always reconstruct WHY the number is a zero.
+
+    Tokens are deliberately left exactly as recorded (NULL here): the token columns are what the
+    PROVIDER reported, and with no provider call there is no provider report — a `0` there would
+    claim a measurement that never happened.  The cost is different: it is the budget-gate
+    quantity, and "$0.0000 because zero calls were made" is a fact this boundary knows.
+    """
+    from app.agents.accounting import (
+        NO_PROVIDER_CALLS_COST_SOURCE,
+        PROVIDER_CALLS_KEY,
+    )
+    from app.core.timeutil import now_utc
+    from app.services.task_service import _as_column_decimal
+
+    run_row.cost_usd = _as_column_decimal(0)
+    recorded: dict[str, Any] = (
+        dict(run_row.usage_json) if isinstance(run_row.usage_json, dict) else {}
+    )
+    recorded["cost_source"] = NO_PROVIDER_CALLS_COST_SOURCE
+    recorded[PROVIDER_CALLS_KEY] = 0
+    recorded["no_provider_calls"] = {
+        "declared_by": source,
+        "settled_by": "celery_app.tasks.agent_tasks",
+        "recorded_at": now_utc().isoformat(),
+        "note": (
+            "MEASURED $0.0000: this run's own path declared zero model provider calls; the cost "
+            "is a measured zero, not an unmeasured NULL"
+        ),
+    }
+    run_row.usage_json = recorded
 
 
 def worker_id() -> str:
@@ -945,7 +1000,7 @@ async def _stamp_replay_started(task_id: int, fingerprints: list[str], *, worker
     """
     from app.core.database import get_session_factory
     from app.core.timeutil import now_utc
-    from app.services.task_service import get_task
+    from app.services.task_service import get_task, task_metadata_bag
 
     stamp = now_utc().isoformat()
     async with get_session_factory()() as db:
@@ -956,7 +1011,7 @@ async def _stamp_replay_started(task_id: int, fingerprints: list[str], *, worker
                 f"task {task_id} vanished before its approved payload could be replayed",
                 context={"task_id": task_id},
             )
-        merged = dict(row.metadata_json or {})
+        merged = task_metadata_bag(row.metadata_json)
         markers = dict(merged.get(APPROVAL_REPLAY_KEY) or {})
         for fp in fingerprints:
             markers[fp] = {"started_at": stamp, "worker": worker}
@@ -987,7 +1042,7 @@ async def _refuse_spent_approval(
     from app.core.database import get_session_factory
     from app.core.errors import E_POLICY_DENIED
     from app.services.activity_service import log_activity
-    from app.services.task_service import update_task_status
+    from app.services.task_service import task_metadata_bag, update_task_status
 
     parked = parked_approval_fingerprints(metadata)
     terminal = not parked
@@ -1004,7 +1059,7 @@ async def _refuse_spent_approval(
             row.claimed_by = None
             row.claimed_at = None
             row.heartbeat_at = None
-            merged = dict(row.metadata_json or {})
+            merged = task_metadata_bag(row.metadata_json)
             merged.pop(APPROVAL_TOKEN_KEY, None)
             merged.pop(APPROVAL_TOKEN_FINGERPRINT_KEY, None)
             row.metadata_json = merged
@@ -1143,7 +1198,20 @@ async def _spend_approval_before_dispatch(
                 "task %s: the approval ledger could not record the spend (%s) — refusing the "
                 "dispatch and re-queueing the row", task_id, exc.message,
             )
-            await release_claim(db, task_id, me)
+            try:
+                await release_claim(db, task_id, me)
+            except PolsiaError as release_exc:
+                # W5-S2: the claim may already belong to another worker (the row was taken
+                # over while this delivery was in flight). Losing the release must NOT lose the
+                # named E_DB envelope, the rearm stamp or the refusal activity: nothing was
+                # dispatched and the ledger is untouched either way.
+                if release_exc.code != E_TASK_CLAIMED:
+                    raise
+                logger.warning(
+                    "task %s: the E_DB re-queue could not release the claim (%s) — the row "
+                    "belongs to another claim; stamping the rearm without a claim write",
+                    task_id, release_exc.message,
+                )
             row = await get_task(db, task_id)
             if row is not None:
                 row.error_message = f"{E_DB}: {exc.message} (nothing was dispatched)"
@@ -1501,6 +1569,12 @@ async def _replay_approved_actions(
         "agent_type": agent_type,
         "side_effects": receipts,
         "approval_replay": outcomes,
+        # F-W4-TM-1: this path performs the STORED approved actions and asks no model — a fact
+        # the function itself knows, so it DECLARES the call count instead of leaving the
+        # settlement to infer it from a missing usage envelope (which a lost measurement looks
+        # exactly like).  The worker settles a measured $0.0000 from this declaration.
+        accounting.PROVIDER_CALLS_KEY: 0,
+        accounting.PROVIDER_CALLS_SOURCE_KEY: "approval_replay",
         # OR-02: the fingerprints this attempt did NOT perform.  They stay parked (see
         # `_settle_parked_after_failed_replay`), so a later delivery replays exactly these; the
         # performed ones are closed by their `sent` marker and are no longer in the parked set.
@@ -1840,6 +1914,8 @@ def _settle_parked_after_failed_replay(
     Returns the settlement record (for the activity row + the run's outcome), or None when this
     was not a replay that left anything owed.
     """
+    from app.services.task_service import task_metadata_bag
+
     outcomes = result.get("approval_replay")
     if not isinstance(outcomes, dict):
         return None
@@ -1857,7 +1933,7 @@ def _settle_parked_after_failed_replay(
     )
     if not owed:
         return None
-    bag = dict(task_row.metadata_json or {})
+    bag = task_metadata_bag(task_row.metadata_json)
     if not requeued:
         # R3's `_clear_parked_approval` already dropped the token in this transaction (OR-02's
         # task_service half) — the pop is defence in depth for a writer that predates it.
@@ -1934,6 +2010,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         get_task,
         heartbeat_task,
         release_claim,
+        task_metadata_bag,
         update_task_status,
     )
 
@@ -2055,7 +2132,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
             if task_row is not None:
                 # Merge — never replace — the marker into the per-task payload channel; a
                 # re-assigned dict, because the JSON column tracks attribute assignment.
-                merged = dict(task_row.metadata_json or {})
+                merged = task_metadata_bag(task_row.metadata_json)
                 merged[PAUSED_RELEASE_KEY] = {
                     "released_at": now_utc().isoformat(),
                     "reason": paused_reason,
@@ -2444,6 +2521,56 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         reset_run_usage_sink(usage_sink_token)
     duration = round(time.monotonic() - started, 2)
 
+    # ── 3b. W5-LD-03: the outcome write is conditional on STILL OWNING the claim ──────────────
+    # The `lease_lost` guard below only fires on a HEARTBEAT tick, and the interval is
+    # `max(5 s, lease/3)` — 300 s at the shipped lease of 900 s.  In that window the row can move
+    # on in a way no heartbeat sees: the OWNER can cancel/reject it mid-run
+    # (`PATCH /tasks/{id}/status`; `in_progress -> cancelled` is a legal edge and it does NOT clear
+    # `claimed_by`, by design — the row must keep saying who was running it), or an operator can
+    # complete it.  The worker then wrote `completed` over the human decision, with the run's
+    # summary and a `task_completed` "success" row on top — a decision erased and two records
+    # disagreeing.  The claim VERB is the check (`heartbeat_task` refuses by name when this worker
+    # no longer holds the claim), run in its own short transaction BEFORE the outcome transaction so
+    # a refusal cannot poison the run's ledger write.
+    #
+    # Two different worlds, two different answers, and the OLD `lease_lost` answer is kept for the
+    # world it was written for:
+    #   * the row is TERMINAL now (cancelled/rejected/completed/failed by somebody else): the run
+    #     really finished, so its OUTPUT is preserved on the ledger, the row's status is left
+    #     alone, and the supersession is recorded by name (`task_outcome_superseded`).  Nothing is
+    #     announced to the owner — the owner is the one who decided.
+    #   * the row is NOT terminal (another worker holds the claim, or it was re-queued): the
+    #     shipped lease-lost path — abandon the outcome, record `task_lease_lost`.
+    superseded_by: str | None = None
+    if not lease_lost.is_set():
+        try:
+            async with session_factory() as guard_db:
+                await heartbeat_task(guard_db, task_id, me)
+                await guard_db.commit()
+        except PolsiaError as exc:
+            if exc.code not in (*_SKIP_CLAIM_CODES, E_NOT_FOUND):
+                raise
+            async with session_factory() as guard_db:
+                moved_on = await get_task(guard_db, task_id)
+            moved_on_status = str(moved_on.status) if moved_on is not None else ""
+            if moved_on_status in _TERMINAL_STATUSES:
+                superseded_by = moved_on_status
+                logger.warning(
+                    "task %s: the row is %r now; this run's outcome is preserved on the ledger "
+                    "but NOT written to the task (the owner's decision stands)",
+                    task_id,
+                    moved_on_status,
+                )
+            else:
+                logger.error(
+                    "task %s: claim no longer held (%s, status=%r) — abandoning the outcome",
+                    task_id,
+                    exc.code,
+                    moved_on_status,
+                )
+                cancel_run(f"claim no longer held ({exc.code})")
+                lease_lost.set()
+
     error = None if failure is None else f"{type(failure).__name__}: {failure}"
     if lease_lost.is_set():
         error = "; ".join(x for x in (error, "claim lease lost during the run") if x)
@@ -2556,6 +2683,20 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         )
         if run_row is not None:
             _apply_run_usage(run_row, result)
+            # F-W4-TM-1: a finished run whose own path DECLARED zero model provider calls settles
+            # a MEASURED $0.0000 (never NULL, which makes the whole day unmeasurable and refuses
+            # paid planner dispatch).  `_apply_run_usage` runs FIRST so a real measurement always
+            # wins; the settlement only fills a cost that is still unknown.  The declaration is
+            # read from the run's outcome AND from a refusal's context (a dispatch preflight
+            # refusal raises before the agent exists — zero calls by construction) — never
+            # inferred from an absent usage envelope.
+            from app.agents.accounting import provider_call_declaration
+
+            declared = provider_call_declaration(result)
+            if declared is None and failure is not None:
+                declared = provider_call_declaration(getattr(failure, "context", None))
+            if declared is not None and declared[0] == 0 and run_row.cost_usd is None:
+                _settle_no_provider_calls(run_row, source=declared[1])
 
         # F-13: what THIS attempt really executed.  A COMPLETED run also carries the list in its
         # result (`agent_runs.output` gets the same copy, via `attach_run_meta`); a FAILED run
@@ -2573,6 +2714,36 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 summary=f"Claim lease lost during run of task {task_id}; outcome not written",
                 level="warning",
                 detail={"task_id": task_id, "worker_id": me, "duration_secs": duration},
+            )
+        elif superseded_by is not None:
+            # W5-LD-03: the row was ENDED while this run was in flight (the owner's cancel or
+            # reject, or an operator's completion).  The decision is the human's and stands; the
+            # run's own evidence is already on the ledger (`finish_agent_run` above, with its
+            # output and its cost) and on its artifacts (`_persist_run_artifacts` above — the work
+            # really happened).  What is written HERE is the record of the supersession, so the
+            # two truthful facts ("the run finished", "the task was ended") are both visible and
+            # neither is silently rewritten.  No task status, no task summary, no error, no
+            # completion/partial activity row, and no DAG settlement (the terminating writer
+            # already settled the dependents — re-running the hook could release a dependent of a
+            # row that never completed).
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action="task_outcome_superseded",
+                summary=(
+                    f"task {task_id}: the run finished but the row was already "
+                    f"{superseded_by!r}; the outcome was kept on the run ledger and NOT written "
+                    "to the task"
+                ),
+                level="warning",
+                detail={
+                    "task_id": task_id,
+                    "worker_id": me,
+                    "duration_secs": duration,
+                    "row_status": superseded_by,
+                    "run_status": run_status,
+                    "payload_status": payload_status,
+                },
             )
         else:
             # The service deliberately splits "write the outcome" (`update_task_status`) from
@@ -2608,7 +2779,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # `VERDICT_METADATA_KEY`; they are written as literals HERE because the caller's
                     # service-import set is a pinned contract (`test_service_contract`) and a JSON
                     # bag key is a wire name, not a service callable.
-                    merged = dict(task_row.metadata_json or {})
+                    merged = task_metadata_bag(task_row.metadata_json)
                     merged["result_status"] = payload_status
                     verdict = result.get("verdict") if isinstance(result, dict) else None
                     if isinstance(verdict, dict):
@@ -2626,7 +2797,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # mints binds the FULL body, so the resume must send the exact words the owner
                     # saw.  They are stored beside the fingerprints, MERGED over anything already
                     # there (a re-park after a partial replay keeps the records it did not touch).
-                    merged = dict(task_row.metadata_json or {})
+                    merged = task_metadata_bag(task_row.metadata_json)
                     merged[APPROVAL_REQUIRED_KEY] = approval_reqs
                     stored_payloads = approved_payloads(merged)
                     for fingerprint, record in approved_payloads_for(
@@ -2650,7 +2821,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # outcome it describes.
                     outcomes = result.get("approval_replay")
                     if isinstance(outcomes, dict):
-                        merged = dict(task_row.metadata_json or {})
+                        merged = task_metadata_bag(task_row.metadata_json)
                         markers = dict(merged.get(APPROVAL_REPLAY_KEY) or {})
                         for fingerprint, outcome in outcomes.items():
                             if not isinstance(fingerprint, str) or not isinstance(outcome, dict):
@@ -2666,7 +2837,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                     # wrote it too, and a stale copy would silently drop the fingerprints), merge
                     # by `call_key` so one effect keeps one record, and let the merge apply the
                     # list bound.  This line is what a retry replays instead of re-doing the run.
-                    merged = dict(task_row.metadata_json or {})
+                    merged = task_metadata_bag(task_row.metadata_json)
                     merged[ACTION_KEY] = merge_actions(merged.get(ACTION_KEY), run_actions)
                     task_row.metadata_json = merged
                 if run_status == "failed":
@@ -2806,9 +2977,14 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     #   * failed, terminal -> its dependents can never run: fail them BY NAME (never `pending`);
     #   * failed, requeued -> the retry is coming; nothing is settled yet;
     #   * awaiting_approval -> the row is not done; its dependents keep waiting;
-    #   * lease lost       -> this worker wrote no outcome; the row belongs to another worker.
+    #   * lease lost       -> this worker wrote no outcome; the row belongs to another worker;
+    #   * superseded       -> W5-LD-03: the row was ENDED by a human writer while the run was in
+    #                         flight, and THAT writer settled the DAG in its own transaction
+    #                         (`_fail_dependents_of_terminal` for a cancel/reject/fail,
+    #                         `release_ready_dependents` for a completion).  Running the hook again
+    #                         here would re-release a dependent of a row that never completed.
     dag_dependents: dict[str, Any] | None = None
-    if not lease_lost.is_set():
+    if not lease_lost.is_set() and superseded_by is None:
         if task_status == "completed":
             dag_dependents = await _release_dag_dependents(task_id, agent_type=agent_type)
         elif task_status == "failed" and not requeued:
@@ -2832,7 +3008,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     # here would contradict — eight lines later — the record it just refused to touch, and the
     # owner would receive "Task #N completed" for work whose result was deliberately discarded
     # (the row may still be `running` under the new owner, may complete, or may fail differently).
-    if not lease_lost.is_set():
+    # W5-LD-03 extends the same rule to a SUPERSEDED outcome: the owner is the one who ended the
+    # row, so telling them "Task #N completed" would announce their own cancel back to them.
+    if not lease_lost.is_set() and superseded_by is None:
         notification_outcome = _notification_outcome(task_status, requeued)
         try:
             from app.services.notification_service import notify_owner_for_terminal_outcome
@@ -2847,7 +3025,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 exc_info=True,
             )
 
-    return {
+    delivery_outcome: dict[str, Any] = {
         "status": task_status,
         "task_id": task_id,
         "agent_type": agent_type,
@@ -2874,6 +3052,13 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         "approval_replay_settlement": replay_settlement,
         "_exception": failure,  # popped by the sync wrapper; never returned to Celery
     }
+    if superseded_by is not None:
+        # W5-LD-03: `status` above is the RUN's outcome (the work really finished); the task row
+        # kept a different, human-chosen status.  Both facts travel, named, instead of the delivery
+        # reporting a task status it never wrote.
+        delivery_outcome["superseded_by"] = superseded_by
+        delivery_outcome["outcome_written"] = False
+    return delivery_outcome
 
 
 # ── repeating sweeps ─────────────────────────────────────────────────────────

@@ -77,6 +77,58 @@ class TaskCreate(BaseModel):
     scheduled_date: datetime | None = None
 
 
+def _optional_str(value: Any) -> str | None:
+    """A stored bag value as a non-empty string, or None.  Junk is dropped, never `str()`-coerced."""
+    return value if isinstance(value, str) and value else None
+
+
+#: The `tasks.metadata` key a COMPLETED transition writes the superseded failure under
+#: (`task_service._retire_error_message`; the producer's constant is
+#: `task_service.LAST_ATTEMPT_ERROR_KEY`).  Written as a LITERAL here, the same way
+#: `APPROVAL_REQUIRED_KEY` / `UPSTREAM_RESULTS_KEY` above are: a JSON bag key is a wire name, not
+#: a service callable, and `/schemas` must not import `/services` (the services import models, the
+#: routes import both; importing up from schemas is the cycle this repo avoids).  A cross-check
+#: test pins that the two literals agree (`test_w5_aw402_retired_error_read_shape.py`).
+LAST_ATTEMPT_ERROR_KEY = "last_attempt_error"
+
+#: Characters of a retired error text SERVED on the task wire.  The bag keeps up to 8 000
+#: (`task_service.LAST_ATTEMPT_ERROR_MAX_CHARS`, and its own cut is stated inside the text); a
+#: `limit=100` list page must not carry 800 KB of failure history for rows that mostly have none,
+#: so the READ bound is smaller and the cut is STATED (`truncated` + `message_chars` = the stored
+#: length) instead of silent.  The full stored text stays available from the bag (owner ops/export)
+#: and from the failed run's own output in the ledger.
+LAST_ATTEMPT_ERROR_WIRE_CHARS = 2000
+
+
+class TaskLastAttemptError(BaseModel):
+    """The failure an EARLIER attempt recorded, retired when a later write COMPLETED the row.
+
+    A-W4-02: SV-W4-03 preserved this record in the metadata bag, but no wire served it — the owner
+    could not see that a completed task had failed before, or why.  This is the minimal honest read
+    shape for it.  Every field is taken from the stored record as written:
+
+      * `message` — the failure text, bounded for the wire by `LAST_ATTEMPT_ERROR_WIRE_CHARS`;
+      * `message_chars` — the STORED length, so a truncated read is measurable, not a guess;
+      * `truncated` — true exactly when this read cut the text (the bag may itself already end with
+        the writer's own `… [truncated at 8000 chars]` marker — that marker is part of `message`);
+      * `attempts` — the execution count AT retirement (null when the row did not record one);
+      * `retired_at` / `retired_by` / `retired_on_status` — when, by which writer, and which
+        transition ended the failure.  `retired_on_status` is what makes this HISTORY: the record
+        is served beside `status`, never as `error_message`.
+
+    NOT served: anything else in the bag.  `metadata.approval_token` is a credential and
+    `metadata_json` stays `exclude=True`.
+    """
+
+    message: str
+    message_chars: int
+    truncated: bool
+    attempts: int | None = None
+    retired_at: str | None = None
+    retired_by: str | None = None
+    retired_on_status: str | None = None
+
+
 class TaskResponse(TimestampedORM):
     """`priority`/`status` are NULLABLE in the frozen schema (`models/task.py`; `0001`'s
     `CREATE TABLE tasks` carries `server_default`s but no `NOT NULL`, and on PostgreSQL
@@ -123,6 +175,24 @@ class TaskResponse(TimestampedORM):
     cost_usd: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+
+    # ── A-W4-02 (ADDITIVE): the attempt counter + the RETIRED failure history ────────────────
+    # SV-W4-03 moved a completed row's superseded `error_message` into
+    # `tasks.metadata.last_attempt_error` so the column stops serving an earlier attempt's
+    # failure as if it were current.  The audit (A-W4-02) then found the preservation WRITE-ONLY:
+    # `TaskResponse` served neither `metadata` nor `attempts`, so the history the fix promised the
+    # owner was invisible on every wire.  These two fields are the minimal read shape:
+    #
+    #   * `attempts` — the live execution counter (a real column, auto-filled by
+    #     `model_validate`); it says how many deliveries this row has had.
+    #   * `last_attempt_error` (below, computed) — the retired record, typed and DEFINITELY PAST
+    #     TENSE (`retired_on_status` says which transition ended it).  It is HISTORY, never a
+    #     current failure: on a completed row `error_message` is null and this field is the only
+    #     place the earlier failure is served.
+    #
+    # The bag itself stays off the wire (`metadata_json` is `exclude=True`): it also carries
+    # `approval_token`, the operator's credential.
+    attempts: int | None = None
 
     # ── F-07 (ADDITIVE, computed): the run's OWN verdict beside the lifecycle status ─────────
     # `status` is the persisted lifecycle (`completed` means the run ended and its work is
@@ -262,6 +332,67 @@ class TaskResponse(TimestampedORM):
         bag = self.metadata_json or {}
         recorded = bag.get(UPSTREAM_RESULTS_RECORDED_KEY)
         return recorded if isinstance(recorded, str) and recorded else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def last_attempt_error(self) -> TaskLastAttemptError | None:
+        """The failure a SUPERSEDED attempt recorded, or null when there is no such history.
+
+        A-W4-02: `task_service._retire_error_message` MOVES a completed row's stale
+        `error_message` here (so `completed` and the served error agree), and until this field
+        existed nothing on the wire read it — the preserved history was invisible.  This exposes
+        exactly that ONE bag key, typed and bounded (see `TaskLastAttemptError`).
+
+        Junk rules, deliberately the same shape as `plan`/`approval_fingerprints`: a non-dict
+        value, a record with no non-empty `message`, or one whose fields have the wrong types
+        reads as NULL with a log line — never a 500 for the whole task list (L1-11), and never a
+        half-record presented as a fact.  Absence is null: a task that never failed a superseded
+        attempt has no key at all and no record is invented.
+
+        This is NOT `error_message`: a completed row's current error is null (the writer clears
+        it), and `retired_on_status` names the transition that ended this failure, so a client
+        cannot mistake history for a live failure.
+        """
+        bag = self.metadata_json or {}
+        raw = bag.get(LAST_ATTEMPT_ERROR_KEY)
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            logger.warning(
+                "code=task_last_attempt_error_not_an_object: tasks.metadata['%s'] holds %s; "
+                "serving no retired failure for this row",
+                LAST_ATTEMPT_ERROR_KEY,
+                type(raw).__name__,
+            )
+            return None
+        message = raw.get("message")
+        if not isinstance(message, str) or not message:
+            logger.warning(
+                "code=task_last_attempt_error_malformed: tasks.metadata['%s'] carries no usable "
+                "message; serving no retired failure for this row",
+                LAST_ATTEMPT_ERROR_KEY,
+            )
+            return None
+        attempts = raw.get("attempts")
+        truncated = len(message) > LAST_ATTEMPT_ERROR_WIRE_CHARS
+        return TaskLastAttemptError(
+            message=(
+                message[:LAST_ATTEMPT_ERROR_WIRE_CHARS]
+                + f"… [read cut at {LAST_ATTEMPT_ERROR_WIRE_CHARS} chars]"
+                if truncated
+                else message
+            ),
+            message_chars=len(message),
+            truncated=truncated,
+            attempts=(
+                attempts
+                if isinstance(attempts, int) and not isinstance(attempts, bool)
+                else None
+            ),
+            retired_at=_optional_str(raw.get("retired_at")),
+            retired_by=_optional_str(raw.get("retired_by")),
+            retired_on_status=_optional_str(raw.get("retired_on_status")),
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
