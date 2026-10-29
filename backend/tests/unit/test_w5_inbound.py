@@ -149,7 +149,7 @@ async def test_a_non_ascii_secret_header_is_a_401_not_a_500(
     response = await api_client.post(
         INBOUND_PATH,
         json=PAYLOAD,
-        headers=[(b"x-polsia-inbound-secret", "w5-s\u00e9cret".encode("latin-1"))],
+        headers=[(b"x-meridian-inbound-secret", "w5-s\u00e9cret".encode("latin-1"))],
     )
     assert response.status_code == 401, response.text[:400]
     assert _error(response)["code"] == "E_AUTH"

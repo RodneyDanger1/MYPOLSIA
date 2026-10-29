@@ -14,7 +14,7 @@ import pytest
 
 from app.config import settings
 
-EXPOSED = {"x-polsia-error-code", "x-request-id", "x-response-time-ms"}
+EXPOSED = {"x-meridian-error-code", "x-request-id", "x-response-time-ms"}
 
 
 def _exposed(resp) -> set[str]:
@@ -37,7 +37,7 @@ async def test_cross_origin_401_exposes_the_custom_headers(api_client):
     origin = settings.cors_origins[0]
     resp = await api_client.get("/api/v1/config", headers={"Origin": origin})
     assert resp.status_code == 401
-    assert resp.headers.get("x-polsia-error-code") == "E_AUTH"
+    assert resp.headers.get("x-meridian-error-code") == "E_AUTH"
     assert _exposed(resp) >= EXPOSED, resp.headers.get("access-control-expose-headers")
 
 

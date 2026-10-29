@@ -342,7 +342,7 @@ async def test_the_three_422_wire_shapes_are_real(api_client, auth_headers) -> N
     assert coded_body["ok"] is False
     assert coded_body["error"]["code"] == "E_AGENT_UNKNOWN"
     assert "detail" not in coded_body, "the framework array must not be mixed into a plain refusal"
-    assert coded.headers.get("x-polsia-error-code") == "E_AGENT_UNKNOWN"
+    assert coded.headers.get("x-meridian-error-code") == "E_AGENT_UNKNOWN"
     PolsiaErrorEnvelope.model_validate(coded_body)  # the declared component accepts the wire
 
     # 2. a framework validation error -> the array, uncoded (the documented exception)
@@ -350,7 +350,7 @@ async def test_the_three_422_wire_shapes_are_real(api_client, auth_headers) -> N
     assert array.status_code == 422, array.text
     array_body = array.json()
     assert set(array_body) == {"detail"} and isinstance(array_body["detail"], list)
-    assert array.headers.get("x-polsia-error-code") is None
+    assert array.headers.get("x-meridian-error-code") is None
 
     # 3. the non-finite input class -> the envelope PLUS the sanitized array under `detail`
     raw = await api_client.post(
@@ -361,5 +361,5 @@ async def test_the_three_422_wire_shapes_are_real(api_client, auth_headers) -> N
     assert raw.status_code == 422, raw.text
     raw_body = raw.json()
     assert raw_body["error"]["code"] == "E_VALIDATION"
-    assert raw.headers.get("x-polsia-error-code") == "E_VALIDATION"
+    assert raw.headers.get("x-meridian-error-code") == "E_VALIDATION"
     assert [item for item in raw_body["detail"] if item.get("loc") == ["body", "title"]]

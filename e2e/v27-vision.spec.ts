@@ -92,7 +92,7 @@ test.describe("V27/L6 — vision on demand", () => {
       const probe = await request.post(`${API_BASE}/api/v1/vision/describe`, {
         data: { attachment_id: attachmentId },
       });
-      const probeCode = probe.headers()["x-polsia-error-code"] ?? "";
+      const probeCode = probe.headers()["x-meridian-error-code"] ?? "";
       test.skip(
         probe.status() !== 200 && probeCode === "E_CONFIG",
         `no vision model is configured on this stack (${probeCode}); this spec needs a live model`,

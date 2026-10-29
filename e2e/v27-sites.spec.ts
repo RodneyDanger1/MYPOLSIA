@@ -92,7 +92,7 @@ test.describe("V27/L6 — sites 2.0", () => {
       },
     });
     expect(bad.status(), await bad.text()).toBe(422);
-    const headerCode = bad.headers()["x-polsia-error-code"];
+    const headerCode = bad.headers()["x-meridian-error-code"];
     const body = (await bad.json()) as { error?: { code?: string } };
     expect(headerCode ?? body.error?.code).toBe("E_VALIDATION");
 

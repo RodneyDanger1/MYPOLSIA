@@ -43,7 +43,7 @@ def test_404_route_miss_is_the_product_envelope() -> None:
     assert resp.status_code == 404
     error = _envelope(resp.json())
     assert error["code"] == "E_NOT_FOUND"
-    assert resp.headers["x-polsia-error-code"] == "E_NOT_FOUND"
+    assert resp.headers["x-meridian-error-code"] == "E_NOT_FOUND"
     assert error["how_to_fix"], "a named refusal must say how to fix it"
     assert error["context"]["method"] == "GET"
     assert "definitely-not-a-route" in error["context"]["path"]
@@ -56,7 +56,7 @@ def test_405_wrong_verb_is_a_named_refusal_and_keeps_allow() -> None:
     assert resp.status_code == 405
     error = _envelope(resp.json())
     assert error["code"] == "E_METHOD_NOT_ALLOWED"
-    assert resp.headers["x-polsia-error-code"] == "E_METHOD_NOT_ALLOWED"
+    assert resp.headers["x-meridian-error-code"] == "E_METHOD_NOT_ALLOWED"
     assert "DELETE" in resp.headers.get("allow", ""), (
         "the framework's Allow header must survive the envelope rewrite"
     )
@@ -109,7 +109,7 @@ async def test_error_boundary_alone_answers_the_envelope() -> None:
     assert resp.status_code == 500
     error = _envelope(resp.json())
     assert error["code"] == "E_INTERNAL"
-    assert resp.headers["x-polsia-error-code"] == "E_INTERNAL"
+    assert resp.headers["x-meridian-error-code"] == "E_INTERNAL"
 
 
 def test_the_documented_uncoded_400_still_passes_through(monkeypatch) -> None:

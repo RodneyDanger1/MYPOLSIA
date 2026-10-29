@@ -139,7 +139,7 @@ def test_the_model_describes_the_runtime_envelope() -> None:
     with TestClient(create_app()) as client:
         resp = client.get("/api/v1/runs")
     assert resp.status_code == 401
-    assert resp.headers["x-polsia-error-code"] == "E_AUTH"
+    assert resp.headers["x-meridian-error-code"] == "E_AUTH"
     parsed = PolsiaErrorEnvelope.model_validate(resp.json())
     assert parsed.ok is False
     assert parsed.error.code == "E_AUTH"

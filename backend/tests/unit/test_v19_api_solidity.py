@@ -90,7 +90,7 @@ async def test_every_protected_read_refuses_a_missing_key_with_envelope_and_head
         body = response.json()
         assert body["ok"] is False and body["error"]["code"] == E_AUTH, route.path
         assert set(body["error"]) == {"code", "message", "how_to_fix", "context"}, route.path
-        assert response.headers["x-polsia-error-code"] == E_AUTH, route.path
+        assert response.headers["x-meridian-error-code"] == E_AUTH, route.path
         assert response.headers["www-authenticate"] == "X-API-Key", route.path
         probed += 1
     assert probed >= 30, f"only {probed} protected routes probed — the inventory shrank?"
@@ -115,7 +115,7 @@ async def test_write_refusals_use_the_same_envelope_and_code_header(
     body = response.json()
     assert body["ok"] is False and body["error"]["code"] == code
     assert set(body["error"]) == {"code", "message", "how_to_fix", "context"}
-    assert response.headers["x-polsia-error-code"] == code
+    assert response.headers["x-meridian-error-code"] == code
 
 
 @pytest.mark.parametrize(
@@ -133,7 +133,7 @@ async def test_an_absent_row_is_the_named_envelope_with_its_code_header(api_clie
     body = response.json()
     assert body["ok"] is False and body["error"]["code"] == code
     assert body["error"]["context"], "a refusal must say WHAT was missing"
-    assert response.headers["x-polsia-error-code"] == code
+    assert response.headers["x-meridian-error-code"] == code
 
 
 # ── lens 3: declared totals are the rows they count ───────────────────────────
@@ -303,7 +303,7 @@ async def test_invoice_read_refuses_a_stored_non_finite_json_row(api_client, asy
     body = response.json()
     assert body["error"]["code"] == E_DB
     assert "bill_to" in body["error"]["message"]
-    assert response.headers["x-polsia-error-code"] == E_DB
+    assert response.headers["x-meridian-error-code"] == E_DB
 
 
 # ── item 6: the ads metrics read (DEBT decided by wiring) ─────────────────────

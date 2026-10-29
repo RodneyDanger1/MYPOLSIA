@@ -221,7 +221,7 @@ test.describe("V28/L4 — run-workspace retention panel", () => {
 
     const bad = await request.post(ROUTE, { data: { apply: "yes" } });
     expect(bad.status(), await bad.text()).toBe(422);
-    expect(bad.headers()["x-polsia-error-code"]).toBe("E_VALIDATION");
+    expect(bad.headers()["x-meridian-error-code"]).toBe("E_VALIDATION");
     const badBody = (await bad.json()) as {
       error: { code: string; context?: { apply?: string } };
     };

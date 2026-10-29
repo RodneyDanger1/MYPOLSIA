@@ -121,7 +121,7 @@ test.describe("V28/L4 — prospect CRM (/prospects)", () => {
         data: { email: email.toUpperCase() },
       });
       expect(duplicate.status(), await duplicate.text()).toBe(422);
-      expect(duplicate.headers()["x-polsia-error-code"]).toBe("E_VALIDATION");
+      expect(duplicate.headers()["x-meridian-error-code"]).toBe("E_VALIDATION");
       const duplicateBody = (await duplicate.json()) as {
         error: { code: string; message: string; context?: { field?: string } };
       };
@@ -186,12 +186,12 @@ test.describe("V28/L4 — prospect CRM (/prospects)", () => {
       // ── 404: a deleted id is honest on read, write and a second delete ──────────────────────
       const gone = await request.get(`/api/v1/prospects/${deletedId}`);
       expect(gone.status()).toBe(404);
-      expect(gone.headers()["x-polsia-error-code"]).toBe("E_NOT_FOUND");
+      expect(gone.headers()["x-meridian-error-code"]).toBe("E_NOT_FOUND");
       expect((await gone.json()).error.code).toBe("E_NOT_FOUND");
 
       const secondDelete = await request.delete(`/api/v1/prospects/${deletedId}`);
       expect(secondDelete.status()).toBe(404);
-      expect(secondDelete.headers()["x-polsia-error-code"]).toBe("E_NOT_FOUND");
+      expect(secondDelete.headers()["x-meridian-error-code"]).toBe("E_NOT_FOUND");
 
       const patchGone = await request.patch(`/api/v1/prospects/${deletedId}`, {
         data: { status: "contacted" },

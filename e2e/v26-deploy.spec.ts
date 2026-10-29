@@ -70,7 +70,7 @@ test.describe("V26/L6 — site deploy dry run", () => {
       data: { dry_run: true },
     });
     expect(dryRun.status(), await dryRun.text()).toBe(503);
-    expect(dryRun.headers()["x-polsia-error-code"]).toBe("E_CONFIG");
+    expect(dryRun.headers()["x-meridian-error-code"]).toBe("E_CONFIG");
     const refusal = (await dryRun.json()) as {
       error: { code: string; message: string; how_to_fix?: string; context?: { missing?: string[] } };
     };

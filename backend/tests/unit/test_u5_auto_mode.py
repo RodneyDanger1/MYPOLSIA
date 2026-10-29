@@ -171,7 +171,7 @@ async def test_second_start_refuses_e_validation_and_writes_no_row(api_client, a
     assert refusal["ok"] is False
     assert refusal["error"]["code"] == "E_VALIDATION"
     assert "already active" in refusal["error"]["message"]
-    assert second.headers["x-polsia-error-code"] == "E_VALIDATION"
+    assert second.headers["x-meridian-error-code"] == "E_VALIDATION"
 
     rows = (await async_db_session.execute(select(AutoModeSession))).scalars().all()
     assert len(rows) == 1, "a refused start must never create a second window"

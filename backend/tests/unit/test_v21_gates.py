@@ -93,13 +93,13 @@ async def test_polsia_total_is_cors_exposed(api_client) -> None:
     resp = await api_client.get("/api/v1/health", headers={"Origin": origin})
     assert resp.status_code == 200
     exposed = _exposed(resp)
-    assert "x-polsia-total" in exposed, resp.headers.get("access-control-expose-headers")
+    assert "x-meridian-total" in exposed, resp.headers.get("access-control-expose-headers")
     # The V7/V18 set must survive the addition — one header list, one contract.
     assert {
-        "x-polsia-error-code",
+        "x-meridian-error-code",
         "x-request-id",
         "x-response-time-ms",
-        "x-polsia-row-count",
+        "x-meridian-row-count",
         "content-disposition",
     } <= exposed, resp.headers.get("access-control-expose-headers")
 

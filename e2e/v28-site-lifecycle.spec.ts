@@ -139,7 +139,7 @@ test.describe("V28/L4 — site lifecycle", () => {
       // The list's exact-slug read is an honest 404, not an empty list or a zeroed 200.
       const gone = await request.get(`/api/v1/sites?slug=${slug}`);
       expect(gone.status(), await gone.text()).toBe(404);
-      expect(gone.headers()["x-polsia-error-code"]).toBe("E_NOT_FOUND");
+      expect(gone.headers()["x-meridian-error-code"]).toBe("E_NOT_FOUND");
       expect(((await gone.json()) as { error: { code: string } }).error.code).toBe("E_NOT_FOUND");
 
       // Every generated file is gone with the directory — the disk is the site's only record.
@@ -154,7 +154,7 @@ test.describe("V28/L4 — site lifecycle", () => {
       // A second delete is honest too: 404 E_NOT_FOUND, never a fabricated 200.
       const secondDelete = await request.delete(`/api/v1/sites/${slug}`);
       expect(secondDelete.status(), await secondDelete.text()).toBe(404);
-      expect(secondDelete.headers()["x-polsia-error-code"]).toBe("E_NOT_FOUND");
+      expect(secondDelete.headers()["x-meridian-error-code"]).toBe("E_NOT_FOUND");
     } finally {
       if (exists) {
         await request.delete(`/api/v1/sites/${slug}`).catch(() => undefined);

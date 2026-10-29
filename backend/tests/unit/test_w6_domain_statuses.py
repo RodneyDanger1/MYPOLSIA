@@ -297,4 +297,4 @@ async def test_a_pathless_404_is_real_on_the_wire(
     assert response.status_code == expected_status, response.text
     payload = response.json()
     assert payload.get("error", {}).get("code") == "E_NOT_FOUND", payload
-    assert response.headers.get("x-polsia-error-code") == "E_NOT_FOUND"
+    assert response.headers.get("x-meridian-error-code") == "E_NOT_FOUND"

@@ -573,9 +573,9 @@ async def test_the_content_route_serves_the_text_and_its_identity(
     assert resp.text == "# Hearth & Lather\n\nprovisional.\n"
     assert resp.headers["content-type"].startswith("text/plain")
     expected = hashlib.sha256(b"# Hearth & Lather\n\nprovisional.\n").hexdigest()
-    assert resp.headers["x-polsia-artifact-sha256"] == expected
-    assert resp.headers["x-polsia-artifact-bytes"] == "32"
-    assert resp.headers["x-polsia-artifact-modified"].endswith("Z")
+    assert resp.headers["x-meridian-artifact-sha256"] == expected
+    assert resp.headers["x-meridian-artifact-bytes"] == "32"
+    assert resp.headers["x-meridian-artifact-modified"].endswith("Z")
     assert resp.headers["x-content-type-options"] == "nosniff"
     assert "inline" in resp.headers["content-disposition"]
 

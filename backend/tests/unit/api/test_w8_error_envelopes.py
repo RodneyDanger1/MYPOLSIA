@@ -85,7 +85,7 @@ def refusal_of(resp: httpx.Response, *, status: int, code: str) -> dict:
         "a named refusal must say how to fix it"
     )
     assert isinstance(error["context"], dict)
-    assert resp.headers.get("x-polsia-error-code") == code, (
+    assert resp.headers.get("x-meridian-error-code") == code, (
         "the machine-readable code header must agree with the body"
     )
     return error
@@ -313,7 +313,7 @@ async def test_a16_both_db_paths_answer_the_SAME_wire(api_client, auth_headers, 
     for resp in (before, inside):
         refusal_of(resp, status=503, code=E_DB)
     assert set(before.json()) == set(inside.json())
-    assert before.headers.get("x-polsia-error-code") == inside.headers.get("x-polsia-error-code")
+    assert before.headers.get("x-meridian-error-code") == inside.headers.get("x-meridian-error-code")
 
 
 # ── provider class (503 config, 401 auth, 502 upstream) ────────────────────────────────────

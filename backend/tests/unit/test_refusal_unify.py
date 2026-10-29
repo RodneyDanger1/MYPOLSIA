@@ -150,7 +150,7 @@ async def test_a_routed_miss_is_now_the_product_envelope(api_client):
     assert body["ok"] is False
     assert body["error"]["code"] == "E_NOT_FOUND"
     assert body["error"]["how_to_fix"], "a named refusal must say how to fix it"
-    assert resp.headers["x-polsia-error-code"] == "E_NOT_FOUND"
+    assert resp.headers["x-meridian-error-code"] == "E_NOT_FOUND"
 
 
 @pytest.mark.asyncio

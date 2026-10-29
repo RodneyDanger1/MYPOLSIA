@@ -412,7 +412,7 @@ async def test_export_row_count_equals_the_same_filters_total(api_client, auth_h
                                 headers=auth_headers)
     assert resp.status_code == 200, resp.text[:300]
     assert resp.headers["content-type"].startswith("text/csv")
-    assert resp.headers["x-polsia-row-count"] == "3", "the declared count rides the response headers"
+    assert resp.headers["x-meridian-row-count"] == "3", "the declared count rides the response headers"
 
     parsed = list(csv.reader(io.StringIO(resp.text)))
     assert parsed[0] == ROW_KEYS, "CSV header = the frozen field names, in order"
@@ -428,7 +428,7 @@ async def test_export_row_count_equals_the_same_filters_total(api_client, auth_h
 async def test_export_empty_set_is_header_only(api_client, auth_headers):
     resp = await api_client.get(EXPORT_PATH, headers=auth_headers)
     assert resp.status_code == 200
-    assert resp.headers["x-polsia-row-count"] == "0"
+    assert resp.headers["x-meridian-row-count"] == "0"
     lines = resp.text.strip().splitlines()
     assert lines == [",".join(ROW_KEYS)], "an empty export is a header-only CSV"
     assert list(csv.reader(io.StringIO(resp.text))) == [ROW_KEYS]
@@ -443,7 +443,7 @@ async def test_export_json_is_the_wrapper_and_default_format_is_csv(api_client, 
     # no format param -> CSV (the contract's first listed format)
     default_resp = await api_client.get(EXPORT_PATH, headers=auth_headers)
     assert default_resp.headers["content-type"].startswith("text/csv")
-    assert default_resp.headers["x-polsia-row-count"] == "1"
+    assert default_resp.headers["x-meridian-row-count"] == "1"
 
     resp = await api_client.get(EXPORT_PATH, params={"format": "json"}, headers=auth_headers)
     assert resp.status_code == 200
@@ -477,7 +477,7 @@ async def test_export_cannot_be_truncated_by_a_limit_param(api_client, auth_head
         await _run(async_db_session, started_at=_at(hour))
 
     resp = await api_client.get(EXPORT_PATH, params={"limit": 1}, headers=auth_headers)
-    assert resp.headers["x-polsia-row-count"] == "3"
+    assert resp.headers["x-meridian-row-count"] == "3"
     assert len(list(csv.reader(io.StringIO(resp.text)))) - 1 == 3, "the export is never a page"
 
 

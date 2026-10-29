@@ -16,10 +16,10 @@ from app.config import settings
 
 #: Every custom response header the app emits that a cross-origin JS client must read.
 EXPOSED = {
-    "x-polsia-error-code",
+    "x-meridian-error-code",
     "x-request-id",
     "x-response-time-ms",
-    "x-polsia-row-count",
+    "x-meridian-row-count",
 }
 
 
@@ -34,7 +34,7 @@ async def test_cross_origin_200_exposes_the_row_count_header(api_client):
     resp = await api_client.get("/api/v1/health", headers={"Origin": origin})
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == origin
-    assert "x-polsia-row-count" in _exposed(resp), (
+    assert "x-meridian-row-count" in _exposed(resp), (
         resp.headers.get("access-control-expose-headers")
     )
 
