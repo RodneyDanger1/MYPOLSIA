@@ -109,6 +109,47 @@ def memory_company_name(tags: list[str] | tuple[str, ...]) -> str:
 
 
 
+#: ── WAVE 6: memory rows that ASSERT a claim this company cannot support ────────────────────────
+#:
+#: Measured chain (wave 5): the copy correction fixed the profile and the site, but 13 `memory_entries`
+#: rows still carry a banned/unverified brand claim — six assert the previous brand's facts as ours
+#: (coconut-soy wax, a reusable tin, hand-poured, a 55-hour burn), and ONE (row 225) is CURRENT company
+#: scope, written AFTER the correction because the task text told the model to say "hand-poured in Los
+#: Angeles".  Wave 6 applied the reversible review tags (raw-w6/w6-memory-tag-apply.sql) and THIS is
+#: the read side of that decision: a row whose own tags mark it `claim:stale-asserted` or
+#: `claim:banned-current` is WITHHELD from the prompt — the same treatment a foreign-company row
+#: gets, for the same reason (a stale claim read as "our current story" is how wave-1's 55-hour burn
+#: came back).  The two other classes are NOT withheld and must stay: `claim:stale-premise` is the
+#: row that quotes the stale claim while reasoning against it, and `claim:mention-ok` names the term
+#: only to refuse or verify it — withholding those would delete the reasoning that rejected the claim.
+#:
+#: The rule lives here (not in the prompt layer) so the tag vocabulary has ONE owner: the write-side
+#: census (`copy_claims`), the tags applied to the rows, and the read-side consequence all name these
+#: strings.  Only the marker is read — never the row's prose (same discipline as `memory_company_scope`).
+CLAIM_TAG_PREFIX = "claim:"
+CLAIM_STALE_ASSERTED = "claim:stale-asserted"
+CLAIM_BANNED_CURRENT = "claim:banned-current"
+CLAIM_REVIEWED_PREFIX = "claim:reviewed:"
+
+#: The tags that make a memory row unsafe to place in a prompt.  Ordered: the classification that
+#: actually describes the row wins over the current-scope marker for reporting.
+WITHHELD_CLAIM_TAGS: tuple[str, ...] = (CLAIM_STALE_ASSERTED, CLAIM_BANNED_CURRENT)
+
+
+def memory_claim_withheld(tags: list[str] | tuple[str, ...]) -> str | None:
+    """The withholding tag this row carries, or `None` when it may reach a prompt.
+
+    `None` is not a claim that the row is TRUE: an untagged row was never reviewed (that is what
+    `claim:reviewed:<date>` marks), and the census is the tool that finds new ones.  This function
+    answers exactly one question — "did a review already decide this row must not be read as ours?"
+    """
+    for tag in tags or ():
+        text = str(tag)
+        if text in WITHHELD_CLAIM_TAGS:
+            return text
+    return None
+
+
 def _build_where(category: str | None, source: str | None) -> dict[str, Any] | None:
     clauses = []
     if category:
@@ -484,6 +525,9 @@ async def resolve_agent_memories(
             # F-24: provenance, measured from the row's own tags — never inferred from its text.
             "company_scope": memory_company_scope(tags, company_id),
             "company_name": memory_company_name(tags),
+            # WAVE 6: the claim review's decision, carried on the view so the read leg can report
+            # WHAT it is about to withhold (and a test can prove it without re-reading the tags).
+            "claim_withheld": memory_claim_withheld(tags),
         })
     return views
 
@@ -575,15 +619,21 @@ async def remember_run(
 
 
 __all__ = [
+    "CLAIM_BANNED_CURRENT",
+    "CLAIM_REVIEWED_PREFIX",
+    "CLAIM_STALE_ASSERTED",
+    "CLAIM_TAG_PREFIX",
     "COMPANY_ID_TAG",
     "COMPANY_NAME_TAG",
     "SCOPE_CURRENT",
     "SCOPE_FOREIGN",
     "SCOPE_UNSCOPED",
+    "WITHHELD_CLAIM_TAGS",
     "company_id_tag",
     "delete_memory",
     "get_memory",
     "list_memories",
+    "memory_claim_withheld",
     "memory_company_name",
     "memory_company_scope",
     "remember_run",

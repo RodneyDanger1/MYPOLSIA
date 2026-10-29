@@ -707,7 +707,7 @@ class BasePolsiaAgent(ABC):
                 memory_identity,
                 rank_memories,
             )
-            from app.services.memory_service import SCOPE_FOREIGN
+            from app.services.memory_service import SCOPE_FOREIGN, memory_claim_withheld
 
             items = [
                 MemoryItem(
@@ -729,7 +729,16 @@ class BasePolsiaAgent(ABC):
             # with its own scope tag so no entry can be read as this company's fact by accident.
             ours = [item for item in items if item.company_scope != SCOPE_FOREIGN]
             withheld = len(items) - len(ours)
-            ranked = rank_memories(ours, query_terms=task_title_terms(task), k=30)
+            # WAVE 6 (the read side of the memory-tag decision): a row that a copy review has
+            # tagged `claim:stale-asserted` / `claim:banned-current` asserts a product fact this
+            # company cannot support, so it is withheld exactly like another company's row — and
+            # COUNTED, never dropped in silence.  The tag is the decision; the prose is untouched
+            # (the owner's rows are not edited by a read path).  `claim:stale-premise` and
+            # `claim:mention-ok` rows are deliberately KEPT: they are the reasoning that rejected
+            # the claim, and withholding them would remove the correction's own evidence.
+            kept = [item for item in ours if memory_claim_withheld(item.tags) is None]
+            withheld_claims = len(ours) - len(kept)
+            ranked = rank_memories(kept, query_terms=task_title_terms(task), k=30)
             # W4-F24-1 (wave 4, found live on the rebuilt app): the SCOPE key and the WITHHOLDING
             # COUNT ride at the HEAD of the entries.  They used to be inserted first / appended
             # last, and the assembler's over-budget pass drops TRAILING entries — a live prompt with
@@ -744,6 +753,12 @@ class BasePolsiaAgent(ABC):
                 header.append(
                     f"- ({withheld} stored memories from a different company were withheld from "
                     "this brief)"
+                )
+            if withheld_claims:
+                header.append(
+                    f"- ({withheld_claims} stored memories were withheld from this brief: a copy "
+                    "review tagged them as asserting a product claim this company cannot support, "
+                    "so they are neither this company's facts nor evidence to repeat)"
                 )
             memory_layer.entries = header + [render_memory_entry(m) for m in ranked]
 
