@@ -37,8 +37,14 @@ https://api-docs.deepseek.com/api/create-chat-completion):
     is interrupted due to insufficient resource of the inference system") and `aborted` ("the
     generation was interrupted") each map to their own named failure subtype
     (`error_max_tokens` / `error_content_filter` / `error_overloaded` / `error_aborted`);
-  * `thinking` / `reasoning_effort`: canonicalized (minimal->low, medium/xhigh->high); effort
-    `none` disables thinking (the fleet's deterministic JSON runs want no hidden reasoning pass).
+  * `thinking` / `reasoning_effort`: canonicalized — the documented alias table is
+    `minimal->low`, `medium->high`, `xhigh->high`, `ultra->max` (Thinking Mode guide, fetched
+    2026-10-28/29); effort `none` disables thinking (the fleet's deterministic JSON runs want no
+    hidden reasoning pass).  SV-W4-06 added the missing `ultra` alias;
+  * the output bound: `max_tokens` is ALWAYS sent (never left to the provider default), read from
+    the `deepseek_max_tokens` Settings field whose documented range is 1..393216 (Chat Completions
+    API page, fetched 2026-10-28).  The shipped default 8192 is a deliberate, cheap bound — see
+    `DEEPSEEK_DEFAULT_MAX_TOKENS` and `_max_tokens`.
 
 Honesty rules (repo-wide): every failure is a NAMED refusal, a truncated response is never a
 success, and no envelope key is fabricated — absent measurements stay absent (NULL-vs-zero rule
@@ -120,7 +126,16 @@ DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300
 #: bounded at the CALL, not only at the dispatch gate. 8192 output tokens is ~6k words, far
 #: above any of this product's JSON payloads; the worst-case output charge at flash peak rates
 #: is 8192/1e6 * $1.20 ~= $0.0098. A response cut at the bound is reported as `error_max_tokens`
-#: (never a success). Overridable via `deepseek_max_tokens` once that Settings field lands.
+#: (never a success).
+#:
+#: F-W5 (SV-W4-07 close-out): the live value is the `deepseek_max_tokens` Settings field, sent as
+#: the body's `max_tokens` on EVERY call (`_max_tokens` -> `_build_body`).  The vendor documents the
+#: accepted range as 1..384K (393216) — "The value must be between 1 and 384K (393216). When not
+#: set, the default is 8K in non-thinking mode, 64K in thinking mode (128K with `reasoning_effort`
+#: set to `max`)" (api-docs.deepseek.com/api/create-chat-completion, fetched 2026-10-28).  The
+#: shipped 8192 is therefore a CHOICE, not the provider default: because this runtime always sends
+#: `max_tokens`, the 64K thinking-mode default never applies to a Polsia call.  Raising it is a cost
+#: decision (the worst-case output charge scales linearly), not a code change.
 DEEPSEEK_DEFAULT_MAX_TOKENS = 8192
 CHAT_COMPLETIONS_PATH = "/chat/completions"
 
@@ -213,11 +228,14 @@ _JSON_INSTRUCTION = (
 
 
 def _setting(name: str, default: Any) -> Any:
-    """Read a Settings field defensively.
+    """Read a `deepseek_*` Settings field, falling back to the documented default.
 
-    getattr-with-default: the `deepseek_*` Settings fields arrive with a parallel seat (RD8
-    seat 3). Until then the documented defaults apply and nothing breaks; once they land, the
-    same call reads the real configured value (this is the forward-safe pattern, not a stub).
+    Every name this function is called with IS a real `config.Settings` field (SV-W4-05's wave-5
+    census pins exactly that over the whole product: no `getattr(settings, <name>)` may name a
+    phantom knob).  The fallback therefore only covers an in-process probe/test that replaces the
+    settings object with a partial double — it is not a licence for a field to go missing: the
+    census test fails on a name that is not a field, so a renamed field cannot silently revert to
+    a default in a deployed build.
     """
     return getattr(settings, name, default)
 
@@ -1265,7 +1283,14 @@ def configured_model() -> str:
 
 
 def _reasoning_effort() -> str:
-    """Canonical reasoning_effort from Settings; unknown values are a NAMED refusal, not coerced."""
+    """Canonical reasoning_effort from Settings; unknown values are a NAMED refusal, not coerced.
+
+    Documented aliases (Thinking Mode guide, fetched 2026-10-28/29): `minimal->low`, `medium->high`,
+    `xhigh->high`, `ultra->max`.  `ultra` is listed in the guide's mapping table (the API-reference
+    parameter prose names only minimal/medium/xhigh as compatibility aliases — both sources agree
+    the four aliases are accepted, so all four are accepted here).  SV-W4-06: `ultra` was missing,
+    so the vendor's own alias was refused as an unknown value.
+    """
     raw = str(_setting("deepseek_reasoning_effort", DEEPSEEK_DEFAULT_REASONING_EFFORT) or "").strip().lower()
     value = REASONING_EFFORT_ALIASES.get(raw, raw) or DEEPSEEK_DEFAULT_REASONING_EFFORT
     if value not in REASONING_EFFORT_CANONICAL:
@@ -1309,10 +1334,13 @@ def _call_timeout_seconds(inv: claude_cli.Invocation) -> int:
 
 
 def _max_tokens() -> int:
-    """The per-call output bound (L3-04): settings override when present, else the default.
+    """The per-call output bound (L3-04): the configured `deepseek_max_tokens`, else the default.
 
-    Same forward-safe `_setting` pattern as the other `deepseek_*` knobs: nothing breaks while
-    the Settings field is absent, and the same call reads the configured value once it lands.
+    The field is real (`config.Settings.deepseek_max_tokens`, SV-W4-07) and its value is serialized
+    into every request body as `max_tokens`.  The vendor's documented accepted range is 1..393216
+    (api-docs.deepseek.com/api/create-chat-completion, fetched 2026-10-28); this function does not
+    invent an upper clamp of its own — an out-of-range value is the provider's 400 to refuse by
+    name, and the worst-case cost guard prices whatever bound the operator chose.
     A non-positive / non-integer override falls back to the default — a 0 here would mean
     "unbounded" to some providers, the opposite of the bound's purpose.
     """

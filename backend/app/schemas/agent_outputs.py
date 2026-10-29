@@ -5,11 +5,15 @@ lane 03's per-agent contracts (`SPEC-AGENTS.md` §3), which are keyed off the DB
 agent feeds: `social_posts.*`, `prospects.*` / `email_logs.*`, `ad_campaigns.*`,
 `revenue_snapshots.*`, `expense_records.*`.
 
-W4/CAPABILITY-AUDITOR: `competitors.*` was in that list and is NOT fed — the `competitors` table
-has no writer in the worker (`_persist_run_artifacts` has no branch for it) and no reader beyond
-the generic `/data/{table}` dump; a competitor run's rows live on `agent_runs.output` only.  This
-list now says what the code does, and the producer/consumer decision is requested as
-`R-W4-CA-1` in the capability-auditor lane's REQUESTS.
+W4/CAPABILITY-AUDITOR + F-W5 (R-W4-CA-1 close-out): `competitors.*` was in that list and is NOT
+fed — the `competitors` table has no writer in the worker (`_persist_run_artifacts` has no branch
+for it) and NO READER AT ALL: the only `/data` surfaces are the export ZIP (8 fixed members, and
+`competitors` is not one of them) and the guarded wipe (which DELETEs it).  The wave-4 wording here
+said "the generic `/data/{table}` dump" reads it — that route does not exist: the live OpenAPI has
+exactly `/api/v1/data` and `/api/v1/data/export`, with zero `{table}` paths and zero competitor
+routes (`forge/raw/w5/live-data-routes.txt`, 92 paths).  A competitor run's rows live on
+`agent_runs.output` only.  A producer AND a consumer are ONE product decision, so wave 5 refuses to
+land the write-only table: the named request is `R-W5-CA-1` (wave 4's `R-W4-CA-1`, carried forward).
 
 Two things make the schema the contract rather than decoration:
 

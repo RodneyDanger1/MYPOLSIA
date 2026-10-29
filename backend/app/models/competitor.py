@@ -1,4 +1,22 @@
-"""competitors (module name INFERRED - unreferenced)."""
+"""competitors — a table with NO writer and NO reader in this product (R-W5-CA-1).
+
+WHY THIS HEADER EXISTS (measured): the generated header said "unreferenced", which was wrong in one
+direction and right in another, and both halves matter:
+
+  * REFERENCED by the data-portability surface: `Competitor` is a WIPE member
+    (`app/api/v1/data.py::MEMBER_MODELS`) and a data-wipe approval token digests that member set, so
+    the model is imported and every wipe deletes this table;
+  * NOT a member of the export (`EXPORT_MODELS`, 8 members) and NOT read anywhere else: no route, no
+    page, no service renders a row.  The wave-4 claim that a generic `/data/{table}` dump reads it
+    named a route that does not exist (the live OpenAPI carries only `/api/v1/data` and
+    `/api/v1/data/export`; forge/raw/w5/live-data-routes.txt).
+
+A competitor_research run's findings live on `agent_runs.output` (its schema, `CompetitorReport`),
+which IS read.  Landing a producer here without a consumer would create a write-only table, so wave
+5 refuses that and carries the exact producer+consumer seam as `R-W5-CA-1` in
+`forge/REQUESTS-W5.md`.  Keep this docstring true: if a reader is ever added, this is the file that
+must stop saying it has none.
+"""
 from __future__ import annotations
 
 from datetime import datetime

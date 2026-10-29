@@ -1720,6 +1720,15 @@ class BasePolsiaAgent(ABC):
         from app.services.claimed_files import audit_claimed_files
 
         audit_claimed_files(run_id=self.run_id, result=result)
+        # F-W5-F21-1 (wave 5): the same seam, now for SIZE claims.  A run's summary/notes may assert
+        # an exact character count about what it produced (live task 327 / run 319 said "exactly
+        # 320 characters … verified at 320" over a 265-character payload).  The assertion is checked
+        # against the run's own deliverable text fields; a count no stored payload measures is
+        # labelled in the summary the owner reads, and limit/task references are recorded as ignored
+        # instead of being treated as false claims.  A run that asserts no count is byte-identical.
+        from app.services.claimed_files import audit_claimed_lengths
+
+        audit_claimed_lengths(result=result)
         from app.agents.run_verdict import apply_run_verdict
 
         return apply_run_verdict(self.agent_type, result)
