@@ -7,12 +7,15 @@ The SCHEDULING half — a beat process actually firing the entry every 5 minutes
 live Redis and beat, which this host does not run: that half is `environment-only`. The
 parity suite separately proves the entry is declared and loaded by the app.
 
-Counts, precisely: `scanned` is the number of in-flight (`in_progress`) claims the sweep
-examined (measured by a count query beside the sweep); `requeued` is the service's own
-count of recovered claims — an attempts-exhausted row is among them and has been moved to
-`failed` (reason recorded) rather than back to `pending`, which is the service's documented
-contract (see `test_queue_safety_core.py::test_invariant_4_an_exhausted_row_goes_terminal`,
-`== 2` for one pending-bound and one terminal row).
+Counts, precisely (F-W8-TM-3, wave 9 — the counter used to be one number): `scanned` is the number
+of in-flight (`in_progress`) claims the sweep examined (measured by a count query beside the sweep);
+`recovered` is the service's own count of claims moved out of `in_progress`; `requeued` is the
+subset that went back to `pending`; `ended` is the subset the attempt ladder wrote `failed` (the
+reason recorded).  The wave-8 result had only `requeued`, and it counted the terminal row too, so a
+sweep that ENDED a crash-looping row read as a recovery that never happened.  `outcomes` says
+whether that split was measured against the DB (`measured`) or could not be (`unavailable`, with
+`requeued`/`ended` None rather than a guessed number).  The service's own contract is unchanged
+(`test_queue_safety_core.py::test_invariant_4_an_exhausted_row_goes_terminal`).
 """
 from __future__ import annotations
 
@@ -56,7 +59,14 @@ def test_lease_sweep_recovers_a_stale_claim_reports_counts_and_is_idempotent(que
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 1, "scanned": 1}
+    # F-W8-TM-3 (wave 9): OLD arithmetic was the exact-equality dict
+    # `{"status": "completed", "requeued": 1, "scanned": 1}`.  NEW: recovered 1 (one claim left
+    # in_progress) == requeued 1 (back on the queue) + ended 0 (nothing terminated), scanned 1.
+    assert result["status"] == "completed"
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        1, 1, 0, 1,
+    ), result
+    assert result["outcomes"] == "measured" and result["requeued_ids"] == [stale], result
     row = queue_db.row(stale)
     assert row["status"] == "pending", "the stale claim goes back to the queue"
     assert row["claimed_by"] is None and row["claimed_at"] is None and row["heartbeat_at"] is None
@@ -66,7 +76,9 @@ def test_lease_sweep_recovers_a_stale_claim_reports_counts_and_is_idempotent(que
     # row is byte-identical before/after it.
     before_second = queue_db.row(stale)
     again = requeue_stale_task_claims()
-    assert again == {"status": "completed", "requeued": 0, "scanned": 0}
+    assert (again["recovered"], again["requeued"], again["ended"], again["scanned"]) == (
+        0, 0, 0, 0,
+    ), again
     assert queue_db.row(stale) == before_second, "a second sweep must touch nothing"
 
 
@@ -74,9 +86,12 @@ def test_lease_sweep_sends_an_exhausted_stale_row_terminal_with_the_reason(queue
     """The terminal rule at the sweep's own surface: an exhausted stale claim becomes `failed`
     (reason recorded), and no later sweep can see it again.
 
-    The first sweep's `requeued` includes it — the service counts every recovered claim and
-    sends this one terminal inside its single UPDATE (see the module docstring). "Never
-    requeued forever" is the second half: once terminal, the sweep no longer touches it.
+    F-W8-TM-3: the wave-8 result put this row in `requeued` ("the service counts every recovered
+    claim and sends this one terminal inside its single UPDATE") — that was the misleading
+    counter.  OLD arithmetic: `{"requeued": 1, "scanned": 1}` for a row that was NOT requeued.
+    NEW: recovered 1 (one claim left in_progress), requeued 0 (nothing went back on the queue),
+    ended 1 (the ladder terminated it). "Never requeued forever" is the second half: once
+    terminal, the sweep no longer touches it.
     """
     exhausted = queue_db.create_task(title="lease-sweep-exhausted")
     max_attempts = int(settings.task_max_attempts)
@@ -90,7 +105,12 @@ def test_lease_sweep_sends_an_exhausted_stale_row_terminal_with_the_reason(queue
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 1, "scanned": 1}
+    assert result["status"] == "completed"
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        1, 0, 1, 1,
+    ), result
+    assert result["outcomes"] == "measured", result
+    assert result["ended_ids"] == [exhausted] and result["requeued_ids"] == [], result
     row = queue_db.row(exhausted)
     assert row["status"] == "failed", "an exhausted task must not be requeued forever"
     assert row["error_message"] == f"lease expired after {max_attempts} attempts (worker died?)"
@@ -98,7 +118,9 @@ def test_lease_sweep_sends_an_exhausted_stale_row_terminal_with_the_reason(queue
     assert row["attempts"] == max_attempts, "going terminal does not add an attempt"
 
     again = requeue_stale_task_claims()
-    assert again == {"status": "completed", "requeued": 0, "scanned": 0}
+    assert (again["recovered"], again["requeued"], again["ended"], again["scanned"]) == (
+        0, 0, 0, 0,
+    ), again
 
 
 def test_lease_sweep_leaves_a_fresh_claim_untouched(queue_db):
@@ -109,5 +131,10 @@ def test_lease_sweep_leaves_a_fresh_claim_untouched(queue_db):
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 0, "scanned": 1}
+    # F-W8-TM-3: OLD `{"requeued": 0, "scanned": 1}`; NEW adds the measured split (0/0) beside
+    # the same `scanned` fact.
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        0, 0, 0, 1,
+    ), result
+    assert result["outcomes"] == "measured", result
     assert queue_db.row(fresh) == before, "a live claim must be byte-identical after the sweep"

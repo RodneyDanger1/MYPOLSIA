@@ -196,7 +196,15 @@ def test_c04_a_delivery_after_the_reaper_ended_the_row_is_refused_and_never_resu
 
     awaitable = maintenance._requeue_stale_claims_in_session()
     reaped = queue_db.run(awaitable)
-    assert reaped["requeued"] == 1, reaped  # the sweep counts every recovery, terminal included
+    # F-W8-TM-3 (wave 9) — this pin used to read `reaped["requeued"] == 1` with the comment "the
+    # sweep counts every recovery, terminal included".  That WAS the defect: this row is TERMINAL
+    # (the attempt ladder ended it), so nothing was requeued.  Old arithmetic: one total == 1
+    # under the name `requeued`.  New arithmetic: recovered == 1 (one row moved out of
+    # in_progress), requeued == 0 (nothing went back on the queue), ended == 1 (the ladder ended
+    # it).  The measured live shape is taskmaster/raw/w8/l4-result.txt.
+    assert reaped["recovered"] == 1, reaped
+    assert reaped["requeued"] == 0 and reaped["ended"] == 1, reaped
+    assert reaped["outcomes"] == "measured", reaped
     row = _task_row(queue_db, task_id)
     assert row["status"] == "failed"
     assert "lease expired" in (row["error_message"] or "")

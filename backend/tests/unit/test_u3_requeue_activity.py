@@ -10,7 +10,8 @@ could not tell that a stalled run had been requeued (B7's acceptance line has no
 
 Every test here FAILS against the pre-fix tree on the activity-row assertions (measured: zero rows —
 `raw/red-requeue-activity.txt`).  The sweep's public contract is deliberately unchanged: the task
-still returns `{"status", "requeued", "scanned"}` and the service still returns an `int`
+still returns its measured counts — `status`, `scanned`, and since F-W8-TM-3 the measured split
+`recovered` = `requeued` + `ended` — and the service still returns an `int`
 (`tests/unit/celery/test_lease_sweep_task.py` and `test_queue_safety_core.py` pin both).
 
 Harness: the shared `queue_db` fixture (file-backed SQLite behind the app-wide session factory,
@@ -60,7 +61,12 @@ def test_a_sweep_writes_one_activity_row_naming_the_count_and_the_ids(queue_db):
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 1, "scanned": 1}
+    # F-W8-TM-3 (wave 9): OLD exact dict `{"status": "completed", "requeued": 1, "scanned": 1}`.
+    # NEW: recovered 1 (one claim left in_progress) == requeued 1 (it is back on the queue) + ended 0.
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        1, 1, 0, 1,
+    ), result
+    assert result["outcomes"] == "measured", result
     assert queue_db.row(task_id)["status"] == "pending", "the claim really was requeued"
 
     rows = _activity_rows(queue_db)
@@ -87,7 +93,9 @@ def test_a_no_op_sweep_writes_no_activity_row(queue_db):
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 0, "scanned": 1}
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        0, 0, 0, 1,
+    ), result
     assert _activity_rows(queue_db) == []
     assert queue_db.row(fresh)["status"] == "in_progress", "a live claim stays untouched"
 
@@ -113,7 +121,13 @@ def test_one_sweep_with_both_outcomes_still_writes_exactly_one_row(queue_db):
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 2, "scanned": 2}
+    # F-W8-TM-3 (wave 9): OLD read `{"status": "completed", "requeued": 2, "scanned": 2}` — the
+    # exhausted row was counted as a requeue.  NEW: recovered 2 (two claims left in_progress) ==
+    # requeued 1 (the survivor) + ended 1 (the exhausted row the ladder terminated).
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        2, 1, 1, 2,
+    ), result
+    assert result["requeued_ids"] == [survivor] and result["ended_ids"] == [exhausted], result
     # F-51 (wave B2): ONE ROW PER RECOVERED TASK.  OLD: `len(rows) == 1` with every id on one
     # `detail` (unbounded with the queue, and no single task's history could be read from it).
     rows = _activity_rows(queue_db)
@@ -139,7 +153,9 @@ def test_a_multi_row_sweep_writes_one_row_per_task(queue_db):
 
     result = requeue_stale_task_claims()
 
-    assert result == {"status": "completed", "requeued": 3, "scanned": 3}
+    assert (result["recovered"], result["requeued"], result["ended"], result["scanned"]) == (
+        3, 3, 0, 3,
+    ), result
     rows = _activity_rows(queue_db)
     assert len(rows) == 3, f"expected one row per recovered task, saw {len(rows)}"
     named = sorted(json.loads(row["detail"])["task_id"] for row in rows)

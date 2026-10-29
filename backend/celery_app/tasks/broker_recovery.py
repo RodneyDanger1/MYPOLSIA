@@ -92,7 +92,16 @@ class RecoveryResult:
     scanned: int = 0
     bound: int = 0
     reaped_scanned: int = 0
-    reaped_requeued: int = 0
+    #: F-W8-TM-3: the claim sweep that runs first can REQUEUE a dead worker's claim or END it at
+    #: the attempt bound.  `reaped_requeued`/`reaped_ended` are that split, measured; the sweep's
+    #: total is `reaped_recovered`.  All three stay None until a sweep actually ran (a failed sweep
+    #: must not present a 0 that looks like a measured count) and the split is None when it could
+    #: not be measured (`reaped_outcomes` says why).
+    reaped_recovered: int | None = None
+    reaped_requeued: int | None = None
+    reaped_ended: int | None = None
+    reaped_outcomes: str | None = None
+    reaped_reason: str | None = None
     restored: list[int] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     left_live_claim: list[int] = field(default_factory=list)
@@ -109,7 +118,11 @@ class RecoveryResult:
             "bound": self.bound,
             "bound_reached": self.bound_reached,
             "reaped_scanned": self.reaped_scanned,
+            "reaped_recovered": self.reaped_recovered,
             "reaped_requeued": self.reaped_requeued,
+            "reaped_ended": self.reaped_ended,
+            "reaped_outcomes": self.reaped_outcomes,
+            "reaped_reason": self.reaped_reason,
             "restored": list(self.restored),
             "dropped": list(self.dropped),
             "left_live_claim": list(self.left_live_claim),

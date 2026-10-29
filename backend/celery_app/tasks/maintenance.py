@@ -231,8 +231,111 @@ def requeue_stale_task_claims() -> dict[str, Any]:
     recovery bound is interval + lease (~20 min at the defaults). A row that has exhausted
     `task_max_attempts` goes terminal inside `requeue_stale_claims` itself — the sweep never
     requeues it forever.
+
+    RESULT SHAPE (F-W8-TM-3, wave 9): a sweep can do TWO different things and the result names
+    each one separately — `recovered` (rows moved out of `in_progress`), `requeued` (back to
+    `pending`, i.e. genuinely recoverable work) and `ended` (terminally `failed` at the attempt
+    bound).  The wave-8 shape reported the ONE total under the name `requeued`, so a sweep that
+    ENDED two crash-looping rows read as `{"requeued": 2}` — a recovery that never happened.
     """
     return run_async(_requeue_stale_claims_in_session())
+
+
+#: The stale-claim sweep's two outcomes are DIFFERENT facts (F-W8-TM-3).  `measured` means the
+#: split below is the DB's own post-sweep state for exactly the ids the sweep considered;
+#: `unavailable` means the snapshot and the sweep disagreed, so NO split is reported (never guessed).
+SWEEP_OUTCOME_MEASURED = "measured"
+SWEEP_OUTCOME_UNAVAILABLE = "unavailable"
+
+
+def _status_text(value: Any) -> str:
+    """A `tasks.status` value as the plain text the write produced (enum or text)."""
+    return str(getattr(value, "value", value))
+
+
+async def _sweep_stale_claims_with_outcomes(db: AsyncSession) -> dict[str, Any]:
+    """Run the shipped stale-claim sweep and MEASURE its two outcomes, in the caller's transaction.
+
+    F-W8-TM-3 (found in wave 8, live L4): `requeue_stale_claims` returns ONE number for a pass that
+    can (a) put a dead worker's claim back on the queue or (b) END a crash-looping row at the
+    attempt bound (`failed`, "lease expired after N attempts").  Reporting that number as
+    `requeued` claimed a recovery that never happened: the live sweep said `{"requeued": 2}` while
+    tasks 335 and 336 were both written `failed` and none was requeued.
+
+    The service's own RETURNING split is not exposed (its return value is pinned to the count, and
+    every shipped caller depends on that), so this wrapper MEASURES the outcome instead of
+    inferring it:
+
+      1. snapshot the ids the sweep's own rule selects — the same predicate (status, last sign of
+         life vs the same lease) and the same `STALE_CLAIM_BATCH`/id order the service uses;
+      2. run the shipped sweep;
+      3. read the status the DB now holds for exactly those ids, in the SAME session and
+         transaction (the caller commits both together), so no other writer can move them in
+         between and a rolled-back sweep cannot leave a split claiming a recovery that never
+         committed.
+
+    Fail-closed: if the snapshot and the sweep disagree (the service's rule changed, a heartbeat
+    was refreshed inside the window, a row crossed the lease boundary), the split is NOT reported
+    as a number — `outcomes` is "unavailable", `requeued`/`ended` are None, and `reason` names the
+    disagreement.  A counter that cannot be measured is never guessed.
+    """
+    from sqlalchemy import func, select
+
+    from app.models.task import Task
+    from app.services.task_service import STALE_CLAIM_BATCH
+
+    lease = int(settings.task_claim_lease_seconds)
+    cutoff = as_bound_instant(now_utc() - timedelta(seconds=lease), db)
+    candidate_ids = [
+        int(task_id)
+        for task_id in (
+            await db.execute(
+                select(Task.id)
+                .where(
+                    Task.status == "in_progress",
+                    func.coalesce(Task.heartbeat_at, Task.claimed_at, Task.created_at) < cutoff,
+                )
+                .order_by(Task.id)
+                .limit(STALE_CLAIM_BATCH)
+            )
+        ).scalars().all()
+    ]
+
+    recovered = int(await requeue_stale_claims(db))
+
+    after: dict[int, str] = {}
+    if candidate_ids:
+        rows = (
+            await db.execute(select(Task.id, Task.status).where(Task.id.in_(candidate_ids)))
+        ).all()
+        after = {int(task_id): _status_text(status) for task_id, status in rows}
+
+    requeued_ids = sorted(task_id for task_id in candidate_ids if after.get(task_id) == "pending")
+    ended_ids = sorted(task_id for task_id in candidate_ids if after.get(task_id) == "failed")
+    changed_ids = set(requeued_ids) | set(ended_ids)
+    # A candidate that is STILL `in_progress` was refreshed (a live heartbeat) between the snapshot
+    # and the sweep's own UPDATE, so the sweep did not touch it.  It is reported as `left_ids`, not
+    # as an outcome — and it does not break the agreement: the split only has to account for the
+    # rows the service says it CHANGED.
+    left_ids = [task_id for task_id in candidate_ids if task_id not in changed_ids]
+    measured = len(changed_ids) == recovered
+    reason = None
+    if not measured:
+        reason = (
+            f"the sweep changed {recovered} row(s) but the measured outcomes account for "
+            f"{len(requeued_ids) + len(ended_ids)} (snapshot of {len(candidate_ids)}); the split is "
+            "not reported as a number"
+        )
+    return {
+        "recovered": recovered,
+        "requeued": len(requeued_ids) if measured else None,
+        "ended": len(ended_ids) if measured else None,
+        "outcomes": SWEEP_OUTCOME_MEASURED if measured else SWEEP_OUTCOME_UNAVAILABLE,
+        "reason": reason,
+        "requeued_ids": requeued_ids,
+        "ended_ids": ended_ids,
+        "left_ids": left_ids,
+    }
 
 
 async def _requeue_stale_claims_in_session() -> dict[str, Any]:
@@ -249,14 +352,24 @@ async def _requeue_stale_claims_in_session() -> dict[str, Any]:
                 select(func.count()).select_from(Task).where(Task.status == "in_progress")
             )
         )
-        # The service's own count of recovered claims: back to `pending`, or terminal when
-        # the attempts are spent (reason recorded) — either way, no longer both stuck and
-        # invisible.
-        requeued = await requeue_stale_claims(db)
+        # The split is measured in this transaction (F-W8-TM-3): `recovered` is every claim moved
+        # out of `in_progress`, `requeued` the ones back on the queue, `ended` the ones the attempt
+        # ladder terminated — three facts, never one number wearing three names.
+        swept = await _sweep_stale_claims_with_outcomes(db)
         await db.commit()
 
-    logger.info("task-lease sweep: recovered %s of %s in-flight claim(s)", requeued, scanned)
-    return {"status": "completed", "requeued": requeued, "scanned": scanned}
+    logger.info(
+        "task-lease sweep: recovered %s of %s in-flight claim(s) — %s back to pending, %s ended "
+        "at the attempt bound (outcomes=%s)",
+        swept["recovered"],
+        scanned,
+        "?" if swept["requeued"] is None else swept["requeued"],
+        "?" if swept["ended"] is None else swept["ended"],
+        swept["outcomes"],
+    )
+    if swept["outcomes"] != SWEEP_OUTCOME_MEASURED:
+        logger.warning("task-lease sweep: outcome split unavailable — %s", swept["reason"])
+    return {"status": "completed", "scanned": scanned, **swept}
 
 
 # ── F-22: the broker's orphaned deliveries (no Beat required) ─────────────────────────────────
@@ -318,8 +431,15 @@ async def _recover_orphaned_deliveries(*, broker: Any | None = None) -> dict[str
                     select(func.count()).select_from(Task).where(Task.status == "in_progress")
                 )
             )
-            result.reaped_requeued = await requeue_stale_claims(db)
+            # F-W8-TM-3: the pass reports the sweep's TWO outcomes separately, so a restored
+            # delivery is never confused with a row the attempt ladder just ended.
+            swept = await _sweep_stale_claims_with_outcomes(db)
             await db.commit()
+        result.reaped_recovered = int(swept["recovered"])
+        result.reaped_requeued = swept["requeued"]
+        result.reaped_ended = swept["ended"]
+        result.reaped_outcomes = str(swept["outcomes"])
+        result.reaped_reason = swept["reason"]
     except Exception as exc:  # noqa: BLE001 — a DB outage must not stop the delivery decision
         result.errored.append({"step": "lease_sweep", "error": exc.__class__.__name__})
         logger.warning("delivery recovery: lease sweep failed (%s)", exc.__class__.__name__,
@@ -454,18 +574,25 @@ async def _recover_orphaned_deliveries(*, broker: Any | None = None) -> dict[str
                         "dropped": result.dropped,
                         "left_live_claim": result.left_live_claim,
                         "reaped_requeued": result.reaped_requeued,
+                        "reaped_recovered": result.reaped_recovered,
+                        "reaped_ended": result.reaped_ended,
+                        "reaped_outcomes": result.reaped_outcomes,
                         "bound": result.bound,
                     },
                 )
                 await db.commit()
         logger.info(
-            "delivery recovery: scanned=%s restored=%s dropped=%s live_left=%s reaped=%s/%s",
+            "delivery recovery: scanned=%s restored=%s dropped=%s live_left=%s "
+            "claim_sweep=%s/%s requeued=%s ended=%s outcomes=%s",
             result.scanned,
             result.restored,
             result.dropped,
             result.left_live_claim,
-            result.reaped_requeued,
+            result.reaped_recovered,
             result.reaped_scanned,
+            result.reaped_requeued,
+            result.reaped_ended,
+            result.reaped_outcomes,
         )
         return result.as_dict()
     except Exception as exc:  # noqa: BLE001 — report what was done; the next pass is idempotent
