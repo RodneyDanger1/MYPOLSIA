@@ -40,6 +40,16 @@ never showed a fault.  Now:
   * every BACKEND fault — the activity bus unreachable, the subscription ending, a failed send
     that is not a disconnect — closes with 1011 (internal error), never 1000.  The codes are
     module constants and are pinned by `tests/unit/test_b2_api.py`.
+
+REFUSALS ARE ACCEPT-THEN-CLOSE (SV-W4-12, wave 5).  The refusal DECISION is still made before
+anything is subscribed or sent, but it is DELIVERED by accepting the handshake and closing it as
+the first and only frame (`_refuse`).  Reason, measured: a `websocket.close` sent BEFORE
+`accept()` is not a close frame at all — uvicorn answers the HTTP upgrade with **403** and the
+code is discarded — and a browser cannot read a failed handshake's status.  Its `CloseEvent` is
+always **1006**, i.e. a refused credential was indistinguishable from a dead network
+(`useActivityFeed.closeText` rendered "abnormal").  Wave-4's unit tests asserted `close(code=...)`
+on a fake and could not see it; `tests/unit/api/test_w5_ws_handshake_real.py` now opens a REAL
+socket against a real uvicorn and pins the wire: `101` then a close frame carrying 1008/1013.
 """
 from __future__ import annotations
 
@@ -58,8 +68,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from app.api.deps import refusal_guard
 from app.config import settings
 from app.core import events
+from app.core.errors import E_RATE_LIMITED, PolsiaError
 from app.core.security import api_key_matches, verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -103,6 +115,15 @@ _open_sockets: dict[str, int] = {}
 #: The same sockets counted per OPERATOR (`<operator>`), i.e. per install for the shipped
 #: single-key deployment: the bound a client cannot escape by minting more tickets.
 _operator_sockets: dict[str, int] = {}
+
+#: F-03b (wave 5): when each operator last minted a ticket, for the mint rate limit.  A ticket is
+#: a URL credential with a fresh random SUBJECT, so unlimited mints = unlimited socket identities:
+#: one client that re-mints in a loop can walk past `_MAX_SOCKETS_PER_CLIENT` (4 per subject) and
+#: occupy the install-wide cap.  The window bounds how fast identities can be created; the mint
+#: route also refuses when the operator is already at the socket cap (cap accounting), so a client
+#: cannot stockpile tickets that can never connect.  Pruned on every mint, so it cannot grow past
+#: the configured limit per operator.
+_mint_times: dict[str, list[float]] = {}
 
 
 class WsTicketResponse(BaseModel):
@@ -197,6 +218,72 @@ def operator_identity() -> str:
     return hashlib.sha256(material).hexdigest()[:16]
 
 
+def _authorise_mint(operator: str | None = None, *, now: float | None = None) -> None:
+    """F-03b: refuse a ticket mint that would widen one client's share of the install.
+
+    Two bounds, both per OPERATOR (the shipped install has exactly one API key = one operator):
+
+      * CAP ACCOUNTING — the operator already holds `_MAX_SOCKETS_PER_OPERATOR` sockets, so a new
+        ticket cannot produce a usable socket.  Refusing the MINT here is a named 429 the client
+        can back off from, instead of a pile of handshake refusals that carry no reason.  It also
+        stops a client from stockpiling tickets it can never redeem.
+      * MINT RATE — more than `ws_ticket_mint_limit` mints inside `ws_ticket_mint_window_seconds`.
+        Every mint carries a fresh random SUBJECT, and the socket cap is per SUBJECT (4), so an
+        unlimited mint is an unlimited supply of identities: one client that re-mints in a loop
+        walks past the per-session cap and occupies the install-wide one.  The window bounds how
+        fast identities can be created.
+
+    Both checks run before a ticket exists, and the whole function is synchronous, so two
+    concurrent mints cannot both pass on the same last slot (the event loop cannot interleave a
+    function with no `await`).  `now` is a test seam; production uses the wall clock.
+    """
+    ident = operator if operator is not None else operator_identity()
+    limit = int(settings.ws_ticket_mint_limit)
+    window = float(settings.ws_ticket_mint_window_seconds)
+    current = now if now is not None else time.time()
+
+    open_sockets = _operator_sockets.get(ident, 0)
+    if open_sockets >= _MAX_SOCKETS_PER_OPERATOR:
+        raise PolsiaError(
+            E_RATE_LIMITED,
+            "a socket ticket was not minted: this operator already holds "
+            f"{open_sockets} open activity socket(s), which is the install-wide cap "
+            f"({_MAX_SOCKETS_PER_OPERATOR})",
+            how_to_fix=(
+                "close an idle dashboard tab (each page holds one socket) and retry; the cap "
+                "protects the feed for every other client on this install"
+            ),
+            context={
+                "open_sockets": open_sockets,
+                "socket_cap": _MAX_SOCKETS_PER_OPERATOR,
+                "reason": "socket_cap",
+            },
+        )
+
+    history = [stamp for stamp in _mint_times.get(ident, []) if stamp > current - window]
+    if len(history) >= limit:
+        retry_after = max(0.0, window - (current - history[0]))
+        _mint_times[ident] = history
+        raise PolsiaError(
+            E_RATE_LIMITED,
+            f"a socket ticket was not minted: {len(history)} tickets were already minted in the "
+            f"last {window:g}s (limit {limit} per operator)",
+            how_to_fix=(
+                "back off and reconnect; the activity feed reconnects with exponential backoff, "
+                "and a fresh ticket is minted for each attempt"
+            ),
+            context={
+                "mints_in_window": len(history),
+                "mint_limit": limit,
+                "window_seconds": window,
+                "retry_after_seconds": round(retry_after, 1),
+                "reason": "mint_rate",
+            },
+        )
+    history.append(current)
+    _mint_times[ident] = history
+
+
 def _socket_identity(websocket: WebSocket, ticket: str | None) -> tuple[str, str]:
     """`(cap key, kind)` for this handshake — the identity a socket is COUNTED under.
 
@@ -245,12 +332,45 @@ async def mint_activity_ticket() -> WsTicketResponse:
 
     Browsers cannot set handshake headers; the ticket is the answer to that constraint that does
     not put the key in a URL.  It expires in `_TICKET_TTL_SECONDS` and is safe to appear in a log.
+
+    F-03b: the mint is BOUNDED per operator (`_authorise_mint`): a client cannot mint an unlimited
+    supply of socket identities — the install-wide cap is reachable in at most `limit` tickets per
+    window, and a mint while the operator is already at the socket cap is refused by name (429
+    `E_RATE_LIMITED`) instead of being handed a ticket that cannot connect.
     """
+    with refusal_guard():
+        _authorise_mint()
     ticket, ttl = mint_ws_ticket()
     return WsTicketResponse(ticket=ticket, expires_in=ttl)
 
 
 # ── the socket ────────────────────────────────────────────────────────────────────────────────
+
+
+async def _refuse_handshake(
+    websocket: WebSocket, code: int, reason: str, log: str, *log_args: Any
+) -> None:
+    """Refuse this handshake so the CLIENT can see WHY: accept, then close with `code`.
+
+    SV-W4-12 (wave 5), measured: a `websocket.close` sent BEFORE `accept()` never becomes a close
+    frame.  uvicorn turns it into an HTTP **403** on the upgrade and drops the code
+    (`uvicorn/protocols/websockets/websockets_impl.py:287-295`), and a browser cannot read a
+    failed handshake's HTTP status — its `CloseEvent.code` is 1006 either way.  So the refusal
+    DECISION is still made before anything is subscribed or sent, and the DELIVERY accepts the
+    handshake and closes it as the FIRST and only frame: the documented code (1008 policy /
+    1013 capacity) is what the browser's `onclose` actually receives.
+
+    `reason` is a short static sentence that rides the close frame (the browser exposes it as
+    `CloseEvent.reason`).  It NEVER carries a credential, and the refusal log line is emitted
+    BEFORE the handshake completes, exactly as before.
+    """
+    logger.warning(log, *log_args)
+    try:
+        await websocket.accept()
+    except Exception:  # noqa: BLE001 - the peer may already be gone; the refusal still stands
+        return
+    with contextlib.suppress(Exception):  # the peer may already have dropped the connection
+        await websocket.close(code=code, reason=reason)
 
 
 @router.websocket("/ws/activity")
@@ -267,40 +387,52 @@ async def activity_socket(websocket: WebSocket) -> None:
 
     if supplied_key is not None:
         # An API key in a URL is the defect, not a credential: refuse it, and never echo it.
-        await websocket.close(code=WS_CLOSE_POLICY)
-        logger.warning(
+        await _refuse_handshake(
+            websocket,
+            WS_CLOSE_POLICY,
+            "refused: the API key must not travel in a URL",
             "activity websocket refused: the API key was sent in the query string; mint a "
             "short-lived ticket at POST /api/v1/ws/ticket and connect with ?ticket= "
-            "(or send the X-API-Key header)"
+            "(or send the X-API-Key header)",
         )
         return
 
-    # Refuse BEFORE accept(): an unauthenticated subscriber never gets a working socket.  Same
-    # semantics as every REST route (no key configured => open; blank counts as absent) via the ONE
-    # shared matcher, plus the ticket form for browsers.
+    # Refuse an unauthenticated subscriber BEFORE any subscription or send: it never gets a feed.
+    # Same semantics as every REST route (no key configured => open; blank counts as absent) via
+    # the ONE shared matcher, plus the ticket form for browsers.
     if not (api_key_matches(websocket.headers.get("x-api-key")) or verify_ws_ticket(supplied_ticket)):
-        await websocket.close(code=WS_CLOSE_POLICY)
-        logger.warning("activity websocket refused: missing/invalid credential")
+        await _refuse_handshake(
+            websocket,
+            WS_CLOSE_POLICY,
+            "refused: missing or invalid credential",
+            "activity websocket refused: missing/invalid credential",
+        )
         return
 
     # R-W03-1: the identity is the ticket's SUBJECT (or the operator for a header client), never
     # the peer address — behind nginx every browser is the same peer, and the old keying let four
-    # open sockets anywhere starve every page.  Refused BEFORE accept, exactly as before.
+    # open sockets anywhere starve every page.  The refusal is DELIVERED by `_refuse_handshake`
+    # (SV-W4-12): the decision is made here, before any subscription, and the client still sees
+    # the documented 1013 instead of a bare HTTP 403 that a browser cannot read.
     cap_key, cap_kind = _socket_identity(websocket, supplied_ticket)
     operator_key = operator_identity()
     session_count = _open_sockets.get(cap_key, 0)
     operator_count = _operator_sockets.get(operator_key, 0)
     if session_count >= _MAX_SOCKETS_PER_CLIENT:
-        await websocket.close(code=WS_CLOSE_CAPACITY)
-        logger.warning(
+        await _refuse_handshake(
+            websocket,
+            WS_CLOSE_CAPACITY,
+            "refused: this session already holds the maximum number of activity sockets",
             "activity websocket refused: %s identity already holds %d open socket(s) (cap %d); "
             "the peer address is not used for this",
             cap_kind, session_count, _MAX_SOCKETS_PER_CLIENT,
         )
         return
     if operator_count >= _MAX_SOCKETS_PER_OPERATOR:
-        await websocket.close(code=WS_CLOSE_CAPACITY)
-        logger.warning(
+        await _refuse_handshake(
+            websocket,
+            WS_CLOSE_CAPACITY,
+            "refused: this install already holds the maximum number of activity sockets",
             "activity websocket refused: this install already holds %d open activity socket(s) "
             "(cap %d for the operator)",
             operator_count, _MAX_SOCKETS_PER_OPERATOR,

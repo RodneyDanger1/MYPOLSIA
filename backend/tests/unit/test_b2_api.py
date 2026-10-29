@@ -41,6 +41,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.api.v1 import data as data_module
 from app.api.v1 import ws as ws_module
 from app.config import settings
+from tests.support.ws_handshake import accepted_handshake, refused_handshake
 
 #: The configured owner key for every socket test in this file.
 KEY = "b2-seat-c1-owner-key"
@@ -104,8 +105,21 @@ class _IdlePubsub:
         self.closed = True
 
 
+@pytest.fixture()
+def ws_app():
+    """The real FastAPI app, for the handshake helpers (they own their own TestClient)."""
+    from app.main import app
+
+    return app
+
+
 def _handshake(client: TestClient, url: str, headers: dict[str, str] | None = None):
-    """(accepted, refusal_code).  A pre-accept refusal raises from `__enter__`."""
+    """(accepted, refusal_code) — DEPRECATED in wave 5; kept for the scope-scrub test only.
+
+    SV-W4-12: a refusal is now accept-then-close, so this helper's tuple no longer describes it.
+    Use `tests.support.ws_handshake.refused_handshake` / `accepted_handshake`, which record the
+    frames the route sends and read the close code the client really gets.
+    """
     kwargs = {"headers": headers} if headers else {}
     ws = client.websocket_connect(url, **kwargs)
     try:
@@ -125,6 +139,10 @@ def test_the_api_key_in_the_query_string_is_refused_and_never_reaches_the_access
     The probe records the ASGI scope object the SERVER holds; uvicorn formats its access line from
     that same dict (`get_path_with_query_string(scope)`).  After the handshake the line must read
     `/ws/activity` — with no key in it — for a client that still sends the key in the URL.
+
+    SV-W4-12 (wave 5): the refusal itself is asserted through the shared helper, which records the
+    frames the route sends — OLD shape was a pre-accept close (an HTTP 403 on the wire, read by a
+    browser as close 1006); NEW shape is accept-then-close carrying 1008.
     """
     from uvicorn.protocols.utils import get_path_with_query_string
 
@@ -139,12 +157,11 @@ def test_the_api_key_in_the_query_string_is_refused_and_never_reaches_the_access
     client = TestClient(probe)
     try:
         with caplog.at_level(logging.WARNING):
-            accepted, code = _handshake(client, f"/ws/activity?key={KEY}")
+            ws = client.websocket_connect(f"/ws/activity?key={KEY}")
+            ws.__enter__()
+            ws.__exit__(None, None, None)
     finally:
         client.close()
-
-    assert not accepted, "a key in the query string must never complete the handshake"
-    assert code == ws_module.WS_CLOSE_POLICY
 
     scope = scopes[-1]
     line = get_path_with_query_string(scope)
@@ -153,8 +170,16 @@ def test_the_api_key_in_the_query_string_is_refused_and_never_reaches_the_access
     assert line == "/ws/activity"
     assert KEY not in caplog.text, "no log record may echo the refused credential"
 
+    result = refused_handshake(app, f"/ws/activity?key={KEY}")
+    assert result["accepted"] is True, (
+        f"the refusal must complete the handshake so the code is readable: {result['messages']}"
+    )
+    assert result["close_code"] == ws_module.WS_CLOSE_POLICY
+    assert result["data_frames"] == 0, "a refused socket must never deliver data"
+    assert KEY not in (result["close_reason"] or ""), result["close_reason"]
 
-def test_a_ticket_is_not_the_key_and_it_authenticates_the_socket(ws_key, ws_client):
+
+def test_a_ticket_is_not_the_key_and_it_authenticates_the_socket(ws_key, ws_client, ws_app):
     """The supported URL form: a short-lived, signed ticket from the header-authenticated route."""
     resp = ws_client.post("/api/v1/ws/ticket", headers={"X-API-Key": KEY})
     assert resp.status_code == 200, resp.text
@@ -170,15 +195,17 @@ def test_a_ticket_is_not_the_key_and_it_authenticates_the_socket(ws_key, ws_clie
     assert body["expires_in"] == ws_module._TICKET_TTL_SECONDS
     assert ws_module.verify_ws_ticket(ticket) is True
 
-    accepted, code = _handshake(ws_client, f"/ws/activity?ticket={ticket}")
-    assert accepted, f"a freshly minted ticket must be accepted (refusal code {code})"
+    accepted = accepted_handshake(ws_app, f"/ws/activity?ticket={ticket}")
+    assert accepted["accepted"], f"a freshly minted ticket must be accepted: {accepted}"
 
     # The header form is unchanged for programmatic clients.
-    accepted, code = _handshake(ws_client, "/ws/activity", headers={"X-API-Key": KEY})
-    assert accepted, f"the X-API-Key header must still be accepted (refusal code {code})"
+    accepted = accepted_handshake(ws_app, "/ws/activity", headers={"X-API-Key": KEY})
+    assert accepted["accepted"], f"the X-API-Key header must still be accepted: {accepted}"
 
 
-def test_the_ticket_route_requires_the_owner_key_and_a_forged_ticket_is_refused(ws_key, ws_client):
+def test_the_ticket_route_requires_the_owner_key_and_a_forged_ticket_is_refused(
+    ws_key, ws_client, ws_app
+):
     assert ws_client.post("/api/v1/ws/ticket").status_code == 401
     assert ws_client.post(
         "/api/v1/ws/ticket", headers={"X-API-Key": "not-the-key"}
@@ -189,8 +216,10 @@ def test_the_ticket_route_requires_the_owner_key_and_a_forged_ticket_is_refused(
     head, expiry, subject, signature = ticket.split(".")
     forged = f"{head}.{expiry}.{subject}.{'0' * len(signature)}"
     assert ws_module.verify_ws_ticket(forged) is False
-    accepted, code = _handshake(ws_client, f"/ws/activity?ticket={forged}")
-    assert not accepted and code == ws_module.WS_CLOSE_POLICY
+    refused = refused_handshake(ws_app, f"/ws/activity?ticket={forged}")
+    assert refused["accepted"] is True, refused
+    assert refused["close_code"] == ws_module.WS_CLOSE_POLICY
+    assert refused["data_frames"] == 0
 
     # The subject is SIGNED: swapping it for another identity breaks the signature (otherwise a
     # client could pick any cap key it liked).
@@ -205,19 +234,20 @@ def test_the_ticket_route_requires_the_owner_key_and_a_forged_ticket_is_refused(
     # And an expired ticket is refused.
     expired, _ = ws_module.mint_ws_ticket(now=time.time() - ws_module._TICKET_TTL_SECONDS - 5)
     assert ws_module.verify_ws_ticket(expired) is False
-    accepted, code = _handshake(ws_client, f"/ws/activity?ticket={expired}")
-    assert not accepted and code == ws_module.WS_CLOSE_POLICY
+    refused = refused_handshake(ws_app, f"/ws/activity?ticket={expired}")
+    assert refused["accepted"] is True, refused
+    assert refused["close_code"] == ws_module.WS_CLOSE_POLICY
 
 
-def test_the_socket_is_still_open_when_no_key_is_configured(ws_client):
+def test_the_socket_is_still_open_when_no_key_is_configured(ws_app):
     """The house semantics, unchanged: no key configured => the service is open."""
     old = settings.api_key
     settings.api_key = ""
     try:
-        accepted, code = _handshake(ws_client, "/ws/activity")
+        result = accepted_handshake(ws_app, "/ws/activity")
     finally:
         settings.api_key = old
-    assert accepted, f"an open backend must accept (refusal code {code})"
+    assert result["accepted"], f"an open backend must accept: {result}"
 
 
 # ── F-52 · keepalive, cap, and a fault that is not a clean close ─────────────────────────────
@@ -261,7 +291,7 @@ def test_the_heartbeat_sends_a_ping_so_a_dead_path_is_noticed(ws_key, ws_client,
         assert isinstance(frame["ts"], float)
 
 
-def test_one_client_cannot_hold_more_than_the_socket_cap(ws_key, ws_client, monkeypatch):
+def test_one_client_cannot_hold_more_than_the_socket_cap(ws_key, ws_client, ws_app, monkeypatch):
     from app.core import events
 
     async def idle():
@@ -274,12 +304,15 @@ def test_one_client_cannot_hold_more_than_the_socket_cap(ws_key, ws_client, monk
     first.__enter__()  # the handshake completed => the counter is 1
     try:
         assert sum(ws_module._open_sockets.values()) == 1
-        accepted, code = _handshake(ws_client, "/ws/activity", headers={"X-API-Key": KEY})
+        refused = refused_handshake(ws_app, "/ws/activity", headers={"X-API-Key": KEY})
     finally:
         first.__exit__(None, None, None)
 
-    assert not accepted, "the second socket from one client must be refused"
-    assert code == ws_module.WS_CLOSE_CAPACITY == 1013
+    assert refused["accepted"] is True, (
+        f"the capacity refusal must complete the handshake so 1013 is readable: {refused}"
+    )
+    assert refused["close_code"] == ws_module.WS_CLOSE_CAPACITY == 1013
+    assert refused["data_frames"] == 0
     assert ws_module._open_sockets == {}, "the cap slot must be released when a socket ends"
 
 

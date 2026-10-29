@@ -48,13 +48,20 @@ class _IdlePubsub:
 
 
 class FakeWebSocket:
-    """The members the handler reads, with the nginx peer address every browser really has."""
+    """The members the handler reads, with the nginx peer address every browser really has.
+
+    SV-W4-12 (wave 5): a refusal is now DELIVERED as accept-then-close (a pre-accept close is an
+    HTTP 403 that a browser can only read as 1006), so a refused handshake is `accepted` AND
+    `closed`, and `sent` must stay empty — the close frame is the only thing the client gets.
+    """
 
     def __init__(self, *, ticket: str | None = None, api_key: str | None = None,
                  host: str = NGINX) -> None:
         self.accepted = False
         self.closed = False
         self.close_codes: list[int | None] = []
+        self.close_reasons: list[str | None] = []
+        self.sent: list[str] = []
         self.query_params: dict[str, str] = {}
         self.headers: dict[str, str] = {}
         if ticket is not None:
@@ -68,15 +75,16 @@ class FakeWebSocket:
         self.accepted = True
 
     async def send_text(self, text: str) -> None:
-        return None
+        self.sent.append(text)
 
     async def receive_text(self) -> str:
         await asyncio.Event().wait()      # a quiet client: parks until the handler is torn down
         return ""                          # pragma: no cover - unreachable
 
-    async def close(self, code: int | None = None) -> None:
+    async def close(self, code: int | None = None, reason: str | None = None) -> None:
         self.closed = True
         self.close_codes.append(code)
+        self.close_reasons.append(reason)
 
 
 @pytest.fixture(autouse=True)
@@ -189,9 +197,13 @@ async def test_one_ticket_cannot_hold_more_than_its_own_cap(monkeypatch) -> None
     task = await _hold(first)
     try:
         second = FakeWebSocket(ticket=ticket)
-        await _hold(second)
-        assert second.accepted is False
+        # A refusal RETURNS immediately (SV-W4-12: accept, then close with the code), so this needs
+        # no task and no polling — the assertion below is the whole observable.
+        await ws_module.activity_socket(second)
+        assert second.accepted is True, "the handshake completes so the client can read the code"
+        assert second.closed is True
         assert second.close_codes == [ws_module.WS_CLOSE_CAPACITY] == [1013]
+        assert second.sent == [], "a refused socket must receive NOTHING except the close frame"
     finally:
         await _release(task)
 
@@ -209,10 +221,13 @@ async def test_the_install_wide_operator_cap_still_binds(monkeypatch) -> None:
             tasks.append(await _hold(ws))
             assert ws.accepted is True
         third = FakeWebSocket(ticket=ws_module.mint_ws_ticket()[0])
-        await _hold(third)
-        assert third.accepted is False
+        await ws_module.activity_socket(third)
+        assert third.accepted is True, "the handshake completes so the client can read the code"
         assert third.close_codes == [ws_module.WS_CLOSE_CAPACITY]
-        assert sum(ws_module._operator_sockets.values()) == 2
+        assert third.sent == []
+        assert sum(ws_module._operator_sockets.values()) == 2, (
+            "a REFUSED socket must not consume a cap slot"
+        )
     finally:
         for task in tasks:
             await _release(task)
@@ -226,9 +241,11 @@ async def test_header_clients_keep_their_single_client_semantics(monkeypatch) ->
     task = await _hold(first)
     try:
         second = FakeWebSocket(api_key="DEV-KEY-R-W03-1")
-        await _hold(second)
+        await ws_module.activity_socket(second)
         assert first.accepted is True
-        assert second.accepted is False and second.close_codes == [1013]
+        assert second.accepted is True and second.closed is True
+        assert second.close_codes == [1013]
+        assert second.sent == []
     finally:
         await _release(task)
 
@@ -243,10 +260,11 @@ async def test_a_ticket_with_a_swapped_subject_is_refused() -> None:
     head, expiry, _subject, signature = ticket.split(".")
     forged = f"{head}.{expiry}.picked-by-the-client.{signature}"
     ws = FakeWebSocket(ticket=forged)
-    await _hold(ws)
-    assert ws.accepted is False
+    await ws_module.activity_socket(ws)
+    assert ws.accepted is True, "refused by close code, not by an unreadable HTTP 403"
     assert ws.close_codes == [ws_module.WS_CLOSE_POLICY]
-    assert ws_module._open_sockets == {}
+    assert ws.sent == []
+    assert ws_module._open_sockets == {}, "a refused socket must never be counted"
 
 
 @pytest.mark.asyncio
@@ -255,6 +273,8 @@ async def test_an_expired_or_v1_ticket_is_refused() -> None:
     legacy = f"v1.{int(time.time()) + 10}.{ws_module._ticket_signature(int(time.time()) + 10, 's')}"
     for ticket in (expired, legacy):
         ws = FakeWebSocket(ticket=ticket)
-        await _hold(ws)
-        assert ws.accepted is False, ticket
+        await ws_module.activity_socket(ws)
+        assert ws.accepted is True, ticket
+        assert ws.closed is True, ticket
         assert ws.close_codes == [ws_module.WS_CLOSE_POLICY], ticket
+        assert ws.sent == [], ticket

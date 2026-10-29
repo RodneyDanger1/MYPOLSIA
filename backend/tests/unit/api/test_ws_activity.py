@@ -64,6 +64,8 @@ class FakeWebSocket:
     F-52 (wave B2) added two members the old fake did not model: `receive_text` (the handler holds
     the receive side open so a disconnect is noticed immediately) and `close(code=...)` (a backend
     fault must close with 1011, not the clean 1000).  Both are recorded, so the codes are asserted.
+
+    SV-W4-12 (wave 5): `close` also takes the `reason` a refusal rides on the close frame.
     """
 
     def __init__(self) -> None:
@@ -72,6 +74,7 @@ class FakeWebSocket:
         self.closed = False
         self.close_calls = 0
         self.close_codes: list[int | None] = []
+        self.close_reasons: list[str | None] = []
         # D1: the handler reads the handshake's key before accept. Empty maps = no credential
         # (the autouse fixture below pins open-backend mode, so that is ACCEPTED here).
         self.query_params: dict[str, str] = {}
@@ -90,10 +93,11 @@ class FakeWebSocket:
         await asyncio.Event().wait()
         return ""  # pragma: no cover - unreachable
 
-    async def close(self, code: int | None = None) -> None:
+    async def close(self, code: int | None = None, reason: str | None = None) -> None:
         self.closed = True
         self.close_calls += 1
         self.close_codes.append(code)
+        self.close_reasons.append(reason)
 
 
 @pytest.fixture

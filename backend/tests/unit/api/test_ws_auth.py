@@ -1,30 +1,35 @@
 """The activity socket authenticates through the SAME matcher as its REST twin (D1; audit L1-01/L3-08).
 
 `api_key_matches` keeps the exact REST semantics: no key configured => the service is open (a
-blank value counts as "no credential"); otherwise a constant-time compare. The socket refuses
-BEFORE accept, so a denied handshake raises `WebSocketDisconnect` with code 1008 and no stream
-is ever established; an accepted client enters fine and the server then closes on its own
-bounded redis path (code 1011 since F-52 — a backend fault must never look like a clean 1000).
+blank value counts as "no credential"); otherwise a constant-time compare.
 
-RED leg (observed): neutralize the guard in `activity_socket` (`if False:`) -> the refused
-handshakes enter successfully and the first two tests fail; restore -> green.
+SV-W4-12 (wave 5) — WHAT A REFUSAL LOOKS LIKE, corrected.  The wave-4 pin was
+`WebSocketDisconnect.code == 1008` raised from `TestClient.__enter__`, i.e. the ASGI message a
+`close()` BEFORE `accept()` produces.  On the wire that is not a close code at all: uvicorn answers
+the HTTP upgrade with **403** (`uvicorn/protocols/websockets/websockets_impl.py:287-295`) and a
+browser, which cannot read a failed handshake's status, reports close code **1006** — a refused
+credential was indistinguishable from a dead network (measured live: 9 refusals, all HTTP 403).
+The handler now ACCEPTS the handshake and closes it with the documented code, so these tests assert
+the delivery the client really gets: `accepted`, then a close frame carrying 1008, and NO data
+frame.  The wire-level proof (a raw TCP upgrade and a real `websockets` client against a real
+uvicorn) is `tests/unit/api/test_w5_ws_handshake_real.py`.
+
+RED leg for the wave-5 change: restore the pre-fix `ws.py` (close before accept) and these tests
+fail with `accepted is False` / no close code — the same failure the live image showed.
 """
 from __future__ import annotations
 
 import pytest
-from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+
+from tests.support.ws_handshake import accepted_handshake, refused_handshake
 
 
 @pytest.fixture()
-def ws_client():
+def ws_app():
+    """The real app.  A plain TestClient does not run lifespan -> no redis/chroma startup needed."""
     from app.main import app
 
-    # A plain TestClient (no `with`) does not run lifespan -> no redis/chroma startup is needed
-    # to exercise the handshake check.
-    client = TestClient(app)
-    yield client
-    client.close()
+    return app
 
 
 def _set_api_key(value: str) -> str:
@@ -35,30 +40,24 @@ def _set_api_key(value: str) -> str:
     return old
 
 
-def _handshake(client: TestClient, url: str, headers: dict[str, str] | None = None):
-    """(accepted, refusal_code). A pre-accept refusal raises from `__enter__` (code 1008)."""
-    kwargs = {"headers": headers} if headers else {}
-    ws = client.websocket_connect(url, **kwargs)
-    try:
-        ws.__enter__()
-    except WebSocketDisconnect as exc:  # refused before accept: no stream ever exists
-        return False, getattr(exc, "code", None)
-    ws.__exit__(None, None, None)
-    return True, None
-
-
 @pytest.mark.parametrize("url", ["/ws/activity", "/ws/activity?key=wrong"])
-def test_ws_refused_with_1008_when_key_configured_and_missing_or_wrong(ws_client, url):
+def test_ws_refused_with_1008_when_key_configured_and_missing_or_wrong(ws_app, url):
     old = _set_api_key("secret-key")
     try:
-        accepted, code = _handshake(ws_client, url)
-        assert not accepted, "an unauthenticated subscriber must not complete the handshake"
-        assert code == 1008, "the refusal must be the policy-violation close, not a silent drop"
+        result = refused_handshake(ws_app, url)
+        assert result["accepted"] is True, (
+            "the refusal must complete the handshake, otherwise the browser sees 1006: "
+            f"{result['messages']}"
+        )
+        assert result["close_code"] == 1008, (
+            f"the refusal must be the policy-violation close, not a silent drop: {result}"
+        )
+        assert result["data_frames"] == 0, "a refused socket must never deliver data"
     finally:
         _set_api_key(old)
 
 
-def test_ws_refuses_the_key_in_the_query_string_and_accepts_the_header_form(ws_client):
+def test_ws_refuses_the_key_in_the_query_string_and_accepts_the_header_form(ws_app):
     """F-46 (wave B2): the URL is not a credential channel.
 
     OLD pin: `test_ws_accepted_with_the_right_key_in_the_query` asserted
@@ -70,28 +69,62 @@ def test_ws_refuses_the_key_in_the_query_string_and_accepts_the_header_form(ws_c
     """
     old = _set_api_key("secret-key")
     try:
-        accepted, code = _handshake(ws_client, "/ws/activity?key=secret-key")
-        assert not accepted, "a key in the query string must not authenticate the socket"
-        assert code == 1008
-        accepted, _ = _handshake(ws_client, "/ws/activity", headers={"x-api-key": "secret-key"})
-        assert accepted
+        result = refused_handshake(ws_app, "/ws/activity?key=secret-key")
+        assert result["accepted"] is True, "a key in the query string must not authenticate"
+        assert result["close_code"] == 1008, result
+        assert result["data_frames"] == 0
+        accepted = accepted_handshake(
+            ws_app, "/ws/activity", headers={"x-api-key": "secret-key"}
+        )
+        assert accepted["accepted"] is True, accepted
     finally:
         _set_api_key(old)
 
 
-def test_ws_accepted_with_the_right_key_header_for_programmatic_clients(ws_client):
+def test_ws_accepted_with_the_right_key_header_for_programmatic_clients(ws_app):
     old = _set_api_key("secret-key")
     try:
-        accepted, _ = _handshake(ws_client, "/ws/activity", headers={"x-api-key": "secret-key"})
-        assert accepted
+        result = accepted_handshake(ws_app, "/ws/activity", headers={"x-api-key": "secret-key"})
+        assert result["accepted"] is True, result
     finally:
         _set_api_key(old)
 
 
-def test_ws_is_open_when_no_key_is_configured_blank_counts_as_absent(ws_client):
+def test_ws_is_open_when_no_key_is_configured_blank_counts_as_absent(ws_app):
     old = _set_api_key("")
     try:
-        accepted, _ = _handshake(ws_client, "/ws/activity")
-        assert accepted
+        result = accepted_handshake(ws_app, "/ws/activity")
+        assert result["accepted"] is True, result
     finally:
         _set_api_key(old)
+
+
+class _VanishedPeer:
+    """A handshake whose peer is already gone: `accept()` raises, as a closing transport does.
+
+    Exercises `_refuse_handshake`'s failure mode.  A refusal must never raise just because the
+    client left mid-refusal: the decision was already made and logged, and nothing may escape into
+    the ASGI server as an unhandled exception.
+    """
+
+    def __init__(self) -> None:
+        self.query_params = {"key": "sent-in-the-url"}
+        self.headers: dict[str, str] = {}
+        self.scope = {"query_string": b"key=sent-in-the-url"}
+        self.accepted = False
+        self.closed = False
+
+    async def accept(self) -> None:
+        raise RuntimeError("transport already closed")
+
+    async def close(self, code: int | None = None, reason: str | None = None) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_to_a_vanished_peer_is_logged_and_does_not_raise(ws_app):
+    from app.api.v1.ws import activity_socket
+
+    peer = _VanishedPeer()
+    await activity_socket(peer)  # must return, not raise
+    assert peer.closed is False, "there is no socket to close once accept() has failed"
