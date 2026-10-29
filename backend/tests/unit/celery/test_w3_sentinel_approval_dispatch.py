@@ -443,6 +443,80 @@ def test_a_ledger_write_failure_refuses_the_dispatch_and_requeues_the_row(queue_
     assert "approval_ledger_unwritable" in _activity_actions(queue_db)
 
 
+def test_a_foreign_claim_is_described_truthfully_never_requeued_by_this_delivery(
+    queue_db, monkeypatch
+):
+    """W6-S4 (wave 7): the E_DB envelope must describe the ROW, not the happy path.
+
+    OLD behaviour (pinned by the test above for the OWNED-claim branch): the refusal payload
+    hardcoded `task_status="pending"` and `requeued_for_retry=True`.  That is true only when THIS
+    worker still holds the claim and the release lands.  Wave 6 measured the other branch on the
+    live image (W5-S2 takeover, `approval-edb-edb_foreign.json`): the same constants came back
+    while the row actually stayed `in_progress` under the other worker — a caller reading them
+    would believe a row this delivery does not own had been requeued by it.
+
+    THIS TEST drives the branch through the REAL `release_claim`: `worker_id()` is stateful, so the
+    claim at the top of `_execute_agent_task` is ours and the ONE call inside the spend seam is a
+    different id — exactly the shape of a takeover while a delivery is in flight.  The release then
+    raises the product's own `E_TASK_CLAIMED`, and NO claim write is attempted (the W5-S2 guard).
+
+    RED LEG (wave 7): restore `"task_status": "pending", "requeued_for_retry": True` in
+    `agent_tasks._spend_approval_before_dispatch` and this test fails on the first assertion pair
+    with `task_status='pending'` / `requeued_for_retry=True` for an `in_progress` row (raw output in
+    `sentinel/raw/w7/RED-w6s4-task-status.txt`).
+    """
+    _configure_secret(monkeypatch)
+    provider = _install_provider(monkeypatch, Provider())
+    model_calls = _install_model(monkeypatch)
+    metadata, (fp,) = _parked_metadata(("first", "first@example.com"))
+    task_id = _create_parked_task(queue_db, metadata)
+    token = issue_approval(SECRET.encode(), action_fingerprint=fp).token
+    _attach(queue_db, task_id, token, fp)
+
+    def _refuse_ledger(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise PolsiaError(E_DB, "the consumed_approvals table is unwritable (probe)")
+
+    monkeypatch.setattr("app.agents.policy_firewall.consume_approval", _refuse_ledger)
+
+    # The takeover: call 1 is the claim (ours), call 2 is the spend seam's `worker_id()` (theirs).
+    claim_ids = {"n": 0}
+
+    def _takeover() -> str:
+        claim_ids["n"] += 1
+        return "sentinel-w7-owner" if claim_ids["n"] == 1 else "sentinel-w7-other-worker"
+
+    monkeypatch.setattr(agent_tasks, "worker_id", _takeover)
+
+    outcome = queue_db.run(agent_tasks._execute_agent_task(task_id))
+
+    assert outcome["status"] == "skipped", outcome
+    assert outcome["reason"] == E_DB, outcome
+    assert outcome["task_status"] == "in_progress", (
+        "the envelope must report the row's ACTUAL status under a foreign claim, not 'pending': "
+        f"{outcome}"
+    )
+    assert outcome["requeued_for_retry"] is False, (
+        "this delivery did not requeue a row another worker holds: " f"{outcome}"
+    )
+    assert outcome["claim_released"] is False, outcome
+    assert provider.calls == [], "the approved action must not be dispatched on an unproven spend"
+    assert model_calls == []
+    assert queue_db.query("SELECT COUNT(*) AS c FROM agent_runs")[0]["c"] == 0, (
+        "a refused dispatch must not open a run row"
+    )
+    row = queue_db.row(task_id)
+    assert row["status"] == "in_progress", row
+    assert row["claimed_by"] == "sentinel-w7-owner", (
+        "W5-S2: the other worker's claim must not be overwritten by the failed release"
+    )
+    assert row["error_message"].startswith(E_DB), row
+    after = _metadata(queue_db, task_id)
+    assert after.get("approval_token") == token, "an unspent token stays on the row"
+    assert after.get("rearmed_at"), "the rearm stamp is written even when the release is refused"
+    assert [item["fingerprint"] for item in after["approval_required"]] == [fp]
+    assert "approval_ledger_unwritable" in _activity_actions(queue_db)
+
+
 # ── 5. one attempt: the spent token is never restored by the OR-02 settlement ────────────────
 
 

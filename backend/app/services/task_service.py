@@ -2283,6 +2283,53 @@ async def create_agent_run(
     return run
 
 
+#: Statuses a run never leaves (`ck_agent_runs_status`'s terminal vocabulary). A settle that
+#: arrives at a row already holding one of these is a SECOND writer: it may describe the real
+#: outcome, but it must not erase the first close's record (wave 7 — see `finish_agent_run`).
+RUN_TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+
+#: `usage_json` key a late settle writes when it lands on an already-closed run (wave 7). It names
+#: the status the row held and the status this settle wrote, so a reader can never again see
+#: "completed" where a reaper's `interrupted` block says the run was declared dead, with no trace
+#: of which fact came first.
+SETTLEMENT_SUPERSEDED_KEY = "settlement_superseded"
+
+
+def _annotate_superseded_close(
+    run: AgentRun, *, previous_status: str, settled_status: str
+) -> None:
+    """Record that a settle landed on an ALREADY-CLOSED run (wave 7) — never erase the first close.
+
+    The reaper's `interrupted` block says what the ledger believed when it closed the run; this
+    settle says what the run actually did.  Both facts stay, and the marker makes the order
+    readable (`closed_status` -> `settled_status`).  `raw_log` keeps the reaper's sentence and
+    appends this one: a `completed` row still carrying "E_RUN_STALE: the worker died mid-run" with
+    no explanation would be a contradiction, not a record.
+    """
+    now = utcnow().isoformat()
+    existing = run.usage_json if isinstance(run.usage_json, dict) else {}
+    merged = dict(existing)
+    interrupted = merged.get(RUN_INTERRUPTED_KEY)
+    if isinstance(interrupted, dict) and "superseded_at" not in interrupted:
+        merged[RUN_INTERRUPTED_KEY] = {
+            **interrupted,
+            "superseded_at": now,
+            "superseded_by_status": settled_status,
+        }
+    merged[SETTLEMENT_SUPERSEDED_KEY] = {
+        "closed_status": previous_status,
+        "settled_status": settled_status,
+        "at": now,
+    }
+    run.usage_json = merged
+    note = (
+        f"settlement superseded an earlier close: the row was {previous_status!r} and this "
+        f"settle wrote {settled_status!r} at {now}"
+    )
+    existing_log = (run.raw_log or "").strip()
+    run.raw_log = f"{existing_log}\n{note}" if existing_log else note
+
+
 async def finish_agent_run(
     db: AsyncSession,
     run_id: int,
@@ -2301,11 +2348,28 @@ async def finish_agent_run(
 
     Each field is written only when supplied, so a late `finish` call cannot erase
     accounting the caller already recorded.
+
+    WAVE 7 — A LATE SETTLE ON AN ALREADY-CLOSED RUN.  The stale-run reaper
+    (`celery_app.tasks.maintenance.close_stale_agent_runs`) closes a run it believes dead. The
+    process can then come back (a suspended container, a stopped clock) and settle the SAME row.
+    Measured on `8c941d1`: the late write set `status="completed"` and left the reaper's
+    `usage_json.interrupted` block saying the run was closed unmeasured, with NOTHING recording
+    that two writers had touched one terminal row — and `_apply_run_usage` then deleted the
+    interruption block outright. Now the real outcome still lands (it is the run's truth), but:
+      * the previous terminal status is recorded under `usage_json.settlement_superseded`
+        (`closed_status`, `settled_status`, `at`);
+      * an `interrupted` block is ANNOTATED (`superseded_at`, `superseded_by_status`) instead of
+        being silently contradicted — e.g. a `cost_scope="unmeasured"` close followed by a measured
+        cost is readable as "unmeasured AT THE CLOSE, superseded by the settle";
+      * the closed run's `raw_log` note is preserved and the supersession appended (never replaced).
+    An ordinary settle (running -> terminal) writes none of this.
     """
     result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
     run = result.scalar_one_or_none()
     if run is None:
         return None
+    previous_status = str(run.status or "")
+    superseded_close = previous_status in RUN_TERMINAL_STATUSES and previous_status != str(status)
     run.status = status
     if output is not None:
         run.output = output
@@ -2323,6 +2387,10 @@ async def finish_agent_run(
         run.cost_usd = _as_column_decimal(cost_usd)
     if usage_json is not None:
         run.usage_json = usage_json
+    if superseded_close:
+        _annotate_superseded_close(
+            run, previous_status=previous_status, settled_status=str(status)
+        )
     run.ended_at = utcnow()
     await db.flush()
     return run

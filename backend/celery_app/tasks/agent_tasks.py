@@ -168,9 +168,23 @@ def worker_id() -> str:
 
 
 def is_retryable(exc: BaseException | None) -> bool:
+    """Should the TASK ladder redeliver a row whose run failed with `exc`?
+
+    The code table below is the answer for every ordinary failure.  W7 (retry ladders): a refusal
+    may also DECLARE its own verdict in `context["retryable"]` — the agent runtime sets it to
+    `False` for a provider-terminal operator action (a rejected API key, an out-of-balance
+    provider account).  Those share the generic `E_CLI_EXIT` code with genuinely transient exits,
+    so the code table alone requeued them `agent_max_retries` times, and every redelivery was
+    doomed by construction until a human entered a key or topped up the account.  Only a bool
+    counts (a malformed context value falls back to the table, never to "retry"); an absent key
+    leaves every existing answer — and every pinned `RETRYABLE_CODES` membership — unchanged.
+    """
     if exc is None:
         return True
     if isinstance(exc, PolsiaError):
+        declared = exc.context.get("retryable")
+        if isinstance(declared, bool):
+            return declared
         return exc.code in RETRYABLE_CODES
     # Unexpected failures (driver/network/OS) are treated as transient; the ladder is
     # bounded by settings.agent_max_retries and every attempt is visible in the ledger.
@@ -268,7 +282,16 @@ def _apply_run_usage(run_row: Any, result: dict[str, Any]) -> None:
         except (TypeError, ValueError, ArithmeticError):  # pragma: no cover - defensive, logged not silent
             logger.warning("non-numeric cost in agent result: %r", cost)
 
-    recorded: dict[str, Any] = dict(envelope_usage)
+    # WAVE 7: a MERGE, never a replacement.  This used to start from the result's envelope and
+    # assign `usage_json` outright, so a settle that landed after another writer's close deleted
+    # that writer's record — measured: the stale-run reaper's `interrupted` block + the in-flight
+    # usage snapshot vanished when a resumed worker settled the same row, leaving a `completed` row
+    # whose own accounting had been rewritten with no trace.  The result's values still WIN for the
+    # keys it carries; keys this settle did not write are preserved.
+    recorded: dict[str, Any] = (
+        dict(run_row.usage_json) if isinstance(run_row.usage_json, dict) else {}
+    )
+    recorded.update(envelope_usage)
     if usage:
         recorded.setdefault("usage", usage)
     for key in RUN_META_KEYS:
@@ -345,6 +368,10 @@ async def _with_compliance_preflight(
 
     try:
         preflight = await compliance_preflight(db)
+        # R1 (wave 7): the producer assertion the session-free send requires. This resolution runs
+        # immediately before the agent is dispatched; a per-SEND refresh inside a long run is the
+        # wave-8 carry, so the assertion is scoped to "resolved at dispatch", not "fresh forever".
+        preflight = {**preflight, "send_time_verified": True}
     except Exception as exc:  # noqa: BLE001 — recorded, never a fabricated identity
         logger.warning(
             "code=compliance_preflight_unavailable: %s runs without a worker-resolved "
@@ -1198,6 +1225,7 @@ async def _spend_approval_before_dispatch(
                 "task %s: the approval ledger could not record the spend (%s) — refusing the "
                 "dispatch and re-queueing the row", task_id, exc.message,
             )
+            released = True
             try:
                 await release_claim(db, task_id, me)
             except PolsiaError as release_exc:
@@ -1207,6 +1235,7 @@ async def _spend_approval_before_dispatch(
                 # dispatched and the ledger is untouched either way.
                 if release_exc.code != E_TASK_CLAIMED:
                     raise
+                released = False
                 logger.warning(
                     "task %s: the E_DB re-queue could not release the claim (%s) — the row "
                     "belongs to another claim; stamping the rearm without a claim write",
@@ -1227,16 +1256,35 @@ async def _spend_approval_before_dispatch(
                 level="error",
                 detail={"task_id": task_id, "action_fingerprint": fingerprint, "code": E_DB},
             )
+            # W6-S4 (wave 7): the envelope must describe the row as it IS, never as the happy
+            # path would leave it.  The old shape HARDCODED `task_status="pending"` — true when
+            # the release lands, FALSE under the W5-S2 foreign-claim branch, where the row stays
+            # `in_progress` under the other worker (measured in wave 6: `outcome.task_status=
+            # "pending"` vs `row_after.status="in_progress"`).  A caller that trusted the constant
+            # would believe a row this delivery does not own had been requeued by it.
+            # `requeued_for_retry` is derived from the SAME observation for the same reason: only
+            # a row actually back in `pending` can be re-dispatched by the stranded-row
+            # reconciler, so the boolean is `released and status == "pending"` — the old `True`
+            # was the same overstatement in another field.  The row read above is fresh:
+            # `release_claim` updates with `synchronize_session=False` and this session had not
+            # loaded the row, so the SELECT reflects the state after our release attempt in both
+            # branches (in the foreign branch `release_claim` itself read the row moments earlier
+            # and its identity-mapped copy is what this SELECT returns).
+            observed_status = str(row.status) if row is not None and row.status is not None else ""
+            task_status = observed_status or ("pending" if released else "unknown")
+            requeued = released and observed_status == "pending"
             await db.commit()
             return False, {
                 "status": "skipped",
                 "task_id": task_id,
                 "agent_type": agent_type,
-                "task_status": "pending",
+                "task_status": task_status,
                 "reason": E_DB,
                 "error": exc.message,
                 "approval_fingerprint": fingerprint,
-                "requeued_for_retry": True,
+                "requeued_for_retry": requeued,
+                # WHY the boolean above is what it is: a foreign claim is not a failed release.
+                "claim_released": released,
             }
     if spent.ok:
         logger.info(
@@ -2813,6 +2861,23 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                             continue
                         stored_payloads[fingerprint] = record
                     merged[APPROVED_PAYLOAD_KEY] = stored_payloads
+                    # WAVE 7 (W7-LD-01): A RE-PARK NEVER KEEPS THE ATTEMPT'S TOKEN.  Measured on
+                    # the wave-6 tree: a parked row whose owner supplied an EXPIRED token re-parked
+                    # with `metadata.approval_token` + `approval_token_fingerprint` still on it —
+                    # the attempt had refused it by name ("nothing was spent"), yet the dead bearer
+                    # credential rode the next claim, where it was re-verified and refused again.
+                    # A parked row asks for a FRESH mint (`POST /api/v1/approvals` overwrites the
+                    # token anyway), so the dead credential is retired here and the retirement is
+                    # recorded — the same "no usable set ⇒ no token" rule the terminal write
+                    # (`_clear_parked_approval`) and the spent-token refusal already implement.
+                    dead_token = merged.pop(APPROVAL_TOKEN_KEY, None)
+                    if dead_token is not None:
+                        merged.pop(APPROVAL_TOKEN_FINGERPRINT_KEY, None)
+                        merged["approval_token_cleared"] = {
+                            "reason": "re_parked",
+                            "source": "agent_tasks.re_park",
+                            "fresh_mint_required": True,
+                        }
                     task_row.metadata_json = merged
                 if replay and isinstance(result, dict):
                     # The replay's own outcome, per fingerprint: `sent`/`provider_refused` close the

@@ -463,6 +463,13 @@ def route_agent_type(message: str) -> str:
 # ── confirm tokens (the approvals mint pattern, V8-D4) ───────────────────────
 
 
+#: The intent state of a proposal that a NEWER proposal replaced (wave 7).  It is deliberately not
+#: "consumed": consumption means the owner filed that plan, supersession means they moved on before
+#: filing it.  One live gate per owner is the invariant the F-40 restore needs (see
+#: `supersede_pending_proposals`).
+SUPERSEDED_STATE = "superseded"
+
+
 def issue_confirm_token(secret: bytes, *, chat_message_id: int, ttl_s: int = CONFIRM_TOKEN_TTL_S) -> str:
     """Mint the single-use confirm token for ONE pending chat row.
 
@@ -550,6 +557,49 @@ def pending_confirm_expiry(row: ChatMessage) -> int | None:
 _PENDING_SCAN = 25
 
 
+async def supersede_pending_proposals(db: AsyncSession, *, keep_row_id: int) -> list[int]:
+    """End every OTHER live confirm gate: `state="superseded"` + `superseded_by` (wave 7).
+
+    WHY (the F-40 state question).  Wave 6 made the gate restorable from the stored proposal, and
+    `restore_pending_confirm` restores only the NEWEST `pending` row — but nothing ended the older
+    ones.  Measured on `8c941d1`: after a second proposal, the first proposal's row was still
+    `pending` and its token still CONFIRMED (200 + a task for the old plan) even though no screen
+    and no reload could ever offer that card again.  The stored message for it says *"Reloading
+    the page brings the card back while that token is still valid"*, which was false.  So the
+    state had THREE answers for one row (live by token, invisible on screen, not restorable) and
+    one of them filed stale work.
+
+    ONE live gate is the invariant: creating a proposal ends every older one, so the restore read,
+    the confirm verb and the stored copy agree.  The row is NOT rewritten: only its `intent` state
+    changes (`kind`/`plan` survive verbatim, `task_id` stays NULL), and a later confirm answers
+    the named `superseded` refusal instead of filing the plan.
+
+    Returns the ids that were superseded (oldest last read first).  Flush only — the caller's
+    transaction owns the commit, so a failed mint cannot leave a half-superseded exchange.
+    """
+    rows = await fetch_scalars(
+        db,
+        select(ChatMessage)
+        .where(
+            ChatMessage.role == ChatRole.OWNER,
+            ChatMessage.id != keep_row_id,
+            ChatMessage.task_id.is_(None),
+            ChatMessage.intent.is_not(None),
+        )
+        .order_by(ChatMessage.id.desc())
+        .limit(_PENDING_SCAN),
+        what="older pending chat proposals",
+    )
+    superseded: list[int] = []
+    for row in rows:
+        intent = row.intent if isinstance(row.intent, dict) else None
+        if not intent or intent.get("kind") != "create_task" or intent.get("state") != "pending":
+            continue
+        row.intent = {**intent, "state": SUPERSEDED_STATE, "superseded_by": int(keep_row_id)}
+        superseded.append(int(row.id))
+    return superseded
+
+
 async def restore_pending_confirm(db: AsyncSession) -> ChatPendingConfirm | None:
     """The still-open confirm gate for the newest stored proposal, or `None` (F-40).
 
@@ -585,8 +635,17 @@ async def restore_pending_confirm(db: AsyncSession) -> ChatPendingConfirm | None
         expires_at = pending_confirm_expiry(row)
         if expires_at is None:
             return None  # the newest pending proposal's window is closed; nothing older is open
+        remaining = expires_at - int(time.time())
+        if remaining <= 0:
+            # THE BOUNDARY SECOND (wave 7).  `pending_confirm_expiry` accepted the row because
+            # `now <= expires_at`, but the wall clock can tick between that check and the mint.
+            # Minting with a non-positive TTL hands the caller a token whose `exp` is already in
+            # the past while `expires_at` says the gate is open: a card that promises a click and
+            # answers `expired`.  No gate is offered instead — and no token is ever minted for a
+            # window this server cannot honour.
+            return None
         token = issue_confirm_token(
-            secret, chat_message_id=row.id, ttl_s=expires_at - int(time.time())
+            secret, chat_message_id=row.id, ttl_s=remaining
         )
         raw_plan = intent.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
@@ -873,6 +932,11 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
         )
         db.add(owner_row)
         await db.flush()  # the token is bound to this row's id
+        # WAVE 7 — ONE live gate.  A new proposal ends every older pending proposal BEFORE its own
+        # token is minted (same transaction: a rollback restores the older gate untouched), so the
+        # restore read, the confirm verb and the executed reply copy cannot disagree about which
+        # card is live.
+        superseded_ids = await supersede_pending_proposals(db, keep_row_id=owner_row.id)
         confirm_token = issue_confirm_token(secret, chat_message_id=owner_row.id)
         # F-40: the copy must stay TRUE after a reload, not only while the card is on screen.  The
         # card IS restored while the token's original window is open (GET /chat re-issues the same
@@ -904,13 +968,35 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
         )
         db.add(polsia_row)
         await db.flush()
+        if superseded_ids:
+            # The older card silently disappearing is a STATE CHANGE the owner can see happen, so
+            # the ledger says it: the plan was retired, not confirmed and not lost silently.
+            await log_activity(
+                db,
+                agent_type="polsia",
+                action="chat_message",
+                summary=(
+                    f"Chat: superseded {len(superseded_ids)} earlier pending proposal(s) — only "
+                    "the newest confirm card is live"
+                ),
+                level="info",
+                detail={
+                    "kind": "proposal_superseded",
+                    "superseded_ids": superseded_ids,
+                    "kept_id": int(owner_row.id),
+                },
+            )
         await log_activity(
             db,
             agent_type="polsia",
             action="chat_message",
             summary=f"Chat: proposed a task for the {agent_type} agent (awaiting confirm)",
             level="info",
-            detail={"kind": "create_task", "agent_type": agent_type},
+            detail={
+                "kind": "create_task",
+                "agent_type": agent_type,
+                "superseded_ids": superseded_ids,
+            },
         )
         # F-29: the confirm click dispatches a PAID run (see `confirm_task`: the task row is
         # committed, then `run_agent_task.delay` hands it to a worker that calls the model
@@ -1028,6 +1114,19 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
             f"this confirm token was already used — task #{row.task_id} was created from it "
             "and one token confirms exactly one task; nothing else was created",
             context={"chat_message_id": row.id, "task_id": row.task_id},
+        )
+    if state == SUPERSEDED_STATE:
+        # WAVE 7: a NEWER proposal ended this gate.  The token is still cryptographically valid
+        # (it was never used), so the refusal must say WHAT ended it — otherwise a stale tab reads
+        # a generic "no pending plan" and the owner cannot tell a supersede from a corrupt token.
+        raise _refuse_confirm(
+            "superseded",
+            "this confirm token was superseded by a newer chat proposal — the plan it names was "
+            "retired unconfirmed when a later card was created, so nothing was created",
+            context={
+                "chat_message_id": row.id,
+                "superseded_by": (intent or {}).get("superseded_by"),
+            },
         )
     if not intent or intent.get("kind") != "create_task" or state != "pending":
         raise _refuse_confirm(

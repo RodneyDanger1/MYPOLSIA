@@ -1243,6 +1243,28 @@ class BasePolsiaAgent(ABC):
             )
         if failure is not None:
             e_code = self._e_code_for(failure)
+            # W7 (auth call path): an envelope built by the DeepSeek runtime stamps its provider and
+            # the HTTP status that answered. When the answer says the CREDENTIAL or the ACCOUNT is
+            # the problem, the CLI's remediation ("run `claude login`; an API key is not a
+            # supported fix") is the opposite of the truth, so the provider that answered supplies
+            # the guidance. An envelope with no DeepSeek stamp (real CLI failures, unparsed stdout)
+            # keeps the pre-wave-7 text byte for byte.
+            provider = str(env.get("provider") or "")
+            api_status = env.get("api_error_status")
+            provider_guidance = deepseek_runtime.failure_guidance(
+                provider=provider,
+                subtype=str(env.get("subtype") or ""),
+                api_status=api_status if isinstance(api_status, int) else None,
+            )
+            # W7 (retry ladders): an operator-action failure (rejected key / balance) is declared
+            # non-retryable HERE, so the task-level requeue ladder stops re-running a run that
+            # cannot succeed until a human acts. The in-run ladder never retried it; only the
+            # worker's code table did, because the code is the shared generic `E_CLI_EXIT`.
+            operator_action = deepseek_runtime.operator_action_required(
+                provider=provider,
+                subtype=str(env.get("subtype") or ""),
+                api_status=api_status if isinstance(api_status, int) else None,
+            )
             # F-20: a FAILED run spent real tokens. `last_usage` was measured off the envelope two
             # blocks above, and until this key existed the refusal was the ONLY carrier a failed run
             # had — so 900 prompt / 120 completion tokens were recorded as nothing and the spend was
@@ -1255,7 +1277,9 @@ class BasePolsiaAgent(ABC):
             raise PolsiaError(
                 e_code,
                 f"agent {self.agent_type}: {failure.value} {detail}".strip(),
-                how_to_fix=structured_output.REMEDIATION.get(failure, ERROR_HINTS.get(e_code, "")),
+                how_to_fix=provider_guidance or structured_output.REMEDIATION.get(
+                    failure, ERROR_HINTS.get(e_code, "")
+                ),
                 context={
                     "failure_code": failure.value,
                     "detail": detail,
@@ -1263,6 +1287,14 @@ class BasePolsiaAgent(ABC):
                     "stderr": result.stderr.strip()[:500],
                     "stdout_head": result.stdout[:500],
                     "attempts": attempts,
+                    # W7: which provider answered, and with what status — machine-readable, so an
+                    # operator does not have to parse the message to learn it was the API key.
+                    **({"provider": provider} if provider else {}),
+                    **({"api_error_status": api_status} if isinstance(api_status, int) else {}),
+                    # W7: THE VERDICT the task ladder reads (`agent_tasks.is_retryable`). Present
+                    # only for a provider-terminal operator action; absent leaves every other
+                    # failure on its existing code-table answer.
+                    **({"retryable": False} if operator_action else {}),
                     # F-20: what this failed run really spent (absent when unmeasured).
                     **({"usage": measured} if measured else {}),
                     # F-13: the known effects ride the refusal.  A FAILED run stores no
