@@ -123,7 +123,13 @@ async def _attach_and_requeue(
     for the human reading it, and the caller gets a refusal that says exactly that: accepted and
     re-queued with its token, but NOT dispatched.
     """
-    await attach_approval_token(db, task_id, token)   # refuses by name; never a partial write
+    # R-W2-S2: the fingerprint is handed over WITH the token.  `attach_approval_token` persists the
+    # binding (`metadata.approval_token_fingerprint`) so the worker can SPEND the token against the
+    # exact action the owner minted for — without it the dispatch seam cannot know which of a parked
+    # row's fingerprints the token names, and spending against a guess could burn the wrong approval.
+    await attach_approval_token(
+        db, task_id, token, action_fingerprint=action_fingerprint
+    )  # refuses by name; never a partial write
     await log_activity(
         db,
         "orchestrator",

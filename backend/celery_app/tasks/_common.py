@@ -465,6 +465,12 @@ async def assert_budget_allows(agent_type: str) -> None:
     kill switch frozen when `POLSIA_KILL_SWITCH` says freeze). The estimate is the policy's own
     per-run cap — the flat plan carries no per-node estimate, so the gate uses the conservative
     worst case rather than an invented small number.
+
+    F-26 (wave 3): the day's measured total is now a LOWER BOUND in one specific way — a settled
+    run whose cost was never measured (an interrupted run from before the live-usage sink, a
+    provider that reported no usage) contributes nothing to the sum. The refusal's context names
+    `day_runs_with_unmeasured_cost` so the arithmetic that let a run through (or stopped it) is
+    never presented as complete when part of it is unknown.
     """
     from app.agents.accounting import authorize, budget_policy_from_settings
     from app.agents.policy_firewall import kill_grade_from_env
@@ -473,13 +479,48 @@ async def assert_budget_allows(agent_type: str) -> None:
     policy = budget_policy_from_settings(kill_switch=kill_grade_from_env() == "freeze")
     async with get_session_factory()() as db:
         total, per_agent = await day_spend_by_agent(db)
-    authorize(  # raises BudgetStop; the caller decides skip-vs-fail
-        policy,
-        agent_type=agent_type,
-        est_cost_usd=policy.per_run_cap_usd,
-        day_spent_usd=total,
-        agent_spent_usd=per_agent.get(agent_type, 0.0),
+        unmeasured = await day_runs_with_unmeasured_cost(db)
+    try:
+        authorize(  # raises BudgetStop; the caller decides skip-vs-fail
+            policy,
+            agent_type=agent_type,
+            est_cost_usd=policy.per_run_cap_usd,
+            day_spent_usd=total,
+            agent_spent_usd=per_agent.get(agent_type, 0.0),
+        )
+    except Exception as exc:
+        context = getattr(exc, "context", None)
+        if isinstance(context, dict):
+            context.setdefault("day_runs_with_unmeasured_cost", unmeasured)
+        raise
+
+
+async def day_runs_with_unmeasured_cost(db: AsyncSession) -> int:
+    """How many of today's SETTLED runs carry no measured cost (the day cap's blind spot).
+
+    F-26: `agent_runs.cost_usd` is NULL for a run whose spend was never measured — an interrupted
+    run from before the live usage sink existed, or a provider that reported no usage. Such a run
+    adds nothing to `day_spend_by_agent`, so the day's total is a lower bound by exactly this
+    count. A `running` row is NOT counted here: with the live sink it is still reporting, and
+    counting it as unmeasured would double-count the moment it settles.
+    """
+    from sqlalchemy import func as sa_func
+
+    from app.core.timeutil import as_bound_instant, day_bounds, today_in
+    from app.models.task import AgentRun
+
+    start, _end = day_bounds(today_in())
+    total = await db.execute(
+        select(sa_func.count())
+        .select_from(AgentRun)
+        .where(
+            AgentRun.started_at >= as_bound_instant(start, db),
+            AgentRun.cost_usd.is_(None),
+            AgentRun.status != "running",
+        )
     )
+    value = total.scalar_one_or_none()
+    return int(value or 0)
 
 
 __all__ = [
@@ -490,6 +531,7 @@ __all__ = [
     "actions_from_outcome",
     "assert_budget_allows",
     "create_task_deduped",
+    "day_runs_with_unmeasured_cost",
     "day_spend_by_agent",
     "dedupe_key",
     "dispatch_paused_reason",

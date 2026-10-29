@@ -499,6 +499,10 @@ def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
     # rule in ONE place: "no parked set ⇒ no token".  `approval_cleared` records the fingerprints
     # that ended, so the audit keeps what the token was for.
     merged.pop(APPROVAL_TOKEN_METADATA_KEY, None)
+    # R-W2-S2: the BINDING dies with the token it describes.  A fingerprint left behind would pair
+    # a later, unrelated token with this ended approval at the dispatch seam, so the pair is
+    # dropped together — "no parked set ⇒ no token ⇒ no binding".
+    merged.pop(APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY, None)
     task.metadata_json = merged
     return True
 
@@ -700,8 +704,20 @@ async def transition_task_status(
 #: `finance/agent.py`'s `FAILED_PAYMENTS_KEY` reads what `daily_cycle.py` writes literally).
 APPROVAL_TOKEN_METADATA_KEY = "approval_token"
 
+#: The `tasks.metadata` key that binds an attached token to the ONE action it was minted for
+#: (R-W2-S2).  Producer: `attach_approval_token` below (the approvals route passes the minted
+#: fingerprint).  Consumer: `celery_app.tasks.agent_tasks._spend_approval_before_dispatch`, which
+#: SPENDS the token through `policy_firewall.consume_approval` before the action is dispatched.
+#: WHY it has to exist: `verify_approval`/`consume_approval` take `action_fingerprint` as a
+#: PARAMETER while a parked row can hold N fingerprints, so without this binding the worker cannot
+#: know which approval the token names — spending against the wrong one would burn an approval the
+#: owner granted for a different action (taskmaster W2 §7 reason 2).
+APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY = "approval_token_fingerprint"
 
-async def attach_approval_token(db: AsyncSession, task_id: int, token: str) -> Task:
+
+async def attach_approval_token(
+    db: AsyncSession, task_id: int, token: str, *, action_fingerprint: str = ""
+) -> Task:
     """Deliver the owner's approval token onto a PARKED task and re-queue it (T02b, D1).
 
     The missing second half of the approvals loop (wave-W1 REQUESTS §1, option (b)): the
@@ -709,6 +725,13 @@ async def attach_approval_token(db: AsyncSession, task_id: int, token: str) -> T
     (the worker publishes the run's `RunApproval` from exactly that key), but nothing over HTTP
     could WRITE it — `TaskCreate` carries no `metadata`, so the loop's producer had no route.
     `POST /api/v1/approvals` (its optional `task_id`) calls this.
+
+    R-W2-S2: `action_fingerprint` is the fingerprint the token was MINTED for (the route has it in
+    hand).  It is persisted beside the token as `metadata.approval_token_fingerprint`, which is what
+    lets the worker SPEND the token against the right action at dispatch
+    (`agent_tasks._spend_approval_before_dispatch`).  Omitted (a caller that predates the binding):
+    the stale key is REMOVED rather than left behind, so a later dispatch never spends a new token
+    against an old action's fingerprint.
 
     Guardrails, each BEFORE any mutation — a refusal leaves the row byte-identical:
       * a missing row is `E_NOT_FOUND` (404 at the API boundary);
@@ -767,6 +790,15 @@ async def attach_approval_token(db: AsyncSession, task_id: int, token: str) -> T
         )
     merged = dict(existing or {})
     merged[APPROVAL_TOKEN_METADATA_KEY] = token.strip()
+    # R-W2-S2: bind the token to the ONE action the owner minted it for.  A caller that does not
+    # know the fingerprint (every pre-R-W2-S2 caller) gets the key REMOVED, never a stale one: a
+    # leftover binding would make the worker spend a NEW token against an OLD action's fingerprint,
+    # which `consume_approval` reports as `invalid` (nothing spent) and then nothing gates the spend.
+    fingerprint = action_fingerprint.strip() if isinstance(action_fingerprint, str) else ""
+    if fingerprint:
+        merged[APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY] = fingerprint
+    else:
+        merged.pop(APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY, None)
     task.metadata_json = merged
     # The re-queue: the same fields the parking side wrote (status + cleared claim), so the
     # dispatcher's claim sees a runnable row whose metadata carries the token.
@@ -975,14 +1007,19 @@ async def _take_over_expired_claim(
     )
     claimed = (await db.execute(takeover)).scalars().one_or_none()
     if claimed is not None:
+        # OBSERVABILITY TRUTH (measured live 2026-10-28, wave-3 takeover drill): the atomic
+        # `UPDATE … RETURNING` returns the row's NEW values, so `claimed.claimed_by` here is the
+        # worker that JUST took the claim — the old summary named it as "the expired claim on
+        # <that same worker>", i.e. the new owner twice and never the dead one. The previous
+        # claimant's identity is not carried by this statement, so the summary does not claim to
+        # know it; the detail names the worker that now owns the row.
         await log_activity(
             db,
             agent_type=str(claimed.agent_type or "orchestrator"),
             action="task_claim_recovered",
             summary=(
-                f"task {task_id}: expired claim on {claimed.claimed_by or 'a dead worker'} taken "
-                f"over by {worker} after a redelivery; lease {lease} s, attempt "
-                f"{int(claimed.attempts or 0)}"
+                f"task {task_id}: an EXPIRED claim (lease {lease} s, attempt "
+                f"{int(claimed.attempts or 0)}) was taken over by {worker} after a redelivery"
             ),
             level="warning",
             detail={
@@ -2051,6 +2088,103 @@ async def finish_agent_run(
     return run
 
 
+#: `usage_json` key holding the LAST measured snapshot a LIVE run reported (F-26).
+#: Absent = the run never reported in flight (a legacy row, or one killed before its first
+#: provider call returned).  Never written by the settle path.
+IN_FLIGHT_USAGE_KEY = "in_flight"
+#: `usage_json` key naming WHAT an interrupted run's `cost_usd` covers (F-26):
+#: `"in_flight_partial"` = measured until the interruption (a LOWER BOUND on what was spent),
+#: `"unmeasured"` = nothing was ever measured (NULL, never 0).  Written by the stale-run closer.
+RUN_COST_SCOPE_KEY = "cost_scope"
+#: `usage_json` key carrying the interruption record itself (`at`, `bound_seconds`, `reason_code`,
+#: `cost_scope`, `provider_calls_persisted`, `usage_source`).
+RUN_INTERRUPTED_KEY = "interrupted"
+
+
+async def record_run_usage_progress(
+    db: AsyncSession,
+    run_id: int,
+    snapshot: dict[str, Any],
+) -> bool:
+    """Persist what a STILL-RUNNING run has MEASURED so far (F-26).  Returns True if written.
+
+    Called from the provider loop (through `app.agents.run_progress`) after every finished call, so
+    a worker killed mid-run leaves the spend it really made on the ledger instead of a NULL.  The
+    row is updated ONLY while it is `running`: a settled row's accounting is final, and a late
+    snapshot (a retry ladder's earlier dispatch reporting after the row closed) must never rewrite
+    it — that would be the mirror-image lie of the defect (a completed run whose cost changed
+    after the fact).
+
+    The snapshot is UNTRUSTED input at this boundary (it crosses from the agent thread): every
+    number is type-checked, and an unusable field is left exactly as the row had it rather than
+    coerced to 0.  A measured zero is written as 0 (that is a real measurement); `None` is never
+    turned into one.
+
+    `tokens_used` follows the settle path's F-10 rule: it is the sum of BOTH sides only when both
+    were measured — a one-sided sum would put a fabricated 0 into the missing half.
+
+    No commit here: the caller owns the transaction (the worker's sink commits one row per call).
+    """
+    if not isinstance(snapshot, dict) or not isinstance(run_id, int) or isinstance(run_id, bool):
+        logger.warning("run usage progress: ignored unusable snapshot for run %r", run_id)
+        return False
+
+    result = await db.execute(
+        select(AgentRun).where(AgentRun.id == run_id, AgentRun.status == "running")
+    )
+    run = result.scalar_one_or_none()
+    if run is None:
+        # The run already settled (or never existed).  Nothing to write: a settled row's
+        # accounting is final.
+        return False
+
+    usage_raw = snapshot.get("usage")
+    usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
+    tokens_input = _count_or_none(usage.get("input_tokens"))
+    tokens_output = _count_or_none(usage.get("output_tokens"))
+    if tokens_input is not None:
+        run.tokens_input = tokens_input
+    if tokens_output is not None:
+        run.tokens_output = tokens_output
+    if tokens_input is not None and tokens_output is not None:
+        run.tokens_used = tokens_input + tokens_output
+
+    cost = snapshot.get("cost_usd")
+    written_cost = False
+    if cost is not None:
+        try:
+            run.cost_usd = _as_column_decimal(cost)
+            written_cost = True
+        except (TypeError, ValueError, ArithmeticError):
+            logger.warning(
+                "run usage progress: non-numeric cost %r for run %s (left as recorded)",
+                cost,
+                run_id,
+            )
+
+    existing = run.usage_json if isinstance(run.usage_json, dict) else {}
+    recorded: dict[str, Any] = dict(existing)
+    recorded[IN_FLIGHT_USAGE_KEY] = {
+        **{k: v for k, v in snapshot.items() if k != "usage"},
+        "usage": usage or None,
+        "recorded_at": utcnow().isoformat(),
+    }
+    if written_cost:
+        # The settle path's own stamp, kept consistent here so a reader never sees a NULL
+        # `cost_source` beside a real cost (the token arithmetic is the source).
+        recorded.setdefault("cost_source", "token_estimate")
+    run.usage_json = recorded
+    await db.flush()
+    return True
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A token count as a non-negative int, or None.  Bools/strings/floats are NOT counts."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
 def _as_column_decimal(value: Decimal | float | None) -> Decimal | None:
     """`cost_usd` is a `Numeric(14, 4)` column (alembic `0003_money_exact`) — the ONE boundary.
 
@@ -2183,12 +2317,16 @@ async def get_task_run_totals(
 __all__ = [
     "APPROVAL_PARK_TTL_S",
     "APPROVAL_REAP_BATCH",
+    "APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY",
     "APPROVAL_TOKEN_METADATA_KEY",
+    "IN_FLIGHT_USAGE_KEY",
     "NEEDS_ATTENTION_EXECUTION_STATUSES",
     "PARTIAL_EXECUTION_STATUS",
     "PARTIAL_SUMMARY_PREFIX",
     "REFUSED_EXECUTION_STATUS",
     "RESULT_STATUS_KEY",
+    "RUN_COST_SCOPE_KEY",
+    "RUN_INTERRUPTED_KEY",
     "RUN_PAYLOAD_STATUS_KEY",
     "STALE_CLAIM_BATCH",
     "TASK_STATUS_CHANGED_ACTION",
@@ -2216,6 +2354,7 @@ __all__ = [
     "reap_stale_approvals",
     "release_claim",
     "release_ready_dependents",
+    "record_run_usage_progress",
     "requeue_stale_claims",
     "task_completed_at",
     "task_execution_state",

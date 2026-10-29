@@ -511,6 +511,22 @@ def _recover_deliveries_on_worker_startup(sender: Any = None, **kwargs: Any) -> 
             "visibility timeout) still cover the orphaned deliveries",
             exc_info=True,
         )
+    # F-26 (wave 3): the SAME reason this hook exists for deliveries applies to the ledger rows the
+    # dead process was writing — `close_stale_agent_runs` is a Beat task and Beat is OFF, so before
+    # this line an interrupted run stayed `running` for the life of the deployment (live:
+    # `agent_runs` 311 and 314, since 21:07/21:11Z).  A restarted worker IS the evidence that the
+    # previous process is gone, so it closes the rows that process abandoned, with the named
+    # reason and the interruption marker the sweep writes.  No spend: the sweep only writes the
+    # ledger; the stale bound keeps a genuinely live run (another worker) untouched.
+    try:
+        closed = run_async(_close_stale_runs_in_session())
+        logger.info("worker-startup stale-run sweep: %s", closed)
+    except Exception:  # noqa: BLE001 — ledger hygiene must never stop a worker from starting
+        logger.warning(
+            "worker-startup stale-run sweep failed; the rows stay `running` until the next worker "
+            "start or a Beat tick (the sweep is idempotent)",
+            exc_info=True,
+        )
 
 
 @app.task(name="celery_app.tasks.maintenance.check_activity_publish_health")
@@ -780,6 +796,13 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
     `cost_usd` is untouched: an unmeasured cost stays NULL (A-T17) and a measured one keeps
     counting against the day cap exactly as recorded.
 
+    F-26 (wave 3): the row also gets an explicit INTERRUPTION record in `usage_json`
+    (`interrupted.cost_scope`).  Since the provider loop now persists cumulative usage while the
+    run is live (`record_run_usage_progress`), an interrupted row usually HAS a real measured cost
+    — but only up to the kill, so it is a LOWER BOUND, not the run's total.  The marker is what
+    lets a reader tell that apart from a run whose cost is complete, and from one where nothing
+    was ever measured (`cost_scope="unmeasured"`, cost stays NULL — an unknown, never a 0).
+
     A `running` row with NO `started_at` is closed too, with the missing timestamp NAMED: it
     can never become measurable later, and an immortal `running` row is the defect itself.
     Ordered by id, one batched activity row per sweep, and idempotent by construction — a
@@ -790,19 +813,31 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
     from app.core.database import get_session_factory
     from app.models.task import AgentRun
     from app.services.activity_service import log_activities
-    from app.services.task_service import finish_agent_run
+    from app.services.task_service import (
+        IN_FLIGHT_USAGE_KEY,
+        RUN_COST_SCOPE_KEY,
+        RUN_INTERRUPTED_KEY,
+        finish_agent_run,
+    )
 
     session_factory = get_session_factory()
     cutoff = now_utc() - timedelta(seconds=AGENT_RUN_STALE_AFTER_SECONDS)
 
     closed: list[int] = []
     undated: list[int] = []
+    cost_partial: list[int] = []
+    cost_unmeasured: list[int] = []
     scanned = 0
     async with session_factory() as db:
         bound = as_bound_instant(cutoff, db)
         rows = (
             await db.execute(
-                select(AgentRun.id, AgentRun.started_at)
+                select(
+                    AgentRun.id,
+                    AgentRun.started_at,
+                    AgentRun.usage_json,
+                    AgentRun.cost_usd,
+                )
                 .where(
                     AgentRun.status == "running",
                     or_(AgentRun.started_at.is_(None), AgentRun.started_at < bound),
@@ -811,7 +846,7 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
             )
         ).all()
         scanned = len(rows)
-        for raw_id, started_at in rows:
+        for raw_id, started_at, usage_json, cost_usd in rows:
             run_id = int(raw_id)
             if started_at is None:
                 reason = (
@@ -827,9 +862,30 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
                     f"{STALE_RUN_REASON_CODE}: still 'running' after {age_seconds} s "
                     f"(bound {AGENT_RUN_STALE_AFTER_SECONDS} s; started_at {opened.isoformat()}) "
                     "— the worker died mid-run; closed by close_stale_agent_runs "
-                    "(duration/cost left exactly as recorded)"
+                    "(duration left exactly as recorded; cost is what the live run measured)"
                 )
-            run_row = await finish_agent_run(db, run_id, "cancelled", error_message=reason)
+            existing = usage_json if isinstance(usage_json, dict) else {}
+            in_flight = existing.get(IN_FLIGHT_USAGE_KEY)
+            in_flight_block = in_flight if isinstance(in_flight, dict) else {}
+            measured_cost = cost_usd is not None
+            cost_scope = "in_flight_partial" if measured_cost else "unmeasured"
+            merged = dict(existing)
+            merged[RUN_COST_SCOPE_KEY] = cost_scope
+            merged[RUN_INTERRUPTED_KEY] = {
+                "at": now_utc().isoformat(),
+                "bound_seconds": AGENT_RUN_STALE_AFTER_SECONDS,
+                "reason_code": STALE_RUN_REASON_CODE,
+                "cost_scope": cost_scope,
+                "usage_source": "in_flight" if in_flight_block else "none",
+                "provider_calls_persisted": in_flight_block.get("provider_calls"),
+            }
+            if measured_cost:
+                cost_partial.append(run_id)
+            else:
+                cost_unmeasured.append(run_id)
+            run_row = await finish_agent_run(
+                db, run_id, "cancelled", error_message=reason, usage_json=merged
+            )
             if run_row is not None:
                 closed.append(run_id)
 
@@ -841,6 +897,13 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
             parts = [f"{len(closed)} stale agent run(s) closed"]
             if undated:
                 parts.append(f"{len(undated)} had no started_at recorded")
+            if cost_partial:
+                parts.append(
+                    f"{len(cost_partial)} carry a PARTIAL measured cost (spent up to the "
+                    "interruption)"
+                )
+            if cost_unmeasured:
+                parts.append(f"{len(cost_unmeasured)} have UNMEASURED cost (null, not zero)")
             await log_activities(
                 db,
                 [
@@ -852,6 +915,8 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
                         "detail": {
                             "closed_ids": closed,
                             "undated_ids": undated,
+                            "cost_partial_ids": cost_partial,
+                            "cost_unmeasured_ids": cost_unmeasured,
                             "bound_seconds": AGENT_RUN_STALE_AFTER_SECONDS,
                         },
                     }
@@ -865,6 +930,8 @@ async def _close_stale_runs_in_session() -> dict[str, Any]:
         "closed": closed,
         "closed_count": len(closed),
         "undated": undated,
+        "cost_partial_ids": cost_partial,
+        "cost_unmeasured_ids": cost_unmeasured,
         "bound_seconds": AGENT_RUN_STALE_AFTER_SECONDS,
     }
     logger.info("stale-run sweep: %s", result)

@@ -125,6 +125,12 @@ def test_the_surfaces_that_stay_are_exactly_the_pinned_ones():
         "PARTIAL_EXECUTION_STATUS", "REFUSED_EXECUTION_STATUS", "PARTIAL_SUMMARY_PREFIX",
         "NEEDS_ATTENTION_EXECUTION_STATUSES", "RUN_PAYLOAD_STATUS_KEY", "RESULT_STATUS_KEY",
         "task_execution_state",
+        # wave 3 (2026-10-28): the worker cost/approval surfaces now exported by task_service —
+        # in-flight usage keys, the interrupted-run marker, the approval-token fingerprint binding
+        # key, and the progress writer. OLD set = the names above without these five; NEW adds
+        # exactly these; nothing removed.
+        "IN_FLIGHT_USAGE_KEY", "RUN_COST_SCOPE_KEY", "RUN_INTERRUPTED_KEY",
+        "APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY", "record_run_usage_progress",
     } == set(task_service.__all__)
     assert "get_latest_revenue_snapshot" not in finance_service.__all__
     assert "recent_failed_payments" in finance_service.__all__

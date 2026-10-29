@@ -96,7 +96,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.agents import accounting, claude_cli, pricing
+from app.agents import accounting, claude_cli, pricing, run_progress
 from app.config import settings
 from app.core.errors import (
     E_ACTION_REPLAY_UNAVAILABLE,
@@ -1708,16 +1708,42 @@ def invoke(
             # BEFORE the loop decides anything else: a run that has already passed its cap must be
             # refused here, on its last call too, never reported as a clean success.
             turn_hit, turn_miss, turn_out = _price_split([turns[-1]])
-            guard.record_call(
-                cost_usd=pricing.estimate_cost_usd(
-                    str(payload.get("model") or model_id),
-                    cache_hit_tokens=turn_hit,
-                    cache_miss_tokens=turn_miss,
-                    output_tokens=turn_out,
-                ),
-                call_bound_usd=call_bound,
-                provider_calls=provider_calls,
-            )
+            try:
+                guard.record_call(
+                    cost_usd=pricing.estimate_cost_usd(
+                        str(payload.get("model") or model_id),
+                        cache_hit_tokens=turn_hit,
+                        cache_miss_tokens=turn_miss,
+                        output_tokens=turn_out,
+                    ),
+                    call_bound_usd=call_bound,
+                    provider_calls=provider_calls,
+                )
+            finally:
+                # F-26: hand the CUMULATIVE measurements of this live run to whatever sink the
+                # worker installed (the worker persists them on `agent_runs`).  This is the ONLY
+                # durable record a killed worker leaves behind: the settle write never happens
+                # when the process dies, so without this report a run that really spent money kept
+                # `cost_usd`/`tokens_*` NULL (measured live: runs 311/314).  The report is in a
+                # `finally` because `record_call` raises when THIS call has already passed the
+                # run's cap — that spend is real and must be recorded even though the run is
+                # about to be refused.  Best effort by contract (`report_usage_progress` never
+                # raises and is a no-op with no sink), so the CLI path and every direct caller
+                # stay byte-identical.
+                run_progress.report_usage_progress(
+                    {
+                        "provider_calls": provider_calls,
+                        "num_turns": provider_calls,
+                        "usage": _accumulated_usage(turns),
+                        "cost_usd": guard.priced_usd if guard.calls else None,
+                        "cost_basis": guard.cost_basis,
+                        "measured_cost_usd": guard.measured_usd,
+                        "upper_bound_usd": guard.upper_bound_usd,
+                        "unmeasured_calls": guard.unmeasured_calls,
+                        "model": model_id,
+                        "pricing_version": pricing.PRICING_VERSION,
+                    }
+                )
 
             calls = message.get("tool_calls")
             if tool_specs and (finish_reason == "tool_calls" or (isinstance(calls, list) and calls)):

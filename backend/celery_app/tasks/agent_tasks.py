@@ -584,6 +584,25 @@ def approval_token_from_metadata(metadata: Any) -> str:
     return ""
 
 
+#: The `tasks.metadata` key that binds the token to the ONE action the owner minted it for
+#: (R-W2-S2).  PRODUCER: `task_service.attach_approval_token` (the approvals route passes the
+#: minted fingerprint; it writes this key beside `approval_token`).  CONSUMER:
+#: `_spend_approval_before_dispatch` below, which needs it to spend the token against the right
+#: action — `verify_approval`/`consume_approval` take the fingerprint as a PARAMETER while a parked
+#: row can name N fingerprints.  The two literals are the same producer/consumer split
+#: `APPROVAL_TOKEN_KEY` / `task_service.APPROVAL_TOKEN_METADATA_KEY` already uses.
+APPROVAL_TOKEN_FINGERPRINT_KEY = "approval_token_fingerprint"
+
+
+def approval_token_fingerprint_from_metadata(metadata: Any) -> str:
+    """The fingerprint recorded with the attached token, or `""` (no binding) — never coerced."""
+    if isinstance(metadata, dict):
+        raw = metadata.get(APPROVAL_TOKEN_FINGERPRINT_KEY)
+        if isinstance(raw, str):
+            return raw.strip()
+    return ""
+
+
 def approval_requirements(result: Any) -> list[dict[str, Any]]:
     """The gated actions a finished run recorded as needing the owner's green light.
 
@@ -944,6 +963,233 @@ async def _stamp_replay_started(task_id: int, fingerprints: list[str], *, worker
         merged[APPROVAL_REPLAY_KEY] = markers
         row.metadata_json = merged
         await db.commit()
+
+
+async def _refuse_spent_approval(
+    *, task_id: int, agent_type: str, metadata: Any, fingerprint: str, jti: str
+) -> dict[str, Any]:
+    """Land the row honestly after an approval REPLAY: nothing dispatched, the owner told why.
+
+    Called only when the ledger says the token was ALREADY SPENT.  The effect is never reached, so
+    the write has to say that in the one place the operator looks: the row's own status + error.
+      * a row that still has a PARKED SET goes back to `awaiting_approval` with the spent token (and
+        its binding) REMOVED.  A terminal write would destroy work the owner already approved and
+        never had performed; a re-park asks for exactly one thing — a fresh token — and the parked
+        records the retry needs are untouched;
+      * a row with NOTHING parked has no work left to approve, so it ends `rejected` by name (the
+        same terminal state the shipped unreplayable-payload refusal writes) and its dependents are
+        failed through `_block_dag_dependents`, so a DAG never waits on a row that will not run.
+
+    One `approval_replay_refused` activity row in the same transaction (the feed already carries
+    that action for the unreplayable-payload path — the two are the same control: a replay the ledger
+    or the payload cannot authorise).
+    """
+    from app.core.database import get_session_factory
+    from app.core.errors import E_POLICY_DENIED
+    from app.services.activity_service import log_activity
+    from app.services.task_service import update_task_status
+
+    parked = parked_approval_fingerprints(metadata)
+    terminal = not parked
+    message = (
+        f"{E_POLICY_DENIED}: POLSIA-E121 approval replay — the token minted for {fingerprint} was "
+        "already spent by an earlier attempt (one approval authorises ONE attempt), so nothing was "
+        "dispatched"
+    )
+    async with get_session_factory()() as db:
+        row = await update_task_status(
+            db, task_id, "rejected" if terminal else "awaiting_approval", error_message=message
+        )
+        if row is not None:
+            row.claimed_by = None
+            row.claimed_at = None
+            row.heartbeat_at = None
+            merged = dict(row.metadata_json or {})
+            merged.pop(APPROVAL_TOKEN_KEY, None)
+            merged.pop(APPROVAL_TOKEN_FINGERPRINT_KEY, None)
+            row.metadata_json = merged
+        await log_activity(
+            db,
+            agent_type=agent_type,
+            action="approval_replay_refused",
+            summary=(
+                f"task {task_id}: the approval token for {fingerprint} was already spent — "
+                "nothing was dispatched"
+            ),
+            level="warning",
+            detail={
+                "task_id": task_id,
+                "action_fingerprint": fingerprint,
+                "jti": jti,
+                "policy_code": "POLSIA-E121",
+                "reason": "already_used",
+                "approval_replay": True,
+                "fresh_token_required": True,
+            },
+        )
+        await db.commit()
+    blocked: dict[str, Any] = {}
+    if terminal:
+        blocked = await _block_dag_dependents(
+            task_id,
+            agent_type=agent_type,
+            upstream_status="rejected",
+            upstream_error=message,
+        )
+    return {
+        "status": "skipped",
+        "task_id": task_id,
+        "agent_type": agent_type,
+        "task_status": "rejected" if terminal else "awaiting_approval",
+        "reason": E_POLICY_DENIED,
+        "error": message,
+        "policy_code": "POLSIA-E121",
+        "approval_replay": True,
+        "approval_fingerprint": fingerprint,
+        "dag_dependents": blocked,
+    }
+
+
+async def _spend_approval_before_dispatch(
+    *,
+    task_id: int,
+    agent_type: str,
+    metadata: Any,
+    approval_token: str,
+    parked: list[str],
+) -> tuple[bool, dict[str, Any] | None]:
+    """SPEND the supplied approval token BEFORE the action it authorises is dispatched (R-W2-S2).
+
+    THE GAP THIS CLOSES.  The deploy seam, the data wipe and the phone seam all SPEND an approval
+    (`policy_firewall.consume_approval`), but the WORKER's path only VERIFIED it: the token was
+    published as the run's `RunApproval` and `_replay_approved_actions`/`side_effects` re-verified it
+    per item, so a captured token could authorise the same irreversible agent action twice — on this
+    row (a re-delivery) or, worse, on ANOTHER row naming the same fingerprint (a fingerprint is a
+    hash of class|channel|payload, so two rows can name one action).
+
+    WHAT IT DOES.  Resolves the ONE fingerprint the token was minted for — the binding
+    `task_service.attach_approval_token` wrote, else the unique parked fingerprint the token verifies
+    for — then spends it through the ledger, whose UNIQUE `token_id` is the cross-process guarantee.
+    Returns `(spent, refusal_outcome)`.
+
+      * `already_used` -> the dispatch is REFUSED by name (`POLSIA-E121`) and `_refuse_spent_approval`
+        lands the row (`awaiting_approval` with a fresh token required, or `rejected` when nothing is
+        parked).  The effect is never reached.
+      * a ledger write that fails for any other reason -> the named `E_DB`: the same refusal, and the
+        row is released back to `pending` with `metadata.rearmed_at` so the stranded-row reconciler
+        re-dispatches it once the database is writable (fail closed: an approval that cannot be
+        RECORDED as spent is not an approval this build can honour).
+
+    SEMANTICS: one approval authorises ONE ATTEMPT.  A retry after a spend needs a fresh mint — the
+    same fail-safe direction the deploy seam ratified, because an attempt whose outcome may be
+    unknown must not be replayable.  The spent token is therefore never restored to the row.
+
+    WHAT IS DELIBERATELY NOT SPENT.  A token that verifies for NO action this row is waiting on
+    (`invalid`/`expired`, no binding and no match) authorises nothing, so nothing is burned: the
+    replay's per-item verification, the live gate and the caps still refuse it downstream and the
+    row re-parks exactly as before.  A token that verifies for SEVERAL parked fingerprints — only
+    reachable under a test double, since a real token HMACs its own fingerprint — is not spent
+    either: burning a guess could kill the approval for the wrong action.
+    """
+    if not approval_token:
+        return False, None
+    from app.agents.policy_firewall import (
+        configured_approval_secret,
+        consume_approval,
+        verify_approval,
+    )
+    from app.core.database import get_session_factory
+    from app.services.activity_service import log_activity
+    from app.services.task_service import get_task, release_claim
+
+    secret = configured_approval_secret()
+    if not secret:
+        # No approval channel is configured at all: nothing can verify, so nothing is spent.  The
+        # run's own gate refuses whatever it attempts (the fail-closed default every seam shares).
+        return False, None
+    fingerprint = approval_token_fingerprint_from_metadata(metadata)
+    if not fingerprint:
+        matches = [
+            fp for fp in parked
+            if fp and verify_approval(secret, approval_token, action_fingerprint=fp)
+        ]
+        if len(matches) > 1:
+            logger.warning(
+                "task %s: the supplied approval token verifies for %d parked fingerprints %s; "
+                "nothing was spent (an approval is never burned on a guess)",
+                task_id, len(matches), matches,
+            )
+            return False, None
+        fingerprint = matches[0] if matches else ""
+    if not fingerprint:
+        logger.warning(
+            "task %s: the supplied approval token names no action this row is waiting on; nothing "
+            "was spent, and every downstream gate still verifies it",
+            task_id,
+        )
+        return False, None
+    me = worker_id()
+    async with get_session_factory()() as db:
+        try:
+            spent = await consume_approval(
+                db, secret, approval_token,
+                action_fingerprint=fingerprint,
+                consumed_by=f"task:{task_id}",
+            )
+        except PolsiaError as exc:
+            if exc.code != E_DB:
+                raise
+            logger.error(
+                "task %s: the approval ledger could not record the spend (%s) — refusing the "
+                "dispatch and re-queueing the row", task_id, exc.message,
+            )
+            await release_claim(db, task_id, me)
+            row = await get_task(db, task_id)
+            if row is not None:
+                row.error_message = f"{E_DB}: {exc.message} (nothing was dispatched)"
+            await stamp_rearmed(db, [task_id], reason="approval_ledger_unwritable")
+            await log_activity(
+                db,
+                agent_type=agent_type,
+                action="approval_ledger_unwritable",
+                summary=(
+                    f"task {task_id}: the approval ledger refused the spend ({E_DB}) — the "
+                    "approved action was NOT dispatched and the row is queued for a retry"
+                ),
+                level="error",
+                detail={"task_id": task_id, "action_fingerprint": fingerprint, "code": E_DB},
+            )
+            await db.commit()
+            return False, {
+                "status": "skipped",
+                "task_id": task_id,
+                "agent_type": agent_type,
+                "task_status": "pending",
+                "reason": E_DB,
+                "error": exc.message,
+                "approval_fingerprint": fingerprint,
+                "requeued_for_retry": True,
+            }
+    if spent.ok:
+        logger.info(
+            "task %s: approval %s spent BEFORE dispatch (jti=%s, one attempt)",
+            task_id, fingerprint[:16], spent.jti,
+        )
+        return True, None
+    if spent.reason != "already_used":
+        logger.warning(
+            "task %s: the supplied approval token did not verify for %s (%s); nothing was spent",
+            task_id, fingerprint[:16], spent.reason or "invalid",
+        )
+        return False, None
+    logger.warning(
+        "task %s: approval replay refused (POLSIA-E121 already_used) for %s — nothing dispatched",
+        task_id, fingerprint[:16],
+    )
+    return False, await _refuse_spent_approval(
+        task_id=task_id, agent_type=agent_type, metadata=metadata,
+        fingerprint=fingerprint, jti=spent.jti,
+    )
 
 
 async def _perform_approved_action(
@@ -1995,6 +2241,23 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                 "dag_dependents": blocked,
             }
 
+    # ── 1d. R-W2-S2: SPEND the approval BEFORE anything it authorises is dispatched ──────────
+    # The deploy seam, the data wipe and the phone seam already SPEND; the worker path only
+    # VERIFIED, so the same token could authorise a second irreversible agent action.  This is the
+    # one place in the worker where a session and the row's own binding exist, and it runs BEFORE
+    # the run row and BEFORE any provider is reachable — a refusal here costs no model call, no
+    # artifact and no effect.  `approval_spent` is load-bearing below: a SPENT token must never be
+    # restored to the row by the OR-02 settlement (one approval = one attempt).
+    approval_spent, spend_refusal = await _spend_approval_before_dispatch(
+        task_id=task_id,
+        agent_type=agent_type,
+        metadata=task_dict.get("metadata"),
+        approval_token=approval_token,
+        parked=parked_at_claim,
+    )
+    if spend_refusal is not None:
+        return spend_refusal
+
     # ── 2. context + run-ledger row (own short transaction) ──────────────────
     async with session_factory() as db:
         context = await get_full_context(db)
@@ -2063,6 +2326,7 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         set_run_approval,
         set_run_channel_sends,
     )
+    from app.agents.run_progress import reset_run_usage_sink, set_run_usage_sink
 
     set_run_channel_sends(context.get("channel_sends"))
     begin_run_cancellation()
@@ -2114,6 +2378,29 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
     set_run_approval(
         RunApproval(secret=configured_approval_secret(), token=approval_token)
     )
+    # F-26: install the run's LIVE usage sink BEFORE the agent thread starts — `asyncio.to_thread`
+    # below copies this context, so every provider call the run makes reports its cumulative
+    # measurement through `app.agents.run_progress` and lands on `agent_runs` while the run is
+    # still in flight.  Without this, a worker killed mid-run left `cost_usd`/`tokens_*` NULL
+    # although the provider had been paid (measured live: runs 311/314 on 2026-10-28).  The sink
+    # is best effort by contract (`report_usage_progress` never raises); the `finally` below
+    # resets it so one run's sink can never record another run's numbers.
+    async def _persist_usage_progress(snapshot: dict[str, Any]) -> None:
+        from app.services.task_service import record_run_usage_progress
+
+        async with session_factory() as db:
+            await record_run_usage_progress(db, run_id, snapshot)
+            await db.commit()
+
+    def _run_usage_sink(snapshot: dict[str, Any]) -> None:
+        # The sink is called from the provider loop's THREAD (`asyncio.to_thread`), while this
+        # function's own loop is awaiting that thread.  Every database call in the worker goes
+        # through the ONE process loop (`run_async`), so the write is submitted back to it and
+        # this thread blocks until it commits.  A DB failure propagates to
+        # `report_usage_progress`, which logs it and lets the run continue.
+        run_async(_persist_usage_progress(snapshot))
+
+    usage_sink_token = set_run_usage_sink(_run_usage_sink)
     try:
         # The agent's CLI call is blocking; run it off the loop so the heartbeat keeps
         # beating (the upload blocked the whole event loop for the CLI's lifetime, D-11).
@@ -2152,6 +2439,9 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
         reset_run_approval()
         reset_run_channel_sends()
         end_run_cancellation()
+        # F-26: the live usage sink dies with the run (the thread that reported through it has
+        # returned; anything later would be another run's numbers in this process).
+        reset_run_usage_sink(usage_sink_token)
     duration = round(time.monotonic() - started, 2)
 
     error = None if failure is None else f"{type(failure).__name__}: {failure}"
@@ -2423,7 +2713,13 @@ async def _execute_agent_task(task_id: int) -> dict[str, Any]:
                         result=result,
                         parked_before=parked_before,
                         requeued=requeued,
-                        approval_token=approval_token,
+                        # R-W2-S2: a SPENT token is never restored.  The settlement's own rule
+                        # ("the token survives only while it still covers an owed fingerprint")
+                        # predates the ledger; once the dispatch seam has spent it, keeping it
+                        # would hand the retry a credential the ledger already refuses
+                        # (POLSIA-E121) — the retry needs a FRESH mint, which is exactly the
+                        # one-approval-one-attempt semantics.
+                        approval_token=approval_token if not approval_spent else "",
                     )
                     if replay_settlement is not None:
                         result["approval_replay_settlement"] = replay_settlement

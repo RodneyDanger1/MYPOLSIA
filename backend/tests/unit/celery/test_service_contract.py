@@ -52,6 +52,14 @@ IMPORTED = {
     # moves this set on purpose or not at all).
     "get_task",
     "release_claim",
+    # RE-PINNED DELIBERATELY (wave 3 / F-26, 2026-10-28): the worker's live usage sink imports
+    # `record_run_usage_progress` — the service function that persists a STILL-RUNNING run's
+    # measured tokens/cost, so a killed worker leaves the money it really spent on the ledger
+    # instead of a NULL (live: agent_runs 311/314).  OLD pin: the eight names above; NEW pin:
+    # those eight plus `record_run_usage_progress`.  The pin's shape is unchanged — every name
+    # imported from the service is still a real callable on it and every call site still binds
+    # (the second test in this file proves that against the live signatures).
+    "record_run_usage_progress",
 }
 
 CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type", "takeover_stale"]
