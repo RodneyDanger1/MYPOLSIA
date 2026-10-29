@@ -61,11 +61,26 @@ class AiSpendSummary(BaseModel):
     `accounting.budget_policy_from_settings`), `spent` the day's measured `agent_runs.cost_usd`
     total.  `spent`/`remaining` are None when the day could not be measured — an absent day is a
     measured `0.0`, never the other way round (accounting.py:276-289).
+
+    F-W5-TS-1 (wave 6): a measured FLOOR is never served as the day's total.  `spent_status` says
+    which state the day is in — `measured` (every finished run reported a cost; an absent day is a
+    measured 0.0), `partial` (at least one finished run reported no cost, so the total is UNKNOWN)
+    or `unmeasured` (no run reported a cost at all).  On a `partial` day `spent`/`remaining`/
+    `burn_rate` are None and the measured portion is published separately as `measured_floor_usd`
+    — a lower bound to be labelled as one, never summed into a total (it is None when no run was
+    priced, because a floor of `0.0` with nothing measured would be a fabricated zero).
+    `unmeasured_finished_runs` is the count that makes the total unknown; `in_flight_runs` counts
+    the still-open runs, whose cost is bounded by the per-run cap and therefore does NOT make the
+    finished-run total unknown.
     """
 
     limit: float
     spent: float | None = None
     remaining: float | None = None
+    spent_status: str = "measured"
+    measured_floor_usd: float | None = None
+    unmeasured_finished_runs: int = 0
+    in_flight_runs: int = 0
     burn_rate: AiBurnRateView | None = None
     unit_economics: UnitEconomicsView | None = None
 

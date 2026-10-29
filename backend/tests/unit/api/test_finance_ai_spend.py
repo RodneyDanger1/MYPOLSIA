@@ -34,9 +34,16 @@ async def _seed_run(
     status: str = "completed",
     cost_usd: str | None = None,
     started_at: Any = None,
+    ended_at: Any = "unset",
 ) -> Any:
     """One `agent_runs` row on the app's session.  `cost_usd=None` is the documented NULL state:
-    the CLI never reported a cost (accounting.py:20-23) — NOT a measured zero."""
+    the CLI never reported a cost (accounting.py:20-23) — NOT a measured zero.
+
+    `ended_at` defaults to UNSET (the shipped fixture's shape: a row with no end stamp).  The
+    F-W5-TS-1 tests pass it explicitly, because the day-total rule distinguishes a FINISHED run
+    that never reported a cost (`ended_at` set → the total is unknown) from an OPEN one
+    (`ended_at` NULL → bounded by the per-run cap, and not a reason to refuse a total).
+    """
     from app.core.database import utcnow
     from app.models.task import AgentRun
 
@@ -45,6 +52,7 @@ async def _seed_run(
         status=status,
         cost_usd=None if cost_usd is None else Decimal(cost_usd),
         started_at=utcnow() if started_at is None else started_at,
+        ended_at=None if ended_at == "unset" else ended_at,
     )
     db.add(run)
     await db.commit()
@@ -234,3 +242,115 @@ async def test_ai_spend_prices_only_agents_with_a_measured_day(
         "finance": {"spend_usd": 4.0, "completed": 2, "cost_per_completed_task_usd": 2.0}
     }
     assert economics["unmeasured_spend_agents"] == ["social_media"]
+
+
+# ── F-W5-TS-1 (wave 6): a measured FLOOR is never served as the day's TOTAL ───────────────────────
+#
+# The live defect (2026-10-28/29): `ai_spend.spent` served 0.0032 (the measured runs) with
+# `remaining`/`burn_rate` derived from it, while `day_spend_truth.total` for the SAME day was
+# UNKNOWN because run 318 finished with no cost.  The rule now matches the cap gate's: a finished
+# run without a cost makes the total unknown; the measured portion is published separately as
+# `measured_floor_usd` and named a floor.  An OPEN run is not a reason to refuse (its cost is
+# bounded by the per-run cap) — that distinction is pinned below too.
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_day_reports_the_floor_separately_and_the_total_as_unknown(
+    api_client, auth_headers, async_db_session, monkeypatch
+):
+    """One priced run + one FINISHED unpriced run: `spent` is None, the floor is separate.
+
+    This is the exact live shape reproduced on SQLite: `social_media` reported 0.0032 and
+    `email_outreach` finished with `cost_usd` NULL.  RED at wave-5 HEAD: `spent` was 0.0032 (a
+    floor), `remaining` 24.9968 and `burn_rate.status` "ok" — a total the ledger cannot support.
+    """
+    from app.core.database import utcnow
+
+    _pin_cap(monkeypatch, 25.0)
+    await _seed_run(
+        async_db_session, agent_type="social_media", status="completed",
+        cost_usd="0.0032", ended_at=utcnow(),
+    )
+    await _seed_run(
+        async_db_session, agent_type="email_outreach", status="completed",
+        cost_usd=None, ended_at=utcnow(),
+    )
+
+    ai = (await api_client.get("/api/v1/finance/summary", headers=auth_headers)).json()["ai_spend"]
+
+    assert ai is not None
+    assert ai["limit"] == 25.0, "the cap is known even when the day total is not"
+    assert ai["spent"] is None, "a floor must never be presented as the day's total"
+    assert ai["remaining"] is None, "headroom derived from a floor would be fabricated"
+    assert ai["burn_rate"] is None, "a projection from a floor would be fabricated precision"
+    assert ai["spent_status"] == "partial"
+    assert ai["measured_floor_usd"] == pytest.approx(0.0032), (
+        "the measured portion is published SEPARATELY, at full precision"
+    )
+    assert ai["unmeasured_finished_runs"] == 1
+    assert ai["in_flight_runs"] == 0
+    # The priced set still carries its own per-agent economics, and the unpriced agent is NAMED.
+    economics = ai["unit_economics"]
+    assert economics["unmeasured_spend_agents"] == ["email_outreach"]
+    assert economics["per_agent"] == {
+        "social_media": {"spend_usd": 0.0032, "completed": 1, "cost_per_completed_task_usd": 0.0032}
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_open_run_does_not_make_the_day_total_unknown(
+    api_client, auth_headers, async_db_session, monkeypatch
+):
+    """An in-flight run is bounded by the per-run cap, so it is counted, not refused.
+
+    The mirror of the test above: `ended_at IS NULL` on an unpriced run means "still spending",
+    not "finished and unmeasured" — `day_spend_truth` makes the same distinction, and the gate
+    relies on it.
+    """
+    _pin_cap(monkeypatch, 25.0)
+    await _seed_run(async_db_session, agent_type="finance", status="completed", cost_usd="2.0000")
+    await _seed_run(async_db_session, agent_type="social_media", status="running", cost_usd=None)
+
+    ai = (await api_client.get("/api/v1/finance/summary", headers=auth_headers)).json()["ai_spend"]
+
+    assert ai is not None
+    assert ai["spent"] == 2.0, "an open run's cost is unknown but bounded — it does not void the total"
+    assert ai["spent_status"] == "measured"
+    assert ai["measured_floor_usd"] is None, "a fully measured day has no floor to report"
+    assert ai["unmeasured_finished_runs"] == 0
+    assert ai["in_flight_runs"] == 1
+    assert ai["unit_economics"]["unmeasured_spend_agents"] == ["social_media"]
+
+
+@pytest.mark.asyncio
+async def test_the_measured_states_declare_themselves(
+    api_client, auth_headers, async_db_session, monkeypatch
+):
+    """The three states are distinguishable on the wire: absent day and reported zero are
+    `measured` (a zero is a reading), a day with no priced run is `unmeasured`."""
+    _pin_cap(monkeypatch, 25.0)
+
+    absent = (await api_client.get("/api/v1/finance/summary", headers=auth_headers)).json()["ai_spend"]
+    assert absent["spent"] == 0.0
+    assert absent["spent_status"] == "measured"
+    assert absent["measured_floor_usd"] is None
+    assert absent["unmeasured_finished_runs"] == 0
+    assert absent["in_flight_runs"] == 0
+
+    await _seed_run(async_db_session, agent_type="finance", status="completed", cost_usd="0.0000")
+    zero = (await api_client.get("/api/v1/finance/summary", headers=auth_headers)).json()["ai_spend"]
+    assert zero["spent"] == 0.0, "a reported 0 is a measured zero, not an unknown day"
+    assert zero["spent_status"] == "measured"
+
+    from app.core.database import utcnow
+
+    await _seed_run(
+        async_db_session, agent_type="email_outreach", status="failed",
+        cost_usd=None, ended_at=utcnow(),
+    )
+    mixed = (await api_client.get("/api/v1/finance/summary", headers=auth_headers)).json()["ai_spend"]
+    assert mixed["spent_status"] == "partial", "the zero stays measured but no longer totals the day"
+    assert mixed["measured_floor_usd"] == 0.0, (
+        "a measured zero IS a floor of 0.00 here — it is named a floor, not the day's total"
+    )
+    assert mixed["spent"] is None

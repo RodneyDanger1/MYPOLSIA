@@ -386,11 +386,25 @@ export type AiUnitEconomics = {
 /** `ai_spend` — the additive AI-spend day view of `GET /finance/summary` (R24; backend
  *  `AiSpendSummary`). `limit` is the day cap the dispatch gate enforces; `spent`/`remaining` are
  *  `float | None` — null is "the day could not be measured" (an absent day is a measured 0.0,
- *  never the other way round), so a renderer must branch on null before formatting. */
+ *  never the other way round), so a renderer must branch on null before formatting.
+ *
+ *  F-W5-TS-1 (wave 6): `spent` is never a measured FLOOR dressed up as the day's total. When a
+ *  finished run reported no cost the backend serves `spent: null`, `spent_status: "partial"` and
+ *  the measured portion SEPARATELY as `measured_floor_usd` — a lower bound to be labelled as one.
+ *  These four fields are OPTIONAL because a server older than wave 6 does not declare them: the
+ *  card must then say only that the total is not measured, never invent a state. */
 export type AiSpend = {
   limit: number;
   spent: number | null;
   remaining: number | null;
+  /** `measured` | `partial` | `unmeasured` — absent on a pre-wave-6 server. */
+  spent_status?: string | null;
+  /** The measured lower bound of a `partial` day (never to be read as the total). */
+  measured_floor_usd?: number | null;
+  /** Finished runs that reported no cost — why a `partial` day's total is unknown. */
+  unmeasured_finished_runs?: number;
+  /** Runs still open: bounded by the per-run cap, so they do not make the total unknown. */
+  in_flight_runs?: number;
   burn_rate: AiBurnRate | null;
   unit_economics: AiUnitEconomics | null;
 };

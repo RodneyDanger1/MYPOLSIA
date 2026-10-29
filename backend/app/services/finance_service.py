@@ -398,6 +398,19 @@ async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
     `unmeasured_spend_agents` — outside the priced set, never silently dropped.  `burn_rate` is
     None when `spent` is None: a projection from an unmeasured spend is fabricated precision.
 
+    F-W5-TS-1 (wave 5 finding, fixed in wave 6) — A FLOOR IS NOT A TOTAL.  On the mixed live day
+    (2026-10-28/29) one agent's run had a measured cost and another's finished run had none, and
+    this block served `spent: 0.0032` with `remaining`/`burn_rate` derived from it while
+    `day_spend_truth.total` for the SAME day was UNKNOWN.  The day total is now decided by the same
+    rule the cap gate uses: a FINISHED run with no cost (`ended_at IS NOT NULL AND cost_usd IS
+    NULL`) makes the total unknown — `spent`/`remaining`/`burn_rate` are None — and the measured
+    portion is published SEPARATELY as `measured_floor_usd` (named a floor, never summed into a
+    total) with `spent_status = "partial"` and the count of unpriced finished runs.  An OPEN run
+    (`ended_at IS NULL`) is NOT a reason to refuse a total: it is counted in `in_flight_runs` and
+    its cost is bounded by the per-run cap — the same distinction `day_spend_truth` records.  The
+    three states stay distinguishable on the wire: `measured` (total known, absent day = 0.0),
+    `partial` (some of the day measured, total unknown), `unmeasured` (no priced run at all).
+
     Exactness: the cap and the spend reach `spend_summary` as `Decimal` (this module's money rule,
     see the module docstring), so `remaining` is `0.3`, not `0.3000000000000007`; the response
     model floats the values at the wire boundary only.  `unit_economics` takes `float`s (its own
@@ -408,11 +421,17 @@ async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
     # ONE grouped statement: the day's spend AND the completed-run count per agent, from the same
     # rows — a run's cost and its status live on the row that carries both, so they cannot drift
     # apart.  `sum(case(...))` (not `count(*) filter`) is spelled the same way on both engines.
+    # F-W5-TS-1: the same statement also separates a FINISHED run with no cost (which makes the day
+    # total unknown) from an OPEN one (bounded by the per-run cap, and not a reason to refuse).
+    finished_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_not(None))
+    open_unpriced = and_(AgentRun.cost_usd.is_(None), AgentRun.ended_at.is_(None))
     grouped = (
         select(
             AgentRun.agent_type,
             func.sum(AgentRun.cost_usd).label("spent"),
             func.sum(case((AgentRun.status == "completed", 1), else_=0)).label("completed"),
+            func.sum(case((finished_unpriced, 1), else_=0)).label("finished_unpriced"),
+            func.sum(case((open_unpriced, 1), else_=0)).label("in_flight"),
         )
         .where(AgentRun.started_at >= start, AgentRun.started_at < end)
         .group_by(AgentRun.agent_type)
@@ -427,8 +446,11 @@ async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
     spend_by_agent: dict[str, Decimal] = {}
     completed_by_agent: dict[str, int] = {}
     unmeasured_spend_agents: list[str] = []
-    for agent, spent, completed in rows:
+    finished_unpriced_runs = in_flight_runs = 0
+    for agent, spent, completed, finished_unpriced_count, in_flight_count in rows:
         name = str(agent)
+        finished_unpriced_runs += int(finished_unpriced_count or 0)
+        in_flight_runs += int(in_flight_count or 0)
         if spent is None:  # rows, no reported cost: NOT a measured 0 (F-08/F-10)
             unmeasured_spend_agents.append(name)
             continue
@@ -437,12 +459,24 @@ async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
         spend_by_agent[name] = measured
         completed_by_agent[name] = int(completed)
 
+    measured_total = sum(spend_by_agent.values(), Decimal("0"))
+    #: The measured portion of a day whose TOTAL is unknown — published as a floor, never as the
+    #: day's spend.  `None` when the day is fully measured, and `None` when NO run was priced (a
+    #: floor of 0.0 with nothing measured would be a fabricated zero).
+    measured_floor: Decimal | None = None
     if not rows:                                    # absent day: measured zero (D3)
         day_spent: Decimal | None = Decimal("0")
-    elif spend_by_agent:                            # at least one run reported its cost
-        day_spent = sum(spend_by_agent.values(), Decimal("0"))
-    else:                                           # runs exist, none reported a cost
+        spent_status = "measured"
+    elif not spend_by_agent:                        # runs exist, none reported a cost
         day_spent = None
+        spent_status = "unmeasured"
+    elif finished_unpriced_runs:                    # F-W5-TS-1: part of the day is unmeasured
+        day_spent = None
+        spent_status = "partial"
+        measured_floor = measured_total
+    else:                                           # every finished run reported its cost
+        day_spent = measured_total
+        spent_status = "measured"
 
     # `spend_summary` is `float`-typed but arithmetically exact on Decimals (is-None guard, then
     # `cap - spent`): passing Decimal here is what keeps `remaining` exact, hence the one ignore.
@@ -456,6 +490,12 @@ async def get_ai_spend_summary(db: AsyncSession) -> dict[str, Any]:
     )
 
     block: dict[str, Any] = dict(view)
+    # F-W5-TS-1: the day's measurement state, and — when the total is unknown — the measured
+    # portion published under its own name, so no reader can add it up as "the day's spend".
+    block["spent_status"] = spent_status
+    block["measured_floor_usd"] = None if measured_floor is None else float(measured_floor)
+    block["unmeasured_finished_runs"] = finished_unpriced_runs
+    block["in_flight_runs"] = in_flight_runs
     block["burn_rate"] = (
         None
         if day_spent is None

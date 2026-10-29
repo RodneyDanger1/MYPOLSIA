@@ -54,7 +54,11 @@ export type SummaryCardSpec = {
 
 /** "AI spend today" (R24's `ai_spend` block). An absent block or an unmeasured day (`spent: null`,
  *  which the backend serves when rows exist but no cost was reported) is the marker; only a
- *  measured zero renders `$0.00`. */
+ *  measured zero renders `$0.00`.
+ *
+ *  F-W5-TS-1: on a `partial` day (a finished run reported no cost) the backend serves `spent: null`
+ *  and the measured portion as `measured_floor_usd` — so the value stays the em dash and the floor
+ *  is carried by the NOTE, labelled as a floor. A floor must never be promoted into the number. */
 export function aiSpendValue(spend: FinanceSummary["ai_spend"]): string {
   if (!spend) return NOT_MEASURED;
   const spent = usdText(spend.spent);
@@ -62,11 +66,60 @@ export function aiSpendValue(spend: FinanceSummary["ai_spend"]): string {
   return `${spent} of ${usdText(spend.limit)}`;
 }
 
-/** An agent whose day spend was NOT measurable is NAMED, never priced at a fabricated $0.00 per
- *  task — so it is a note on the card, not folded into its number. */
+/**
+ * A measured FLOOR rendered at its own precision. The card's money is two decimals, but a floor of
+ * $0.0032 would print as `$0.00` — the fabricated zero this project refuses — so a floor keeps up
+ * to four decimals and is always prefixed "at least". Not exported: the only reader is the note.
+ */
+function aiSpendFloorText(value: number): string {
+  if (!Number.isFinite(value)) return NOT_MEASURED;
+  const amount = value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  return `at least $${amount}`;
+}
+
+/** "1 finished run" / "2 finished runs" — a count the wire supplies, never a guess. */
+function runCountText(count: number | undefined): string | null {
+  if (typeof count !== "number" || !Number.isFinite(count) || count < 0) return null;
+  return `${count} finished ${count === 1 ? "run" : "runs"}`;
+}
+
+/**
+ * The AI spend card's note. On an UNKNOWN day it says what IS known, in this order: the measured
+ * floor (a lower bound, never the total) and/or the count of finished runs that reported no cost;
+ * then the named agents whose day spend was not measurable (never priced at a fabricated $0.00).
+ * A pre-wave-6 server that declares neither `spent_status` nor a floor gets no invented state.
+ */
 export function aiSpendNote(spend: FinanceSummary["ai_spend"]): string | undefined {
-  const unmeasured = spend?.unit_economics?.unmeasured_spend_agents ?? [];
-  return unmeasured.length > 0 ? `unmeasured spend: ${unmeasured.join(", ")}` : undefined;
+  if (!spend) return undefined;
+  const parts: string[] = [];
+  if (spend.spent == null) {
+    const status = typeof spend.spent_status === "string" ? spend.spent_status : null;
+    const runs = runCountText(spend.unmeasured_finished_runs);
+    const floor = spend.measured_floor_usd;
+    if (status === "partial") {
+      const hasFloor =
+        typeof floor === "number" && Number.isFinite(floor);
+      const measured = hasFloor ? aiSpendFloorText(floor as number) : null;
+      parts.push(
+        measured !== null
+          ? `partial: ${measured} measured so far — a floor, not the day's total`
+          : "partial: only part of the day's spend was measured",
+      );
+      if (runs !== null) parts.push(`${runs} carried no cost`);
+    } else if (status === "unmeasured") {
+      parts.push(
+        runs !== null
+          ? `unmeasured: ${runs} carried no cost — the day's total is unknown`
+          : "unmeasured: no run reported a cost — the day's total is unknown",
+      );
+    } else if (runs !== null) {
+      // A newer server that declares the count but no status word: say the count, not a state.
+      parts.push(`${runs} carried no cost — the day's total is unknown`);
+    }
+  }
+  const unmeasured = spend.unit_economics?.unmeasured_spend_agents ?? [];
+  if (unmeasured.length > 0) parts.push(`unmeasured spend: ${unmeasured.join(", ")}`);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 /** The seven cards, AI spend leading (spec OPEN DECISION 3: it is the measured, unique number). */
