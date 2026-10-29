@@ -807,9 +807,24 @@ async def handle_message(db: AsyncSession, message: str) -> ChatResponse:
             level="info",
             detail={"kind": "create_task", "agent_type": agent_type},
         )
+        # F-29: the confirm click dispatches a PAID run (see `confirm_task`: the task row is
+        # committed, then `run_agent_task.delay` hands it to a worker that calls the model
+        # provider).  The disclosure must be possible BEFORE that click, so the caps the run is
+        # actually bounded by ride the 201 reply — read from the SAME policy object the accounting
+        # guard enforces, never a client-side constant.
+        from app.agents.accounting import budget_policy_from_settings
+
+        budget = budget_policy_from_settings()
         return ChatResponse(
             reply=ChatReply(text=reply_text),
-            intent=ChatIntent(kind="create_task", agent_type=agent_type, title=title),
+            intent=ChatIntent(
+                kind="create_task",
+                agent_type=agent_type,
+                title=title,
+                paid_run=True,
+                run_cost_cap_usd=float(budget.per_run_cap_usd),
+                day_cost_cap_usd=float(budget.day_limit_usd),
+            ),
             task_id=None,
             requires_confirm=True,
             confirm_token=confirm_token,

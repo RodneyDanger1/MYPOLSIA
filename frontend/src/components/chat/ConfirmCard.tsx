@@ -3,6 +3,11 @@
 import { Button } from "@/components/ui";
 import type { ChatConfirmGate } from "@/components/chat/useChat";
 
+/** Money for a disclosure sentence: two decimals, never a bare float. */
+function usd(value: number): string {
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /**
  * The confirm gate under a `create_task` reply. Rendering it confirms NOTHING: the single
  * primary (glossy `CONFIRM`) fires `POST /api/v1/chat/confirm` with the reply's single-use
@@ -12,6 +17,20 @@ import type { ChatConfirmGate } from "@/components/chat/useChat";
  *  - a 409 / transport failure → the failure's own display string (code + message + fix hint),
  *    with CONFIRM enabled again (an unused token is retryable until it expires);
  *  - `confirming` → the button is disabled and says so.
+ *
+ * F-29 — THE PAID-RUN DISCLOSURE, BEFORE THE CLICK. The confirm is not just a filing step:
+ * `chat_service.confirm_task` creates the task, commits it, and calls `run_agent_task.delay`, so a
+ * worker runs the agent against the model provider and real money is spent. The card used to say
+ * only "files it through the same path the agents page uses". It now states:
+ *
+ *   * what the click starts (a real agent run that bills the provider);
+ *   * the caps the run is bounded by, as the SERVER declared them on this reply
+ *     (`intent.run_cost_cap_usd` / `intent.day_cost_cap_usd`, from
+ *     `accounting.budget_policy_from_settings` — the same object the dispatch guard enforces);
+ *   * that no estimate exists: the cost is measured AFTER the run (there is no planner estimate on
+ *     a chat-filed task, so inventing one here would be a fabricated number);
+ *   * when an older server did not send the fields, that they were not declared — never a
+ *     made-up cap.
  */
 export function ConfirmCard({
   gate,
@@ -20,7 +39,8 @@ export function ConfirmCard({
   gate: ChatConfirmGate;
   onConfirm: () => void;
 }) {
-  const { status, taskId, error } = gate;
+  const { status, taskId, error, disclosure } = gate;
+  const capsDeclared = disclosure.runCostCapUsd !== null || disclosure.dayCostCapUsd !== null;
 
   return (
     <div
@@ -41,6 +61,48 @@ export function ConfirmCard({
             CONFIRM files it through the same path the agents page uses. Nothing is created until
             you do.
           </p>
+
+          {/* F-29 — the disclosure sits between the sentence and the button, so it is read BEFORE
+              the click; the costs come from the reply, not from this component. */}
+          <div
+            data-testid="chat-paid-run-disclosure"
+            className="mt-2 rounded-sm border border-amber-200 bg-amber-50 px-2 py-1.5 font-serif text-xs leading-snug text-[#111]"
+          >
+            <p>
+              {disclosure.paidRun === true
+                ? "Confirming also dispatches a PAID agent run"
+                : "Confirming also dispatches a real agent run"}{" "}
+              — a worker calls the model provider and real money is spent.
+            </p>
+            {capsDeclared ? (
+              <p className="mt-1">
+                The server caps this run at{" "}
+                <span data-testid="chat-run-cost-cap">
+                  {disclosure.runCostCapUsd === null
+                    ? "no declared per-run cap"
+                    : `${usd(disclosure.runCostCapUsd)} per run`}
+                </span>
+                {disclosure.dayCostCapUsd === null ? null : (
+                  <>
+                    {" "}
+                    and{" "}
+                    <span data-testid="chat-day-cost-cap">
+                      {usd(disclosure.dayCostCapUsd)} per day
+                    </span>
+                  </>
+                )}
+                . Those are the caps the worker enforces before dispatch — the actual cost is
+                measured after the run; no estimate exists for a task filed from chat.
+              </p>
+            ) : (
+              <p className="mt-1" data-testid="chat-cost-cap-undeclared">
+                This server did not declare the run&rsquo;s cost caps on this reply; the run still
+                spends money, and its cost is measured after it runs — no estimate exists for a
+                task filed from chat.
+              </p>
+            )}
+          </div>
+
           <div className="mt-2 flex items-center gap-2">
             <Button
               variant="glossy"

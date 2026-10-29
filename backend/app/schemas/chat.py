@@ -41,6 +41,12 @@ class ChatIntent(BaseModel):
       redacted title that will be filed (both `sk-`-safe: key material never reaches here).
     * `matched` — a `refused`: the literal phrase the deterministic rule keyed on (redacted,
       truncated), so the owner can see WHAT tripped the policy.
+    * `paid_run` / `run_cost_cap_usd` / `day_cost_cap_usd` — F-29 (ADDITIVE, `create_task` only):
+      confirming a chat proposal creates the task AND hands it to the worker, which runs the agent
+      against the model provider — a PAID run.  The UI must say so BEFORE the click, and these
+      three fields are where the caps come from (`accounting.budget_policy_from_settings`: the
+      enforced per-run ceiling and the daily ceiling).  They are `None` on every other branch:
+      an answer/refusal dispatches nothing, so no cost claim belongs on it.
     """
 
     kind: Literal["answer", "create_task", "refused"]
@@ -48,6 +54,9 @@ class ChatIntent(BaseModel):
     agent_type: str | None = None
     title: str | None = None
     matched: str | None = None
+    paid_run: bool | None = None
+    run_cost_cap_usd: float | None = None
+    day_cost_cap_usd: float | None = None
 
 
 class ChatRefusal(BaseModel):

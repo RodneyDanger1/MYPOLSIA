@@ -42,14 +42,42 @@ export type ChatRefusal = {
 };
 
 /** The frozen 201 body of POST /api/v1/chat. `intent.kind` is an open string carrying the three
- *  known branches (answer | create_task | refused); per-branch extras ride the same object. */
+ *  known branches (answer | create_task | refused); per-branch extras ride the same object.
+ *
+ *  F-29 (wave 4): a `create_task` reply also carries `paid_run` / `run_cost_cap_usd` /
+ *  `day_cost_cap_usd` — the disclosure the confirm card must show BEFORE the click. They are
+ *  typed as optional/nullable because a server that predates F-29 omits them; the card then says
+ *  the caps were not declared instead of inventing numbers. */
+export type ChatIntent = {
+  kind: string;
+  agent_type?: string | null;
+  paid_run?: boolean | null;
+  run_cost_cap_usd?: number | null;
+  day_cost_cap_usd?: number | null;
+  [key: string]: unknown;
+};
+
 export type ChatReply = {
   reply: { text: string };
-  intent: { kind: string; [key: string]: unknown };
+  intent: ChatIntent;
   task_id: number | null;
   requires_confirm: boolean;
   confirm_token: string | null;
   refusal: ChatRefusal | null;
+};
+
+/**
+ * F-29 — what confirming the gate actually starts, as the SERVER declared it on the 201 reply.
+ *
+ * `paidRun` is `null` when an older server sent no `paid_run` flag (the card then says it was not
+ * declared, while still stating that a run is dispatched — that part is the frozen confirm
+ * contract, not a server claim). The caps are the enforced per-run / daily ceilings from
+ * `accounting.budget_policy_from_settings`; absent = not declared, never defaulted here.
+ */
+export type ChatDispatchDisclosure = {
+  paidRun: boolean | null;
+  runCostCapUsd: number | null;
+  dayCostCapUsd: number | null;
 };
 
 /** The 200 body of POST /api/v1/chat/confirm. */
@@ -123,13 +151,33 @@ export function mergeHistory(rows: ChatMessageRow[], prev: ChatItem[]): ChatItem
 
 /** The single confirm gate this rail can offer. Confirm tokens are single-use and history rows
  *  do not carry one, so at most the latest confirmable reply is actionable; an earlier unused
- *  token stays valid server-side until it is used or expires. */
+ *  token stays valid server-side until it is used or expires.
+ *
+ *  F-29: `disclosure` travels WITH the gate — the cost facts the server declared on the same 201
+ *  that minted this token. It is never re-read or guessed at click time. */
 export type ChatConfirmGate = {
   token: string;
   status: "pending" | "confirming" | "confirmed" | "failed";
   taskId: number | null;
   error: string | null;
+  disclosure: ChatDispatchDisclosure;
 };
+
+/** A non-negative finite number off the wire, or `null` (never a coerced string/NaN). */
+function asCost(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** F-29: the disclosure a create_task reply declared (see `ChatDispatchDisclosure`). */
+function disclosureFrom(intent: ChatIntent | null | undefined): ChatDispatchDisclosure {
+  const bag: Record<string, unknown> =
+    intent !== null && typeof intent === "object" ? (intent as Record<string, unknown>) : {};
+  return {
+    paidRun: typeof bag.paid_run === "boolean" ? bag.paid_run : null,
+    runCostCapUsd: asCost(bag.run_cost_cap_usd),
+    dayCostCapUsd: asCost(bag.day_cost_cap_usd),
+  };
+}
 
 function errorDisplay(e: unknown): string {
   if (e instanceof ApiError) return e.display;
@@ -220,6 +268,9 @@ export function useChat() {
           status: "pending",
           taskId: null,
           error: null,
+          // F-29: captured from THIS reply — the same body that minted the token. The card shows
+          // it before the click; the click itself sends only the token.
+          disclosure: disclosureFrom(reply.intent),
         });
       }
       return reply;
@@ -240,7 +291,7 @@ export function useChat() {
         const ack = await api.post<ChatConfirmAck>("/chat/confirm", { confirm_token: token });
         setConfirm((prev) =>
           prev && prev.token === token
-            ? { token, status: "confirmed", taskId: ack?.task_id ?? null, error: null }
+            ? { ...prev, status: "confirmed", taskId: ack?.task_id ?? null, error: null }
             : prev,
         );
         // Refresh silently: the persisted exchange (and the task id now on its row) replaces
