@@ -163,15 +163,25 @@ def test_the_tool_gate_receives_the_real_channel_payload_taint_and_counts(monkey
 
 
 def test_a_read_tool_carries_its_arguments_and_no_channel(monkeypatch):
-    """A read is not a channel send: it keeps channel `""` and is still allowed, taint or not."""
+    """A read is not a channel send: it keeps channel `""` and is still allowed, taint or not.
+
+    OLD (pre-wave-6): this called `pricing_catalog` with `{"limit": 3}` — an argument that tool's
+    schema does not declare — and asserted `ok is True`, i.e. it depended on the registry silently
+    dropping the key.  NEW: `pricing_catalog` takes NO arguments, so the call is `{}` and the
+    payload assertion is `{}`.  The "arguments ride the decide payload" half is not lost: it is
+    proven on REAL arguments by `test_the_runs_own_performed_sends_are_added_to_the_decision`
+    below (a `github_commit` payload) and, in both directions, by
+    `tests/unit/test_w6_tool_behaviour_census.py` (F-W6-01: a schema declaring
+    `additionalProperties: false` must be honoured, so this test may not pin the old tolerance).
+    """
     seen = _record_decide(monkeypatch)
     pf.set_run_taint(RunTaint(tainted=True, sources=["probe"]))
 
-    out = _call("pricing_catalog", {"limit": 3}, agent_type="orchestrator")
+    out = _call("pricing_catalog", {}, agent_type="orchestrator")
 
     req, _kwargs = seen[0]
     assert req.channel == ""
-    assert req.payload == {"limit": 3}
+    assert req.payload == {}
     assert req.action_class is ActionClass.READ
     assert out["ok"] is True, "a read is never escalated by the taint leg"
 

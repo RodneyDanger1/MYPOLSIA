@@ -99,6 +99,15 @@ MAX_SKIP_DETAILS = 20
 #: The workspace is text-only by construction (`code_write` refuses NUL bytes and non-UTF-8).
 TEXT_ENCODING = "utf-8"
 
+#: A-W4-05 (wave 6) — the two causes a run-scoped 404 can have, as a machine-readable marker in
+#: `context["kind"]`.  Both are `E_NOT_FOUND` (404 is right for either: the resource is not here),
+#: but they are DIFFERENT answers and an operator (or a UI) must be able to branch on them without
+#: parsing prose.  `NO_WORKSPACE_KIND` is this module's own verdict — it only ever knows the
+#: filesystem.  `NO_SUCH_RUN_KIND` belongs to the router, which is the only layer that can consult
+#: the run ledger; see `app/api/v1/artifacts.py::_refuse_an_unknown_run`.
+NO_WORKSPACE_KIND = "no_workspace"
+NO_SUCH_RUN_KIND = "no_such_run"
+
 
 # ── result shapes (plain frozen dataclasses; the router declares the wire models) ──────────────
 
@@ -397,6 +406,34 @@ def relative_parts(path: object) -> list[str]:
     return parts
 
 
+def workspace_exists(run_id: object, root: str | Path | None = None) -> bool:
+    """Whether run `run_id` has a workspace DIRECTORY here — a filesystem fact and nothing more.
+
+    A-W4-05 (wave 6) exists because the run-scoped 404 could not tell two different worlds apart
+    and described both with the second one: `GET /api/v1/artifacts/999999` answered *"run 999999
+    has no workspace — nothing was written for it"* for an id the ledger had never issued, i.e. it
+    asserted a run's history the surface had not measured.  The router needs a plain predicate to
+    branch on BEFORE the service raises, so it asks this first and the ledger second.
+
+    The refusals are the SAME as `run_dir`'s and come BEFORE the question is answered, so this can
+    never be a quiet "no": an unsafe id is `E_VALIDATION`, a misconfigured workspace (or a `runs/`
+    link) is `E_CONFIG`, and a `stat` the OS cannot perform is `E_STORAGE`.  `False` therefore
+    means exactly one thing — there is no `runs/<id>/` directory on this volume — and nothing
+    about whether the run exists in the ledger or wrote a file.
+    """
+    name = validate_run_id(run_id)
+    runs = runs_root(root)
+    try:
+        return (runs / name).exists()
+    except OSError as exc:  # a path the OS cannot even stat
+        raise PolsiaError(
+            E_STORAGE,
+            f"artifacts: run workspace {name!r} cannot be read ({type(exc).__name__}: {exc})",
+            how_to_fix="check that the code workspace directory is readable by this process",
+            context={"run_id": name},
+        ) from exc
+
+
 def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
     """`(run_id, run directory)` for a run that HAS a workspace, or a named refusal.
 
@@ -424,7 +461,11 @@ def run_dir(run_id: object, root: str | Path | None = None) -> tuple[str, Path]:
                 "check the run id with GET /api/v1/runs; a run that wrote no file has no "
                 "workspace directory (the code tools create it on first use)"
             ),
-            context={"run_id": name},
+            # A-W4-05 (wave 6): the DISCRIMINATOR.  This refusal means "a run id this volume
+            # has no workspace for"; `app/api/v1/artifacts.py` answers `no_such_run` instead
+            # once the ledger confirms the id is not a run at all, so a client can tell the
+            # two 404s apart without parsing prose.
+            context={"run_id": name, "kind": NO_WORKSPACE_KIND},
         )
     try:
         resolved = candidate.resolve()
@@ -858,6 +899,8 @@ __all__ = [
     "MAX_LIST_ENTRIES",
     "MAX_RUNS",
     "MAX_SCAN_FILES",
+    "NO_SUCH_RUN_KIND",
+    "NO_WORKSPACE_KIND",
     "RUN_ID_PATTERN",
     "RUN_WORKSPACE_SUBDIR",
     "ResolvedArtifact",
@@ -874,5 +917,6 @@ __all__ = [
     "run_dir",
     "runs_root",
     "validate_run_id",
+    "workspace_exists",
     "workspace_root",
 ]

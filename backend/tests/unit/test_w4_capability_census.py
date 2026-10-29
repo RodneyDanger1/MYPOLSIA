@@ -323,8 +323,15 @@ def test_a_schema_required_argument_is_really_required_by_the_implementation(nam
 
     A tool whose implementation DEFAULTED a required argument would silently run on a call the
     schema says is incomplete — the model would never learn the argument mattered.  Every probe
-    below must be refused BY NAME as an `E_VALIDATION` before any I/O (measured: all 21 refusals
+    below must be refused BY NAME as an `E_VALIDATION` before any I/O (measured: all 22 refusals
     happen in the runner's own argument validation, no network, no file write).
+
+    OLD (wave 4/5 wording): "all 21 refusals".  NEW (wave 6, re-derived from `TOOL_SPECS` by
+    `forge/w6/census_spec_table.py`): the registry has **17** tools and **22** required-argument
+    pairs — web_fetch 1, web_search 1, code_write 2, code_read 1, github_repo 1, github_branch 2,
+    github_commit 4, github_pr 4, research_fetch 1, fx_convert 3, domain_health 1, link_status 1.
+    The parametrization has always run the real number (`_OMISSIONS` is derived, so all 22 were
+    exercised); only this sentence was wrong, which is why it is corrected rather than re-asserted.
     """
     arguments = {k: v for k, v in _VALID_ARGS[name].items() if k != argument}
     payload = json.loads(execute_tool(name, arguments, agent_type=_agent_for_tool(name)))

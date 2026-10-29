@@ -40,15 +40,26 @@ FROZEN CONTRACT (owner-key like every sibling v1 router):
         resolves outside the run dir (a link/junction escape); a symbolic link; a directory; a
         file over the inline cap (512 KiB) or the download cap (8 MiB); a binary file requested
         through `content` (NUL byte or undecodable UTF-8);
-      * `E_NOT_FOUND` (404) — a run with no workspace directory; a file that does not exist;
+      * `E_NOT_FOUND` (404) — a run with no workspace directory AND no ledger row (the named
+        `no_such_run`: nothing anywhere names this id); a run that exists but has no workspace
+        (the named `no_workspace`); a file that does not exist;
       * `E_STORAGE` (503) — the volume answered an OS error (named, with the reason);
       * `E_CONFIG` (503) — `code_workspace_dir` is not a directory, or `runs/` is a link.
       * no `X-API-Key` → the standard 401 `E_AUTH`.
 
+A-W4-05 (wave 6): the run-scoped 404 used to answer *"run {id} has no workspace — nothing was
+written for it"* for ids that were never runs at all — a claim about a run's history that this
+surface had not measured, and a dead end for the operator (the live evidence is quoted in
+`tests/unit/test_w6_a_w4_05_artifact_run_distinction.py`).  `_refuse_an_unknown_run` now asks the
+run ledger, but ONLY when no workspace exists, so a served artifact never runs a ledger query (the
+happy-path test installs a `get_run` that raises if it is called) and a
+ledger outage is never dressed up as a 404.
+
 WHAT THIS ROUTER DELIBERATELY DOES NOT DO: no write/upload/delete (the writer is `code_write`,
-the deleter is `POST /api/v1/ops/run-workspace-cleanup`), no `agent_runs`/`tasks` join (the UI
-joins with `GET /api/v1/runs?task_id=`), no rendering or conversion, no binary preview, and no
-path outside the run workspace is ever resolved, let alone served.
+the deleter is `POST /api/v1/ops/run-workspace-cleanup`), no run LIST (the UI uses
+`GET /api/v1/runs?task_id=`; the ledger read here is an existence check on one id and nothing
+else is taken from it), no rendering or conversion, no binary preview, and no path outside the run
+workspace is ever resolved, let alone served.
 
 The route bodies stay thin: every rule — caps, path safety, refusal codes — lives in
 `app/services/artifact_service.py` so the service can be exercised without HTTP.
@@ -60,11 +71,13 @@ import re
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import refusal_guard, verify_api_key
+from app.api.deps import get_db, refusal_guard, verify_api_key
+from app.core.errors import E_NOT_FOUND, PolsiaError
 from app.core.timeutil import iso_utc
 from app.schemas.common import UtcDatetime
-from app.services import artifact_service
+from app.services import artifact_service, run_service
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"], dependencies=[Depends(verify_api_key)])
 
@@ -127,6 +140,55 @@ def _safe_filename(name: str) -> str:
     return cleaned[:_MAX_FILENAME_CHARS]
 
 
+#: `agent_runs.id` is a positive signed 64-bit integer.  An id outside that range cannot name a
+#: row, and it is never sent to the database as a comparison (a value past the column type is an
+#: error from the driver, not a "not found").
+_LEDGER_ID_MAX = 2**63 - 1
+
+
+def _ledger_id(run_id: str) -> int | None:
+    """`run_id` as a ledger id, or `None` when it cannot be one (non-numeric or out of range)."""
+    try:
+        value = int(run_id)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value <= _LEDGER_ID_MAX else None
+
+
+async def _refuse_an_unknown_run(db: AsyncSession, run_id: str) -> None:
+    """A-W4-05: refuse "no such run" when NEITHER a workspace NOR a ledger row names this id.
+
+    Returns (the caller proceeds) in the two cases where the service's own answer is the right
+    one: a workspace exists for this id, or the ledger has the run — a real run that wrote no
+    file is `no_workspace`, not "no such run".  Otherwise it raises the named `E_NOT_FOUND` with
+    `context.kind == "no_such_run"`.
+
+    The ledger read is deliberately LAST and one-directional: `workspace_exists` validates the
+    id first (`E_VALIDATION` for a hostile id, `E_CONFIG` for a broken workspace), so an unsafe id
+    is refused before any database work, and a served artifact never runs a ledger QUERY at all (the
+    session FastAPI injects is only touched by `get_db`'s own begin/commit, which starts no
+    transaction when nothing was read).
+    A ledger FAILURE is not caught here: `run_service.get_run` raises `E_DB`, `refusal_guard`
+    turns that into the named 503, and the operator learns the ledger is down instead of being
+    told a run does not exist.
+    """
+    if artifact_service.workspace_exists(run_id):
+        return
+    ledger_id = _ledger_id(run_id)
+    if ledger_id is not None and await run_service.get_run(db, run_id=ledger_id) is not None:
+        return
+    raise PolsiaError(
+        E_NOT_FOUND,
+        f"artifacts: no such run {run_id!r} — the run ledger has no row for it and this volume "
+        "has no workspace for it either",
+        how_to_fix=(
+            "list the real run ids with GET /api/v1/runs and pass one of those; this surface "
+            "serves the workspaces of runs that exist, not arbitrary ids"
+        ),
+        context={"run_id": run_id, "kind": artifact_service.NO_SUCH_RUN_KIND},
+    )
+
+
 def _artifact_headers(*, sha256: str, size: int, modified_at) -> dict[str, str]:
     """The provenance headers both byte routes carry (the artifact's identity, not a claim)."""
     return {
@@ -163,9 +225,12 @@ async def list_artifacts_route() -> ArtifactIndexModel:
 
 
 @router.get("/{run_id}", response_model=RunArtifactsModel)
-async def list_run_artifacts_route(run_id: str) -> RunArtifactsModel:
+async def list_run_artifacts_route(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> RunArtifactsModel:
     """The files one run wrote; an empty run workspace is a measured `total: 0`."""
     with refusal_guard():
+        await _refuse_an_unknown_run(db, run_id)
         listing = artifact_service.list_run_artifacts(run_id)
     return RunArtifactsModel(
         run_id=listing.run_id,
@@ -184,10 +249,13 @@ async def list_run_artifacts_route(run_id: str) -> RunArtifactsModel:
 
 @router.get("/{run_id}/content")
 async def read_artifact_content_route(
-    run_id: str, path: str = Query(..., description="the artifact's run-relative path")
+    run_id: str,
+    path: str = Query(..., description="the artifact's run-relative path"),
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
     """One artifact as UTF-8 text — the deliverable the operator could not open before."""
     with refusal_guard():
+        await _refuse_an_unknown_run(db, run_id)
         artifact = artifact_service.read_artifact_text(run_id, path)
     headers = _artifact_headers(
         sha256=artifact.sha256, size=artifact.size, modified_at=artifact.modified_at
@@ -202,10 +270,13 @@ async def read_artifact_content_route(
 
 @router.get("/{run_id}/download")
 async def download_artifact_route(
-    run_id: str, path: str = Query(..., description="the artifact's run-relative path")
+    run_id: str,
+    path: str = Query(..., description="the artifact's run-relative path"),
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
     """One artifact's exact bytes as an attachment (same identity headers as `content`)."""
     with refusal_guard():
+        await _refuse_an_unknown_run(db, run_id)
         artifact = artifact_service.read_artifact_bytes(run_id, path)
     headers = _artifact_headers(
         sha256=artifact.sha256, size=artifact.size, modified_at=artifact.modified_at

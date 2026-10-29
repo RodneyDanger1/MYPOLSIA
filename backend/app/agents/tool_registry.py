@@ -243,14 +243,6 @@ RUN_RETENTION_MAX_AGE_HOURS = 72.0
 #: The four registry names, in the order the allowlist advertises them (read -> branch ->
 #: commit -> PR: the order the agent should use them in).
 GITHUB_TOOLS: tuple[str, ...] = ("github_repo", "github_branch", "github_commit", "github_pr")
-#: Each tool's own argument set — anything else is refused by name.  `force` is deliberately
-#: absent everywhere: the registry cannot express a force-push.
-_GITHUB_ARGUMENTS: dict[str, frozenset[str]] = {
-    "github_repo": frozenset({"repo"}),
-    "github_branch": frozenset({"repo", "branch", "from_branch", "dry_run"}),
-    "github_commit": frozenset({"repo", "branch", "message", "files", "dry_run"}),
-    "github_pr": frozenset({"repo", "title", "head", "base", "body", "dry_run"}),
-}
 
 
 #: The HTTP transport `web_search` builds its client over.  `None` in production (a plain
@@ -912,6 +904,61 @@ TOOL_SPECS: list[dict] = [
 
 _SPEC_BY_NAME: dict[str, dict] = {spec["function"]["name"]: spec for spec in TOOL_SPECS}
 
+#: Every argument name each shipped tool's OWN schema declares, DERIVED from `TOOL_SPECS` (never
+#: typed here — a spec edit cannot leave this stale).  All 17 specs carry
+#: `additionalProperties: false`, which is the contract the MODEL is shown; this table is what
+#: makes the implementation honour it.  F-W6-01 (wave 6): before it existed, four GitHub tools
+#: refused an undeclared argument by name while the other thirteen silently dropped it — so a
+#: misspelled `max_chars` ran on the default and the model got a plausible result for a request
+#: nothing had honoured.  The measured corpus behind that change (23 real tool calls recorded on
+#: this install, 0 carrying an undeclared argument) is in `forge/raw/w6/action-arg-keys.txt`.
+_DECLARED_ARGUMENTS: dict[str, frozenset[str]] = {
+    name: frozenset(spec["function"]["parameters"].get("properties") or {})
+    for name, spec in _SPEC_BY_NAME.items()
+}
+
+#: Where "unknown argument" alone would under-explain the request: the GitHub mutations cannot
+#: express a force-push, and saying so names the limit instead of just the spelling error.
+_GITHUB_FORCE_HINT = (
+    " — force-push/forced update is not expressible on this surface; every git ref update is "
+    "sent with force=false"
+)
+
+
+def _undeclared_argument_refusal(name: str, arguments: dict, *, agent_type: str) -> dict | None:
+    """The named refusal for an argument this tool's schema does not declare, or `None`.
+
+    Both halves of the contract are published to the model in the SAME schema: the arguments it
+    accepts AND `additionalProperties: false`.  An argument the runner never reads is not a
+    harmless extra — the call that returns `ok` did not do what was asked (a `max_chars` typo
+    returns the default excerpt and says nothing), which is exactly the "looked correct and was
+    not" outcome this repository's rules forbid.  Refusing by name is the difference between "not
+    offered" and "silently ignored"; the model gets the accepted set and one of its bounded turns
+    to correct the spelling.
+
+    Deliberately checked AFTER the firewall gate (`_execute`): a denied tool must not answer
+    questions about its own surface, and a run with no claim on a tool must be refused for that
+    reason first — `tests/unit/test_b1_c_integrator.py` pins that order.
+    """
+    declared = _DECLARED_ARGUMENTS.get(name, frozenset())
+    unknown = sorted(set(arguments) - declared)
+    if not unknown:
+        return None
+    hint = _GITHUB_FORCE_HINT if (name in GITHUB_TOOLS and "force" in unknown) else ""
+    return named_refusal(
+        E_VALIDATION,
+        f"{name}: unknown argument(s) {', '.join(unknown)}; this tool accepts "
+        f"{', '.join(sorted(declared)) or 'no arguments'}{hint}",
+        how_to_fix=(
+            "remove the unsupported argument and call again; this tool's schema lists exactly the "
+            "arguments it honours, and an argument it cannot honour is refused rather than "
+            "silently dropped"
+        ),
+        tool=name,
+        agent=agent_type,
+        unknown=unknown,
+    )
+
 #: The ACTION CLASS each registry tool is gated as.  Reads are the default (V12/W-B); a tool
 #: that WRITES is gated as `internal_write` (V24/L2 `code_write`), so the firewall decision
 #: reflects what the call really does.  V25/L2: the three GitHub MUTATIONS reach a third party and
@@ -1248,6 +1295,11 @@ def _execute(name: str, arguments: Any, *, agent_type: str) -> dict:
             tool=name,
             agent=agent_type,
         )
+    # F-W6-01: an argument the tool's own schema does not declare is REFUSED, never dropped — the
+    # model was shown `additionalProperties: false`, so the implementation has to honour it.
+    undeclared = _undeclared_argument_refusal(name, arguments, agent_type=agent_type)
+    if undeclared is not None:
+        return undeclared
     # F-33: charge the run's metered budget AFTER the gate allowed the call and the arguments
     # were proved usable — a refusal must never spend a slot.
     budget = _charge_metered_tool(name, agent_type=agent_type)
@@ -2690,33 +2742,6 @@ def _run_phone_read(*, agent_type: str, arguments: dict) -> dict:
 # github_repo / github_branch / github_commit / github_pr (V25/L2)
 # ---------------------------------------------------------------------------
 
-def _github_arguments(
-    tool: str, arguments: dict, *, agent_type: str,
-) -> tuple[dict | None, dict | None]:
-    """`(arguments, None)` when every key is documented, `(None, refusal)` otherwise.
-
-    Strict on purpose: an unknown key is how a caller would try to express something this
-    surface deliberately cannot do — `force`, a refspec, a merge strategy.  Refusing it by name
-    is the difference between "not offered" and "silently ignored".
-    """
-    unknown = sorted(set(arguments) - _GITHUB_ARGUMENTS[tool])
-    if unknown:
-        extra = ""
-        if "force" in unknown:
-            extra = (" — force-push/forced update is not expressible on this surface; every git "
-                     "ref update is sent with force=false")
-        return None, named_refusal(
-            E_VALIDATION,
-            f"{tool}: unknown argument(s) {', '.join(unknown)}; this tool accepts "
-            f"{', '.join(sorted(_GITHUB_ARGUMENTS[tool])) or 'no arguments'}{extra}",
-            how_to_fix=(
-                "remove the unsupported argument; for a hard reset or a force-push, do it as a "
-                "human in git — the agent's GitHub surface cannot"
-            ),
-            tool=tool, agent=agent_type, unknown=unknown)
-    return arguments, None
-
-
 def _github_dry_run(
     tool: str, arguments: dict, *, agent_type: str,
 ) -> tuple[bool | None, dict | None]:
@@ -2745,12 +2770,10 @@ def _run_github_repo(*, agent_type: str, arguments: dict) -> dict:
     """Read one repository's metadata (`github_service.get_repo`)."""
     from app.services import github_service
 
-    args, refusal = _github_arguments("github_repo", arguments, agent_type=agent_type)
-    if refusal is not None:
-        return refusal
-    assert args is not None
+    # The undeclared-argument check runs ONCE for every tool in `_execute`
+    # (`_undeclared_argument_refusal`), so each runner receives only documented keys.
     try:
-        result = github_service.get_repo(args.get("repo"))
+        result = github_service.get_repo(arguments.get("repo"))
     except PolsiaError as exc:
         return _github_refusal("github_repo", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_repo", "result": {"repo": result}}
@@ -2760,20 +2783,16 @@ def _run_github_branch(*, agent_type: str, arguments: dict) -> dict:
     """Read one branch, or create it from `from_branch` (dry-run by default)."""
     from app.services import github_service
 
-    args, refusal = _github_arguments("github_branch", arguments, agent_type=agent_type)
+    dry_run, refusal = _github_dry_run("github_branch", arguments, agent_type=agent_type)
     if refusal is not None:
         return refusal
-    assert args is not None
-    dry_run, refusal = _github_dry_run("github_branch", args, agent_type=agent_type)
-    if refusal is not None:
-        return refusal
-    from_branch = _github_from_branch(args)
+    from_branch = _github_from_branch(arguments)
     try:
         if from_branch is None:
-            result = github_service.get_branch(args.get("repo"), args.get("branch"))
+            result = github_service.get_branch(arguments.get("repo"), arguments.get("branch"))
         else:
             result = github_service.create_branch(
-                args.get("repo"), args.get("branch"), from_branch,
+                arguments.get("repo"), arguments.get("branch"), from_branch,
                 dry_run=True if dry_run is None else dry_run)
     except PolsiaError as exc:
         return _github_refusal("github_branch", exc, agent_type=agent_type)
@@ -2784,17 +2803,13 @@ def _run_github_commit(*, agent_type: str, arguments: dict) -> dict:
     """Commit `files` to a branch (dry-run by default; force is always false)."""
     from app.services import github_service
 
-    args, refusal = _github_arguments("github_commit", arguments, agent_type=agent_type)
-    if refusal is not None:
-        return refusal
-    assert args is not None
-    dry_run, refusal = _github_dry_run("github_commit", args, agent_type=agent_type)
+    dry_run, refusal = _github_dry_run("github_commit", arguments, agent_type=agent_type)
     if refusal is not None:
         return refusal
     try:
         result = github_service.commit_files(
-            args.get("repo"), args.get("branch"), args.get("message"), args.get("files"),
-            dry_run=True if dry_run is None else dry_run)
+            arguments.get("repo"), arguments.get("branch"), arguments.get("message"),
+            arguments.get("files"), dry_run=True if dry_run is None else dry_run)
     except PolsiaError as exc:
         return _github_refusal("github_commit", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_commit", "result": result}
@@ -2804,17 +2819,14 @@ def _run_github_pr(*, agent_type: str, arguments: dict) -> dict:
     """Open a PR from `head` into `base` (dry-run by default; never merges)."""
     from app.services import github_service
 
-    args, refusal = _github_arguments("github_pr", arguments, agent_type=agent_type)
-    if refusal is not None:
-        return refusal
-    assert args is not None
-    dry_run, refusal = _github_dry_run("github_pr", args, agent_type=agent_type)
+    dry_run, refusal = _github_dry_run("github_pr", arguments, agent_type=agent_type)
     if refusal is not None:
         return refusal
     try:
         result = github_service.create_pr(
-            args.get("repo"), args.get("title"), args.get("head"), args.get("base"),
-            args.get("body"), dry_run=True if dry_run is None else dry_run)
+            arguments.get("repo"), arguments.get("title"), arguments.get("head"),
+            arguments.get("base"), arguments.get("body"),
+            dry_run=True if dry_run is None else dry_run)
     except PolsiaError as exc:
         return _github_refusal("github_pr", exc, agent_type=agent_type)
     return {"ok": True, "tool": "github_pr", "result": result}
