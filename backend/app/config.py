@@ -315,6 +315,27 @@ class Settings(BaseSettings):
     # is never logged, and never appears in a refusal (the refusal names this SETTING, not a value).
     support_inbound_secret: str = ""
 
+    # --- Twilio SendGrid Inbound Parse (WAVE 9, SV-W7-01 / SV-W8-04) ---
+    # SendGrid's Inbound Parse cannot send a JSON body, a `provider_message_id` OR the shared header
+    # above.  Its documented delivery is `multipart/form-data` carrying either an ECDSA signature
+    # (`X-Twilio-Email-Event-Webhook-Signature` + `-Timestamp`, verified over the RAW bytes with the
+    # security policy's public key) or an OAuth `Authorization: Bearer` token.  The adapter lives in
+    # `services.support_inbox_service` (`ingest_sendgrid_inbound`).
+    #
+    # `sendgrid_inbound_public_key` is the PUBLIC key the Parse security-policy API returns for the
+    # webhook — copy that value verbatim: base64-encoded DER SubjectPublicKeyInfo (it starts
+    # `MFkw…`), or a PEM block.  It is public by construction (no secret to rotate), which is why it
+    # sits beside the route wiring rather than in the provider-secret store.
+    sendgrid_inbound_public_key: str = ""
+    # `sendgrid_inbound_oauth_token` is the bearer value the owner's authorization server issues to
+    # SendGrid.  Verification is constant-time token EQUALITY, not introspection (this deployment
+    # holds the expected value; a rotating issuer must update it together with the token).
+    sendgrid_inbound_oauth_token: str = ""
+    # Replay window (seconds) for the signed timestamp.  SendGrid's docs state no tolerance; this is
+    # a product hardening on top of the vendor contract (the Message-ID dedupe already makes a
+    # replay a no-op).  Non-positive falls back to 300 — never "off" (the Stripe rule, SV-W7-05).
+    sendgrid_inbound_signature_tolerance_seconds: int = 300
+
 
 @lru_cache
 def get_settings() -> Settings:

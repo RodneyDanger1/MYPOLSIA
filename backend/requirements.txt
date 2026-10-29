@@ -22,6 +22,14 @@ pydantic-settings==2.7.0
 # HTTP client
 httpx==0.28.1
 
+# Crypto — the SendGrid Inbound Parse adapter verifies the vendor's ECDSA webhook signature
+# (`app/services/support_inbox_service.verify_sendgrid_signature`: DER ECDSA over
+# sha256(timestamp + raw body), P-256).  It was already present transitively in the measured venv
+# AND in the built image (50.0.2 in both, measured 2026-10-29); WAVE 9 makes the dependency
+# EXPLICIT and pinned, because a direct import on an undeclared transitive dependency is how a
+# rebuild silently loses a feature (AGENTS.md §28).
+cryptography==50.0.2
+
 # Third-party integrations
 tweepy==4.14.0
 sendgrid==6.11.0
