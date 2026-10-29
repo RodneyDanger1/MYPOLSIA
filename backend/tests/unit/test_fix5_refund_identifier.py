@@ -10,7 +10,8 @@ money-moving call in the product could not succeed even with the approval channe
 The firewall's approval channel has no producer today (documented owner item), so the agent
 test DOUBLES the firewall decision at its boundary (`request_side_effect`), which is what the
 test then holds fixed while checking the identifier that crosses the NEXT boundary — the
-adapter call.  The adapter tests stub the provider edge (`stripe.Refund.create`) only.
+adapter call.  The adapter tests stub the provider edge (`stripe.StripeClient.refunds.create`,
+wave 8's bounded per-call client; it was `stripe.Refund.create` before) only.
 """
 from __future__ import annotations
 
@@ -53,16 +54,35 @@ def test_adapter_refuses_a_non_pi_id_by_name_with_no_provider_call(monkeypatch, 
     assert calls == [], "fail-closed: nothing may reach the provider adapter"
 
 
+def _patch_stripe_refund_edge(monkeypatch, captured: dict, result: dict) -> None:
+    """Stub the provider edge the adapter ACTUALLY uses.
+
+    OLD (<= wave 7): `stripe.Refund.create(**params)` on the global module — the adapter inherited
+    the SDK's 80 s socket timeout and `max_network_retries = 2` (which re-POSTs a refund on a
+    connection fault).  NEW (wave 8): a per-call `StripeClient(...)` whose `refunds.create(params)`
+    is bounded and non-retrying.  The pinned SUBJECT of these two tests — the exact kwargs the
+    provider receives — is unchanged; only the double moved with the adapter's edge.
+    """
+    class _Refunds:
+        def create(self, params: dict) -> dict:
+            captured.update(params)
+            return result
+
+    class _Client:
+        def __init__(self, api_key: str, **kwargs: object) -> None:
+            self.refunds = _Refunds()
+
+    monkeypatch.setattr(stripe, "StripeClient", _Client)
+
+
 def test_adapter_sends_payment_intent_and_amount_for_a_pi_id(monkeypatch):
-    """The kwarg the provider receives for a valid id — stubbed at `stripe.Refund.create`."""
+    """The kwarg the provider receives for a valid id — stubbed at the Stripe client boundary."""
     monkeypatch.setattr(app_config.settings, "stripe_secret_key", "test-value")
     captured: dict = {}
+    _patch_stripe_refund_edge(
+        monkeypatch, captured, {"id": "re_123", "status": "succeeded"}
+    )
 
-    def fake_create(**params):
-        captured.update(params)
-        return {"id": "re_123", "status": "succeeded"}
-
-    monkeypatch.setattr(stripe.Refund, "create", fake_create)
     out = integrations.refund_payment(payment_id=PI_ID, amount_cents=2500)
 
     assert out["ok"] is True
@@ -74,12 +94,8 @@ def test_adapter_omits_amount_when_none(monkeypatch):
     """No cap supplied -> no `amount` kwarg (Stripe refunds what is left of the intent)."""
     monkeypatch.setattr(app_config.settings, "stripe_secret_key", "test-value")
     captured: dict = {}
+    _patch_stripe_refund_edge(monkeypatch, captured, {"id": "re_full", "status": "succeeded"})
 
-    def fake_create(**params):
-        captured.update(params)
-        return {"id": "re_full", "status": "succeeded"}
-
-    monkeypatch.setattr(stripe.Refund, "create", fake_create)
     out = integrations.refund_payment(payment_id=PI_ID)
 
     assert out["ok"] is True

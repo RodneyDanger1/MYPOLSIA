@@ -77,6 +77,45 @@ _YOUTUBE_VIDEOS_INSERT_URL = "https://www.googleapis.com/upload/youtube/v3/video
 #: it). U2-03 (wave-v14): pre-fix `httpx.get` materialised an attacker-sized response in memory.
 YOUTUBE_MEDIA_MAX_BYTES = 100 * 1024 * 1024
 
+# ---------------------------------------------------------------------------
+# BOUNDED PROVIDER CALLS (wave 8).  One named bound per network leg, for two reasons:
+#
+#   * a call with NO timeout pins a Celery worker until the OS gives up — tweepy passes no
+#     timeout to `requests` at all (`Client.request` calls `session.request` bare), and the
+#     Stripe/PyGithub SDKs ship their own long/default bounds (80 s socket, 15 s + urllib3
+#     retries).  The adapter owns the number instead of inheriting one;
+#   * a no-answer fault must NAME the bound in the refusal, or "it failed" cannot be acted on
+#     and a blind retry of a mutation (post / PR / refund) can perform it twice.
+#
+# The httpx adapters already passed 30 / 60 / 120 s literals; those values are unchanged and
+# now have one definition each so a test can pin them.
+# ---------------------------------------------------------------------------
+SOCIAL_POST_TIMEOUT_SECONDS = 30.0
+YOUTUBE_MEDIA_TIMEOUT_SECONDS = 60.0
+YOUTUBE_UPLOAD_TIMEOUT_SECONDS = 120.0
+#: tweepy's `Client` has no timeout parameter: the bound is installed on the `requests.Session`
+#: it uses (see `_tweepy_create_tweet`).
+TWITTER_TIMEOUT_SECONDS = 20.0
+#: The Stripe SDK's own defaults are an 80 s socket timeout and `max_network_retries = 2`; this
+#: adapter builds a per-call `StripeClient` instead (bounded, zero internal retries).
+STRIPE_TIMEOUT_SECONDS = 20.0
+
+
+def _no_answer(provider: str, exc: BaseException, *, timeout_seconds: float) -> ProviderTransportError:
+    """The ambiguity class for ONE provider call: the request produced no answer inside its bound.
+
+    WHY shared: every adapter classifies its OWN SDK exception shape (`requests`/`httpx`
+    transport errors, Stripe `http_status`, PyGithub `GithubException.status`) at its own edge,
+    then hands the ambiguity contract one identical, named object.  `ProviderTransportError` is
+    what `integration_call` turns into the `outcome_unknown` refusal; the message names the
+    provider and the bound so an operator can tell a hang from a rejection.
+    """
+    return ProviderTransportError(
+        f"{provider} produced no answer within {timeout_seconds:g}s "
+        f"(transport fault): {type(exc).__name__}: {exc}",
+        timeout_seconds=timeout_seconds,
+    )
+
 
 def _missing_config(*pairs: tuple[str, str]) -> list[str]:
     return [name for name, value in pairs if not str(value or "").strip()]
@@ -136,11 +175,12 @@ def _post_twitter(text: str, *, image_url: str = "", reply_to: str = "") -> dict
         )
     return integration_call(
         "tweepy", "Client", agent_type="social_media", install_hint=_TWEEPY_HINT,
-        call=_tweepy_create_tweet, text=text, reply_to=reply_to,
+        call=_tweepy_create_tweet, may_have_applied=True, text=text, reply_to=reply_to,
     )
 
 
 def _tweepy_create_tweet(text: str, reply_to: str = "") -> Any:  # pragma: no cover - provider
+    import requests
     import tweepy
 
     client = tweepy.Client(
@@ -149,10 +189,30 @@ def _tweepy_create_tweet(text: str, reply_to: str = "") -> Any:  # pragma: no co
         access_token=settings.twitter_access_token,
         access_token_secret=settings.twitter_access_secret,
     )
+    # tweepy's Client has NO timeout parameter and `Client.request` calls `session.request` with
+    # none, so a half-open connection would block the worker until the OS gives up. The bound goes
+    # on the one Session the client uses; `setdefault` keeps an explicit per-call timeout (there is
+    # none today) authoritative rather than overwriting it.
+    session = requests.Session()
+    session_request = session.request
+
+    def _bounded_request(method: str, url: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("timeout", TWITTER_TIMEOUT_SECONDS)
+        return session_request(method, url, **kwargs)
+
+    session.request = _bounded_request  # type: ignore[assignment]
+    client.session = session
     kwargs: dict[str, Any] = {}
     if reply_to:
         kwargs["in_reply_to_tweet_id"] = reply_to
-    response = client.create_tweet(text=text, **kwargs)
+    try:
+        response = client.create_tweet(text=text, **kwargs)
+    except requests.RequestException as exc:
+        # A `tweepy.errors.HTTPException` (the provider ANSWERED with a status) is not a requests
+        # exception: it propagates untouched and the generic handler reports the provider's own
+        # text. A requests transport exception means NO answer arrived — ambiguous for a mutation
+        # (a retry can post a second tweet), so it is raised as the named ambiguity class.
+        raise _no_answer("X/Twitter", exc, timeout_seconds=TWITTER_TIMEOUT_SECONDS) from exc
     return {"id": str(response.data.get("id"))}
 
 
@@ -181,35 +241,40 @@ def _post_linkedin(text: str, *, image_url: str = "") -> dict:
         )
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
-        call=_linkedin_create_post, text=text,
+        call=_linkedin_create_post, may_have_applied=True, text=text,
     )
 
 
 def _linkedin_create_post(text: str) -> Any:  # pragma: no cover - requires the provider
     import httpx
 
-    response = httpx.post(
-        _LINKEDIN_POSTS_URL,
-        headers={
-            "Authorization": f"Bearer {_setting('linkedin_access_token')}",
-            "Content-Type": "application/json",
-            "LinkedIn-Version": _LINKEDIN_API_VERSION,
-            "X-Restli-Protocol-Version": "2.0.0",
-        },
-        json={
-            "author": _setting("linkedin_author_urn"),
-            "commentary": text,
-            "visibility": "PUBLIC",
-            "distribution": {
-                "feedDistribution": "MAIN_FEED",
-                "targetEntities": [],
-                "thirdPartyDistributionChannels": [],
+    try:
+        response = httpx.post(
+            _LINKEDIN_POSTS_URL,
+            headers={
+                "Authorization": f"Bearer {_setting('linkedin_access_token')}",
+                "Content-Type": "application/json",
+                "LinkedIn-Version": _LINKEDIN_API_VERSION,
+                "X-Restli-Protocol-Version": "2.0.0",
             },
-            "lifecycleState": "PUBLISHED",
-            "isReshareDisabledByAuthor": False,
-        },
-        timeout=30.0,
-    )
+            json={
+                "author": _setting("linkedin_author_urn"),
+                "commentary": text,
+                "visibility": "PUBLIC",
+                "distribution": {
+                    "feedDistribution": "MAIN_FEED",
+                    "targetEntities": [],
+                    "thirdPartyDistributionChannels": [],
+                },
+                "lifecycleState": "PUBLISHED",
+                "isReshareDisabledByAuthor": False,
+            },
+            timeout=SOCIAL_POST_TIMEOUT_SECONDS,
+        )
+    except httpx.TransportError as exc:
+        # No answer arrived.  A post is a MUTATION, so the request may already be visible on the
+        # author's feed — the named ambiguity class is the honest report, never a bare "failed".
+        raise _no_answer("LinkedIn", exc, timeout_seconds=SOCIAL_POST_TIMEOUT_SECONDS) from exc
     if response.status_code not in (200, 201):
         # The provider's own status + text travel in the exception — `integration_call` turns this
         # into a named E_INTEGRATION refusal that KEEPS that text (never swallowed).
@@ -240,7 +305,7 @@ def _post_facebook(text: str, *, image_url: str = "") -> dict:
         )
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
-        call=_facebook_create_post, text=text,
+        call=_facebook_create_post, may_have_applied=True, text=text,
     )
 
 
@@ -248,11 +313,14 @@ def _facebook_create_post(text: str) -> Any:  # pragma: no cover - requires the 
     import httpx
 
     page_id = _setting("meta_facebook_page_id")
-    response = httpx.post(
-        f"{_GRAPH_BASE}/{page_id}/feed",
-        data={"message": text, "access_token": _setting("meta_page_access_token")},
-        timeout=30.0,
-    )
+    try:
+        response = httpx.post(
+            f"{_GRAPH_BASE}/{page_id}/feed",
+            data={"message": text, "access_token": _setting("meta_page_access_token")},
+            timeout=SOCIAL_POST_TIMEOUT_SECONDS,
+        )
+    except httpx.TransportError as exc:
+        raise _no_answer("Facebook", exc, timeout_seconds=SOCIAL_POST_TIMEOUT_SECONDS) from exc
     if response.status_code not in (200, 201):
         raise RuntimeError(
             f"Facebook Graph API returned {response.status_code}: {response.text[:300]}"
@@ -285,7 +353,7 @@ def _post_instagram(text: str, *, image_url: str = "") -> dict:
         )
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
-        call=_instagram_create_post, text=text, image_url=str(image_url),
+        call=_instagram_create_post, may_have_applied=True, text=text, image_url=str(image_url),
     )
 
 
@@ -294,10 +362,13 @@ def _instagram_create_post(text: str, image_url: str) -> Any:  # pragma: no cove
 
     token = _setting("meta_page_access_token")
     user_id = _setting("meta_instagram_user_id")
+    # The CONTAINER leg is deliberately NOT wrapped in the ambiguity class: a fault there means
+    # nothing was published (a retry creates another container and publishes once — no duplicate
+    # post).  Only the media_publish leg below can have produced the visible post.
     container = httpx.post(
         f"{_GRAPH_BASE}/{user_id}/media",
         data={"image_url": image_url, "caption": text, "access_token": token},
-        timeout=30.0,
+        timeout=SOCIAL_POST_TIMEOUT_SECONDS,
     )
     if container.status_code not in (200, 201):
         raise RuntimeError(
@@ -306,11 +377,14 @@ def _instagram_create_post(text: str, image_url: str) -> Any:  # pragma: no cove
     creation_id = str(container.json().get("id") or "")
     if not creation_id:
         raise RuntimeError("Instagram media container returned no id")
-    published = httpx.post(
-        f"{_GRAPH_BASE}/{user_id}/media_publish",
-        data={"creation_id": creation_id, "access_token": token},
-        timeout=30.0,
-    )
+    try:
+        published = httpx.post(
+            f"{_GRAPH_BASE}/{user_id}/media_publish",
+            data={"creation_id": creation_id, "access_token": token},
+            timeout=SOCIAL_POST_TIMEOUT_SECONDS,
+        )
+    except httpx.TransportError as exc:
+        raise _no_answer("Instagram", exc, timeout_seconds=SOCIAL_POST_TIMEOUT_SECONDS) from exc
     if published.status_code not in (200, 201):
         raise RuntimeError(
             f"Instagram publish returned {published.status_code}: {published.text[:300]}"
@@ -346,7 +420,7 @@ def _post_tiktok(text: str, *, image_url: str = "") -> dict:
         )
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
-        call=_tiktok_publish_video, text=text, image_url=media_url,
+        call=_tiktok_publish_video, may_have_applied=True, text=text, image_url=media_url,
     )
 
 
@@ -357,21 +431,24 @@ def _tiktok_publish_video(text: str, image_url: str) -> Any:  # pragma: no cover
     # TikTok's id for the publish request; the PULL_FROM_URL fetch + processing complete
     # asynchronously (status/fetch is the documented polling endpoint — polling is a documented
     # limitation of this adapter, deliberate scope; completion is never faked here).
-    response = httpx.post(
-        _TIKTOK_POST_INIT_URL,
-        headers={
-            "Authorization": f"Bearer {_setting('tiktok_access_token')}",
-            "Content-Type": "application/json; charset=UTF-8",
-        },
-        json={
-            "post_info": {
-                "title": text[:2200],          # TikTok's caption limit (UTF-16 runes)
-                "privacy_level": "SELF_ONLY",
+    try:
+        response = httpx.post(
+            _TIKTOK_POST_INIT_URL,
+            headers={
+                "Authorization": f"Bearer {_setting('tiktok_access_token')}",
+                "Content-Type": "application/json; charset=UTF-8",
             },
-            "source_info": {"source": "PULL_FROM_URL", "video_url": image_url},
-        },
-        timeout=30.0,
-    )
+            json={
+                "post_info": {
+                    "title": text[:2200],          # TikTok's caption limit (UTF-16 runes)
+                    "privacy_level": "SELF_ONLY",
+                },
+                "source_info": {"source": "PULL_FROM_URL", "video_url": image_url},
+            },
+            timeout=SOCIAL_POST_TIMEOUT_SECONDS,
+        )
+    except httpx.TransportError as exc:
+        raise _no_answer("TikTok", exc, timeout_seconds=SOCIAL_POST_TIMEOUT_SECONDS) from exc
     if response.status_code not in (200, 201):
         # The provider's own status + text travel in the exception — `integration_call` turns
         # this into a named E_INTEGRATION refusal that KEEPS that text (never swallowed).
@@ -437,7 +514,7 @@ def _post_youtube(text: str, *, image_url: str = "") -> dict:
         return media_denial
     return integration_call(
         "httpx", "post", agent_type="social_media", install_hint=_HTTPX_HINT,
-        call=_youtube_insert_video, text=text, image_url=media_url,
+        call=_youtube_insert_video, may_have_applied=True, text=text, image_url=media_url,
     )
 
 
@@ -458,7 +535,10 @@ def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover
     cap = int(YOUTUBE_MEDIA_MAX_BYTES)
     chunks: list[bytes] = []
     bytes_read = 0
-    with httpx.stream("GET", image_url, timeout=60.0, follow_redirects=False) as media:
+    # The DOWNLOAD is deliberately NOT wrapped in the ambiguity class: the upload has not started,
+    # so a fault here cannot have published anything.  Only the videos.insert POST below can.
+    with httpx.stream("GET", image_url, timeout=YOUTUBE_MEDIA_TIMEOUT_SECONDS,
+                      follow_redirects=False) as media:
         if media.status_code in (301, 302, 303, 307, 308):
             raise RuntimeError(
                 f"YouTube media fetch: {image_url} answered a redirect (HTTP "
@@ -487,16 +567,21 @@ def _youtube_insert_video(text: str, image_url: str) -> Any:  # pragma: no cover
         f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
         f"--{boundary}\r\nContent-Type: {media_type}\r\n\r\n"
     ).encode() + b"".join(chunks) + f"\r\n--{boundary}--".encode()
-    response = httpx.post(
-        _YOUTUBE_VIDEOS_INSERT_URL,
-        params={"uploadType": "multipart", "part": "snippet,status"},
-        headers={
-            "Authorization": f"Bearer {_setting('youtube_access_token')}",
-            "Content-Type": f"multipart/related; boundary={boundary}",
-        },
-        content=body,
-        timeout=120.0,
-    )
+    try:
+        response = httpx.post(
+            _YOUTUBE_VIDEOS_INSERT_URL,
+            params={"uploadType": "multipart", "part": "snippet,status"},
+            headers={
+                "Authorization": f"Bearer {_setting('youtube_access_token')}",
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+            content=body,
+            timeout=YOUTUBE_UPLOAD_TIMEOUT_SECONDS,
+        )
+    except httpx.TransportError as exc:
+        # The upload POST can have been ingested before the connection died: ambiguous, so the
+        # named class rather than a bare "failed" (a blind re-upload can publish twice).
+        raise _no_answer("YouTube", exc, timeout_seconds=YOUTUBE_UPLOAD_TIMEOUT_SECONDS) from exc
     if response.status_code not in (200, 201):
         raise RuntimeError(
             f"YouTube videos.insert returned {response.status_code}: {response.text[:300]}"
@@ -691,16 +776,28 @@ def open_pull_request(*, repo: str, branch: str, title: str, body: str,
         )
     return integration_call(
         "github", "Github", agent_type="code_generation", install_hint=_PYGITHUB_HINT,
-        call=_pygithub_open_pr, repo=repo, branch=branch, title=title, body=body, base=base,
+        call=_pygithub_open_pr, may_have_applied=True,
+        repo=repo, branch=branch, title=title, body=body, base=base,
     )
 
 
 def _pygithub_open_pr(*, repo: str, branch: str, title: str, body: str, base: str) -> Any:  # pragma: no cover
+    import requests
     from github import Github
 
-    client = Github(settings.github_token)
+    from app.services.github_service import GITHUB_TIMEOUT_S
+
+    # PyGithub's OWN defaults are a 15 s timeout and a 10-attempt urllib3 retry that INCLUDES
+    # POST — i.e. the SDK would silently re-submit a pull request on a 5xx/connection fault.  A PR
+    # is a mutation, so this adapter owns both knobs: one explicit bound and no internal retries.
+    client = Github(settings.github_token, timeout=int(GITHUB_TIMEOUT_S), retry=0)
     repository = client.get_repo(repo)
-    pr = repository.create_pull(title=title, body=body, head=branch, base=base)
+    try:
+        pr = repository.create_pull(title=title, body=body, head=branch, base=base)
+    except requests.RequestException as exc:
+        # `github.GithubException` (the provider ANSWERED with a status) is not a requests
+        # exception and propagates untouched; a requests transport exception means NO answer.
+        raise _no_answer("GitHub", exc, timeout_seconds=GITHUB_TIMEOUT_S) from exc
     return {"number": int(pr.number), "url": str(pr.html_url)}
 
 
@@ -738,18 +835,35 @@ def refund_payment(*, payment_id: str, amount_cents: int | None = None) -> dict:
         )
     return integration_call(
         "stripe", "Refund", agent_type="finance", install_hint=_STRIPE_HINT,
-        call=_stripe_refund, payment_id=identifier, amount_cents=amount_cents,
+        call=_stripe_refund, may_have_applied=True,
+        payment_id=identifier, amount_cents=amount_cents,
     )
 
 
 def _stripe_refund(*, payment_id: str, amount_cents: int | None) -> Any:  # pragma: no cover
     import stripe
 
-    stripe.api_key = settings.stripe_secret_key
-    params: dict[str, Any] = {"payment_intent": payment_id}
+    # ONE client per call, bounded by this adapter instead of the SDK's own defaults: stripe 11.3
+    # ships an 80 s socket timeout and `max_network_retries = 2`, so a connection fault would
+    # silently re-POST a REFUND (a duplicate money movement).  `max_network_retries=0` makes this
+    # adapter the only retry authority; a retry after an ambiguous answer is the operator's call.
+    client = stripe.StripeClient(
+        settings.stripe_secret_key,
+        http_client=stripe.RequestsClient(timeout=int(STRIPE_TIMEOUT_SECONDS)),
+        max_network_retries=0,
+    )
+    params: Any = {"payment_intent": payment_id}
     if amount_cents is not None:
         params["amount"] = int(amount_cents)
-    refund = stripe.Refund.create(**params)
+    try:
+        refund = client.refunds.create(params)
+    except stripe.StripeError as exc:
+        # A StripeError carrying an `http_status` is the provider's ANSWER (400/401/402/…), and the
+        # generic handler reports that status text.  One WITHOUT it (`APIConnectionError`) means
+        # no answer arrived: ambiguous for money, so the named class — never a bare "failed".
+        if getattr(exc, "http_status", None) is None:
+            raise _no_answer("Stripe", exc, timeout_seconds=STRIPE_TIMEOUT_SECONDS) from exc
+        raise
     return {"id": str(refund.get("id")), "status": str(refund.get("status"))}
 
 
@@ -1222,6 +1336,11 @@ def read_revenue_facts(*, days: int = 30) -> dict[str, Any]:
 __all__ = [
     "SENDGRID_ACCEPTED_STATUSES",
     "SENDGRID_TIMEOUT_SECONDS",
+    "SOCIAL_POST_TIMEOUT_SECONDS",
+    "STRIPE_TIMEOUT_SECONDS",
+    "TWITTER_TIMEOUT_SECONDS",
+    "YOUTUBE_MEDIA_TIMEOUT_SECONDS",
+    "YOUTUBE_UPLOAD_TIMEOUT_SECONDS",
     "open_pull_request",
     "post_tweet",
     "read_ad_metrics",
