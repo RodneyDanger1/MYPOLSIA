@@ -1,6 +1,6 @@
-# MYPOLSIA — Dependencies & Requirements (everything needed to run it properly)
+# Meridian — Dependencies & Requirements (everything needed to run it properly)
 
-This file is the complete, link-by-link setup guide. The short version: **MYPOLSIA runs as a Docker
+This file is the complete, link-by-link setup guide. The short version: **Meridian runs as a Docker
 Compose stack** (backend + frontend + Postgres + Redis + workers + nginx), so on Windows the chain is
 **WSL2 → Docker Desktop → (GNU) Make → the stack**. Python/Node are only needed for running tests or
 developing outside Docker. Once it boots, the operator's guide is [USAGE.md](USAGE.md) and the
@@ -45,14 +45,14 @@ TCP port **80** free on localhost — nginx publishes `127.0.0.1:80` (loopback o
 | SendGrid | outreach email sending | [sendgrid.com](https://sendgrid.com) |
 | Google Ads API | ads management agent | [developers.google.com/google-ads](https://developers.google.com/google-ads/api/docs/get-started/introduction) |
 | Meta Marketing API | ads management agent | [developers.facebook.com/docs/marketing-apis](https://developers.facebook.com/docs/marketing-apis) |
-| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Polsia-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) is **live since V16** — proven against the real store 2026-10-15 (`PHONELINK-MCP-TEST.md`). Since V19 `/phone` also carries the explicit **verification-codes panel** (click-to-fetch, masked by default) and the optional **send bridge** (`scripts/phone_send_bridge.py`) below. The send driver additionally needs Google Messages web paired in a browser | built into Windows 10/11 |
+| **Windows Phone Link** | read-only phone data: the **Hermes-side bridge works today**; the Meridian-side read path (read-only store mount via `PHONE_LINK_DB_DIR`, `GET /api/v1/phone/*`, `/phone` page) is **live since V16** — proven against the real store 2026-10-15 (`PHONELINK-MCP-TEST.md`). Since V19 `/phone` also carries the explicit **verification-codes panel** (click-to-fetch, masked by default) and the optional **send bridge** (`scripts/phone_send_bridge.py`) below. The send driver additionally needs Google Messages web paired in a browser | built into Windows 10/11 |
 | **Phone send bridge** (V19, optional) | lets a **containerized** backend send SMS through the host's paired Google Messages browser; the host-run API keeps working without it, and the bridge stays OFF until `PHONE_SEND_BRIDGE_URL` is set | `scripts/phone_send_bridge.py` (stdlib only — no install): `export PHONE_SEND_BRIDGE_TOKEN=<≥24 chars>`, `python scripts/phone_send_bridge.py --host 127.0.0.1 --port 9227`, health `curl -s http://127.0.0.1:9227/health` → `{"status":"ok","paired":true,…}`. Binding a docker-reachable interface is an explicit security decision — token + firewall are then mandatory (USAGE §5.2) |
 
 ## 5) First run (after §1–§2)
 
 ```bash
-git clone https://github.com/RodneyDanger1/MYPOLSIA.git
-cd MYPOLSIA
+git clone https://github.com/RodneyDanger1/Meridian.git
+cd Meridian
 cp .env.example .env            # then edit .env (see next line)
 #   API_KEY=<your own key>  ·  SANDBOX_MODE=true  ·  DEEPSEEK_API_KEY=<optional, can be set in-app>
 export NEXT_PUBLIC_API_KEY=dev-key    # must match API_KEY (build-time inlined)

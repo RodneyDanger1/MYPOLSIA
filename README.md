@@ -1,8 +1,8 @@
-# Polsia — AI Business Agent Platform
+# Meridian — AI Business Agent Platform
 
 An autonomous multi-agent system that runs your business on autopilot. Nine specialized AI agents handle social media, competitor research, email outreach, ads management, customer support, code generation, business planning, finance, and orchestration — on a DeepSeek-first runtime (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored server-side) with the Claude Code CLI as a fallback.
 
-**Start here:** [USAGE.md](USAGE.md) — the operator's guide: what MYPOLSIA is, the first-run
+**Start here:** [USAGE.md](USAGE.md) — the operator's guide: what Meridian is, the first-run
 checklist, and how to work each feature day-to-day. [DEPENDENCIES.md](DEPENDENCIES.md) — install.
 Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NEXTSTEPS.md](NEXTSTEPS.md).
 
@@ -29,14 +29,14 @@ Readiness: [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) · what's done/next: [NE
 
 | Surface | Route | What you do there |
 |---|---|---|
-| **Dashboard** | `/dashboard` | Morning plan + Daily Report, live Activity feed, chat rail, Auto Mode, send-caps counter; widgets show/hide/reorder. **V23:** the feed header prints the server's own total — `N events` (`1 event` singular) from the same response's `X-Polsia-Total`; no header, no count (never the rows on hand) |
+| **Dashboard** | `/dashboard` | Morning plan + Daily Report, live Activity feed, chat rail, Auto Mode, send-caps counter; widgets show/hide/reorder. **V23:** the feed header prints the server's own total — `N events` (`1 event` singular) from the same response's `X-Meridian-Total`; no header, no count (never the rows on hand) |
 | **Agents** | `/agents` | Fleet status; run a single agent on demand; **per-agent toolbox (V20)** — each card's `TOOLS · N` expander lists the tools that agent can actually use (names + the registry's own descriptions, from `GET /api/v1/ops/capabilities`); honest "No tools are granted to this agent." for an empty list, and `TOOLS — UNAVAILABLE` + Retry when the read fails (never "no tools"). Needs the V20 frontend rebuild. **V26:** the page reaches a terminal state even when it was opened in a hidden tab — the mount read is never skipped, `loading` ends on success/error/empty, an empty answer is stated as such, and a failed read renders `Could not load agent status: …` with a working Retry |
 | **Tasks** | `/tasks` | The work queue — filter, open a task (deep-links `/tasks/{id}`), run or approve parked rows. **V25:** image attachments (PNG/JPEG/WebP ≤5 MB, ≤4/task, magic-byte sniffed; the blob is served with the sniffed type). **V26:** a per-image **Describe** action renders the model's sentence inline under "Model description — not saved to the task" — it is never written to the task result |
 | **Planner** | `/planner` | Propose/confirm the business plan (sourced claims verified) |
 | **Schedules** | `/schedules` | Recurring task prompts (15-minute cadence, company-local, DST-safe) |
 | **Social** | `/social` | Post drafting/publishing + mention replies (really threaded) |
 | **Outreach** | `/outreach` | Prospects + compliance-gated cold email with follow-up sweep |
-| **Prospects** | `/prospects` | *V27* — the owner-managed CRM: add / correct / remove a row, search across email, name and company, filter by exact status; blank and duplicate addresses are refused by name; the list carries the server's declared total (`X-Polsia-Total`) and an honest `{items: [], total: 0}` when empty |
+| **Prospects** | `/prospects` | *V27* — the owner-managed CRM: add / correct / remove a row, search across email, name and company, filter by exact status; blank and duplicate addresses are refused by name; the list carries the server's declared total (`X-Meridian-Total`) and an honest `{items: [], total: 0}` when empty |
 | **Support** | `/support` | The inbox mirror; draft/send replies through the one compliance bridge |
 | **Ads** | `/ads` | Campaigns + **per-campaign metrics expander** (V22): opening a campaign issues one `GET /ads/campaigns/{id}/metrics` and renders the real rows (null → `—`, measured 0 → a real zero); collapsed issues no request. Ads↔Stripe sync every 6 h. The count line reads the server's declared total ("N of M campaigns") |
 | **Finance** | `/finance` | Revenue/expenses/invoices KPIs (`null` when never measured). **V23:** a **Human rate** card sets/clears the owner's hourly rate (`PUT /config {"human_hourly_rate": n \| null}`, server response reflected) — gross margin becomes measurable only once price, AI cost (needs capacity) and human hours are also measured; the Planning row shows `—` with the Finance reason until then |

@@ -11,7 +11,7 @@ moment it was written.  The marker body even named internal process files
 WHAT THIS PINS (the fix is a serving decision, not an edit to owner data):
 
   * a dotfile (`.fixture.json`) is a **named 404** (`E_NOT_FOUND` envelope +
-    `X-Polsia-Error-Code`) — the file stays on disk, its bytes are never served;
+    `X-Meridian-Error-Code`) — the file stays on disk, its bytes are never served;
   * a dot-DIRECTORY is refused the same way, at any depth;
   * a file outside the generator's own file set (`debug-notes.json`, `404.html`, `notes.txt`) is
     refused the same way — the route serves a generated site, not an arbitrary directory dump;
@@ -74,7 +74,7 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
 def _assert_named_404(resp, *, path: str) -> dict:
     """A refusal is the product envelope, names the code, and never a served body."""
     assert resp.status_code == 404, (path, resp.status_code, resp.text[:200])
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_NOT_FOUND"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_NOT_FOUND"
     body = resp.json()
     assert body["ok"] is False
     error = body["error"]
@@ -173,7 +173,7 @@ def test_head_on_a_refused_path_is_a_404_with_no_body(tmp_path: Path, monkeypatc
 
     resp = client.head(f"/sites/{SLUG}/.fixture.json")
     assert resp.status_code == 404
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_NOT_FOUND"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_NOT_FOUND"
     assert resp.content == b""
 
 

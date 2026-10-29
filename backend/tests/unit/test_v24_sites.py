@@ -403,7 +403,7 @@ async def test_an_unknown_slug_on_the_list_is_404_e_not_found(
     error = resp.json()["error"]
     assert error["code"] == E_NOT_FOUND
     assert error["context"]["slug"] == "never-built"
-    assert resp.headers["X-Polsia-Error-Code"] == E_NOT_FOUND
+    assert resp.headers["X-Meridian-Error-Code"] == E_NOT_FOUND
 
 
 @pytest.mark.asyncio

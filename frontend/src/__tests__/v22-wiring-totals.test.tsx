@@ -13,7 +13,7 @@ import TasksPage from "@/app/tasks/page";
 /**
  * V22/L3 — the declared-total reads (W2 D3/D4).
  *
- * Both `/tasks` and `/ads/campaigns` emit `X-Polsia-Total` with the FULL filtered count
+ * Both `/tasks` and `/ads/campaigns` emit `X-Meridian-Total` with the FULL filtered count
  * (`backend/app/api/v1/totals.py`). The pages read the body only, so a capped read said
  * "the API reports no total" / printed the page length as the total. The client now captures the
  * response header through `api.get`'s `onHeaders` hook and prints the server's own number.
@@ -57,7 +57,7 @@ function task(id: number): Record<string, unknown> {
 
 function headersWithTotal(total: string | null): Headers {
   const headers = new Headers();
-  if (total !== null) headers.set("X-Polsia-Total", total);
+  if (total !== null) headers.set("X-Meridian-Total", total);
   return headers;
 }
 

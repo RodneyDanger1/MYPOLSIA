@@ -346,7 +346,7 @@ async def test_a_missing_task_is_a_named_404(queue_client, auth_headers, monkeyp
     assert body["error"]["code"] == E_NOT_FOUND
     assert body["error"]["context"]["task_id"] == 987654
     assert "987654" in body["error"]["message"]
-    assert resp.headers.get("X-Polsia-Error-Code") == E_NOT_FOUND
+    assert resp.headers.get("X-Meridian-Error-Code") == E_NOT_FOUND
 
 
 @pytest.mark.asyncio

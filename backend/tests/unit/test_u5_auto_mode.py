@@ -20,7 +20,7 @@ What each block exists to catch:
   * the gates — a scheduled dispatch denied by the day budget closes the live window with
     `day_cap`; a MANUAL override (T04) does NOT close it (the gate interrupts, the owner's own
     trigger proceeds — nothing here bypasses a gate); approval parking is untouched;
-  * refusals — named E_VALIDATION envelopes (422 + X-Polsia-Error-Code), never silent successes;
+  * refusals — named E_VALIDATION envelopes (422 + X-Meridian-Error-Code), never silent successes;
   * the HTTP surface — POST/GET/DELETE exist behind the API key; no key -> 401.
 
 Worker legs run on the file-backed `queue_db` (the celery conftest) so the UPDATE is an

@@ -94,7 +94,7 @@ def test_a_client_cannot_mint_more_tickets_than_the_window_allows(client, monkey
     assert detail["context"]["mints_in_window"] == 3
     assert detail["context"]["retry_after_seconds"] > 0
     assert "ticket" not in refused.json(), "a refused mint must not hand out a ticket"
-    assert refused.headers.get("X-Polsia-Error-Code") == "E_RATE_LIMITED"
+    assert refused.headers.get("X-Meridian-Error-Code") == "E_RATE_LIMITED"
 
 
 def test_the_window_rolls_and_the_budget_comes_back(monkeypatch):

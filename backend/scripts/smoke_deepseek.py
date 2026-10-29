@@ -28,7 +28,7 @@ def main() -> int:
             "properties": {"ping": {"type": "string"}},
             "required": ["ping"],
         },
-        system_prompt_static="You are a connectivity probe for the Polsia agent runtime.",
+        system_prompt_static="You are a connectivity probe for the Meridian agent runtime.",
         schema_name="smoke_deepseek",
     )
 

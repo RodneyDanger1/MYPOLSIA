@@ -182,11 +182,11 @@ describe("edit dashboard sheet", () => {
 
     // V29/L5: `signals` joins the registry, so the editor lists 15 switches (14 before it).
     expect(within(editor).getAllByRole("switch")).toHaveLength(15);
-    for (const label of ["Polsia status", "Auto Mode", "Business", "Website", "Phone", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Signals", "Activity feed", "Chat rail"]) {
+    for (const label of ["Meridian status", "Auto Mode", "Business", "Website", "Phone", "Tasks", "Documents", "Media", "Twitter", "Email", "Meta Ads", "Send caps", "Signals", "Activity feed", "Chat rail"]) {
       expect(within(editor).getByText(label)).toBeInTheDocument();
     }
     // Just opened: nothing was hidden, the first item cannot move up.
-    expect(within(editor).getByRole("button", { name: "Move Polsia status up" })).toBeDisabled();
+    expect(within(editor).getByRole("button", { name: "Move Meridian status up" })).toBeDisabled();
   });
 
   it("hiding a region unmounts it, persists, and the editor keeps listing it", async () => {

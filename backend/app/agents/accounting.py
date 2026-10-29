@@ -1,4 +1,4 @@
-"""Polsia agent runtime — cost/token accounting and the pre-dispatch spend gate.
+"""Meridian agent runtime — cost/token accounting and the pre-dispatch spend gate.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/accounting.py`) with the ledger
 section dropped: persistence belongs to the queue/API layer (`agent_runs` + `spend_ledger` via

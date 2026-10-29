@@ -27,7 +27,7 @@ import { useAdsRead } from "@/components/ads/useAdsRead";
  *
  * Reads exactly ONE real endpoint — `GET /ads/campaigns` (the backend's only ads list route,
  * `backend/app/api/v1/ads.py`) — with the explicit bounded `limit` this page's own rules pass.
- * The route also declares its FULL filtered count in `X-Polsia-Total`; `useAdsRead` captures that
+ * The route also declares its FULL filtered count in `X-Meridian-Total`; `useAdsRead` captures that
  * header from the SAME response as the rows, so the count line prints the server's own total
  * ("50 of 137 campaigns") instead of presenting the page length as the whole table. When the
  * response carries no readable total, the page falls back to the page-length count plus the

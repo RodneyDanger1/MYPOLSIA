@@ -27,7 +27,7 @@ export type AdsRead<T> = {
   data: T | null;
   error: string | null;
   loading: boolean;
-  /** The server's declared full count from THIS read's `X-Polsia-Total` header (the same header
+  /** The server's declared full count from THIS read's `X-Meridian-Total` header (the same header
    *  every bounded list route emits, `backend/app/api/v1/totals.py`). `null` when the response
    *  carried no readable total — the consumer then says only what the rows prove (the page
    *  length), never an invented count. Reset on every (re)read so a filtered read cannot inherit
@@ -56,7 +56,7 @@ export function useAdsRead<T>(path: string, reloadKey: number): AdsRead<T> {
       .get<T>(path, {
         onHeaders: (headers) => {
           if (cancelled) return;
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           if (raw === null) return;
           const parsed = Number(raw.trim());
           // A header that is not a non-negative safe integer is not a count; leave it null so the

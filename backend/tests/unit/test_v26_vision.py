@@ -99,7 +99,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
 
     The two exception handlers mirror the shipped app's refusal bridge so the assertions read
     the REAL wire envelope (`{"ok": false, "error": {code, message, how_to_fix, context}}`,
-    `X-Polsia-Error-Code`) rather than FastAPI's default `{"detail": ...}`: `PolsiaError` ->
+    `X-Meridian-Error-Code`) rather than FastAPI's default `{"detail": ...}`: `PolsiaError` ->
     `errors.to_http_detail` + `errors.http_status_for` (main.py:335-343), and a coded
     `HTTPException` (what `refusal_guard` raises) -> the same envelope at its own status
     (main.py:345-374).  Importing `app.main` here would drag every other lane's router into
@@ -123,7 +123,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -140,7 +140,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
                 },
             }
             headers = dict(exc.headers or {})
-            headers.setdefault("X-Polsia-Error-Code", detail["code"])
+            headers.setdefault("X-Meridian-Error-Code", detail["code"])
             return JSONResponse(status_code=exc.status_code, content=envelope, headers=headers)
         return JSONResponse(status_code=exc.status_code, content={"detail": detail},
                             headers=dict(exc.headers or {}))
@@ -465,7 +465,7 @@ async def test_two_images_on_a_task_require_attachment_id(
     error = response.json()["error"]
     assert error["code"] == "E_VALIDATION"
     assert "2" in error["message"] and "attachment_id" in error["message"]
-    assert response.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
     assert calls == [], "an ambiguous task must not reach the model at all"
 
 
@@ -578,7 +578,7 @@ async def test_a_malformed_or_ambiguous_body_is_named_validation(
 
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "E_VALIDATION"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
     assert calls == []
 
 
@@ -647,7 +647,7 @@ async def test_no_deepseek_key_is_named_e_config_naming_the_env_var(
     error = response.json()["error"]
     assert error["code"] == "E_CONFIG"
     assert "DEEPSEEK_API_KEY" in error["message"]
-    assert response.headers.get("X-Polsia-Error-Code") == "E_CONFIG"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_CONFIG"
 
 
 @pytest.mark.asyncio

@@ -82,9 +82,9 @@ function jsonResponse(body: unknown): Response {
 
 function contentResponse(text: string, sha256: string, bytes: number): Response {
   const headers = new Headers({
-    "X-Polsia-Artifact-Sha256": sha256,
-    "X-Polsia-Artifact-Bytes": String(bytes),
-    "X-Polsia-Artifact-Modified": "2026-10-28T21:12:08Z",
+    "X-Meridian-Artifact-Sha256": sha256,
+    "X-Meridian-Artifact-Bytes": String(bytes),
+    "X-Meridian-Artifact-Modified": "2026-10-28T21:12:08Z",
   });
   return {
     ok: true,
@@ -280,7 +280,7 @@ describe("R-W2-B3 — a refused read and a real download", () => {
           ok: true,
           status: 200,
           blob: async () => blob,
-          headers: new Headers({ "X-Polsia-Artifact-Bytes": "7" }),
+          headers: new Headers({ "X-Meridian-Artifact-Bytes": "7" }),
         } as unknown as Response);
       }
       return Promise.resolve(contentResponse("# Brand", "abc123", 7));

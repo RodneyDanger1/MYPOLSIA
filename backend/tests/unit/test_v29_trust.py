@@ -159,7 +159,7 @@ async def trust_client(monkeypatch: pytest.MonkeyPatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     app.add_exception_handler(PolsiaError, _polsia_handler)

@@ -158,7 +158,7 @@ async def test_route_refuses_unknown_status_with_e_validation(api_client, auth_h
     assert body["ok"] is False
     assert body["error"]["code"] == E_VALIDATION
     assert "complete" in body["error"]["message"]
-    assert resp.headers.get("X-Polsia-Error-Code") == E_VALIDATION
+    assert resp.headers.get("X-Meridian-Error-Code") == E_VALIDATION
 
 
 @pytest.mark.asyncio

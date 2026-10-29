@@ -959,7 +959,7 @@ async def record_stripe_event(
 
     `payment_intent_id` (T14/D21) is the refundable id the webhook extracted from the
     delivery's shape (`extract_payment_intent_id`).  When it is present it is persisted as ONE
-    Polsia-owned sibling key on the stored payload — `raw_payload["_polsia"]["payment_intent_id"]`
+    Meridian-owned sibling key on the stored payload — `raw_payload["_polsia"]["payment_intent_id"]`
     — because `stripe_events` carries no dedicated column in this lane's ownership (models/alembic
     are another seat's files) and the verbatim Stripe event must stay byte-for-byte under its own
     keys.  A shape that carries NO PaymentIntent writes no annotation at all: the verbatim event

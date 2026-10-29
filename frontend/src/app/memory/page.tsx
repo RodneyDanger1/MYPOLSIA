@@ -21,7 +21,7 @@ import { absoluteStamp, relativeTime } from "@/components/dashboard/format";
  * `tags`. The screen used to serve only the semantic branch, whose hits carry none, so every stored
  * tag was invisible on the one surface built to inspect memory. Both reads are click-only and share
  * one in-flight guard; the disclosure under the list states which read answered it (a semantic
- * search serves no total; the list read declares `X-Polsia-Total`).
+ * search serves no total; the list read declares `X-Meridian-Total`).
  *
  * Q-11: Enter used to bypass the button's disabled guard, so two searches could overlap and the
  * older response could land last. `search()` now self-guards on a synchronous `inFlight` ref (the
@@ -256,7 +256,7 @@ export default function MemoryPage() {
    * It is CLICK-ONLY, like the search: the page still fires no read on mount. It shares the one
    * `inFlight` guard with the search, so two result reads can never interleave and an older answer
    * can never land over a newer one. The declared total comes from THIS response's
-   * `X-Polsia-Total` header (the same read the rows came from), and a missing/unreadable header is
+   * `X-Meridian-Total` header (the same read the rows came from), and a missing/unreadable header is
    * `null` — the label then says only what the page length proves.
    */
   const browse = async () => {
@@ -271,7 +271,7 @@ export default function MemoryPage() {
     try {
       const data = await api.get<Memory[]>(MEMORY_BROWSE_PATH, {
         onHeaders: (headers) => {
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           const parsed = raw === null || raw === "" ? Number.NaN : Number(raw);
           total = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
         },
@@ -636,7 +636,7 @@ export default function MemoryPage() {
           // Q-12's idiom, memory-sized: a full page is disclosed, never presented as the whole
           // list. Precise wording (V22/L3, W1 GAP-1b): the SEMANTIC branch (`?q=`) serves no
           // total by design (`backend/app/api/v1/memory.py:43-46` — a hit list is not a table
-          // page); only the unfiltered list branch emits X-Polsia-Total. Saying "the API reports
+          // page); only the unfiltered list branch emits X-Meridian-Total. Saying "the API reports
           // no total" overstated that.
           <p className="ui-label text-ink-muted">
             Showing the first {MEMORY_SEARCH_LIMIT} matches — this semantic search serves no
@@ -645,7 +645,7 @@ export default function MemoryPage() {
         ) : null}
 
         {/* F-42: the browse read's disclosure. The list branch DOES declare a total
-            (`X-Polsia-Total`, `backend/app/api/v1/memory.py:57`), so a truncated browse is
+            (`X-Meridian-Total`, `backend/app/api/v1/memory.py:57`), so a truncated browse is
             distinguishable from the whole table; a missing/unreadable header says only what the
             page length proves. */}
         {mode === "browse" && results !== null && browseTotal !== null ? (

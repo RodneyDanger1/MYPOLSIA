@@ -1,4 +1,4 @@
-"""The Polsia agent layer — runtime, registry and the nine agents.
+"""The Meridian agent layer — runtime, registry and the nine agents.
 
 Package map (all lifted from lane 05's proven runtime, wired to `app.config.settings` and
 `app.core.errors`):

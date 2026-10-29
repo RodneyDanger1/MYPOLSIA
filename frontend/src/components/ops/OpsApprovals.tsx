@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
  *
  * The read is the existing task list filtered to the parked status:
  * `GET /tasks?status=awaiting_approval&limit=50` (tasks.py's `status` alias) plus its
- * `X-Polsia-Total` header. That header declares how many rows the FULL filter matches, which is
+ * `X-Meridian-Total` header. That header declares how many rows the FULL filter matches, which is
  * the only honest source for the "waiting" label — the body is a PAGE, capped at `APPROVALS_LIMIT`,
  * and printing its length as the total is the defect this surface used to ship.
  *
@@ -90,7 +90,7 @@ export function OpsApprovals({ tick, onChanged }: { tick: number; onChanged: () 
     api
       .get<unknown>(APPROVALS_PATH, {
         onHeaders: (headers: Headers) => {
-          captured.total = declaredTotal(headers.get("X-Polsia-Total"));
+          captured.total = declaredTotal(headers.get("X-Meridian-Total"));
         },
       })
       .then((body) => {

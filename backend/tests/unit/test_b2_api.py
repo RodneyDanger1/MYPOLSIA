@@ -364,7 +364,7 @@ async def test_readiness_fails_closed_with_a_named_503_when_the_database_is_down
 
     resp = await api_client.get("/api/v1/ready")
     assert resp.status_code == 503, resp.text
-    assert resp.headers["X-Polsia-Error-Code"] == "E_DB"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_DB"
     error = resp.json()["error"]
     assert error["code"] == "E_DB"
     assert error["how_to_fix"], "a refusal must say how to fix it"

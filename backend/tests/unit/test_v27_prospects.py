@@ -91,7 +91,7 @@ async def test_create_list_patch_status_delete(api_client, auth_headers):
     assert [item["id"] for item in page["items"]] == [prospect_id]
     assert page["total"] == 1
     # the declared full count also rides the header every paged owner read uses
-    assert listed.headers["X-Polsia-Total"] == "1"
+    assert listed.headers["X-Meridian-Total"] == "1"
 
     patched = await api_client.patch(
         f"/api/v1/prospects/{prospect_id}", headers=auth_headers, json={"status": "contacted"}
@@ -143,7 +143,7 @@ async def test_duplicate_email_is_a_named_validation_refusal(api_client, auth_he
     assert error["code"] == "E_VALIDATION"
     assert error["context"]["field"] == "email"
     assert "dup@example.com" in error["message"]
-    assert second.headers["X-Polsia-Error-Code"] == "E_VALIDATION"
+    assert second.headers["X-Meridian-Error-Code"] == "E_VALIDATION"
 
 
 @pytest.mark.parametrize("address", ["", "   ", "not-an-address", "@example.com", "ada@"])
@@ -263,7 +263,7 @@ async def test_limit_is_bounded_and_total_is_the_full_match_count(api_client, au
     body = page.json()
     assert len(body["items"]) == 2
     assert body["total"] == 5          # the page is 2; the match set is 5 — never conflated
-    assert page.headers["X-Polsia-Total"] == "5"
+    assert page.headers["X-Meridian-Total"] == "5"
 
     for bad in (0, -1, 501):
         refused = await api_client.get(

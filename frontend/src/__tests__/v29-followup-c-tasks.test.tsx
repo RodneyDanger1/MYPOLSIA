@@ -12,7 +12,7 @@
  *     nothing named. The sites page has guarded this since V24 ("a 200 whose body is not a list is
  *     named as a broken read"); this page is the one list surface that never did.
  *
- *  2. THE CAP LINE CLAIMS THE API REPORTED NO TOTAL WHILE THE API DID. `X-Polsia-Total` declares
+ *  2. THE CAP LINE CLAIMS THE API REPORTED NO TOTAL WHILE THE API DID. `X-Meridian-Total` declares
  *     the FULL count of the same query. When exactly `TASKS_BOARD_LIMIT` tasks exist, the header
  *     says 500 and the page prints "the API reports no total, so more may exist" — two false
  *     statements (the header was read; nothing more exists) about a response it is holding.
@@ -64,7 +64,7 @@ function taskRow(overrides: Partial<TaskRow> = {}): TaskRow {
 function boardRead(body: unknown, total?: number) {
   mockGet.mockImplementation((_path: string, options?: { onHeaders?: (h: Headers) => void }) => {
     if (total !== undefined) {
-      options?.onHeaders?.(new Headers({ "X-Polsia-Total": String(total) }));
+      options?.onHeaders?.(new Headers({ "X-Meridian-Total": String(total) }));
     }
     return Promise.resolve(body);
   });

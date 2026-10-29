@@ -408,7 +408,7 @@ async def test_finance_summary_refuses_with_a_named_db_error(api_client, auth_he
     await _drop(async_db_session, "revenue_snapshots")
     resp = await api_client.get("/api/v1/finance/summary", headers=auth_headers)
     assert resp.status_code == 503, resp.text
-    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert resp.headers.get("X-Meridian-Error-Code") == E_DB
     error = _envelope(resp)
     assert error["code"] == E_DB
     assert "could not read finance summary" in error["message"]
@@ -422,7 +422,7 @@ async def test_dashboard_summary_refuses_with_a_named_db_error(api_client, auth_
     await _drop(async_db_session, "tasks")
     resp = await api_client.get("/api/v1/dashboard/summary", headers=auth_headers)
     assert resp.status_code == 503, resp.text
-    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert resp.headers.get("X-Meridian-Error-Code") == E_DB
     error = _envelope(resp)
     assert error["code"] == E_DB
     assert "could not read dashboard summary" in error["message"]
@@ -702,6 +702,6 @@ async def test_dashboard_summary_row_none_is_a_fault_not_a_default(
     assert resp.status_code == 503, resp.text[:300]
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == E_DB
-    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert resp.headers.get("X-Meridian-Error-Code") == E_DB
     assert "dashboard summary statement returned no row" in body["error"]["message"]
     assert "tasks_today_total" not in body, "a fault must never look like an all-zero dashboard"

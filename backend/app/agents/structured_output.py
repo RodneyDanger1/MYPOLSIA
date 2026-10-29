@@ -1,4 +1,4 @@
-"""Polsia agent runtime — structured output extraction, validation and the repair ladder.
+"""Meridian agent runtime — structured output extraction, validation and the repair ladder.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/structured_output.py`) and wired to
 `app.core.errors`: every failure keeps its stable `POLSIA-Exxx` code and gains the matching

@@ -13,7 +13,7 @@ predicate and the newest-first order.  The routes are the wire shape over it.
 The read answers a WRAPPED body (`{items, total}`) because this is a NEW route — the existing
 bare-array reads (`/outreach/prospects`) cannot change shape without breaking their clients,
 and a page whose length equals its `limit` must be distinguishable from the whole table.  The
-same true count also rides `X-Polsia-Total`, the header every paged owner read already carries
+same true count also rides `X-Meridian-Total`, the header every paged owner read already carries
 (and `main.py` already exposes cross-origin).
 
 Commit discipline: each write builds its response and commits explicitly in the route body (the

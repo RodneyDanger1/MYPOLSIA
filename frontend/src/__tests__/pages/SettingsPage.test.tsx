@@ -18,7 +18,7 @@ const mockApiPut = api.put as jest.MockedFunction<typeof api.put>;
  * not compile — that is the pin.
  */
 const wireConfig: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,

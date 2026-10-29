@@ -1,4 +1,4 @@
-"""Polsia agent runtime — the Claude CLI invocation contract, implemented once.
+"""Meridian agent runtime — the Claude CLI invocation contract, implemented once.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/claude_cli.py`, 39/39 tests green
 there) and wired to this application's frozen surfaces:
@@ -524,7 +524,7 @@ def build_invocation(
     """
     if permission_mode not in SAFE_PERMISSION_MODES:
         raise ValueError(
-            f"refusing to build a Polsia invocation with permission_mode={permission_mode!r} "
+            f"refusing to build a Meridian invocation with permission_mode={permission_mode!r} "
             f"(safe modes: {', '.join(SAFE_PERMISSION_MODES)}; bypassPermissions is banned)"
         )
     budget = argv_budget(max_argv_chars)
@@ -619,7 +619,7 @@ def build_invocation(
 
         for banned in BANNED_FLAGS:
             if banned in argv:
-                raise ValueError(f"refusing to build a Polsia invocation containing {banned}")
+                raise ValueError(f"refusing to build a Meridian invocation containing {banned}")
 
         return Invocation(
             argv=argv,

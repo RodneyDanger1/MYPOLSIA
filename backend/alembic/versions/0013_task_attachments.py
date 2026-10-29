@@ -4,7 +4,7 @@ Revision ID: 0013
 Revises: 0012
 Create Date: 2026-10-19
 
-WHY (V25 PLAN item 1): Polsia reads screenshots/charts; "beat this landing page" is table stakes.
+WHY (V25 PLAN item 1): Meridian reads screenshots/charts; "beat this landing page" is table stakes.
 Before this revision there was nowhere to put an image: `tasks` has no attachment channel, the
 `data` volume has no attachment directory, and the DeepSeek request builder only ever sent a
 plain-string user message.  This revision adds the ROW; the blob lives on the data volume under

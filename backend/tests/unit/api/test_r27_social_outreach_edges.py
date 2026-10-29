@@ -4,7 +4,7 @@ Lane R27 (owned: `app/api/v1/social.py`, `app/api/v1/outreach.py`, the two servi
 The routes are consumed by the frontend (`/social`, `/outreach` pages), so the pinned contract is:
 `X-API-Key` required, `limit` bounded `ge=1 le=500`, `status`/`platform` filters exact,
 newest-first order, and — the honesty rule the whole service layer is built on — a FAILED read
-must surface as the named `E_DB` refusal (503 + `X-Polsia-Error-Code`), never as a `200 []` that
+must surface as the named `E_DB` refusal (503 + `X-Meridian-Error-Code`), never as a `200 []` that
 reads like "no posts".
 
 WHY every route body is ALSO called directly (the M1 measurement, raw/probe_asgi_vs_direct.txt):
@@ -101,7 +101,7 @@ async def test_social_posts_filters_through_query_params(api_client, auth_header
     # `ck_social_posts_status`'s vocabulary, so an unknown word is the named 422 every sibling
     # status read answers instead of a `200 []` that reads like "no posts".
     assert missing.status_code == 422, missing.text[:300]
-    assert missing.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert missing.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
     assert missing.json()["error"]["context"]["status"] == "archived"
 
 
@@ -151,7 +151,7 @@ async def test_social_posts_read_failure_is_a_named_refusal_not_an_empty_list(
     assert body["ok"] is False
     assert body["error"]["code"] == "E_DB"
     assert "could not read social posts" in body["error"]["message"]
-    assert resp.headers["X-Polsia-Error-Code"] == "E_DB"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_DB"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -220,7 +220,7 @@ async def test_outreach_prospects_read_failure_is_a_named_refusal(
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == "E_DB"
     assert "could not read prospects" in body["error"]["message"]
-    assert resp.headers["X-Polsia-Error-Code"] == "E_DB"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_DB"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -247,7 +247,7 @@ async def test_social_posts_route_body_direct_call(async_db_session):
 
 
 async def test_outreach_prospects_route_body_direct_call(async_db_session):
-    # V20/L1: the route declares the honest total on `X-Polsia-Total`, so the `Response` FastAPI
+    # V20/L1: the route declares the honest total on `X-Meridian-Total`, so the `Response` FastAPI
     # injects in production is supplied here; the return contract (validated models) is unchanged.
     assert await outreach_prospects(response=Response(), status_filter=None, limit=100,
                                     db=async_db_session) == []
@@ -288,5 +288,5 @@ async def test_route_body_direct_call_translates_E_DB_through_refusal_guard(
         exc = excinfo.value
         assert exc.status_code == 503
         assert exc.detail["code"] == "E_DB"
-        assert exc.headers["X-Polsia-Error-Code"] == "E_DB"
+        assert exc.headers["X-Meridian-Error-Code"] == "E_DB"
         assert exc.detail["how_to_fix"]                        # a refusal says how to fix it

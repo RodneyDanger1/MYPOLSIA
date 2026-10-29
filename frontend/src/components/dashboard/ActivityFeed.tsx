@@ -148,7 +148,7 @@ export function ActivityFeed() {
         <div className="flex items-baseline gap-2">
           <h2 className="font-serif text-base text-[#111]">Live Activity</h2>
           {/* V23/L4 (COMPLETENESS #6): the server's OWN declared total for the snapshot read
-              (`X-Polsia-Total` on the same response as the rows). Absent header -> no count at
+              (`X-Meridian-Total` on the same response as the rows). Absent header -> no count at
               all: the rows on hand are a page, never a total. */}
           {typeof total === "number" && (
             <span

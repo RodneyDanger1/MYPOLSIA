@@ -40,9 +40,9 @@ export function Topbar() {
         <Link
           href="/dashboard"
           className="mr-auto flex items-baseline gap-2"
-          aria-label="Polsia — dashboard"
+          aria-label="Meridian — dashboard"
         >
-          <span className="text-base font-bold text-ink">Polsia</span>
+          <span className="text-base font-bold text-ink">Meridian</span>
           <span className="ui-label text-ink-muted">AI Business Agent</span>
         </Link>
 

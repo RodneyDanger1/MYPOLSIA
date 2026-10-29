@@ -443,7 +443,7 @@ export function CompanyPlanSection({
         price points and goals back verbatim. They are free-form JSON on the server, so they are
         edited here exactly as stored: one JSON object per box, saved on its own so the rest of
         the company row is never rewritten. A saved product list is a CATALOGUE for the generated
-        site (names and selling prices only); there is no cart, checkout or payment in Polsia.
+        site (names and selling prices only); there is no cart, checkout or payment in Meridian.
       </p>
 
       <JsonField

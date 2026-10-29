@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     # --- app ---
-    app_name: str = "Polsia"
+    app_name: str = "Meridian"
     environment: str = "development"
     debug: bool = False
     log_level: str = "INFO"
@@ -306,7 +306,7 @@ class Settings(BaseSettings):
 
     # --- inbound support inbox (W5, 2026-10-28: the provider-agnostic email webhook) ---
     # The shared secret an inbound-email provider (Postmark/SendGrid-style) presents on
-    # `POST /api/v1/support/inbox/inbound` in the `X-Polsia-Inbound-Secret` header.  DEDICATED and
+    # `POST /api/v1/support/inbox/inbound` in the `X-Meridian-Inbound-Secret` header.  DEDICATED and
     # separate from `api_key` on purpose: a third party's webhook configuration must never have to
     # hold the key that opens the whole dashboard API.
     # Blank = NOT CONFIGURED: the route refuses the NAMED `E_CONFIG` (503) for EVERY caller — there

@@ -2,7 +2,7 @@
 
 WHY THIS FILE EXISTS
     `POST /api/v1/support/inbox/inbound` shipped (W5) as a JSON-only, shared-secret webhook
-    (`X-Polsia-Inbound-Secret`, a REQUIRED non-empty `provider_message_id`).  A real provider's
+    (`X-Meridian-Inbound-Secret`, a REQUIRED non-empty `provider_message_id`).  A real provider's
     Inbound Parse delivery is none of those things, so the route could never receive one:
     Twilio's own pages (fetched 2026-10-29, `dateModified` 2026-10-08 / 2026-10-07) document
 
@@ -69,7 +69,7 @@ from app.models.support import SupportInboxItem
 from app.models.task import Task
 
 INBOUND_PATH = "/api/v1/support/inbox/inbound"
-SECRET_HEADER = "X-Polsia-Inbound-Secret"
+SECRET_HEADER = "X-Meridian-Inbound-Secret"
 SECRET = "w9-inbound-shared-secret"
 SIGNATURE_HEADER = "X-Twilio-Email-Event-Webhook-Signature"
 TIMESTAMP_HEADER = "X-Twilio-Email-Event-Webhook-Timestamp"
@@ -812,7 +812,7 @@ async def test_authentication_precedes_validation_on_the_json_path(
 
     In the shipped route FastAPI parsed the JSON body BEFORE the dependency solved, so a
     malformed body answered the framework's 422 with NO credential check (measured live on the
-    wave-8 image: `POST …/inbound` + `X-Polsia-Inbound-Secret: wrong` + invalid JSON -> 422).  The
+    wave-8 image: `POST …/inbound` + `X-Meridian-Inbound-Secret: wrong` + invalid JSON -> 422).  The
     route now reads raw bytes, authenticates, and only then parses — for BOTH encodings.
     """
     from app.config import settings

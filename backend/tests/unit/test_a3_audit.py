@@ -265,7 +265,7 @@ async def test_an_uncaught_exception_is_the_coded_envelope_with_cors():
     assert error["how_to_fix"], "a coded refusal always says how to fix it"
     request_id = error["context"]["request_id"]
     assert request_id, "the envelope names the request the server log can be searched for"
-    assert resp.headers["X-Polsia-Error-Code"] == "E_INTERNAL"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_INTERNAL"
     assert resp.headers["X-Request-ID"] == request_id, "one request id, not two"
     assert resp.headers["access-control-allow-origin"] == "http://localhost:3000", (
         "the 500 was produced outside CORSMiddleware, so a split-origin client cannot read it"

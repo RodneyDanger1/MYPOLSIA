@@ -69,9 +69,9 @@ function contentResponse(text: string, sha256: string, bytes: number): Response 
     status: 200,
     text: async () => text,
     headers: new Headers({
-      "X-Polsia-Artifact-Sha256": sha256,
-      "X-Polsia-Artifact-Bytes": String(bytes),
-      "X-Polsia-Artifact-Modified": "2026-10-28T21:25:40Z",
+      "X-Meridian-Artifact-Sha256": sha256,
+      "X-Meridian-Artifact-Bytes": String(bytes),
+      "X-Meridian-Artifact-Modified": "2026-10-28T21:25:40Z",
     }),
   } as unknown as Response;
 }
@@ -144,7 +144,7 @@ describe("F-35 — /ops prints the servable path verbatim", () => {
           ok: true,
           status: 200,
           blob: async () => blob,
-          headers: new Headers({ "X-Polsia-Artifact-Bytes": "5721" }),
+          headers: new Headers({ "X-Meridian-Artifact-Bytes": "5721" }),
         } as unknown as Response);
       }
       return Promise.resolve(contentResponse("# Brand one-pager", "abc123", 5721));

@@ -2,7 +2,7 @@
 
 WHY THIS MODULE (V25-PLAN, "Remaining work" row 2): "**GitHub tools** — repo/branch/commit/PR
 behind the firewalled registry + secret store ... The code agent can actually ship code; source
-history like Polsia".  The registry tools (`github_repo`, `github_branch`, `github_commit`,
+history like Meridian".  The registry tools (`github_repo`, `github_branch`, `github_commit`,
 `github_pr`) are thin argument-shaping wrappers over this module; everything that touches the
 network, the credential or a refusal lives here so there is exactly ONE implementation.
 

@@ -286,7 +286,7 @@ describe("Usage — Export really downloads via the API", () => {
       ok: true,
       status: 200,
       statusText: "OK",
-      headers: { get: (name: string) => (name === "X-Polsia-Row-Count" ? "7" : null) },
+      headers: { get: (name: string) => (name === "X-Meridian-Row-Count" ? "7" : null) },
       blob: () => Promise.resolve(new Blob(["id,cost_usd\n1,0.4213\n"], { type: "text/csv" })),
       text: () => Promise.resolve(""),
     });

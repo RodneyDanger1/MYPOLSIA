@@ -1,4 +1,4 @@
-"""Polsia orchestration — the DAG planner for the morning cycle.
+"""Meridian orchestration — the DAG planner for the morning cycle.
 
 STATUS — DELIBERATELY UNWIRED (labelled wave U3, auditor H-04, 2026-10-14).  The line above
 describes what this module was BUILT to be, not what runs: it has ZERO production callers —

@@ -19,7 +19,7 @@ THE CONTRACT (frozen before this module was written)
         then carries `"audit": "unavailable"` instead.
     All of them: key-auth (the router dependency), envelope `{"ok": true, "data": {...}}` on
     success and the named refusal shape (`{"ok": false, "error": {code, message, how_to_fix,
-    context}}` + `X-Polsia-Error-Code`) on failure — both produced by the SHIPPED plumbing
+    context}}` + `X-Meridian-Error-Code`) on failure — both produced by the SHIPPED plumbing
     (`deps.refusal_guard` -> `main._refusal_headers`/`to_http_detail`), never hand-rolled here.
 
 ABSENT STORE = 503 `E_PHONE_UNAVAILABLE`
@@ -251,7 +251,7 @@ async def phone_send(
     """Send one SMS through the owner's paired Google Messages web session.
 
     THE BODY IS TYPED `Any` + `Body(None)` ON PURPOSE (V-12).  Every validation mistake must answer
-    the app's own named `E_VALIDATION` envelope, carry `X-Polsia-Error-Code`, AND leave one audit
+    the app's own named `E_VALIDATION` envelope, carry `X-Meridian-Error-Code`, AND leave one audit
     row — and a `dict`/`Body(...)` annotation defeats all three: FastAPI then rejects a non-object
     body (`[]`, `"x"`, `42`, `null`) — and an ABSENT body — BEFORE this function runs, with the
     framework's uncoded `{"detail": [...]}` 422 and ZERO audit rows, so the attempt is invisible in
@@ -376,8 +376,8 @@ async def phone_export() -> ExportFileResponse:
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-Polsia-Export-Messages": str(counts["messages"]),
-            "X-Polsia-Export-Calls": str(counts["calls"]),
+            "X-Meridian-Export-Messages": str(counts["messages"]),
+            "X-Meridian-Export-Calls": str(counts["calls"]),
         },
         background=BackgroundTask(_remove_export_tempfile, path),
     )

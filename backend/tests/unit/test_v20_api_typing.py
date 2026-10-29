@@ -26,8 +26,8 @@ WIRE-COMPATIBILITY DOCTRINE (load-bearing)
 TOTAL HEADER
     The list routes answer bare JSON arrays (the frontend parses them as arrays — `useRuns`,
     `ProspectRow`, the support page), so a body wrapper would be a breaking change.  The honest
-    total therefore rides `X-Polsia-Total` — the full filtered match count, not the page length,
-    the same "declared count" idea `X-Polsia-Row-Count` carries on `/runs/export`.
+    total therefore rides `X-Meridian-Total` — the full filtered match count, not the page length,
+    the same "declared count" idea `X-Meridian-Row-Count` carries on `/runs/export`.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ import pytest
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
-TOTAL_HEADER = "X-Polsia-Total"
+TOTAL_HEADER = "X-Meridian-Total"
 
 #: A fixed instant: every seeded row is stamped with it so payloads are reproducible.
 FIXED_NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
@@ -95,7 +95,7 @@ RESPONSE_MODEL_EXEMPTIONS = {
     "/api/v1/attachments/{attachment_id}": "raw image bytes streamed with the sniffed content-type (V25/L1)",
     "/api/v1/prospects/{prospect_id}": "204 No Content on DELETE — no body to type (V27/L5)",
     "/api/v1/outreach/unsubscribe": "HTML confirmation page (a mail-client link)",
-    "/api/v1/runs/export": "CSV/JSON stream; its count rides X-Polsia-Row-Count, verified pre-send",
+    "/api/v1/runs/export": "CSV/JSON stream; its count rides X-Meridian-Row-Count, verified pre-send",
     "/api/v1/data/export": "application/zip data-portability archive",
     "/api/v1/site/package/download": "application/zip site package",
     "/api/v1/phone/media/{part_id}": "raw attachment bytes (frozen V18 interface)",
@@ -164,7 +164,7 @@ def _refusal(resp) -> dict:
     """The named-refusal envelope of a response, with its machine-readable code header."""
     body = resp.json()
     assert body.get("ok") is False, f"not a refusal envelope: {resp.text[:300]}"
-    assert resp.headers.get("X-Polsia-Error-Code") == body["error"]["code"], (
+    assert resp.headers.get("X-Meridian-Error-Code") == body["error"]["code"], (
         "the code header must agree with the envelope"
     )
     return body
@@ -212,7 +212,7 @@ async def test_an_unknown_status_is_the_same_named_422_on_every_status_filter(
     """`?status=bogus` is caller input, not a filter that happens to match nothing.
 
     The reference contract (tasks/invoices/support, pinned since L1-09): 422 + the
-    `E_VALIDATION` envelope + `X-Polsia-Error-Code`, the message naming the offending value and
+    `E_VALIDATION` envelope + `X-Meridian-Error-Code`, the message naming the offending value and
     the legal set.  `runs`/`outreach` answered `200 []` at 8fa2b38 (V19 L2-08) — the same word
     with two contracts; the ads/social filters had the identical hole.
     """
@@ -644,7 +644,7 @@ async def test_a_limit_only_list_declares_the_honest_total(api_client, auth_head
     """A full page must be distinguishable from a truncated one.
 
     The body stays a bare array (a wrapper would break every existing client), so the declared
-    total rides `X-Polsia-Total` — the FULL filtered match count, never the page length.
+    total rides `X-Meridian-Total` — the FULL filtered match count, never the page length.
     """
     await _seed_lists(async_db_session)
 
@@ -782,7 +782,7 @@ async def test_typed_routes_refuse_absent_auth(api_client, path):
     else:
         response = await api_client.get(path)
     assert response.status_code == 401, response.text[:200]
-    assert response.headers.get("X-Polsia-Error-Code") == "E_AUTH"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_AUTH"
 
 
 @pytest.mark.parametrize("query", ["%00", "😀", "x" * 2000, "  ", "SEO OR 1=1"])

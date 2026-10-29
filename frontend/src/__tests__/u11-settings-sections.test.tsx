@@ -45,7 +45,7 @@ const mockDelete = api.delete as jest.Mock;
 const FETCH_MOCK = jest.fn();
 
 const baseConfig: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,
@@ -221,12 +221,12 @@ describe("u11 settings — sender identity (B13)", () => {
     expect(legal.value).toBe("");
     expect(postal.value).toBe("");
 
-    fireEvent.change(legal, { target: { value: "Polsia LLC" } });
+    fireEvent.change(legal, { target: { value: "Meridian LLC" } });
     fireEvent.change(postal, { target: { value: "123 Main St, Minneapolis, MN 55401" } });
 
     mockPut.mockResolvedValue({
       ...baseConfig,
-      sender_legal_name: "Polsia LLC",
+      sender_legal_name: "Meridian LLC",
       sender_postal_address: "123 Main St, Minneapolis, MN 55401",
     });
     fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
@@ -236,7 +236,7 @@ describe("u11 settings — sender identity (B13)", () => {
     expect(path).toBe("/config");
     // Only the two changed keys leave — website_url (unchanged) is not rewritten.
     expect(body).toEqual({
-      sender_legal_name: "Polsia LLC",
+      sender_legal_name: "Meridian LLC",
       sender_postal_address: "123 Main St, Minneapolis, MN 55401",
     });
     expect(await screen.findByText("Settings saved successfully")).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe("u11 settings — data export & wipe", () => {
       ok: true,
       status: 200,
       statusText: "OK",
-      headers: { get: (name: string) => (name === "X-Polsia-Row-Count" ? "42" : null) },
+      headers: { get: (name: string) => (name === "X-Meridian-Row-Count" ? "42" : null) },
       blob: () => Promise.resolve(new Blob(["zip-bytes"], { type: "application/zip" })),
       text: () => Promise.resolve(""),
     });
@@ -508,10 +508,10 @@ describe("u11 settings — site package", () => {
   it("builds via POST /site/package and reports the REAL response — paths, not an archive", async () => {
     await renderSettings();
     mockPost.mockResolvedValueOnce({
-      package_dir: "C:\\Polsia\\backend\\data\\exports\\site-polsia",
+      package_dir: "C:\\Meridian\\backend\\data\\exports\\site-polsia",
       files: [
-        "C:\\Polsia\\backend\\data\\exports\\site-polsia\\index.html",
-        "C:\\Polsia\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
+        "C:\\Meridian\\backend\\data\\exports\\site-polsia\\index.html",
+        "C:\\Meridian\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
       ],
       slug: "polsia",
     });

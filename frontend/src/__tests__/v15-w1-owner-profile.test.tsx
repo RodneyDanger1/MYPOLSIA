@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 const baseConfig: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,

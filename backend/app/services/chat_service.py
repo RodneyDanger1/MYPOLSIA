@@ -69,7 +69,7 @@ WHAT THIS MODULE IS
   branch with the load-bearing commit (`agents.py:102-128`): the row records its measured
   terminal `failed` state, the caller gets the named refusal, and the created id survives.
 
-* PERSISTENCE: every exchange writes the owner row and the Polsia row to `chat_messages` and
+* PERSISTENCE: every exchange writes the owner row and the Meridian row to `chat_messages` and
   exactly ONE `chat_message` activity row per request through `log_activity` (publish included —
   the single-row, publishing variant; `log_activities` does not publish by design).  Nothing
   here touches `/ws/activity` or the activity feed ordering.
@@ -810,9 +810,9 @@ async def _write_exchange(
     activity_level: str = "info",
     activity_detail: dict[str, Any] | None = None,
 ) -> ChatMessage:
-    """Persist one exchange: the owner row, the Polsia row, ONE published activity row.
+    """Persist one exchange: the owner row, the Meridian row, ONE published activity row.
 
-    Returns the Polsia row.  The owner row is flushed first only when a caller needs its id
+    Returns the Meridian row.  The owner row is flushed first only when a caller needs its id
     (create_task does, for the token); everything else shares the request transaction.
     """
     db.add(ChatMessage(role="owner", content=owner_content, intent=owner_intent, task_id=None))
@@ -1054,7 +1054,7 @@ def _refuse_confirm(reason: str, detail: str, *, context: dict[str, Any] | None 
         E_TASK_NOT_RUNNABLE,
         detail,
         how_to_fix=(
-            "send a new chat message describing the task — Polsia replies with a fresh "
+            "send a new chat message describing the task — Meridian replies with a fresh "
             f"confirmation card; tokens are single-use and expire after {CONFIRM_TOKEN_TTL_S // 60} min"
         ),
         context={"reason": reason, **(context or {})},
@@ -1082,7 +1082,7 @@ async def confirm_task(db: AsyncSession, confirm_token: str) -> int:
         if check.reason == "malformed":
             raise PolsiaError(
                 E_VALIDATION,
-                "the confirm_token is not a Polsia chat confirmation token",
+                "the confirm_token is not a Meridian chat confirmation token",
                 how_to_fix="send the confirm_token value exactly as it came back from "
                            "POST /api/v1/chat",
                 context={"reason": "malformed"},

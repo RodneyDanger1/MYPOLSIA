@@ -19,7 +19,7 @@ import { WidgetSlot, WidgetStack } from "@/components/dashboard/WidgetSlots";
 /**
  * The dashboard, rebuilt as the live product's region composition (agent1 dossier §1.3–1.8):
  *
- *   left rail       Polsia status card + Auto Mode panel + Business mini-panel
+ *   left rail       Meridian status card + Auto Mode panel + Business mini-panel
  *   middle column   Tasks preview + Daily Report (the Documents slot)
  *   right column    Social / Outreach / Ads widgets + the send-caps counter (B9) (the Twitter /
  *                   Email / Meta Ads slots) + the V29 SIGNALS card (headlines, appended last)

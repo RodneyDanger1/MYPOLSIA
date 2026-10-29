@@ -1,4 +1,4 @@
-# COMPLETENESS — MYPOLSIA, the honest final statement
+# COMPLETENESS — Meridian, the honest final statement
 
 > **V27 settlement (2026-10-19, this commit).** Six lanes: site delete/regenerate, retention
 > automation, SendGrid/Stripe read-only probes, vision memory (migration 0016), owner-managed
@@ -67,7 +67,7 @@ receipt at this write)** — never presented as done.
 
 ---
 
-## 1. What MYPOLSIA is
+## 1. What Meridian is
 
 A self-hosted business-operations platform: **FastAPI + Celery** backend, **Next.js 14** frontend,
 **nginx** in front, **PostgreSQL 16** (26 tables), **Redis** (broker), **ChromaDB** (vector memory).
@@ -150,7 +150,7 @@ write — the wave commit must include them or the route regresses to UNWIRED (W
 W1's open findings in its final matrix, reconciled with L3's final receipt (10:16) — W1's TL;DR
 predates the last closures, so where they disagree the working-tree code and L3's pins are the truth:
 
-- **W1 GAP-1 — `X-Polsia-Total` headers.** W1 found **5 of 7 emitted totals never read** (invoices,
+- **W1 GAP-1 — `X-Meridian-Total` headers.** W1 found **5 of 7 emitted totals never read** (invoices,
   memory, outreach, support, dashboard/activity). **Closed for 4 of 5 by L3**: `/invoices` now prints
   `Showing the first 100 of N` (`frontend/src/app/invoices/page.tsx:237`,
   `components/invoices/useInvoices.ts:32,55,79`), `/outreach` prints `100 of 137`
@@ -224,7 +224,7 @@ owned by the parent:
 | **D9** | L | `chat_service.list_history` turns a `None` count into a fabricated `0` instead of a named refusal (the sibling reads refuse). | `backend/app/services/chat_service.py:804-811` | **parent** (backend) |
 
 Three findings W2 made mid-audit were **fixed by V22 writers while it ran** and are recorded, not
-queued: the `/tasks` false "API reports no total" line (now reads `X-Polsia-Total`, pin
+queued: the `/tasks` false "API reports no total" line (now reads `X-Meridian-Total`, pin
 `v22-wiring-totals.test.tsx`), the `/ads` page-length count (now "N of M campaigns"), and the run
 detail's "tools never persisted" state (L1's migration/column/chips — see §5.3).
 
@@ -269,7 +269,7 @@ SKIP → FAIL on a stale proxy and a **green 13-check run is a settle check** on
 |---|---|---|
 | **L1 — tools persistence** | `agent_runs.tools_used` (migration `backend/alembic/versions/0010_agent_run_tools_used.py`, additive + reversible); envelope → `accounting.usage_from_envelope` → `agent_tasks._apply_run_usage` → column → `GET /api/v1/runs/{id}` → `/runs/[id]` three states. Cap 50 with a named marker; NULL ≠ `[]`. | RED `ImportError` → GREEN **129 tests** in the focused backend run (11 new); FE **15/15**; `tsc` 0 bytes; mypy **162 files** clean; migration proven upgrade/downgrade on SQLite and offline PG SQL. `wave-v22/l1-tools-persist/RECEIPT.md` |
 | **L2 — phone thread view** | New in-page `frontend/src/components/phone/PhoneThreadView.tsx` behind an **Open conversation** action; the base page already had a `?thread=` deep-linked conversation read (V16), so V22 adds the panel without a route change. `parseMessages` now tolerates the store's legal `when:null` — the real contract gap. Fetch-on-select only; no storage/console. | RED **12 failed / 2 passed** → GREEN **14/14** new pins; regression **7 suites / 122 tests**; scoped `tsc` 0 bytes; one read-only live GET confirmed the payload shape (values withheld). `wave-v22/l2-phone-thread/RECEIPT.md` |
-| **L3 — wiring fixes** | 13 rows closed: ads metrics expander; invoice item display + entry; `X-Polsia-Total` for invoices/outreach/support/tasks/ads; memory wording; W2 D3–D6 copy/state fixes. | **15 suites / 209 tests** + **10 suites / 97 tests** green; `tsc` 0 bytes; only the pre-existing `PhoneMedia.tsx` `<img>` lint warning. `wave-v22/l3-wiring-fix/RECEIPT.md` |
+| **L3 — wiring fixes** | 13 rows closed: ads metrics expander; invoice item display + entry; `X-Meridian-Total` for invoices/outreach/support/tasks/ads; memory wording; W2 D3–D6 copy/state fixes. | **15 suites / 209 tests** + **10 suites / 97 tests** green; `tsc` 0 bytes; only the pre-existing `PhoneMedia.tsx` `<img>` lint warning. `wave-v22/l3-wiring-fix/RECEIPT.md` |
 | **L4 — e2e + coverage** | `e2e/v22-run-chips.spec.ts` (5 tests) and `e2e/v22-phone-thread.spec.ts` (5 tests), both enumerating; one CI-exact coverage run. | Specs **RED on the stale served FE** (3 failed / 2 vacuous passes; 1 failed on the missing `phone-thread-open`) — the assertions bite and the stubbed envelopes are wire-valid. Coverage **92.10%** (11,711 statements / 925 missed) → **below the 92.3 bar, so `fail_under` stays 90** and `backend/pyproject.toml` is byte-identical (`8a15b56b…`). `wave-v22/l4-proof/RECEIPT.md` |
 
 ### 5.4 The V22 verifier gate — PASSED on the frozen tree (L6)
@@ -313,7 +313,7 @@ These cannot be closed by a commit; each is a deliberate owner action named in `
 
 ## 7. Every remaining item
 
-**The honest answer: MYPOLSIA is not "fully complete" at this write.** Every backend capability has a
+**The honest answer: Meridian is not "fully complete" at this write.** Every backend capability has a
 UI consumer or a stated API-only reason (V22 W1: 74 WIRED / 3 API-only / 0 UNWIRED across 77 surfaces;
 V23 adds the 78th surface, `GET /ops/activity-publish`, WIRED on arrival — 75 / 3 / 0), and there is
 **no mock or fake in the product path** (W2: zero product-path test doubles in 96 triaged hits). What
@@ -333,7 +333,7 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 
 | # | Item | Evidence (`file:line`) | Owner |
 |---|---|---|---|
-| 6 | **CLOSED (V23 · L4).** The feed header now prints the server's own total — `N events` (`1 event` singular) — read from the same response's `X-Polsia-Total` through the shared `onHeaders` hook; an absent or non-integer header draws **no count** (never the rows on hand). A malformed snapshot cannot publish a stale/foreign count. | `frontend/src/hooks/useActivityFeed.ts:88-97,198-215,395`; `frontend/src/components/dashboard/ActivityFeed.tsx:147-163`; pin `frontend/src/__tests__/v23-observability.test.tsx` | **done (V23 L4)** |
+| 6 | **CLOSED (V23 · L4).** The feed header now prints the server's own total — `N events` (`1 event` singular) — read from the same response's `X-Meridian-Total` through the shared `onHeaders` hook; an absent or non-integer header draws **no count** (never the rows on hand). A malformed snapshot cannot publish a stale/foreign count. | `frontend/src/hooks/useActivityFeed.ts:88-97,198-215,395`; `frontend/src/components/dashboard/ActivityFeed.tsx:147-163`; pin `frontend/src/__tests__/v23-observability.test.tsx` | **done (V23 L4)** |
 | 7 | Three components are imported by nothing: `AgentStatusGrid`, `MetricsCard`, `TopbarPopover` (two have their own unit specs). Retire-vs-keep is a recorded decision — the campaign's no-delete rule pins two of them. | `__tests__/u4-darktail.test.tsx:68-75`; `components/dashboard/*`, `components/layout/TopbarPopover.tsx` | **parent (retire decision)** |
 | 8 | **CLOSED (V23 · L4).** The 15-minute maintenance tick writes `{failures, skipped_while_open, breaker_open, ts}` to the shared Redis key `polsia:activity-publish:stats` (TTL 900 s; a Redis failure is logged and never fails the job), and `GET /api/v1/ops/activity-publish` serves it: `{data:{…}}` / `{data:null}` when the worker never wrote / **503 `E_REDIS`** when Redis is unreachable or the stored value is not the frozen shape (no coercion of `"2"`/`true` into counts). The `/usage` **Worker process** card renders the four counters or the honest absence ("No counters are shown rather than fabricated zeros"); the "worker invisible" copy is gone. | `backend/celery_app/tasks/maintenance.py:244-262`; `backend/app/core/redis_client.py:84-110`; `backend/app/api/v1/ops.py:118-147`; `frontend/src/components/usage/OpsPanel.tsx:298-349`; pins `backend/tests/unit/test_v23_breaker_stats.py` (8), `frontend/src/__tests__/v23-observability.test.tsx` (7) | **done (V23 L4)** — the live tick/route read is the parent's (RELEASE-CHECKLIST V23) |
 
@@ -355,7 +355,7 @@ remains is listed here — nothing is softened, and nothing is claimed fixed wit
 | 15 | **L6 verifier gate — PASSED ✅ on the frozen tree.** 2,726 tests / 0 failed / 0 errors / 13 skipped (parent's authoritative re-gate after settle: **2,729 / 0 / 0 / 13**, the +3 being the new D1/D2/D9 pins); full jest **839/839**; tsc 0; ruff 0; coverage 92.10% ≥ 90. | `wave-v22/v-verify/VERIFY.md`; `v-final/gate-final.xml`, `jest-full.txt` | **done** |
 | 16 | **Live settle DONE.** Images rebuilt and recreated; nginx reloaded; live DB migrated **0008 → 0009 → 0010**; `make smoke` **PASS 13 checks**; `/apidocs` + `/openapi.json` 200; 404 page live; `/runs/{id}` honest three-state; the seeded placeholders cleared from the live row (`kpis {}`, `website_url ""`). CI watch pending (runners queued at push time). | `v-final/` evidence; live probes | **done (parent)** |
 | 17 | **PII redacted** in the W2 audit artifact (`<owner name: redacted>` / `<owner postal address: redacted>`); repo-wide re-grep found no live PII in tracked content. | `wave-v22/w2-honesty/MOCK-AUDIT.md`; grep | **done (parent)** |
-| 18 | **V23 settlement — CLOSED ✅ (commit `10ebdc1`).** The four V23 lanes plus the verifier are landed and live: Settings carries the cycle-report switch and the KPI editor, Finance carries the human-rate card (live DB migrated `0010 → 0011`), the Usage page shows the worker's breaker snapshot (a REAL maintenance tick wrote Redis and the route served it), and the activity feed prints `N events` from its own `X-Polsia-Total`. Gates on the settled tree: backend **2,745 / 0 / 0 / 13**, full jest **870/870**, full e2e **43 passed / 8 skipped / 0 failed**, smoke **PASS 13 checks**, mypy 148 files clean, ruff clean. The five live drills (toggle round-trip, KPI save/restore, rate set/clear, feed total 1773, worker tick → route) all passed with every value restored exactly. | `wave-v23/v-final/` evidence; `git show --stat 10ebdc1` | **done (parent)** |
+| 18 | **V23 settlement — CLOSED ✅ (commit `10ebdc1`).** The four V23 lanes plus the verifier are landed and live: Settings carries the cycle-report switch and the KPI editor, Finance carries the human-rate card (live DB migrated `0010 → 0011`), the Usage page shows the worker's breaker snapshot (a REAL maintenance tick wrote Redis and the route served it), and the activity feed prints `N events` from its own `X-Meridian-Total`. Gates on the settled tree: backend **2,745 / 0 / 0 / 13**, full jest **870/870**, full e2e **43 passed / 8 skipped / 0 failed**, smoke **PASS 13 checks**, mypy 148 files clean, ruff clean. The five live drills (toggle round-trip, KPI save/restore, rate set/clear, feed total 1773, worker tick → route) all passed with every value restored exactly. | `wave-v23/v-final/` evidence; `git show --stat 10ebdc1` | **done (parent)** |
 
 ### 7.5 Known residuals already documented in the repo (pre-date V22, still true)
 

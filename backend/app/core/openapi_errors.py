@@ -98,7 +98,7 @@ THE 422 DECLARATION (SV-W6-02, ACCEPTED BY THE LEAD IN WAVE 7 AND EXECUTED IN WA
 -------------------------------------------------------------------------------------
 Measured live in wave 7 (`systems-validator/raw/w7/live-w7-422-shapes.txt`): ONE status, TWO bodies,
 on the SAME operation.  `GET /api/v1/support/inbox?status=bogus` answers the refusal envelope
-(`E_VALIDATION`, `X-Polsia-Error-Code: E_VALIDATION`) while `GET /api/v1/support/inbox?limit=0`
+(`E_VALIDATION`, `X-Meridian-Error-Code: E_VALIDATION`) while `GET /api/v1/support/inbox?limit=0`
 answers FastAPI's `{"detail": [...]}` array.  The envelope comes from `main.polsia_error_handler`
 (via `HTTP_STATUS_BY_CODE[E_VALIDATION] == 422`) and from `main.coded_http_exception_handler`; the
 array comes from the `RequestValidationError` path.  Declaring 422 as the array alone was therefore
@@ -206,7 +206,7 @@ _JSON_OBJECT: dict[str, Any] = {
 SHARED_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
     401: _envelope(
         "E_AUTH — the X-API-Key header is missing or wrong (WWW-Authenticate: X-API-Key, "
-        "X-Polsia-Error-Code: E_AUTH)"
+        "X-Meridian-Error-Code: E_AUTH)"
     ),
     404: _envelope("E_NOT_FOUND — the run/task/row named by the path does not exist"),
     403: _envelope(
@@ -391,9 +391,9 @@ _CODED_422_ENTRY: dict[str, Any] = {
     "description": (
         "validation refused the request — this status has TWO documented wire shapes.  (1) "
         "FastAPI's {\"detail\": [{loc, msg, type, …}]} array: a parameter/body validation error, "
-        "with no product code and no X-Polsia-Error-Code header.  (2) The product refusal envelope "
+        "with no product code and no X-Meridian-Error-Code header.  (2) The product refusal envelope "
         "{\"ok\": false, \"error\": {code: \"E_VALIDATION\" | \"E_AGENT_UNKNOWN\", message, "
-        "how_to_fix, context}}: a named refusal, with X-Polsia-Error-Code repeating the code.  "
+        "how_to_fix, context}}: a named refusal, with X-Meridian-Error-Code repeating the code.  "
         "Discriminate on the BODY: a top-level `error` object means the envelope.  One narrow "
         "input class (a body carrying NaN/Infinity) answers the envelope PLUS the sanitized "
         "pydantic array under `detail` (main.request_validation_error_handler), so read `error` "

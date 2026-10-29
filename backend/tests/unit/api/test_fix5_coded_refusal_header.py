@@ -1,4 +1,4 @@
-"""FIXER-5 / L1-04 — a coded `HTTPException` carries `X-Polsia-Error-Code` too.
+"""FIXER-5 / L1-04 — a coded `HTTPException` carries `X-Meridian-Error-Code` too.
 
 Premise (RED before the fix; raw evidence: fix-5/raw/probe_premises_l1.txt): GET
 /api/v1/tasks/999999 answered `404 E_NOT_FOUND` WITHOUT the machine-readable header while
@@ -22,7 +22,7 @@ async def test_direct_raise_tasks_404_carries_the_code_header(api_client, auth_h
     resp = await api_client.get("/api/v1/tasks/999999", headers=auth_headers)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == E_NOT_FOUND
-    assert resp.headers.get("X-Polsia-Error-Code") == E_NOT_FOUND
+    assert resp.headers.get("X-Meridian-Error-Code") == E_NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_direct_raise_config_unseeded_carries_the_code_header(api_client, 
     resp = await api_client.get("/api/v1/config", headers=auth_headers)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == E_NOT_FOUND
-    assert resp.headers.get("X-Polsia-Error-Code") == E_NOT_FOUND
+    assert resp.headers.get("X-Meridian-Error-Code") == E_NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -41,8 +41,8 @@ async def test_direct_raise_and_guard_path_agree_header_for_header(api_client, a
 
     assert direct.status_code == guarded.status_code == 404
     assert (
-        direct.headers.get("X-Polsia-Error-Code")
-        == guarded.headers.get("X-Polsia-Error-Code")
+        direct.headers.get("X-Meridian-Error-Code")
+        == guarded.headers.get("X-Meridian-Error-Code")
         == E_NOT_FOUND
     )
     assert direct.json()["error"]["code"] == guarded.json()["error"]["code"] == E_NOT_FOUND
@@ -72,7 +72,7 @@ async def test_uncoded_http_exceptions_keep_the_default_shape_and_no_header(api_
     )
     assert resp.status_code == 400
     assert set(resp.json()) == {"detail"}, "a plain-detail exception must stay plain"
-    assert resp.headers.get("X-Polsia-Error-Code") is None
+    assert resp.headers.get("X-Meridian-Error-Code") is None
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_webhook_coded_400_direct_raise_carries_the_code_header(api_client
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == E_VALIDATION
-    assert resp.headers.get("X-Polsia-Error-Code") == E_VALIDATION
+    assert resp.headers.get("X-Meridian-Error-Code") == E_VALIDATION
 
 
 @pytest.mark.asyncio
@@ -104,5 +104,5 @@ async def test_e_auth_from_the_router_dependency_still_carries_its_challenge(api
     """Control next to L1-04: the `PolsiaError` path keeps code + challenge headers."""
     resp = await api_client.get("/api/v1/config")  # no key
     assert resp.status_code == 401
-    assert resp.headers.get("X-Polsia-Error-Code") == E_AUTH
+    assert resp.headers.get("X-Meridian-Error-Code") == E_AUTH
     assert resp.headers.get("WWW-Authenticate") == "X-API-Key"

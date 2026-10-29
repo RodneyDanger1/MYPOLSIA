@@ -53,7 +53,7 @@ export type WidgetMeta = { id: WidgetId; area: AreaId; label: string };
  * ships (Twitter / Email / Meta Ads / Documents / Media, DOSSIER §1.4–1.7).
  */
 export const WIDGETS: readonly WidgetMeta[] = [
-  { id: "status", area: "left", label: "Polsia status" },
+  { id: "status", area: "left", label: "Meridian status" },
   { id: "auto_mode", area: "left", label: "Auto Mode" },
   { id: "business", area: "left", label: "Business" },
   { id: "website", area: "left", label: "Website" },

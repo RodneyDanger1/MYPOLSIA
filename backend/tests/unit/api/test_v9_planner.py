@@ -110,7 +110,7 @@ async def planner_client(async_db_session, mock_redis, monkeypatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     app.add_exception_handler(PolsiaError, _polsia_handler)
@@ -259,7 +259,7 @@ async def test_who_pays_pre_gate_refuses_422(
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
     assert detail["code"] == "E_VALIDATION"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ definition, two files) so the route is proven against the DDL production actuall
 Shape facts pinned here (probe2, `raw/probe2-output.txt`): a missing/wrong key is the NAMED `E_AUTH`
 envelope plus `WWW-Authenticate: X-API-Key` (`app/main.py:80-87`); a DB read failure arrives as 503
 `E_DB` through `refusal_guard()` (`app/api/deps.py:95-125` → `app/main.py:205-220`) carrying
-`X-Polsia-Error-Code`; a malformed `limit` is FastAPI's own uncoded `detail` array (by design,
+`X-Meridian-Error-Code`; a malformed `limit` is FastAPI's own uncoded `detail` array (by design,
 `app/main.py:216-220`).
 """
 from __future__ import annotations
@@ -145,7 +145,7 @@ async def test_the_route_function_returns_validated_models_when_called_directly(
     from app.schemas.social import AdCampaignResponse
 
     await _add(async_db_session, "google_ads", "direct")
-    # V20/L1: the route now also declares the honest total on `X-Polsia-Total`, so the FastAPI
+    # V20/L1: the route now also declares the honest total on `X-Meridian-Total`, so the FastAPI
     # injection it receives in production (`response: Response`) is supplied here too; the return
     # contract this test pins — validated models, in order — is unchanged.
     out = await ads_campaigns(
@@ -176,7 +176,7 @@ async def test_platform_and_status_filters_are_applied(api_client, async_db_sess
     # `components/ads/CampaignFilters.tsx:28` offers exactly the four CHECK values.
     unknown = await api_client.get(URL, headers=HEADERS, params={"status": "womble"})
     assert unknown.status_code == 422, unknown.text[:300]
-    assert unknown.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert unknown.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
     assert unknown.json()["error"]["context"]["status"] == "womble"
 
 
@@ -252,7 +252,7 @@ async def test_an_unreadable_table_is_a_named_503_through_the_refusal_guard(
     assert body["error"]["code"] == E_DB
     assert body["error"]["how_to_fix"] == ERROR_HINTS[E_DB]
     assert body["error"]["context"] == {"query": "ad campaigns"}
-    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert resp.headers.get("X-Meridian-Error-Code") == E_DB
 
 
 # ── the migration head: the route against the DDL production ships ───────────

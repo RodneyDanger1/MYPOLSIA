@@ -220,7 +220,7 @@ async def test_unknown_run_is_the_named_404_envelope(api_client, auth_headers):
     assert body["ok"] is False
     assert body["error"]["code"] == "E_NOT_FOUND"
     assert "999999" in body["error"]["message"]
-    assert resp.headers["X-Polsia-Error-Code"] == "E_NOT_FOUND"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_NOT_FOUND"
 
 
 # ── the frozen list contract is untouched ───────────────────────────────────────────────────

@@ -357,7 +357,7 @@ async def signals_client(install_transport, monkeypatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -375,7 +375,7 @@ async def signals_client(install_transport, monkeypatch):
                         "context": detail.get("context") or {},
                     },
                 },
-                headers={"X-Polsia-Error-Code": detail["code"]},
+                headers={"X-Meridian-Error-Code": detail["code"]},
             )
         return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 

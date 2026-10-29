@@ -46,7 +46,7 @@ REFUSALS, BY NAME
     E_NOT_FOUND         404  no such part, or a part with no stored bytes (NULL/empty blob).
     E_VALIDATION        422  a part larger than `MEDIA_MAX_BYTES` (the documented stream cap).
     Every route raises through `PolsiaError`; the shipped plumbing (`deps.refusal_guard` →
-    `main`'s coded handlers) supplies the envelope and `X-Polsia-Error-Code`.  Nothing here
+    `main`'s coded handlers) supplies the envelope and `X-Meridian-Error-Code`.  Nothing here
     hand-rolls a response.
 
 WHAT IS NEVER LOGGED

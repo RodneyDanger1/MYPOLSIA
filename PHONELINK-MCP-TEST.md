@@ -1,5 +1,5 @@
 # PHONELINK MCP TEST — standalone status + test sheet
-**Label:** PHONELINK MCP TEST · **Status:** WORKS (Hermes-side) · **In the Polsia app:** **LIVE since
+**Label:** PHONELINK MCP TEST · **Status:** WORKS (Hermes-side) · **In the Meridian app:** **LIVE since
 V16** — the read-only integration (items P-01…P-06 of `PHONE-LINK-AMENDMENT.md`) shipped with V16 and
 was proven against the real store on 2026-10-15 (`wave-v16/v-final/live-drill2.txt`: P1
 `store_status='ok'`, unread 57, threads 10; P4 codes 10 rows; P5 export zip members; P6 capabilities).
@@ -18,7 +18,7 @@ stores (no cloud, no third-party service, no phone-app installation):
 - Data sources (read-only SQLite): Phone Link `phone.db` (SMS/MMS/threads/contacts), `calling.db`
   (call history), `notifications.db`, and the Windows toast DB (`wpndatabase.db`) for Phone-Link toasts.
   Store root: `%LOCALAPPDATA%\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\LocalCache\Indexed\<GUID>\System\Database\`
-  (the `<GUID>` is per-machine; Polsia's backend resolves it from the `PHONE_LINK_DB_DIR` env var — see below).
+  (the `<GUID>` is per-machine; Meridian's backend resolves it from the `PHONE_LINK_DB_DIR` env var — see below).
 - Exports write ONLY to `Desktop\PhoneLink-Archive\` (full archive: messages.json/html, calls.csv,
   contacts.json, summary.md; media/ = MMS attachments).
 
@@ -32,17 +32,17 @@ stores (no cloud, no third-party service, no phone-app installation):
 
 ## Honest limits (why, not hand-waving)
 - **READ-ONLY**: every open is `mode=ro`; the store belongs to the Phone Link app. Nothing here (and
-  nothing in the Polsia integration) can modify, delete, or fake a message.
+  nothing in the Meridian integration) can modify, delete, or fake a message.
 - **SENDING IS NOT SUPPORTED** (no local send API exists). The only real send path is pairing Google
   Messages web to this PC and driving the visible browser (`messages.google.com/web`) — offered, not built.
 - Windows-only; the Phone Link app must be running for fresh sync.
-- 2FA codes: fetched only when a flow needs them; never printed into public logs/documents. In Polsia,
+- 2FA codes: fetched only when a flow needs them; never printed into public logs/documents. In Meridian,
   `GET /api/v1/phone/codes` is the one route that is **key-only and audit-logged** (an `activity_log` row
   per call) — it exists for auth flows, not dashboards.
 - Voicemail: missed/unanswered calls are visible; voicemail audio/transcripts are not in the local store
   (carrier-dependent — voicemail-to-text messages would arrive as normal SMS).
 
-## How it enters Polsia (live since V16)
+## How it enters Meridian (live since V16)
 - **P-01** `docker-compose.yml` bind-mounts the store **read-only** into `backend` and `celery_worker`
   at `/phone-link:ro`, host path from env **`PHONE_LINK_DB_DIR`** (blank = the measured Windows default,
   the `YourPhone_…` path above); new `app/services/phone_link_service.py` ports the read logic
@@ -66,5 +66,5 @@ stores (no cloud, no third-party service, no phone-app installation):
   driver (`POST /api/v1/phone/send`, CDP against paired Google Messages web) exists in the V17 tree and
   is off by default; it is not part of the MCP bridge and never fakes a send.
 Full spec: `PHONE-LINK-AMENDMENT.md` in the campaign records (`polsia-work/build/ui-reverse/wave-v15/PLAN/`).
-The Hermes-side MCP remains the way HERMES sessions read the phone; the Polsia side is the app's own
+The Hermes-side MCP remains the way HERMES sessions read the phone; the Meridian side is the app's own
 native read path because backend containers cannot call a Hermes MCP.

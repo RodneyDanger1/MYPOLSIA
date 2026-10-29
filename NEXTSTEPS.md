@@ -1,5 +1,5 @@
 # NEXTSTEPS — everything remaining, in full detail (maintained through wave V27)
-Repo: https://github.com/RodneyDanger1/MYPOLSIA (public). This document is the living map of what is
+Repo: https://github.com/RodneyDanger1/Meridian (public). This document is the living map of what is
 DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for each item.
 
 ## 0. Where things stand (V19 close at base `c2e1261`; V20 open at base `8fa2b38`)
@@ -9,10 +9,10 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
   **45/45** and **17/17**, migration head **0015**. Full detail and the open residuals: §4d.
 - **V1–V25 are landed and committed** (V24 at `51affcf`, V25 at `7faa6dd`); the V23 bullet below is
   retained as its historical record and is superseded by §4b–§4d.
-- **Landed & committed (pushed):** V1–V19 — the full Polsia core: FastAPI + Celery backend, Next.js UI,
+- **Landed & committed (pushed):** V1–V19 — the full Meridian core: FastAPI + Celery backend, Next.js UI,
   agent orchestration, firewalled tool-calling (DeepSeek-first runtime), compliance-gated outreach,
   Stripe billing/webhooks, finance & planning, memory layer, activity feed, ops console, hardened nginx,
-  scheduled backups, phone-in-Polsia (live-proven), capability maps, operator docs. V15 base `3972097`;
+  scheduled backups, phone-in-Meridian (live-proven), capability maps, operator docs. V15 base `3972097`;
   CI-fix rounds `8e9c148` → `a002100` (all three GitHub workflows fully green at `a002100`).
 - **V16/V17/V18 are closed and committed.** V18 closed at `257e20c` with CI fully green: backend
   **2522 passed / 0 failed / 0 errors / 13 skipped**, integration **11/0/0/0**, jest **698/698 ×2**
@@ -40,7 +40,7 @@ DONE, what is IN FLIGHT, and exactly what comes NEXT — with where/when/why for
 
 ## 1. THE PHONE — see `PHONELINK-MCP-TEST.md` (its own standalone file)
 Status: Hermes-side MCP **works today** (10 tools, live-proven; archive export to
-`Desktop\PhoneLink-Archive`). **The Polsia-side integration is LIVE (wave V16, live-proven against the
+`Desktop\PhoneLink-Archive`). **The Meridian-side integration is LIVE (wave V16, live-proven against the
 real store):** read-only mount (`PHONE_LINK_DB_DIR`; container target `/phone-link`), `E_PHONE_UNAVAILABLE`
 refusal by name (503, both body and header), `GET /api/v1/phone/*` routes (codes = key-only +
 audit-logged, values never logged), streaming export ZIP (messages.json + calls.csv + contacts.json),
@@ -216,12 +216,12 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
   `/`, outside `/api/v1`) → real pydantic models publishing `$ref` schemas, with a schema-lint pin
   enforcing `response_model` or a named 12-entry exemption set · L2-07/L2-11 → honest totals: `pricing`
   gains a true `total` beside its page-length `count`, and the 7 `limit`-only lists expose the full
-  filtered count on `X-Polsia-Total` with their bare-array bodies untouched. **Proof:** RED 45
+  filtered count on `X-Meridian-Total` with their bare-array bodies untouched. **Proof:** RED 45
   failures at the base → **81/81** new pins green; the verifier checked 25/25 file hashes and re-ran
   the before/after wire probe: **20/26 responses byte-identical**, the 6 diffs named (2 intended
   `pricing.total`, 3 intended refusals, 1 from the concurrent `phone_read`). **Wire compatibility**
   held — no client-visible shape changed except the two documented additions. Handoff noted: `main.py`
-  `expose_headers` should gain `X-Polsia-Total` for cross-origin readability (no browser consumer
+  `expose_headers` should gain `X-Meridian-Total` for cross-origin readability (no browser consumer
   today).
 - **`phone_read` agent tool (L2) — SETTLED ✅** (`wave-v20/l2-agent-phone-tool/RECEIPT.md`, complete).
   Fourth registry tool (`TOOL_SPECS` + `TOOL_GUIDANCE` + `_RUNNERS`), reusing
@@ -287,7 +287,7 @@ the record of what each lane proved.
   + tests). mypy baseline **4 errors / 2 files** (`phone_send_service.py` ×3, `runs.py` ×1 — the last
   closed by L2 in this wave) → **0 errors / 148 files**; the `|| true` is deleted from `ci.yml` and
   `test_the_mypy_ci_step_is_a_hard_gate` reads the step; **zero** `# type: ignore`, zero overrides,
-  `pyproject.toml` untouched. `expose_headers` now carries `X-Polsia-Total` (wire capture in
+  `pyproject.toml` untouched. `expose_headers` now carries `X-Meridian-Total` (wire capture in
   `raw/cors-header.txt`). Two exact nginx locations — `location = /apidocs` → backend `/docs` with a
   jsDelivr-scoped CSP plus the two other security headers, `location = /openapi.json` → backend — and
   the backend answers 200/200 with 64 paths (`raw/docs-assets.txt`). Debt item: **no open marker
@@ -369,7 +369,7 @@ recorded in `COMPLETENESS.md` §7.4 items 12–17.
   1 WebSocket). Counts: **74 WIRED · 3 API-ONLY-BY-DESIGN · 0 UNWIRED** in the working tree
   (**73 / 3 / 1** at base `4f6a834`); **0 GAP-DEADREAD**; 4/4 registry tools wired; Celery 15 wired +
   2 API-only; ops/dev 1 wired + 4 API-only; **0 frontend calls point at a route the API does not
-  serve**. Open findings (W1 F3 numbering): GAP-1 `X-Polsia-Total` (4/5 closed by L3;
+  serve**. Open findings (W1 F3 numbering): GAP-1 `X-Meridian-Total` (4/5 closed by L3;
   `/dashboard/activity` closed in V23), GAP-2 invoice items (closed by L3, both display and entry),
   GAP-3 the closures are uncommitted, GAP-4 three unimported components, GAP-5 worker counters
   invisible (closed in V23 — §3h).
@@ -398,7 +398,7 @@ recorded in `COMPLETENESS.md` §7.4 items 12–17.
   predates it — parent rebuild needed.
 - **Wiring fixes (L3) — DONE ✅** (`wave-v22/l3-wiring-fix/RECEIPT.md`, final 10:16). **13 rows
   closed**: ads-metrics expander (the one UNWIRED route), invoice line-item display **and** entry,
-  `X-Polsia-Total` for invoices/outreach/support/tasks/ads, memory wording, and W2's D3–D6. Proof:
+  `X-Meridian-Total` for invoices/outreach/support/tasks/ads, memory wording, and W2's D3–D6. Proof:
   **15 suites / 209 tests** + **10 suites / 97 tests** green; `tsc` 0 bytes. Remaining in territory
   (4): the commit itself, `/dashboard/activity` header, the dead-components retire decision, worker
   counters. Out of territory (5): W2 D1, D2, D7, D8, D9 — backend.
@@ -480,7 +480,7 @@ the wave is **unsettled** (no commit; L6's frozen-tree gate **PASSED** — 2,745
   `"2"`/`true`). `/usage` gains a **Worker process** card (four counters or an honest "not published
   yet — no counters rather than fabricated zeros"); the old "worker invisible" copy is corrected.
   The dashboard feed header prints `N events` (`1 event` singular) from the SAME response's
-  `X-Polsia-Total`; absent/non-integer header → no count. Proof: RED frontend **6 failed / 1 passed**
+  `X-Meridian-Total`; absent/non-integer header → no count. Proof: RED frontend **6 failed / 1 passed**
   → `v23-observability` **7/7**; backend **12** + neighbours **110** and **174** green; `u11-ops`
   **12**; FE neighbours **122 / 7 suites**; `tsc` **0 bytes**. Deviation: the header lives in
   `components/dashboard/ActivityFeed.tsx` (the page is a server component), not `dashboard/page.tsx`.

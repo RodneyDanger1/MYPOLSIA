@@ -1,4 +1,4 @@
-# Acceptance Testing Plan — Polsia AI Business Agent
+# Acceptance Testing Plan — Meridian AI Business Agent
 
 ## How to run all tests
 

@@ -390,7 +390,7 @@ async def convert_client(monkeypatch: pytest.MonkeyPatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     app.add_exception_handler(PolsiaError, _polsia_handler)
@@ -454,7 +454,7 @@ async def test_route_refuses_an_unknown_code_with_its_named_status(
     body = resp.json()
     assert body["detail"]["code"] == E_VALIDATION
     assert body["detail"]["how_to_fix"]
-    assert resp.headers["X-Polsia-Error-Code"] == E_VALIDATION
+    assert resp.headers["X-Meridian-Error-Code"] == E_VALIDATION
 
 
 async def test_route_requires_the_api_key(convert_client) -> None:

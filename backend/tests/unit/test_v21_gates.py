@@ -5,7 +5,7 @@ WHAT IS PINNED HERE, AND WHY EACH PIN IS A GATE RATHER THAN A COMMENT
      errors (three in `services/phone_send_service.py`, one in `api/v1/runs.py`) could never
      fail a job.  The three this lane owns are fixed at the source; the reviewed form of that
      fix is pinned by the phone tests at the bottom of this file.
-  2. `X-Polsia-Total` is CORS-exposed.  `api/v1/totals.py` added the header in V20 for a
+  2. `X-Meridian-Total` is CORS-exposed.  `api/v1/totals.py` added the header in V20 for a
      cross-origin browser client, but `expose_headers` never listed it, so JS could not read it
      (only CORS-safelisted headers are readable without it).
   3. `/apidocs` reaches FastAPI's Swagger UI THROUGH nginx.  `location /` sends `/docs` to the
@@ -79,7 +79,7 @@ def test_the_mypy_ci_step_is_a_hard_gate() -> None:
     )
 
 
-# ── 2. X-Polsia-Total is readable cross-origin ───────────────────────────────────────────────
+# ── 2. X-Meridian-Total is readable cross-origin ───────────────────────────────────────────────
 
 
 def _exposed(response) -> set[str]:

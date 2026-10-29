@@ -7,7 +7,7 @@ import { CommandPalette } from "@/components/shell/CommandPalette";
 import { SandboxBanner } from "@/components/system/SandboxBanner";
 
 export const metadata: Metadata = {
-  title: "Polsia — AI Business Agent",
+  title: "Meridian — AI Business Agent",
   description: "Autonomous AI platform running your company 24/7",
 };
 
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
  * App shell.
  *
  * Matches the live product's shape: the light canvas holds a header control row
- * (`Polsia · [🔔] [EDIT] [MENU ▾]`) and the page content below it — there is NO
+ * (`Meridian · [🔔] [EDIT] [MENU ▾]`) and the page content below it — there is NO
  * persistent navigation rail (agent1-live-chrome/DOSSIER.md cross-cutting A;
  * aid3 MATCH-VS-BEAT C2). Navigation lives in the MENU dropdown.
  */

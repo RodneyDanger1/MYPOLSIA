@@ -1,4 +1,4 @@
-"""Polsia agent runtime — the DeepSeek (OpenAI-compatible) chat-completions client.
+"""Meridian agent runtime — the DeepSeek (OpenAI-compatible) chat-completions client.
 
 RD8: the owner's DeepSeek key can serve the agent fleet instead of the Claude CLI. This module
 presents the SAME contract as `claude_cli` so every downstream consumer — base_agent's single
@@ -134,7 +134,7 @@ DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300
 #: set, the default is 8K in non-thinking mode, 64K in thinking mode (128K with `reasoning_effort`
 #: set to `max`)" (api-docs.deepseek.com/api/create-chat-completion, fetched 2026-10-28).  The
 #: shipped 8192 is therefore a CHOICE, not the provider default: because this runtime always sends
-#: `max_tokens`, the 64K thinking-mode default never applies to a Polsia call.  Raising it is a cost
+#: `max_tokens`, the 64K thinking-mode default never applies to a Meridian call.  Raising it is a cost
 #: decision (the worst-case output charge scales linearly), not a code change.
 DEEPSEEK_DEFAULT_MAX_TOKENS = 8192
 CHAT_COMPLETIONS_PATH = "/chat/completions"
@@ -1076,7 +1076,7 @@ def _post_completion(
     try:
         # Same process-wide bound as the CLI path (claude_cli.concurrency_gate): the knob that
         # matters is how many agent runs THIS worker may have in flight. DeepSeek's own limit
-        # (2500) is orders of magnitude above anything a Polsia worker fleet sends, so reusing
+        # (2500) is orders of magnitude above anything a Meridian worker fleet sends, so reusing
         # the existing gate keeps one bound instead of inventing a second, dead setting.
         with claude_cli.concurrency_gate():
             response = http.post(url, json=body, headers=headers, timeout=timeout)

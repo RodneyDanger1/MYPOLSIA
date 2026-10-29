@@ -171,7 +171,7 @@ async def test_export_zip_members_and_counts_match_the_seeded_rows(
     resp = await api_client.get("/api/v1/data/export", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/zip"
-    assert resp.headers["X-Polsia-Row-Count"] == str(
+    assert resp.headers["X-Meridian-Row-Count"] == str(
         sum(seeded[table] for table in data_module.EXPORT_MODELS)
     ), "the export header counts the EXPORTED members, verbatim; the wipe census is wider"
 

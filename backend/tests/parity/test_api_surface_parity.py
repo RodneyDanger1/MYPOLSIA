@@ -68,7 +68,7 @@ EXPECTED_ROUTES: list[tuple[str, tuple[str, ...] | None]] = [
     ("/api/v1/auto-mode", ("GET",)),
     ("/api/v1/auto-mode", ("POST",)),
     ("/api/v1/channels/caps", ("GET",)),                         # wave U3 (H-01): per-channel send counters + day caps (channel_sends_snapshot + RateCaps); OLD surface had no caps route — NEW pin added deliberately with the route; NULL = unknown, never 0
-    # wave V8 (C1): the owner <-> Polsia chat — POST message, POST confirm, GET history. OLD
+    # wave V8 (C1): the owner <-> Meridian chat — POST message, POST confirm, GET history. OLD
     # surface had no chat routes; NEW pins added deliberately (count 41 -> 44). Owner-key.
     ("/api/v1/chat", ("GET",)),
     ("/api/v1/chat", ("POST",)),

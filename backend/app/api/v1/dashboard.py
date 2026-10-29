@@ -283,7 +283,7 @@ async def dashboard_activity(
     """The activity feed (most-recent first) + the honest count that satisfies the cursor.
 
     V20/L1 (card L2-07): the cursor feed serves `limit` and no total, so a full page could not be
-    told from the end of the feed.  `X-Polsia-Total` now declares how many rows match the SAME
+    told from the end of the feed.  `X-Meridian-Total` now declares how many rows match the SAME
     predicate the page used (`id < before` when a cursor is supplied) — a cursor feed's honest
     total is "rows at or below this point", not the whole table.
     """

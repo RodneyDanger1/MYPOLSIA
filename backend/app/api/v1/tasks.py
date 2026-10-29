@@ -147,7 +147,7 @@ async def list_tasks_endpoint(
 ) -> list[TaskResponse]:
     """The task list, newest first.
 
-    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    V20/L1 (card L2-07): `X-Meridian-Total` declares the FULL filtered count (the same `WHERE`,
     without LIMIT/OFFSET) so a full page is distinguishable from a truncated one.  The body stays
     a bare array — every existing client parses it as one.
     """

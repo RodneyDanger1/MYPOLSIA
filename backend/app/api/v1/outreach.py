@@ -56,7 +56,7 @@ async def outreach_prospects(
 
     V20/L1 (cards L2-08 + L2-07): an unknown `status` is the named `E_VALIDATION` 422 every
     sibling status-filtered read answers (it was `200 []` at 8fa2b38), and the full match count
-    rides `X-Polsia-Total` so a full page is distinguishable from a truncated one.  The body
+    rides `X-Meridian-Total` so a full page is distinguishable from a truncated one.  The body
     stays a bare array — every existing client parses it as one.
     """
     with refusal_guard():

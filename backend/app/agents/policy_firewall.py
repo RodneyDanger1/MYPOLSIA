@@ -1,4 +1,4 @@
-"""Polsia runtime — safety layer for an agent that can post, email, spend and merge.
+"""Meridian runtime — safety layer for an agent that can post, email, spend and merge.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/policy_firewall.py`) and wired to
 `app.core.errors`, so a denied action leaves the firewall as a NAMED refusal
@@ -308,7 +308,7 @@ AGENT_CAPABILITIES: dict[str, AgentCapability] = {
         # evidence quoted):
         #   * V25-PLAN "Remaining work" row 2: "**GitHub tools** — repo/branch/commit/PR behind
         #     the firewalled registry + secret store ... The code agent can actually ship code;
-        #     source history like Polsia" — the recipient is named by the plan: the CODE agent.
+        #     source history like Meridian" — the recipient is named by the plan: the CODE agent.
         #   * This is the only agent whose ROLE is "Ship features" / "implement small,
         #     verifiable changes", the only one that already holds the `github` channel and the
         #     CLI `Bash(git status|diff|log|branch|add|commit *)` allowlist (and still denies
@@ -727,13 +727,13 @@ class RateCaps:
     per_channel_day: dict[str, int] = field(default_factory=lambda: {
         # D5 (owner decision, V8 — code-gap §10): the email numbers stay the CLONE's — 50/day
         # (+ 15/h below) — deliberately NOT the live product's published two-tier model ("one
-        # email a day on the shared Polsia sending domain, five a day once you connect and
+        # email a day on the shared Meridian sending domain, five a day once you connect and
         # verify your own custom sending domain", dossier §8 line 99).  The tier needs a source
         # of truth for "own domain verified" that this build does not have (code-gap §10 item 1
         # is the queued resolver); shipping invented tier numbers would be policy theatre.
         # D6 (owner decision, V8 — code-gap §12): X/Twitter stays FLAT 12/day (+ 3/h below).
         # The live product nuances two things this flat number cannot express: the first "free
-        # launch tweet" is exempt from the daily limit, and posting from Polsia's SHARED
+        # launch tweet" is exempt from the daily limit, and posting from Meridian's SHARED
         # account gets the smaller allowance while connecting your own X account raises it
         # (dossier §8 line 98).  The live numbers themselves are NOT FINDABLE — only the shape
         # is — so a split needs owner-decided numbers (code-gap §12); until then one documented

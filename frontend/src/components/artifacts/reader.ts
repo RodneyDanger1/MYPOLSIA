@@ -195,13 +195,13 @@ export async function fetchArtifactContent(runId: string, path: string): Promise
     { method: "GET", headers: API_KEY ? { "X-API-Key": API_KEY } : {} },
   );
   if (!res.ok) throw await refusalFromResponse(res);
-  const headerBytes = res.headers.get("X-Polsia-Artifact-Bytes");
+  const headerBytes = res.headers.get("X-Meridian-Artifact-Bytes");
   const parsedBytes = headerBytes === null ? Number.NaN : Number(headerBytes);
   return {
     text: await res.text(),
-    sha256: res.headers.get("X-Polsia-Artifact-Sha256") ?? "",
+    sha256: res.headers.get("X-Meridian-Artifact-Sha256") ?? "",
     bytes: Number.isFinite(parsedBytes) ? parsedBytes : null,
-    modified: res.headers.get("X-Polsia-Artifact-Modified"),
+    modified: res.headers.get("X-Meridian-Artifact-Modified"),
   };
 }
 

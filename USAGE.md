@@ -1,4 +1,4 @@
-# MYPOLSIA — the Operator's Guide (USAGE.md)
+# Meridian — the Operator's Guide (USAGE.md)
 
 The complete "what it is / how to run it / how to work it" guide. Setup lives in
 [DEPENDENCIES.md](DEPENDENCIES.md); the skimmable tour is [README.md](README.md); the living
@@ -7,9 +7,9 @@ what you do day to day, and where every feature lives.
 
 ---
 
-## 1. What MYPOLSIA is
+## 1. What Meridian is
 
-MYPOLSIA is an autonomous **business-ops platform**: a FastAPI + Celery backend and a Next.js 14
+Meridian is an autonomous **business-ops platform**: a FastAPI + Celery backend and a Next.js 14
 dashboard behind an nginx reverse proxy, with an agent fleet that plans, drafts, and (when you let
 it) executes business work — social posting, outreach email, ads, support, finance, invoices, code
 generation — under a policy firewall, a sandbox, cost budgets, and an approval flow.
@@ -92,8 +92,8 @@ The short chain:
 
 ```bash
 # 1. Windows 10/11 + WSL2 + Docker Desktop + GNU Make (DEPENDENCIES.md §1)
-git clone https://github.com/RodneyDanger1/MYPOLSIA.git
-cd MYPOLSIA
+git clone https://github.com/RodneyDanger1/Meridian.git
+cd Meridian
 cp .env.example .env        # edit: API_KEY (change it), SANDBOX_MODE=true stays until you're ready
 export NEXT_PUBLIC_API_KEY=dev-key   # MUST match API_KEY — the frontend key is inlined at BUILD time
 docker compose up -d        # backend, worker, beat, postgres, redis, nginx, backup sidecar
@@ -143,7 +143,7 @@ no-Docker dev path (`make dev-backend` / `make dev-frontend` / `make dev-e2e`).
 ## 4. How to work it, day to day
 
 ### 4.1 Dashboard (`/dashboard`) — your morning start
-Left rail: Polsia status card + **Auto Mode** panel + business mini-panel. Middle: Tasks preview +
+Left rail: Meridian status card + **Auto Mode** panel + business mini-panel. Middle: Tasks preview +
 **Daily Report** (the morning plan and evening summary filed by the cycles; the Documents overlay
 expands it). Right: Social / Outreach / Ads widgets + the **send-caps counter**. Then the live
 **ActivityFeed** (WebSocket) and the **ChatRail**. Widgets compose through the V12 editor — show/
@@ -186,7 +186,7 @@ same branch **fails closed** to a hard deny (`E_POLICY_DENIED`). Tier enforcemen
 The dashboard feed is live (`/ws/activity`; the nginx access log deliberately does not log the
 socket URL). Every meaningful runtime fact lands here: runs, task transitions, approval waits,
 requeues, backups, phone events (V16). **V23:** the feed header prints the server's own total —
-`N events` (`1 event` singular) — read from `X-Polsia-Total` on the same response as the rows; when
+`N events` (`1 event` singular) — read from `X-Meridian-Total` on the same response as the rows; when
 the header is absent the header shows **no count at all**, never the number of rows on hand. The
 publish breaker (a Redis outage skips-and-counts instead of stalling) is visible on `/usage`
 (§4.12); its 15-minute worker-side healthcheck publishes the worker's own counters there and logs a
@@ -237,7 +237,7 @@ fail-closed.
   confirmed provider delivery** (never optimistically). **Line items (V22):** the create form accepts
   an optional itemised breakdown (repeating description / qty / unit price; a blank row is omitted, a
   touched row is validated before POST), and every row shows a read-only `Items (N)` expander. Lists
-  that the API caps now state the declared total from `X-Polsia-Total` (invoices, outreach, support,
+  that the API caps now state the declared total from `X-Meridian-Total` (invoices, outreach, support,
   tasks, ads) instead of presenting the page as the whole table. The dunning ladder self-gates hourly on the
   company-local hour; each step fires at most once (activity-row ledger), so late/re-delivered ticks
   are harmless. Email gate: an invoice email is approval-gated when the amount asked reaches the
@@ -246,7 +246,7 @@ fail-closed.
   silent unverified accept.
 
 ### 4.12 Usage (`/usage`) — runs ledger + ops panel
-The agent-runs ledger (filters + `GET /runs/export?format=csv`, whose `X-Polsia-Row-Count` is the
+The agent-runs ledger (filters + `GET /runs/export?format=csv`, whose `X-Meridian-Row-Count` is the
 full filtered count by contract), plus the **OpsPanel**: agent-quality reads, the activity publish
 breaker stats, and a reset. Process boundary, stated not hidden: the API-process breaker counters
 are per-process — the panel reports the API process. **Worker process (V23):** the 15-minute
@@ -316,7 +316,7 @@ export/wipe: see §4.15. Full detail: README "Volumes & Backup".
 
 ---
 
-## 5. Phone in Polsia — **live (V16)**; codes panel + host send bridge (**V19**); agent `phone_read` (**V20, settled**)
+## 5. Phone in Meridian — **live (V16)**; codes panel + host send bridge (**V19**); agent `phone_read` (**V20, settled**)
 
 Status: **live since V16** — proven against the real Phone Link store on 2026-10-15
 (`wave-v16/v-final/live-drill2.txt`: P1 `store_status='ok'`, unread 57, threads 10 · P4 codes

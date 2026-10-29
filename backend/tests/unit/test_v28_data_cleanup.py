@@ -486,7 +486,7 @@ def test_apply_skips_a_tagged_parent_that_owns_an_untagged_child(db_path) -> Non
 
 
 def test_an_unproven_database_is_refused_and_nothing_is_created(tmp_path) -> None:
-    """An empty file is not a Polsia database: exit 2, and the script writes nothing to it."""
+    """An empty file is not a Meridian database: exit 2, and the script writes nothing to it."""
     db = tmp_path / "not_polsia.sqlite"
     sqlite3.connect(db.as_posix()).close()
 

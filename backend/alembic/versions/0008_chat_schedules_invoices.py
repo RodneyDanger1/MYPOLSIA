@@ -8,7 +8,7 @@ Wave V8 ("Chat & Automation") freezes ONE revision 0008 (`WAVE-PLAN.md`, "Frozen
 and "Frozen interface — SCHEDULES"; plan section 7 C2 lists the contents).  The names below are the
 frozen interfaces the other lanes import — never renamed here:
 
-**A. NEW table `chat_messages`** (C1).  The owner <-> Polsia conversation; the class is
+**A. NEW table `chat_messages`** (C1).  The owner <-> Meridian conversation; the class is
 `app.models.chat.ChatMessage` and `create_all` describes the same table.  `role` is a named CHECK
 (`ck_chat_messages_role`) over ('owner','polsia'); `intent` is the parsed exchange JSON (the pending
 create-task proposal rides the owner row's intent until /chat/confirm consumes it — C1's shape);

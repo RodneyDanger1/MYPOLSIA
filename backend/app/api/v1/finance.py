@@ -284,7 +284,7 @@ async def stripe_webhook(
     secret = settings.stripe_webhook_secret or ""
     if not secret:
         # L3-04 (V17): this used to be an UNCODED `HTTPException(500, detail="…")` — a plain
-        # string detail, so neither the named envelope nor `X-Polsia-Error-Code` reached Stripe
+        # string detail, so neither the named envelope nor `X-Meridian-Error-Code` reached Stripe
         # (a public route: every delivery was an unexplained 500 and the operator had no code to
         # grep).  The same missing-configuration condition elsewhere in the API is `E_CONFIG`
         # (`api/v1/data.py`: APPROVAL_SECRET unset -> 503 + how_to_fix); this route now answers

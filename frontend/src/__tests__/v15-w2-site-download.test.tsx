@@ -61,10 +61,10 @@ afterEach(() => {
 });
 
 const REPORTED = {
-  package_dir: "C:\\Polsia\\backend\\data\\exports\\site-polsia",
+  package_dir: "C:\\Meridian\\backend\\data\\exports\\site-polsia",
   files: [
-    "C:\\Polsia\\backend\\data\\exports\\site-polsia\\index.html",
-    "C:\\Polsia\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
+    "C:\\Meridian\\backend\\data\\exports\\site-polsia\\index.html",
+    "C:\\Meridian\\backend\\data\\exports\\site-polsia\\HOSTING-README.md",
   ],
   slug: "polsia",
 };

@@ -120,7 +120,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
     """The vision router mounted in a MINIMAL app (main.py's include list is not this lane's file).
 
     The two exception handlers mirror the shipped refusal bridge so assertions read the REAL wire
-    envelope (`{ok:false, error:{code,message,how_to_fix,context}}` + `X-Polsia-Error-Code`)
+    envelope (`{ok:false, error:{code,message,how_to_fix,context}}` + `X-Meridian-Error-Code`)
     instead of FastAPI's uncoded `{"detail": ...}` — the same bridge `test_v26_vision.py` builds,
     from the same canonical helpers (`errors.to_http_detail` / `errors.http_status_for`).
     """
@@ -142,7 +142,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
         return JSONResponse(
             status_code=http_status_for(exc.code),
             content=to_http_detail(exc),
-            headers={"X-Polsia-Error-Code": exc.code},
+            headers={"X-Meridian-Error-Code": exc.code},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -159,7 +159,7 @@ async def vision_client(async_db_session, attachments_root, monkeypatch):
                 },
             }
             headers = dict(exc.headers or {})
-            headers.setdefault("X-Polsia-Error-Code", detail["code"])
+            headers.setdefault("X-Meridian-Error-Code", detail["code"])
             return JSONResponse(status_code=exc.status_code, content=envelope, headers=headers)
         return JSONResponse(
             status_code=exc.status_code,
@@ -774,7 +774,7 @@ async def test_history_of_an_unknown_task_is_named_not_found(vision_client, conf
     error = response.json()["error"]
     assert error["code"] == "E_NOT_FOUND"
     assert error["context"]["task_id"] == 424242
-    assert response.headers.get("X-Polsia-Error-Code") == "E_NOT_FOUND"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_NOT_FOUND"
 
 
 @pytest.mark.asyncio
@@ -789,7 +789,7 @@ async def test_history_without_a_positive_integer_task_id_is_named_validation(
 
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "E_VALIDATION"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
 
 @pytest.mark.asyncio

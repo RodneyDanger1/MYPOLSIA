@@ -213,7 +213,7 @@ describe("Documents overlay (V8b/L3)", () => {
 // -------------------------------------------------------------------------------------------
 
 const BASE_CONFIG: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,

@@ -108,7 +108,7 @@ def test_d2_a_repeated_refusal_is_deterministic_and_never_serves_on_a_retry(tmp_
     for _ in range(3):
         resp = client.get(f"/sites/{SLUG}/.fixture.json")
         assert resp.status_code == 404
-        assert resp.headers.get("X-Polsia-Error-Code") == "E_NOT_FOUND"
+        assert resp.headers.get("X-Meridian-Error-Code") == "E_NOT_FOUND"
         assert MARKER_NOTE not in resp.text, "no refusal may leak the marker body"
         bodies.append(resp.json())
 

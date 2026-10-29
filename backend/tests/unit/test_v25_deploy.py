@@ -487,7 +487,7 @@ async def test_post_deploy_without_credentials_is_503_e_config(
     resp = await api_client.post("/api/v1/sites/landing-page/deploy", headers=auth_headers)
     assert resp.status_code == 503, resp.text
     assert resp.json()["error"]["code"] == E_CONFIG
-    assert resp.headers["X-Polsia-Error-Code"] == E_CONFIG
+    assert resp.headers["X-Meridian-Error-Code"] == E_CONFIG
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,7 @@ from app.core.timeutil import now_utc
 DOH_URL = "https://cloudflare-dns.com/dns-query"
 WAYBACK_URL = "https://archive.org/wayback/available"
 #: The page the badge/route asks for; a real contact string is kinder to the archive and to DoH.
-USER_AGENT = "MYPOLSIA/1.0 (+site and link health check; one request per hour per target)"
+USER_AGENT = "Meridian/1.0 (+site and link health check; one request per hour per target)"
 
 #: The named refusal of `resolve_egress` / `pinned_http_get` (CONTRACTS §4.15, frozen).
 #: Registered in `app/core/errors.py` (one code, one home) — a bare IP or a name that resolves

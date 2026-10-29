@@ -108,9 +108,9 @@ function contentResponse(text: string, sha256: string, bytes: number): Response 
     status: 200,
     text: async () => text,
     headers: new Headers({
-      "X-Polsia-Artifact-Sha256": sha256,
-      "X-Polsia-Artifact-Bytes": String(bytes),
-      "X-Polsia-Artifact-Modified": "2026-10-28T21:12:08Z",
+      "X-Meridian-Artifact-Sha256": sha256,
+      "X-Meridian-Artifact-Bytes": String(bytes),
+      "X-Meridian-Artifact-Modified": "2026-10-28T21:12:08Z",
     }),
   } as unknown as Response;
 }

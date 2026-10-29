@@ -10,7 +10,7 @@ TWO routes, both thin:
 
 The describe body is parsed HERE from the raw request bytes (not by FastAPI's body model) and
 the history `task_id` from the raw query string, so a malformed request is the repo's NAMED
-`E_VALIDATION` refusal in the standard envelope, with `X-Polsia-Error-Code`, instead of
+`E_VALIDATION` refusal in the standard envelope, with `X-Meridian-Error-Code`, instead of
 FastAPI's uncoded `{"detail": [...]}` 422.  The declared schemas still reach OpenAPI through
 `app.schemas.vision`.
 

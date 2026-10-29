@@ -5,7 +5,7 @@ Three models, all deliberately small:
 * `VisionDescribeRequest` — exactly ONE of `attachment_id` / `task_id`.  The ROUTE parses the
   raw JSON through `parse_describe_body` rather than letting FastAPI coerce the body, because
   the product contract is that a malformed body is the repo's NAMED refusal (`E_VALIDATION`
-  envelope + `X-Polsia-Error-Code`), not FastAPI's uncoded `{"detail": [...]}` 422.  The model
+  envelope + `X-Meridian-Error-Code`), not FastAPI's uncoded `{"detail": [...]}` 422.  The model
   documents the shape in OpenAPI and is the single validation site (the service trusts what
   this module produces).
 * `VisionDescribeResponse` — `{description, model, tokens, cached}`.  `tokens` is `int | None`:

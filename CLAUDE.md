@@ -1,8 +1,8 @@
-# CLAUDE.md — Polsia AI Business Agent
+# CLAUDE.md — Meridian AI Business Agent
 
 ## What this project is
 
-Polsia is a self-hosted, autonomous AI platform that runs a company's operations 24/7. Nine specialized agents (Orchestrator, Business Planning, Competitor Research, Social Media, Ads, Email Outreach, Customer Support, Code Generation, Finance) run on a Celery + Redis task queue with a FastAPI backend and Next.js dashboard. The agent runtime is DeepSeek-first (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored in `backend/data/deepseek_api_key.json`) with the Claude Code CLI as a fallback.
+Meridian is a self-hosted, autonomous AI platform that runs a company's operations 24/7. Nine specialized agents (Orchestrator, Business Planning, Competitor Research, Social Media, Ads, Email Outreach, Customer Support, Code Generation, Finance) run on a Celery + Redis task queue with a FastAPI backend and Next.js dashboard. The agent runtime is DeepSeek-first (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored in `backend/data/deepseek_api_key.json`) with the Claude Code CLI as a fallback.
 
 ## Running tests
 

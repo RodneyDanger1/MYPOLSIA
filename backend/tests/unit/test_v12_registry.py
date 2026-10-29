@@ -14,7 +14,7 @@ deliberate; their own behaviour is pinned by test_v24_search_tool.py / test_v24_
 V25/L2 re-pin (deliberate): the vocabulary grows from eight to TWELVE — the source-control
 quartet `github_repo` / `github_branch` / `github_commit` / `github_pr` joins (V25-PLAN row 2:
 "GitHub tools — repo/branch/commit/PR behind the firewalled registry + secret store ... The
-code agent can actually ship code; source history like Polsia").  Their behaviour is pinned by
+code agent can actually ship code; source history like Meridian").  Their behaviour is pinned by
 test_v25_github_tools.py; this pin only records that the registry's NAME SET changed on purpose.
 """
 from __future__ import annotations

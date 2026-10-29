@@ -83,7 +83,7 @@ test.describe("Chat rail", () => {
         )
         .toBeGreaterThan(postsBefore);
 
-      // Our message AND a Polsia reply are in the transcript — the optimistic rows land when the
+      // Our message AND a Meridian reply are in the transcript — the optimistic rows land when the
       // 201 does, so both presence checks POLL (same race as above), and no failure alert rendered.
       await expect
         .poll(async () => rail.getByText(probe, { exact: true }).count(), { timeout: 10_000 })

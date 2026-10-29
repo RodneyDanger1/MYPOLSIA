@@ -173,7 +173,7 @@ async def test_each_illegal_cell_is_refused_with_the_accepted_set_and_writes_not
     assert resp.status_code == 409, (
         f"{from_status}->{to_status} must be refused, not written: {resp.text}"
     )
-    assert resp.headers.get("X-Polsia-Error-Code") == E_TASK_NOT_RUNNABLE
+    assert resp.headers.get("X-Meridian-Error-Code") == E_TASK_NOT_RUNNABLE
     error = resp.json()["error"]
     assert error["code"] == E_TASK_NOT_RUNNABLE
     assert error["how_to_fix"]

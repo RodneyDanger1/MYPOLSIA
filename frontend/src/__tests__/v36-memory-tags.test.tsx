@@ -8,7 +8,7 @@
  *
  * THE FIX UNDER TEST: an explicit, click-only "Recent entries" read of the LIST branch (the page's
  * read-on-request law is unchanged) renders each row's tags — up to 6 chips plus "+N more" with the
- * full list in the title — and states the branch's own totals provenance (X-Polsia-Total); a search
+ * full list in the title — and states the branch's own totals provenance (X-Meridian-Total); a search
  * hit that carries no tags claims nothing about them.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -36,7 +36,7 @@ type HeadersLike = { get: (name: string) => string | null };
 function serveBrowse(rows: Memory[], total: string | null) {
   mockGet.mockImplementation((path: string, init?: { onHeaders?: (headers: HeadersLike) => void }) => {
     if (path === "/memory?limit=20") {
-      init?.onHeaders?.({ get: (name: string) => (name === "X-Polsia-Total" ? total : null) });
+      init?.onHeaders?.({ get: (name: string) => (name === "X-Meridian-Total" ? total : null) });
       return Promise.resolve(rows);
     }
     return Promise.reject(new Error(`unexpected GET ${path}`));

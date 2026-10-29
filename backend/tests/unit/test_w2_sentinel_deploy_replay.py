@@ -360,7 +360,7 @@ async def test_http_deploy_with_an_already_spent_token_is_403_e_policy_denied(
         headers=auth_headers,
     )
     assert resp.status_code == 403, resp.text
-    assert resp.headers["X-Polsia-Error-Code"] == E_POLICY_DENIED
+    assert resp.headers["X-Meridian-Error-Code"] == E_POLICY_DENIED
     error = resp.json()["error"]
     assert error["context"]["reason"] == "already_used"
     assert error["context"]["policy_code"] == "POLSIA-E121"

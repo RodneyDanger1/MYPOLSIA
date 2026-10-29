@@ -147,7 +147,7 @@ async def suppression_status_at_send_time(engine: Any, address: str) -> bool:
 #: The one sourced AI-assistance disclosure line (plan Appendix A4, self-checked 2026-10-14):
 #: EU AI Act Art. 50 has been applicable since 2026-08-02 (Cooley, fetched) — AI-generated text
 #: must be disclosed and the duty follows the output wherever it is used in the EU; fines run to
-#: €15M or 3% of worldwide turnover.  Polsia's outreach is AI-drafted, so every footer carries
+#: €15M or 3% of worldwide turnover.  Meridian's outreach is AI-drafted, so every footer carries
 #: this line BY DEFAULT; a caller turns it off only where provably no EU nexus exists.  ONE
 #: constant on purpose — every footer in the tree reads the same bytes.
 AI_ASSISTANCE_DISCLOSURE: Final[str] = (

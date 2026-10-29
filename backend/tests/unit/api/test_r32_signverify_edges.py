@@ -176,7 +176,7 @@ async def test_daily_report_route_refuses_with_a_named_db_error(
         "/api/v1/dashboard/reports/daily?report_date=2026-01-02", headers=auth_headers
     )
     assert resp.status_code == 503, resp.text
-    assert resp.headers.get("X-Polsia-Error-Code") == E_DB
+    assert resp.headers.get("X-Meridian-Error-Code") == E_DB
     body = resp.json()
     assert body.get("ok") is False, body
     error = body["error"]

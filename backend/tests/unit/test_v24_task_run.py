@@ -95,7 +95,7 @@ async def test_an_unknown_task_is_the_named_404_and_nothing_is_dispatched(
     assert body["ok"] is False
     assert body["error"]["code"] == "E_NOT_FOUND"
     assert body["error"]["context"]["task_id"] == 999999
-    assert response.headers.get("X-Polsia-Error-Code") == "E_NOT_FOUND"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_NOT_FOUND"
     assert calls == [], "a missing row must never reach the broker"
 
 
@@ -122,7 +122,7 @@ async def test_a_non_pending_task_is_refused_by_name_with_its_current_status(
         "the refusal must carry the CURRENT status so the caller can see why"
     )
     assert status in body["error"]["message"]
-    assert response.headers.get("X-Polsia-Error-Code") == "E_TASK_NOT_RUNNABLE"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_TASK_NOT_RUNNABLE"
     assert calls == [], "a refused row must never reach the broker"
 
     row = await _reload(async_db_session, task.id)
@@ -142,7 +142,7 @@ async def test_without_a_key_the_route_is_the_named_401_and_nothing_is_dispatche
     assert response.status_code == 401, response.text
     body = response.json()
     assert body["ok"] is False and body["error"]["code"] == "E_AUTH"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_AUTH"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_AUTH"
     assert calls == []
 
     row = await _reload(async_db_session, task.id)
@@ -175,7 +175,7 @@ async def test_a_broker_refusal_is_a_named_503_and_leaves_the_row_pending(
     assert body["error"]["how_to_fix"], "a named refusal must say how to fix it"
     assert body["error"]["context"]["task_id"] == task.id
     assert body["error"]["context"]["status"] == "pending"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_TASK_NOT_RUNNABLE"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_TASK_NOT_RUNNABLE"
 
     # the request-teardown rollback a real `get_db` runs on the raising path
     await async_db_session.rollback()

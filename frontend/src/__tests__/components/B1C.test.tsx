@@ -22,7 +22,7 @@
  *   - `backend/app/schemas/task.py:121-182` — `plan`, `approval_required: bool`,
  *     `approval_fingerprints: list[str]`;
  *   - `backend/celery_app/tasks/daily_cycle.py:700-705` — `depends_on_cycle = [titles…]`;
- *   - `backend/app/api/v1/tasks.py:131-158` — `GET /tasks` declares `X-Polsia-Total`;
+ *   - `backend/app/api/v1/tasks.py:131-158` — `GET /tasks` declares `X-Meridian-Total`;
  *   - `COMPLETENESS.md:335` — §7.2 item 7 is the retire-vs-keep record the dead headers cite.
  */
 import { act, render, screen } from "@testing-library/react";
@@ -308,7 +308,7 @@ describe("A5-05 — the waiting count is the declared total, not the page", () =
 
   it("prints '<shown> of <total> waiting' when the declared total exceeds the page", async () => {
     mockGet.mockImplementation((_path: string, options?: { onHeaders?: (headers: Headers) => void }) => {
-      options?.onHeaders?.(new Headers({ "X-Polsia-Total": "62" }));
+      options?.onHeaders?.(new Headers({ "X-Meridian-Total": "62" }));
       return Promise.resolve(pageOf(50));
     });
 
@@ -334,7 +334,7 @@ describe("A5-05 — the waiting count is the declared total, not the page", () =
 
   it("still prints the total alone when the page IS the whole queue", async () => {
     mockGet.mockImplementation((_path: string, options?: { onHeaders?: (headers: Headers) => void }) => {
-      options?.onHeaders?.(new Headers({ "X-Polsia-Total": "2" }));
+      options?.onHeaders?.(new Headers({ "X-Meridian-Total": "2" }));
       return Promise.resolve(pageOf(2));
     });
 

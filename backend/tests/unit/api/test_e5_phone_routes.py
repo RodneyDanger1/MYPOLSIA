@@ -7,7 +7,7 @@ Every route is pinned for the four properties H-P1 declares:
     * the envelope — `{"ok": true, "data": {...}}` on success, the named refusal shape on failure;
     * the EXACT `data` keys the frontend lane codes against (a renamed key must fail here);
     * coded refusals: an absent store answers 503 `E_PHONE_UNAVAILABLE` with the code in the body
-      AND in `X-Polsia-Error-Code` — never a 200 with an empty list.
+      AND in `X-Meridian-Error-Code` — never a 200 with an empty list.
 
 The codes route has two extra pins the amendment demands: it is key-only, and EVERY call writes an
 `activity_log` audit row — while the codes themselves never reach that row.
@@ -94,7 +94,7 @@ async def test_absent_store_is_a_named_503_on_every_reading_route(
     assert set(body) == {"ok", "error"}
     assert body["ok"] is False
     assert body["error"]["code"] == E_PHONE_UNAVAILABLE
-    assert resp.headers.get("X-Polsia-Error-Code") == E_PHONE_UNAVAILABLE
+    assert resp.headers.get("X-Meridian-Error-Code") == E_PHONE_UNAVAILABLE
 
 
 async def test_summary_absent_store_is_a_named_503(api_client, auth_headers, no_phone_store):

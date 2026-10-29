@@ -2,7 +2,7 @@
 
 WHY THIS MODULE EXISTS
     The Hermes-side bridge (`scripts/phone_link.py` + the `phone-link` MCP server) already reads
-    this store, but Polsia's agents run in the backend/worker containers and CANNOT call a Hermes
+    this store, but Meridian's agents run in the backend/worker containers and CANNOT call a Hermes
     MCP.  Without a native read path the orchestrator could never see the phone.  This module is
     that path: the same measured read logic, inside the product, under the product's refusal
     contract.

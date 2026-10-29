@@ -31,7 +31,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------------------------
 
 const wireConfig: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,
@@ -380,9 +380,9 @@ describe("settings — honest load/save states (Q-24, ACC 4/5)", () => {
   it("renders an absent-key payload as empty boxes, never the literal word undefined", async () => {
     // The wire type says `| null`; the runtime decides. A payload missing nine keys must not paint
     // "undefined" into nine boxes (and the one key it does carry must render as itself).
-    await renderSettings({ name: "Polsia" } as unknown as SettingsConfig);
+    await renderSettings({ name: "Meridian" } as unknown as SettingsConfig);
 
-    expect((screen.getByLabelText("Company Name") as HTMLInputElement).value).toBe("Polsia");
+    expect((screen.getByLabelText("Company Name") as HTMLInputElement).value).toBe("Meridian");
     for (const label of COMPANY_LABELS.filter((entry) => entry !== "Company Name")) {
       expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("");
     }

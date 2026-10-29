@@ -9,7 +9,7 @@ The pin proves, against the REAL route function and the REAL ASGI app:
     (built in the system scratch dir under a named prefix — the fix's whole point);
   * the served archive is member-identical to the pre-fix contract: MANIFEST.json with the
     same row counts + the same 8 members (counts from the SAME seeded rows);
-  * `X-Polsia-Row-Count` + `Content-Disposition` are unchanged;
+  * `X-Meridian-Row-Count` + `Content-Disposition` are unchanged;
   * the temp file is REMOVED after the response completes (the background cleanup), so a
     server that keeps exporting cannot leak scratch files;
   * the HTTP leg still serves the same bytes (ZipFile-readable) — the regression face.
@@ -67,7 +67,7 @@ async def test_export_route_returns_a_file_backed_response_and_cleans_up(async_d
     assert path.exists(), "the FileResponse path must be a REAL file while the response is live"
     assert path.name.startswith("polsia-data-export-") and path.suffix == ".zip", path.name
     assert resp.media_type == "application/zip"
-    assert resp.headers["X-Polsia-Row-Count"] == str(sum(counts.values()))
+    assert resp.headers["X-Meridian-Row-Count"] == str(sum(counts.values()))
     assert "attachment; filename=" in resp.headers["Content-Disposition"]
 
     # The file on disk IS the contracted archive: MANIFEST + 8 members, counts from these rows.
@@ -97,7 +97,7 @@ async def test_export_http_leg_still_serves_the_same_archive(api_client, auth_he
     resp = await api_client.get("/api/v1/data/export", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/zip"
-    assert resp.headers["X-Polsia-Row-Count"] == str(sum(counts.values()))
+    assert resp.headers["X-Meridian-Row-Count"] == str(sum(counts.values()))
     assert "attachment; filename=" in resp.headers["content-disposition"]
 
     zf = zipfile.ZipFile(io.BytesIO(resp.content))

@@ -7,7 +7,7 @@ fails with `ModuleNotFoundError`; the fix is the implementation, not the test.
 FROZEN INTERFACE (wave-v17/V17-PLAN.md)
     POST /api/v1/phone/send   key-auth   {"to": "<thread_id:int | E.164 digits>", "body": "1..640"}
     success -> 200 {"ok": true, "data": {sent_at, to_masked, driver: "cdp-google-messages"}}
-    refusals BY NAME (+ `X-Polsia-Error-Code`):
+    refusals BY NAME (+ `X-Meridian-Error-Code`):
         403 E_SANDBOX_BLOCKED        (settings.sandbox_mode — the shipped default)
         409 E_PHONE_SEND_UNPAIRED    (no paired Google Messages web session)
         503 E_PHONE_UNAVAILABLE      (driver missing / CDP unreachable / timeout / unparsable output)
@@ -198,7 +198,7 @@ async def test_sandbox_blocks_before_any_driver_work(api_client, auth_headers, m
     assert set(body) == {"ok", "error"}
     assert body["ok"] is False
     assert body["error"]["code"] == E_SANDBOX_BLOCKED
-    assert resp.headers.get("X-Polsia-Error-Code") == E_SANDBOX_BLOCKED
+    assert resp.headers.get("X-Meridian-Error-Code") == E_SANDBOX_BLOCKED
     assert "SANDBOX_MODE" in body["error"]["how_to_fix"]
 
 
@@ -242,7 +242,7 @@ async def test_missing_driver_is_a_named_503_without_spawning(
 
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == E_PHONE_UNAVAILABLE
-    assert resp.headers.get("X-Polsia-Error-Code") == E_PHONE_UNAVAILABLE
+    assert resp.headers.get("X-Meridian-Error-Code") == E_PHONE_UNAVAILABLE
     assert "driver is missing" in resp.json()["error"]["message"]
 
 
@@ -256,7 +256,7 @@ async def test_unpaired_session_is_409_named(
     body = resp.json()
     assert body["ok"] is False
     assert body["error"]["code"] == "E_PHONE_SEND_UNPAIRED"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_PHONE_SEND_UNPAIRED"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_PHONE_SEND_UNPAIRED"
     assert body["error"]["how_to_fix"], "a refusal must say how to fix it"
     rows = await _audit_rows(async_db_session)
     assert len(rows) == 1 and "E_PHONE_SEND_UNPAIRED" in rows[0].summary
@@ -394,7 +394,7 @@ async def test_invalid_target_is_a_named_422(api_client, auth_headers, live_gate
 
     assert resp.status_code == 422, f"accepted a malformed target: {payload['to']!r}"
     assert resp.json()["error"]["code"] == "E_VALIDATION"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
 
 @pytest.mark.parametrize("body", BAD_BODIES)

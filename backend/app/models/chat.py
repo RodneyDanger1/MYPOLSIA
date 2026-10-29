@@ -1,4 +1,4 @@
-"""chat_messages — the owner <-> Polsia conversation (wave V8, migration 0008).
+"""chat_messages — the owner <-> Meridian conversation (wave V8, migration 0008).
 
 Frozen interface (WAVE-PLAN.md, "Frozen interface — CHAT"): the table `chat_messages`, the class
 `ChatMessage` importable from `app.models.chat`, the columns named exactly below.  The C1 lane

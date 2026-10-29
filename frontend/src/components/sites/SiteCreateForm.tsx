@@ -25,7 +25,7 @@ import {
  *     DEFAULT (`classic`) is omitted from the request so the server's own default applies; choosing
  *     another preset sends its id verbatim.
  *   * the custom-domain field — a bare hostname only, validated here with the same structural rules
- *     the backend enforces, and labelled "recorded, not verified": Polsia stores the name, it never
+ *     the backend enforces, and labelled "recorded, not verified": Meridian stores the name, it never
  *     resolves DNS and never claims the domain is live.
  *
  * Blank boxes are OMITTED from the body rather than sent as `""`: the backend's documented rule is
@@ -143,7 +143,7 @@ export function SiteCreateForm({
           aria-invalid={domainError !== null}
         />
         <p id="sites-domain-hint" className="text-xs text-ink-muted">
-          Recorded, not verified — Polsia stores the hostname; it does not check DNS or point the
+          Recorded, not verified — Meridian stores the hostname; it does not check DNS or point the
           domain at this site.
         </p>
         {domainError !== null ? (

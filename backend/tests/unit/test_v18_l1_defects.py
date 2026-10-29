@@ -275,7 +275,7 @@ async def test_empty_query_is_the_named_validation_refusal(api_client, auth_head
     assert resp.status_code == 422, resp.text
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == "E_VALIDATION"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
 
 async def test_absent_query_is_still_the_plain_unfiltered_list(api_client, auth_headers):

@@ -121,7 +121,7 @@ async def test_named_refusals_for_an_unknown_provider_and_a_read_only_write(
     unknown = await api_client.get("/api/v1/integrations/not_a_provider", headers=auth_headers)
     assert unknown.status_code == 404, unknown.text
     assert unknown.json()["error"]["code"] == E_NOT_FOUND
-    assert unknown.headers["X-Polsia-Error-Code"] == E_NOT_FOUND
+    assert unknown.headers["X-Meridian-Error-Code"] == E_NOT_FOUND
 
     read_only = await api_client.put(
         "/api/v1/integrations/stripe",

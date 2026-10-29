@@ -401,7 +401,7 @@ async def test_upload_of_a_non_image_answers_the_named_422(api_client, async_db_
     body = response.json()
     assert body["error"]["code"] == "E_VALIDATION"
     assert "PNG" in body["error"]["message"] and "WebP" in body["error"]["message"]
-    assert response.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
 
 @pytest.mark.asyncio
@@ -510,7 +510,7 @@ async def test_every_route_requires_the_owner_key(api_client, async_db_session, 
     for response in unauthenticated:
         assert response.status_code == 401, response.text
         assert response.json()["error"]["code"] == "E_AUTH"
-        assert response.headers.get("X-Polsia-Error-Code") == "E_AUTH"
+        assert response.headers.get("X-Meridian-Error-Code") == "E_AUTH"
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────

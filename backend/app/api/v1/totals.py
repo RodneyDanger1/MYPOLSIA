@@ -8,8 +8,8 @@ completeness, not dishonesty" — the fix is to declare the true one).
 WHY A HEADER, NOT A BODY FIELD: those bodies are arrays, and every existing client parses them as
 arrays (the tasks table, `OutreachWidget`/`ProspectRow`, the support page).  Wrapping them in
 `{items, total}` is exactly the breaking change the runs wrapper avoided by being a NEW route.
-`X-Polsia-Total` is additive — the same "declared count, verified before the first byte" idea
-`X-Polsia-Row-Count` already carries on `/runs/export` (`runs.py:291-295`).
+`X-Meridian-Total` is additive — the same "declared count, verified before the first byte" idea
+`X-Meridian-Row-Count` already carries on `/runs/export` (`runs.py:291-295`).
 
 WHAT THE NUMBER MEANS: the FULL count of rows the request's filters match — the SAME `WHERE` the
 page used, WITHOUT LIMIT/OFFSET.  It is therefore never the page length (the `pricing.count`
@@ -34,7 +34,7 @@ from app.services.query_helpers import fetch_scalar
 __all__ = ["TOTAL_HEADER", "declared_total"]
 
 #: The response header the honest total rides.
-TOTAL_HEADER = "X-Polsia-Total"
+TOTAL_HEADER = "X-Meridian-Total"
 
 
 async def declared_total(

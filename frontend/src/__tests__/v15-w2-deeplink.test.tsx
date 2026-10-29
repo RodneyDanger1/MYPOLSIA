@@ -188,7 +188,7 @@ describe("5-02 — ?task=N deep link beyond the loaded board", () => {
     expect(within(dialog).getByRole("heading", { name: "fixture: board task" })).toBeInTheDocument();
     // ONE read only: the board's. A by-id fetch for an already-loaded row would be a second call.
     await waitFor(() => expect(mockApiGet).toHaveBeenCalledTimes(1));
-    // V22/L3: the board read now also captures `X-Polsia-Total` via the options object; the PATH
+    // V22/L3: the board read now also captures `X-Meridian-Total` via the options object; the PATH
     // is unchanged, and nothing else rides along.
     expect(mockApiGet).toHaveBeenCalledWith(
       "/tasks?limit=500",

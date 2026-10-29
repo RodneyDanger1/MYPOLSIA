@@ -1,6 +1,6 @@
-"""V7-T07 — `X-Polsia-Row-Count` joins the CORS-exposed headers (wire level).
+"""V7-T07 — `X-Meridian-Row-Count` joins the CORS-exposed headers (wire level).
 
-`GET /api/v1/runs/export` declares its total in `X-Polsia-Row-Count`
+`GET /api/v1/runs/export` declares its total in `X-Meridian-Row-Count`
 (app/api/v1/runs.py — the declared-total law the usage/export UI consumes).  A
 cross-origin browser client (the shipped `cors_origins` pair) must be able to READ it,
 exactly like the refusal/timing headers the L1-08 fix exposed.  Mirrors the wire-level

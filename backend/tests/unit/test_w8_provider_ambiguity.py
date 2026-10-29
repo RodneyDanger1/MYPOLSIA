@@ -580,7 +580,7 @@ async def test_the_real_polsia_error_handler_answers_each_provider_class_with_it
         assert body["error"]["code"] == code
         assert body["error"]["message"] == "boom w8"
         assert body["error"]["how_to_fix"] == "fix w8"
-        assert response.headers["X-Polsia-Error-Code"] == code
+        assert response.headers["X-Meridian-Error-Code"] == code
         if code == E_AUTH:
             assert response.headers["WWW-Authenticate"] == "X-API-Key"
         else:

@@ -1,6 +1,6 @@
 # AGENTS.md — operating rules for agents working in this repository
 
-Polsia: a FastAPI + Celery backend with a Next.js dashboard; the agent runtime is DeepSeek-first
+Meridian: a FastAPI + Celery backend with a Next.js dashboard; the agent runtime is DeepSeek-first
 (V4.1 Flash via the OpenAI-compatible API; the key is entered in the app and stored server-side)
 with the Claude Code CLI as a fallback (`README.md` has the architecture). This file is the repository's own instruction set
 for AI agents — the rules, the gates, and where the evidence goes. Read it before your first

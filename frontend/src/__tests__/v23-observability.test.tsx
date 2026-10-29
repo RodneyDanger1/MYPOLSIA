@@ -3,7 +3,7 @@
  *
  * COMPLETENESS #8 and #6.  Every production path runs for real here:
  *  - the REAL `lib/api` client (no `@/lib/api` mock) over a stubbed `fetch`, so the
- *    `onHeaders` capture is the shipped one and the `X-Polsia-Total` header is read from the
+ *    `onHeaders` capture is the shipped one and the `X-Meridian-Total` header is read from the
  *    SAME response as the rows;
  *  - the REAL `useActivityFeed` hook and `ActivityFeed` header, driven by a test-only
  *    WebSocket (jsdom has no socket) exactly the way `u1-realtime.test.tsx` drives it;
@@ -13,7 +13,7 @@
  *  - worker never wrote  -> `data: null` -> "has not published stats yet", NEVER four zeros;
  *  - Redis unreachable   -> the named `E_REDIS` refusal, rendered with its code + fix hint;
  *  - header absent       -> no count at all (never a guess from the rows on hand);
- *  - header present      -> "N events" from the response's own `X-Polsia-Total`.
+ *  - header present      -> "N events" from the response's own `X-Meridian-Total`.
  */
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 
@@ -209,7 +209,7 @@ describe("Ops panel — the worker process card", () => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
- * 2. The feed's declared total, from the response's own X-Polsia-Total
+ * 2. The feed's declared total, from the response's own X-Meridian-Total
  * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 const EVENT = {
@@ -222,8 +222,8 @@ const EVENT = {
 };
 
 describe("Activity feed — the declared total", () => {
-  it("prints 'N events' from X-Polsia-Total on the snapshot response", async () => {
-    installFetch(() => ({ body: [EVENT], headers: { "X-Polsia-Total": "137" } }));
+  it("prints 'N events' from X-Meridian-Total on the snapshot response", async () => {
+    installFetch(() => ({ body: [EVENT], headers: { "X-Meridian-Total": "137" } }));
 
     render(<ActivityFeed />);
     await flushMint();
@@ -247,7 +247,7 @@ describe("Activity feed — the declared total", () => {
   });
 
   it("exposes the captured total on the hook, null when the header is absent", async () => {
-    installFetch(() => ({ body: [EVENT], headers: { "X-Polsia-Total": "42" } }));
+    installFetch(() => ({ body: [EVENT], headers: { "X-Meridian-Total": "42" } }));
 
     const present = renderHook(() => useActivityFeed(10));
     await flushMint();

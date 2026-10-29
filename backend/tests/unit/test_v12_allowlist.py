@@ -15,7 +15,7 @@ provider interface; every other agent's allowlist is unchanged.
 V25/L2 re-pin (deliberate): the source-control quartet `github_repo`/`github_branch`/
 `github_commit`/`github_pr` joins the registry and is granted to `code_generation` ONLY — the
 V25-PLAN names the recipient ("GitHub tools — repo/branch/commit/PR ... The code agent can
-actually ship code; source history like Polsia"), and the evidence for least privilege is
+actually ship code; source history like Meridian"), and the evidence for least privilege is
 quoted on the firewall entry.  Append-only: every V12/V20/V24 grant keeps its position.
 """
 from __future__ import annotations

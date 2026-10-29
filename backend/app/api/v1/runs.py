@@ -55,7 +55,7 @@ EXPORT — `GET /api/v1/runs/export?format=csv|json` (default `csv`):
     EMPTY cell (CSV has no null type — documented, never a fabricated `0`); datetimes are
     ISO-8601, exactly the values served by the list.
   * JSON = the same wrapper object (`{"items": [...], "total": N}`) with `total == len(items)`.
-  * Both carry `X-Polsia-Row-Count: N` — the declared count, verified equal to the served rows
+  * Both carry `X-Meridian-Row-Count: N` — the declared count, verified equal to the served rows
     BEFORE the first byte (see STREAMING below).
   * `format` is normalized (case-insensitive); anything else refuses by NAME: `E_VALIDATION`
     (422) naming the value, with the supported set in the message and context.
@@ -70,7 +70,7 @@ streams the ALREADY-DECIDED bytes in chunks — chunked emission is real (bounde
 chunk), the honesty of the count is guaranteed before the first byte leaves.
 
 HONEST FAILURE: reads run inside `refusal_guard()`; a broken source surfaces as the named E_DB
-refusal (503 envelope + `X-Polsia-Error-Code`), never as a 200 whose empty page reads like "no
+refusal (503 envelope + `X-Meridian-Error-Code`), never as a 200 whose empty page reads like "no
 runs".  A count/rows mismatch refuses the same way, naming both numbers.
 
 AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router carries
@@ -374,7 +374,7 @@ async def export_runs_route(
 
     headers = {
         # The declared count.  `export_runs` verified it equals the row set about to be served.
-        "X-Polsia-Row-Count": str(total),
+        "X-Meridian-Row-Count": str(total),
         "Content-Disposition": f'attachment; filename="runs.{requested}"',
     }
     if requested == "csv":
@@ -399,7 +399,7 @@ async def get_run_route(run_id: int, db: AsyncSession = Depends(get_db)) -> RunD
     Declared AFTER `/export` on purpose: FastAPI matches in registration order, so `/runs/export`
     reaches the export route and never this numeric path parameter.  A missing id is the named
     404 `E_NOT_FOUND` envelope — not an empty 200 that would read like a run.  Read failures go
-    through `refusal_guard()` (E_DB 503 + `X-Polsia-Error-Code`), the sibling-route rule.
+    through `refusal_guard()` (E_DB 503 + `X-Meridian-Error-Code`), the sibling-route rule.
     """
     with refusal_guard():
         detail = await get_run(db, run_id=run_id)

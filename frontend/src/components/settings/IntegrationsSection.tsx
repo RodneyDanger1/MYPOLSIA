@@ -82,7 +82,7 @@ export function IntegrationsSection() {
         }
       />
       <p className="text-sm text-ink">
-        The services Polsia calls. A value saved here is stored on the backend and never
+        The services Meridian calls. A value saved here is stored on the backend and never
         returned by the API — this panel only ever shows a masked hint. Nothing is read until
         you ask.
       </p>

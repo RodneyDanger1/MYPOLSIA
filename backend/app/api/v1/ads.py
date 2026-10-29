@@ -78,7 +78,7 @@ async def ads_campaigns(
     V20/L1 (cards L2-08 + L2-07): an unknown `status` is the named `E_VALIDATION` 422 every
     sibling status-filtered read answers — this route answered `200 []` at 8fa2b38, the same hole
     L2-08 names on `/runs` and `/outreach/prospects` — and the full match count rides
-    `X-Polsia-Total` so a full page cannot read as the whole table.  The body stays a bare array.
+    `X-Meridian-Total` so a full page cannot read as the whole table.  The body stays a bare array.
     """
     with refusal_guard():
         require_status(status_filter, AD_CAMPAIGN_STATUSES, what="ad campaign")

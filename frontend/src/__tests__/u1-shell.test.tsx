@@ -138,7 +138,7 @@ describe("topbar control cluster", () => {
 
   it("keeps the app title in the shell", () => {
     render(<Topbar />);
-    expect(screen.getByRole("link", { name: /dashboard/i })).toHaveTextContent("Polsia");
+    expect(screen.getByRole("link", { name: /dashboard/i })).toHaveTextContent("Meridian");
   });
 });
 

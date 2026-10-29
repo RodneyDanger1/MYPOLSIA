@@ -15,7 +15,7 @@ import { Button, Card, DataTable, type Column } from "@/components/ui";
 /**
  * Usage — the agent-runs ledger (wave V7, seat S5). The read is the live `GET /api/v1/runs`
  * (U5/B8): `{items, total}` with `total` the FULL filtered count; the export is
- * `GET /api/v1/runs/export?format=csv`, whose `X-Polsia-Row-Count` is the same total by contract.
+ * `GET /api/v1/runs/export?format=csv`, whose `X-Meridian-Row-Count` is the same total by contract.
  *
  * The declared-total law (B8) is the page's spine:
  *   - the footer prints the server's OWN `total` beside the rows this read actually showed — a

@@ -24,7 +24,7 @@ plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
 # ~20 phantom "Column[int] is not int" errors that hide the real findings.
 # The upload ships an `__init__.py` at the REPOSITORY ROOT, which makes mypy treat every parent
 # directory as a package: it then resolves `app/agents/integrations.py` TWICE (as
-# `Polsia.backend.app.agents.integrations` and as `app.agents.integrations`) and ABORTS the run with
+# `Meridian.backend.app.agents.integrations` and as `app.agents.integrations`) and ABORTS the run with
 # "errors prevented further checking" — so `mypy app/` never checked a single line while reporting a
 # failure. Naming the package bases explicitly fixes the resolution without deleting an upload file.
 explicit_package_bases = true

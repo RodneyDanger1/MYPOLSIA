@@ -159,7 +159,7 @@ async def test_v25_github_tools_are_listed_exactly_where_the_allowlist_says(
     Wave V25 shipped the source-control quartet (`github_repo`/`github_branch`/`github_commit`/
     `github_pr`) to `code_generation` only — V25-PLAN row 2: "GitHub tools —
     repo/branch/commit/PR behind the firewalled registry + secret store ... The code agent can
-    actually ship code; source history like Polsia".  This is the wire-level re-pin: the one
+    actually ship code; source history like Meridian".  This is the wire-level re-pin: the one
     holder names them in use order with the registry's OWN descriptions, no other agent names
     any of them, and the orchestrator's row is UNCHANGED (the V24 decision stands).  A future
     spec/allowlist change fails here until this expectation is re-pinned on purpose.

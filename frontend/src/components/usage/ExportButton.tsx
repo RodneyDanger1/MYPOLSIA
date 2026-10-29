@@ -20,7 +20,7 @@ import { API_KEY, ApiError } from "@/lib/api";
  * a REQUEST for lib/api.ts's owner, not a change this seat may make.
  *
  * Success is a REAL browser download: blob -> object URL -> anchor[download=runs.csv] click ->
- * revoke. The server's `X-Polsia-Row-Count` header (runs.py:285-289, verified == the row set
+ * revoke. The server's `X-Meridian-Row-Count` header (runs.py:285-289, verified == the row set
  * before the first byte) is surfaced when the CORS layer exposes it to JS; when it is not, the
  * line says exactly what was exported and nothing more. A failure surfaces `ApiError.display`
  * beside the button: never a silent no-op, never a dead button.
@@ -88,7 +88,7 @@ export function ExportButton() {
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(url);
-      const declared = res.headers.get("X-Polsia-Row-Count");
+      const declared = res.headers.get("X-Meridian-Row-Count");
       setDone(declared === null ? "Exported runs.csv." : `Exported ${declared} rows to runs.csv.`);
     } catch (e: unknown) {
       setError(errorText(e));

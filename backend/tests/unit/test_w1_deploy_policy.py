@@ -21,7 +21,7 @@ it is ever asked for a request:
   * only a valid token lets the single POST happen, and that real deploy is then counted.
 
 The route-level tests use the real FastAPI app: the refusals are `403` with the code in the body
-AND `X-Polsia-Error-Code`, and a refusal leaves the site's `meta.json` untouched.
+AND `X-Meridian-Error-Code`, and a refusal leaves the site's `meta.json` untouched.
 """
 from __future__ import annotations
 
@@ -363,7 +363,7 @@ async def test_the_deploy_route_answers_e_sandbox_blocked_with_403(
 
     assert resp.status_code == 403, resp.text
     assert resp.json()["error"]["code"] == E_SANDBOX_BLOCKED
-    assert resp.headers["X-Polsia-Error-Code"] == E_SANDBOX_BLOCKED
+    assert resp.headers["X-Meridian-Error-Code"] == E_SANDBOX_BLOCKED
     assert resp.json()["error"]["how_to_fix"]
     assert (site_dir / "meta.json").read_bytes() == before
     # "a receipt either way": exactly ONE isolated audit row for the refused live attempt.
@@ -397,7 +397,7 @@ async def test_the_deploy_route_answers_e_policy_denied_under_the_kill_switch(
     assert resp.status_code == 403, resp.text
     assert resp.json()["error"]["code"] == E_POLICY_DENIED
     assert "kill switch" in resp.json()["error"]["message"]
-    assert resp.headers["X-Polsia-Error-Code"] == E_POLICY_DENIED
+    assert resp.headers["X-Meridian-Error-Code"] == E_POLICY_DENIED
     assert [row for row in audit if row["detail"].get("code") == E_POLICY_DENIED], (
         "the refused live deploy must leave its audit receipt"
     )

@@ -10,7 +10,7 @@ forever, so the orchestrator kept a dead service in rotation.  Two probes now, w
     `app/schemas/common.HealthResponse`.
   * `/ready` — READINESS.  It issues one real `SELECT 1` on the app's own session and FAILS CLOSED:
     a database that cannot answer becomes `503` with the house `E_DB` refusal (`code`, `message`,
-    `how_to_fix`, `X-Polsia-Error-Code`) rather than a 200 the orchestrator would trust.  A
+    `how_to_fix`, `X-Meridian-Error-Code`) rather than a 200 the orchestrator would trust.  A
     pre-route failure (the session factory itself raising) lands on the same 503 through
     `app.main`'s `SQLAlchemyError` handler.
 

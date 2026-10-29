@@ -11,9 +11,9 @@ import OutreachPage from "@/app/outreach/page";
 import SupportPage from "@/app/support/page";
 
 /**
- * V22/L3 — W1 GAP-1 (remaining `X-Polsia-Total` reads): invoices, outreach, support.
+ * V22/L3 — W1 GAP-1 (remaining `X-Meridian-Total` reads): invoices, outreach, support.
  *
- * Each route declares the FULL filtered count in `X-Polsia-Total`; each page read the body only.
+ * Each route declares the FULL filtered count in `X-Meridian-Total`; each page read the body only.
  * `/invoices` therefore truncated at 100 silently, and `/outreach` + `/support` disclosed the cap
  * without ever naming the true count. All three now capture the header from the SAME response and
  * print "{shown} of {total}"; a response without a readable header keeps the old page-length copy.
@@ -27,7 +27,7 @@ const mockApiGet = api.get as jest.MockedFunction<
 
 function headers(total: string | null): Headers {
   const h = new Headers();
-  if (total !== null) h.set("X-Polsia-Total", total);
+  if (total !== null) h.set("X-Meridian-Total", total);
   return h;
 }
 

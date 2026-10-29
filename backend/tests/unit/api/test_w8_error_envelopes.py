@@ -3,7 +3,7 @@
 WHAT THIS FILE PINS, and why it is a matrix and not a happy-path test:
 
 Every refusal that reaches an HTTP client must carry the SAME contract — a named `E_*` code, a
-message, a `how_to_fix`, structured context, the machine-readable `X-Polsia-Error-Code` header, and
+message, a `how_to_fix`, structured context, the machine-readable `X-Meridian-Error-Code` header, and
 the HTTP status its code means (`app/core/errors.HTTP_STATUS_BY_CODE`, the single table).  The
 wave-5 sweep pinned the four framework shapes (404/405/422/500); this wave drives ONE representative
 of EVERY route class end-to-end through the real app:

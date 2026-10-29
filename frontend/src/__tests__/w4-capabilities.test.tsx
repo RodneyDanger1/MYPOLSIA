@@ -242,7 +242,7 @@ describe("capabilities read (H-C1)", () => {
 
 describe("capabilities wiring (Settings entry)", () => {
   const wireConfig: SettingsConfig = {
-    name: "Polsia",
+    name: "Meridian",
     mission: null,
     vision: null,
     description: null,

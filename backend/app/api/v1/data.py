@@ -617,7 +617,7 @@ async def export_data_route(db: AsyncSession = Depends(get_db)) -> ExportFileRes
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-Polsia-Row-Count": str(total_rows),
+            "X-Meridian-Row-Count": str(total_rows),
         },
         background=BackgroundTask(_remove_export_tempfile, path),
     )
@@ -682,7 +682,7 @@ def _verify_wipe_token(secret: bytes, token: str) -> str:
     if not exp_part or not sig_part or "." in sig_part:
         raise PolsiaError(
             E_VALIDATION,
-            "the confirm_token is not a Polsia approval token (expected '{expiry}.{signature}')",
+            "the confirm_token is not a Meridian approval token (expected '{expiry}.{signature}')",
             how_to_fix="mint one via POST /api/v1/approvals with the action_fingerprint from "
                        "DELETE /api/v1/data?dry_run=true and pass the token back verbatim",
             context={"reason": "malformed"},
@@ -692,7 +692,7 @@ def _verify_wipe_token(secret: bytes, token: str) -> str:
     except ValueError:
         raise PolsiaError(
             E_VALIDATION,
-            "the confirm_token is not a Polsia approval token (its expiry is not an integer)",
+            "the confirm_token is not a Meridian approval token (its expiry is not an integer)",
             how_to_fix="pass the confirm_token value exactly as POST /api/v1/approvals returned it",
             context={"reason": "malformed"},
         ) from None

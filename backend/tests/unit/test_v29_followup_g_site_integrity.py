@@ -114,7 +114,7 @@ async def test_delete_refuses_a_slug_that_never_existed(api_client, auth_headers
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == E_NOT_FOUND
     assert response.json()["error"]["context"]["slug"] == "never-existed"
-    assert response.headers["X-Polsia-Error-Code"] == E_NOT_FOUND
+    assert response.headers["X-Meridian-Error-Code"] == E_NOT_FOUND
     assert (site / "meta.json").is_file(), "a refused delete must not touch another site"
 
 

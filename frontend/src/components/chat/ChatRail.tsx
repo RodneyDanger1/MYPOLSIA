@@ -35,7 +35,7 @@ function refusalDisplay(refusal: ChatRefusal): string {
     : `${refusal.code}: ${refusal.message}`;
 }
 
-const ROLE_LABEL: Record<string, string> = { owner: "You", polsia: "Polsia" };
+const ROLE_LABEL: Record<string, string> = { owner: "You", polsia: "Meridian" };
 
 /** F-46 — one stored instruction that is NOT the live gate says so, at the row it belongs to.
  *

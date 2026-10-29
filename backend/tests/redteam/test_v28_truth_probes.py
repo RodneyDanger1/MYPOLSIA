@@ -97,7 +97,7 @@ async def test_missing_key_is_a_named_401_across_routers(api_client):
         body = response.json()
         assert body["error"]["code"] == E_AUTH, f"{method} {path}: {body}"
         assert body["error"]["how_to_fix"], f"{method} {path}: refusal carries no fix"
-        assert response.headers.get("X-Polsia-Error-Code") == E_AUTH, (
+        assert response.headers.get("X-Meridian-Error-Code") == E_AUTH, (
             f"{method} {path}: refusal lost its machine-readable header"
         )
 

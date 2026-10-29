@@ -1,4 +1,4 @@
-"""Polsia runtime — sandbox semantics and third-party action execution, in one place.
+"""Meridian runtime — sandbox semantics and third-party action execution, in one place.
 
 The honesty rule this module enforces (SPEC-AGENTS.md §5.3, non-negotiable):
 

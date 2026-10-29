@@ -127,7 +127,7 @@ async def test_the_route_names_redis_when_the_dependency_is_unreachable(
     resp = await api_client.get(ROUTE, headers=auth_headers)
 
     assert resp.status_code == 503
-    assert resp.headers["X-Polsia-Error-Code"] == "E_REDIS"
+    assert resp.headers["X-Meridian-Error-Code"] == "E_REDIS"
     # The app's named-refusal envelope (app/main.py) — the same shape every other refusal uses.
     error = resp.json()["error"]
     assert error["code"] == "E_REDIS"

@@ -86,7 +86,7 @@ async def test_config_put_refuses_non_finite_numbers_in_json_columns(api_client,
     assert resp.status_code == 422, resp.text[:300]
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == "E_VALIDATION"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
     stored = await async_db_session.get(CompanyConfig, 1)
     assert stored is not None and stored.confirmed_idea is None, "nothing non-finite was stored"
@@ -112,7 +112,7 @@ async def test_config_read_refuses_a_poisoned_row_by_name(api_client, async_db_s
     assert resp.status_code == 503, resp.text[:300]
     body = resp.json()
     assert body["error"]["code"] == "E_DB"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_DB"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_DB"
     assert "non-finite" in body["error"]["message"]
 
 
@@ -161,7 +161,7 @@ async def test_stripe_webhook_missing_secret_is_the_named_e_config_refusal(
 
     Failure at base: app/api/v1/finance.py raised `HTTPException(500, detail="Stripe webhook
     secret not configured")` — a plain-string detail, so neither the body envelope nor
-    `X-Polsia-Error-Code` named the fault, and every Stripe delivery (public route) was an
+    `X-Meridian-Error-Code` named the fault, and every Stripe delivery (public route) was an
     unexplained 500.  The same condition elsewhere is `E_CONFIG` (app/api/v1/data.py:513-522):
     the service cannot take the work, and the operator gets the code + the fix hint.  503 is the
     canonical status for E_CONFIG (app/core/errors.py:153).
@@ -177,4 +177,4 @@ async def test_stripe_webhook_missing_secret_is_the_named_e_config_refusal(
     assert body["ok"] is False
     assert body["error"]["code"] == "E_CONFIG"
     assert body["error"]["how_to_fix"]
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_CONFIG"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_CONFIG"

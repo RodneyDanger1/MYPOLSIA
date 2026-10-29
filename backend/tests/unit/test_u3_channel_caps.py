@@ -19,7 +19,7 @@ What each block exists to catch:
     NO configured day cap serves `cap: null, remaining: null` (the `RateCaps` seam is patched to
     move linkedin to an hour-only cap for exactly this case);
   * honest failure — a broken counting source answers the named E_DB refusal (503 + envelope +
-    `X-Polsia-Error-Code`), never a 200 that reads like "no channels";
+    `X-Meridian-Error-Code`), never a 200 that reads like "no channels";
   * `generated_at` parses as an aware UTC instant.
 
 Clock: the route reads the real `now`; tests pin a fixed anchor by patching
@@ -248,7 +248,7 @@ async def test_snapshot_failure_is_a_named_error_not_a_fake_answer(api_client, a
     assert body["ok"] is False
     assert body["error"]["code"] == "E_DB"
     assert "channels" not in body, "a failure must never look like an empty/zeroed payload"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_DB"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_DB"
 
 
 # ── generated_at ──────────────────────────────────────────────────────────────────────────────

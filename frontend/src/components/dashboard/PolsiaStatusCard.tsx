@@ -8,7 +8,7 @@ import { relativeTime } from "./format";
 import { PanelError, PanelSkeleton } from "./states";
 
 /**
- * The left rail's status card — the live `Polsia` widget's slot, expressing the real state of this
+ * The left rail's status card — the live `Meridian` widget's slot, expressing the real state of this
  * workspace's agents from `GET /agents/status` (the endpoint answers one row per agent type —
  * exactly nine, even on an empty database).
  *
@@ -27,7 +27,7 @@ export function PolsiaStatusCard() {
   const { statuses, loading, error } = useAgentStatus();
 
   return (
-    <Card title="Polsia">
+    <Card title="Meridian">
       {loading ? <PanelSkeleton rows={3} /> : null}
       {!loading && error ? <PanelError label="agent status" message={error} /> : null}
       {!loading && !error ? <StatusBody statuses={statuses} /> : null}

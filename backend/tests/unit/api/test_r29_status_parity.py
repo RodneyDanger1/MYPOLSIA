@@ -6,7 +6,7 @@ The defect this file closes (R27 §M2; raw evidence in
 `deps.STATUS_BY_CODE` and `errors.HTTP_STATUS_BY_CODE` were two literal tables that disagreed for
 nine codes (`E_DB`, `E_STORAGE`, the four `E_CLI_*`, `E_INTEGRATION`, `E_AGENT_BAD_OUTPUT`,
 `E_PROMPT_TOO_LARGE`).  The in-route `refusal_guard` path read one table and answered 502/503/504/413
-with an `X-Polsia-Error-Code` header; the app-level handler — everything raised before the route,
+with an `X-Meridian-Error-Code` header; the app-level handler — everything raised before the route,
 e.g. a failing `get_db` — read the other and answered a 500 whose code header was missing.  Same
 refusal, two different wires.
 
@@ -28,12 +28,12 @@ E_AUTH is measured on its two shipped shapes instead of the synthetic route pair
 shipped route raises E_AUTH inside `refusal_guard`, and the shipped in-route shape (an inline
 `check_api_key` raise in the body) already travels the app-level handler — so the pair tested is the
 pair that exists.  Both legs must carry `WWW-Authenticate: X-API-Key` as well as
-`X-Polsia-Error-Code`.
+`X-Meridian-Error-Code`.
 
 RED legs (measured this lane; each restores to a sha256-verified file afterwards):
   * restoring the divergent literal `deps.STATUS_BY_CODE` → the parity test fails with the named
     mismatch (`E_DB: in-route 503 vs pre-route 500`, header missing) and the identity test fails;
-  * dropping `X-Polsia-Error-Code` from `main._refusal_headers` → the parity test fails on the
+  * dropping `X-Meridian-Error-Code` from `main._refusal_headers` → the parity test fails on the
     missing header while every status stays correct (the handler path this lane corrected).
 """
 from __future__ import annotations
@@ -147,7 +147,7 @@ EXPECTED_STATUS_BY_CODE: dict[str, int] = {
     E_DB: 503,
     E_STORAGE: 503,
     # wave V16 (E5/P-01): the Phone Link store absent/unmounted — the read surface refuses by
-    # name (503 + X-Polsia-Error-Code) instead of rendering an empty card.
+    # name (503 + X-Meridian-Error-Code) instead of rendering an empty card.
     E_PHONE_UNAVAILABLE: 503,
     E_CLI_MISSING: 503,
     E_CLI_TIMEOUT: 504,
@@ -304,7 +304,7 @@ async def test_the_same_refusal_is_the_same_response_pre_route_and_in_route(
         assert resp.status_code == expected_status, (
             f"{code} ({leg}): the documented status is {expected_status}, got {resp.status_code}"
         )
-        assert resp.headers.get("X-Polsia-Error-Code") == code, (
+        assert resp.headers.get("X-Meridian-Error-Code") == code, (
             f"{code} ({leg}): the machine-readable code header is missing"
         )
         assert resp.headers.get("x-request-id") == f"r29-{code}", f"{code} ({leg}): request id lost"
@@ -354,7 +354,7 @@ async def test_real_e_db_refusal_matches_wherever_the_failure_happened(
         f"pre={pre_resp.status_code}"
     )
     for leg, resp in (("in-route", in_resp), ("pre-route", pre_resp)):
-        assert resp.headers["X-Polsia-Error-Code"] == E_DB, leg
+        assert resp.headers["X-Meridian-Error-Code"] == E_DB, leg
         body = resp.json()
         assert body["ok"] is False and body["error"]["code"] == E_DB, leg
         assert body["error"]["how_to_fix"] == ERROR_HINTS[E_DB], leg
@@ -373,7 +373,7 @@ async def test_real_e_auth_is_one_response_from_both_shipped_raise_sites(api_cli
 
     for leg, resp in (("verify_api_key", pre_resp), ("check_api_key", in_resp)):
         assert resp.status_code == 401, leg
-        assert resp.headers.get("X-Polsia-Error-Code") == E_AUTH, leg
+        assert resp.headers.get("X-Meridian-Error-Code") == E_AUTH, leg
         assert resp.headers.get("WWW-Authenticate") == "X-API-Key", leg
         body = resp.json()
         assert body["ok"] is False and body["error"]["code"] == E_AUTH, leg

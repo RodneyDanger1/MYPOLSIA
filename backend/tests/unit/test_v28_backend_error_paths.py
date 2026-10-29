@@ -127,7 +127,7 @@ async def test_delete_route_answers_the_named_refusal_when_send_history_exists(
     body = response.json()
     assert body["error"]["code"] == E_VALIDATION
     assert body["error"]["context"]["prospect_id"] == prospect_id
-    assert response.headers["X-Polsia-Error-Code"] == E_VALIDATION
+    assert response.headers["X-Meridian-Error-Code"] == E_VALIDATION
 
 
 @pytest.mark.asyncio
@@ -228,7 +228,7 @@ async def test_create_site_route_answers_e_storage_and_can_be_retried(
 
     assert response.status_code == 503, response.text
     assert response.json()["error"]["code"] == E_STORAGE
-    assert response.headers["X-Polsia-Error-Code"] == E_STORAGE
+    assert response.headers["X-Meridian-Error-Code"] == E_STORAGE
     assert not (tmp_path / "disk-full").exists()
 
     monkeypatch.setattr(Path, "write_text", original)

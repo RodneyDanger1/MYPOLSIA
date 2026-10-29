@@ -122,7 +122,7 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** The declared FULL match count from ONE response's `X-Polsia-Total` header (V23/L4,
+/** The declared FULL match count from ONE response's `X-Meridian-Total` header (V23/L4,
  *  COMPLETENESS #6), or null when the header is absent or does not carry a real count.
  *
  *  NEVER inferred from the rows on hand: a page shows at most `limit` rows, so their count is a
@@ -145,7 +145,7 @@ function readActivitySnapshot(limit: number): Promise<ActivitySnapshot> {
   return api
     .get<ActivityEvent[]>(path, {
       onHeaders: (headers) => {
-        captured.total = declaredTotal(headers.get("X-Polsia-Total"));
+        captured.total = declaredTotal(headers.get("X-Meridian-Total"));
       },
     })
     .then((body) => ({

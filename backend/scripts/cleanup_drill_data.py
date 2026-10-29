@@ -49,7 +49,7 @@ MODES
 
 EXIT CODES
     0  success (including a dry run / a report that found 0 rows)
-    2  REFUSAL — the target database could not be PROVEN (unreachable, not a Polsia DB, or a
+    2  REFUSAL — the target database could not be PROVEN (unreachable, not a Meridian DB, or a
        remote PostgreSQL host without `--allow-remote`), or a delete did not match its plan.
 
 SAFETY
@@ -216,23 +216,23 @@ def _tag_rule_text() -> str:
 
 
 async def _prove(conn: Any, url: str) -> str:
-    """Prove this is a Polsia database and return its alembic head.  Refuses otherwise."""
+    """Prove this is a Meridian database and return its alembic head.  Refuses otherwise."""
     from sqlalchemy import text
 
     try:
         head = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
     except Exception as exc:  # noqa: BLE001 — any failure is "cannot prove"
         raise Refusal(
-            "cannot prove the target is a Polsia database: the alembic_version table is absent "
+            "cannot prove the target is a Meridian database: the alembic_version table is absent "
             f"or unreadable ({type(exc).__name__}: {exc})"
         ) from exc
     if not head:
-        raise Refusal("cannot prove the target is a Polsia database: alembic_version is empty")
+        raise Refusal("cannot prove the target is a Meridian database: alembic_version is empty")
     try:
         await conn.execute(text("SELECT COUNT(*) FROM tasks"))
     except Exception as exc:  # noqa: BLE001
         raise Refusal(
-            f"cannot prove the target is a Polsia database: no `tasks` table ({type(exc).__name__})"
+            f"cannot prove the target is a Meridian database: no `tasks` table ({type(exc).__name__})"
         ) from exc
     return str(head)
 

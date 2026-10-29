@@ -26,7 +26,7 @@ export type InvoiceListRead = {
   rows: Invoice[] | null;
   error: string | null;
   loading: boolean;
-  /** The server's FULL filtered count from THIS read's `X-Polsia-Total` (the same response as the
+  /** The server's FULL filtered count from THIS read's `X-Meridian-Total` (the same response as the
    *  rows). `null` when the response carried no readable header — the page then discloses only the
    *  cap it can see, never an invented count. Reset on every (re)read. */
   total: number | null;
@@ -54,7 +54,7 @@ export function useInvoiceList(path: string): InvoiceListRead {
       .get<unknown>(path, {
         onHeaders: (headers) => {
           if (cancelled) return;
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           if (raw === null) return;
           const parsed = Number(raw.trim());
           if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);

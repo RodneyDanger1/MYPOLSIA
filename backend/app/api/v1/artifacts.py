@@ -27,8 +27,8 @@ FROZEN CONTRACT (owner-key like every sibling v1 router):
 
     GET /api/v1/artifacts/{run_id}/content?path=<relative>
         200 text/plain; charset=utf-8 — the artifact's text, exactly as written (no rendering).
-        Headers: `X-Polsia-Artifact-Sha256`, `X-Polsia-Artifact-Bytes`,
-        `X-Polsia-Artifact-Modified`, `X-Content-Type-Options: nosniff`.
+        Headers: `X-Meridian-Artifact-Sha256`, `X-Meridian-Artifact-Bytes`,
+        `X-Meridian-Artifact-Modified`, `X-Content-Type-Options: nosniff`.
 
     GET /api/v1/artifacts/{run_id}/download?path=<relative>
         200 application/octet-stream — the artifact's exact bytes as an attachment
@@ -192,9 +192,9 @@ async def _refuse_an_unknown_run(db: AsyncSession, run_id: str) -> None:
 def _artifact_headers(*, sha256: str, size: int, modified_at) -> dict[str, str]:
     """The provenance headers both byte routes carry (the artifact's identity, not a claim)."""
     return {
-        "X-Polsia-Artifact-Sha256": sha256,
-        "X-Polsia-Artifact-Bytes": str(size),
-        "X-Polsia-Artifact-Modified": iso_utc(modified_at) or "",
+        "X-Meridian-Artifact-Sha256": sha256,
+        "X-Meridian-Artifact-Bytes": str(size),
+        "X-Meridian-Artifact-Modified": iso_utc(modified_at) or "",
         "X-Content-Type-Options": "nosniff",
     }
 

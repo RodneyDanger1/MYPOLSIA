@@ -268,7 +268,7 @@ async def test_list_503_when_the_store_is_absent(api_client, auth_headers, tmp_p
 
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == E_PHONE_UNAVAILABLE
-    assert resp.headers["X-Polsia-Error-Code"] == E_PHONE_UNAVAILABLE
+    assert resp.headers["X-Meridian-Error-Code"] == E_PHONE_UNAVAILABLE
 
 
 async def test_list_503_when_the_media_columns_have_drifted(api_client, auth_headers, tmp_path, monkeypatch):
@@ -298,7 +298,7 @@ async def test_list_503_when_the_media_columns_have_drifted(api_client, auth_hea
     body = resp.json()
     assert body["error"]["code"] == E_PHONE_UNAVAILABLE
     assert body["error"]["context"]["table"] == "mms_part"
-    assert resp.headers["X-Polsia-Error-Code"] == E_PHONE_UNAVAILABLE
+    assert resp.headers["X-Meridian-Error-Code"] == E_PHONE_UNAVAILABLE
 
 
 # ── the binary route ───────────────────────────────────────────────────────────────────────────
@@ -346,7 +346,7 @@ async def test_stream_404_names_a_missing_part(api_client, auth_headers, media_s
     body = resp.json()
     assert body["ok"] is False
     assert body["error"]["code"] == E_NOT_FOUND
-    assert resp.headers["X-Polsia-Error-Code"] == E_NOT_FOUND
+    assert resp.headers["X-Meridian-Error-Code"] == E_NOT_FOUND
 
 
 async def test_stream_404_for_a_part_with_no_bytes(api_client, auth_headers, media_store):
@@ -376,7 +376,7 @@ async def test_stream_refuses_an_oversized_part_by_name(api_client, auth_headers
     assert resp.status_code == 422
     body = resp.json()
     assert body["error"]["code"] == E_VALIDATION
-    assert resp.headers["X-Polsia-Error-Code"] == E_VALIDATION
+    assert resp.headers["X-Meridian-Error-Code"] == E_VALIDATION
     assert body["error"]["context"]["part_id"] == 2003
     assert body["error"]["context"]["max_bytes"] == 1024
 
@@ -466,7 +466,7 @@ async def test_non_object_send_body_is_a_coded_422_and_one_audit_row(raw, monkey
     assert resp.status_code == 422, resp.text
     body = resp.json()
     assert body["error"]["code"] == E_VALIDATION
-    assert resp.headers["X-Polsia-Error-Code"] == E_VALIDATION
+    assert resp.headers["X-Meridian-Error-Code"] == E_VALIDATION
 
     async with Session() as reader:
         rows = (

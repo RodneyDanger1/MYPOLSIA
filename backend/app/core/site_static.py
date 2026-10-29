@@ -20,7 +20,7 @@ serving decision: the marker files stay on disk (their disposition is the owner'
 
 Honesty rules this module keeps:
 
-  * a refusal is the product envelope (`E_NOT_FOUND` + `how_to_fix` + `X-Polsia-Error-Code`), the
+  * a refusal is the product envelope (`E_NOT_FOUND` + `how_to_fix` + `X-Meridian-Error-Code`), the
     same wire shape every other 404 in this app speaks — never a bare "Not Found" and never a 200;
   * the refusal names the RULE (`reason`: `dotfile` / `not_a_site_file`) and the path, but never
     confirms whether the refused file exists — a 404 must not become an existence oracle;
@@ -159,7 +159,7 @@ class SiteStaticFiles(StaticFiles):
         reason = site_path_refusal(path)
         if reason is None:
             return await super().get_response(path, scope)
-        headers = {"X-Polsia-Error-Code": E_NOT_FOUND, "Cache-Control": "no-store"}
+        headers = {"X-Meridian-Error-Code": E_NOT_FOUND, "Cache-Control": "no-store"}
         if method == "HEAD":
             return Response(status_code=404, headers=headers, media_type="application/json")
         return JSONResponse(site_refusal_body(reason, path), status_code=404, headers=headers)

@@ -1,4 +1,4 @@
-"""Polsia runtime — layered, token-budgeted context assembler.
+"""Meridian runtime — layered, token-budgeted context assembler.
 
 Lifted from lane 05 (`research/05-runtime-100x/code/runtime/context_assembler.py`) and wired to
 the frozen setting `settings.planner_context_token_budget`: `budgets_for_total()` distributes the

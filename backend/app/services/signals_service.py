@@ -85,7 +85,7 @@ CACHE_MAX_FEEDS = 8
 TIMEOUT_S = 10.0
 MAX_TITLE_CHARS = 200
 MAX_URL_CHARS = 2048
-USER_AGENT = "MYPOLSIA/1.0 (+owner contact)"
+USER_AGENT = "Meridian/1.0 (+owner contact)"
 HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",

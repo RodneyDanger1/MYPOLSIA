@@ -82,7 +82,7 @@ async def test_nonfinite_money_is_refused_at_the_wire_and_persists_nothing(
     assert body["ok"] is False
     assert body["error"]["code"] == E_VALIDATION
     assert body["error"]["how_to_fix"]
-    assert resp.headers.get("X-Polsia-Error-Code") == E_VALIDATION
+    assert resp.headers.get("X-Meridian-Error-Code") == E_VALIDATION
     # the offending field is named and the non-finite echo is sanitized (no raw NaN on the wire)
     echo_by_token = {"NaN": "nan", "Infinity": "inf", "-Infinity": "-inf"}
     money_errors = [e for e in body["detail"] if "subtotal" in e.get("loc", [])]
@@ -138,7 +138,7 @@ async def test_a_dirty_row_refuses_by_name_instead_of_poisoning_the_list(
     assert body["error"]["code"] == E_DB
     assert "INV-2026-901" in body["error"]["message"]
     assert body["error"]["context"]["invoice_id"] == dirty_id
-    assert listed.headers.get("X-Polsia-Error-Code") == E_DB
+    assert listed.headers.get("X-Meridian-Error-Code") == E_DB
 
     one = await api_client.get(f"/api/v1/invoices/{dirty_id}", headers=AUTH)
     assert one.status_code == 503 and one.json()["error"]["code"] == E_DB
@@ -160,7 +160,7 @@ async def test_nan_in_body_gets_a_named_422(api_client):
     body = resp.json()
     assert body["ok"] is False
     assert body["error"]["code"] == E_VALIDATION
-    assert resp.headers.get("X-Polsia-Error-Code") == E_VALIDATION
+    assert resp.headers.get("X-Meridian-Error-Code") == E_VALIDATION
     # the sanitized pydantic array survives: the field is named, the echo is a string
     named = [e for e in body["detail"] if e.get("loc") == ["body", "title"]]
     assert named and named[0]["input"] == "nan"
@@ -182,7 +182,7 @@ async def test_ordinary_validation_errors_keep_the_uncoded_default_shape(api_cli
     assert resp.status_code == 422
     body = resp.json()
     assert set(body) == {"detail"} and body["detail"][0]["type"] == "greater_than_equal"
-    assert resp.headers.get("X-Polsia-Error-Code") is None
+    assert resp.headers.get("X-Meridian-Error-Code") is None
 
     resp2 = await api_client.post("/api/v1/tasks", headers=AUTH, json={"nothing": "here"})
     assert resp2.status_code == 422
@@ -206,7 +206,7 @@ async def test_int64_overflow_is_a_named_422_never_a_500(api_client, method, url
     assert resp.status_code == 422, f"{url}: {resp.status_code} {resp.text[:300]}"
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == E_VALIDATION
-    assert resp.headers.get("X-Polsia-Error-Code") == E_VALIDATION
+    assert resp.headers.get("X-Meridian-Error-Code") == E_VALIDATION
     assert "9223372036854775807" in body["error"]["how_to_fix"]
 
 

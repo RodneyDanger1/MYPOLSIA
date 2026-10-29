@@ -88,7 +88,7 @@ function TasksLoading() {
 function TasksPageContent() {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** The server's declared full count from the board read's `X-Polsia-Total` (same response as
+  /** The server's declared full count from the board read's `X-Meridian-Total` (same response as
    *  the rows). null = the response carried no readable header; the cap line then says only what
    *  the rows prove, never an invented total. */
   const [boardTotal, setBoardTotal] = useState<number | null>(null);
@@ -117,7 +117,7 @@ function TasksPageContent() {
       .get<TaskRow[]>(`/tasks?limit=${TASKS_BOARD_LIMIT}`, {
         onHeaders: (headers) => {
           if (cancelled) return;
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           if (raw === null) return;
           const parsed = Number(raw.trim());
           if (Number.isSafeInteger(parsed) && parsed >= 0) setBoardTotal(parsed);

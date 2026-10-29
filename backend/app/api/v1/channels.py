@@ -30,7 +30,7 @@ PROVENANCE — every number comes from a real source; none is invented here:
   * `generated_at`<- `app.core.database.utcnow()` — the aware UTC instant the snapshot was built.
 
 HONEST FAILURE: the count read runs inside `refusal_guard()`; a broken source surfaces as the named
-E_DB refusal (503 envelope + `X-Polsia-Error-Code`), never as a 200 whose empty list reads like
+E_DB refusal (503 envelope + `X-Meridian-Error-Code`), never as a 200 whose empty list reads like
 "no channels". No new error codes.
 
 AUTH: the same `dependencies=[Depends(verify_api_key)]` every sibling v1 router carries

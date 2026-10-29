@@ -148,7 +148,7 @@ Old canonical sha256 `7e0e9f85e54e4cc019067bab323eebf373076eb30a542b3316c53d36ea
 `test_create_all_ddl_sha256_is_frozen`).
 
 RE-PINNED DELIBERATELY (V25/L1, 2026-10-19): `task_attachments` — a task's image attachments
-for vision input (Polsia reads screenshots; V25 PLAN item 1) — is a NEW table added by
+for vision input (Meridian reads screenshots; V25 PLAN item 1) — is a NEW table added by
 `backend/alembic/versions/0013_task_attachments.py`.  Eight columns, all NOT NULL except the
 nullable `created_at` with its `now()` server default; `task_id` is a FK -> `tasks.id`
 `ON DELETE CASCADE`; `ix_task_attachments_task_id` is the one explicit index.  `stored_name`
@@ -408,7 +408,7 @@ FROZEN_COLUMNS = {
         ('updated_at', 'DATETIME', True, '', 'now()', '', False),
     ),
     'chat_messages': (
-        # V8/0008 (C1's frozen table): the owner <-> Polsia conversation. `role` carries the
+        # V8/0008 (C1's frozen table): the owner <-> Meridian conversation. `role` carries the
         # named ck_chat_messages_role CHECK (VARCHAR(50) rendering); `intent` is the parsed
         # exchange JSON (the pending create-task proposal rides the owner row's intent);
         # `task_id` is a nullable FK -> tasks.id (no index; most exchanges create nothing).

@@ -190,7 +190,7 @@ export function DataSection() {
       anchor.remove();
       URL.revokeObjectURL(url);
       if (!mounted.current) return;
-      const declared = res.headers.get("X-Polsia-Row-Count");
+      const declared = res.headers.get("X-Meridian-Row-Count");
       setExportDone(
         declared === null ? `Exported ${name}.` : `Exported ${declared} rows to ${name}.`,
       );

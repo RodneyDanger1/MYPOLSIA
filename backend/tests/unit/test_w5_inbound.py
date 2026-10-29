@@ -10,7 +10,7 @@ WHAT THIS FILE PINS
 
     Seven contracts are exercised END TO END against the real app, the real ORM and the real
     service (no doubles — only Redis, which is the suite's standard mock):
-      1. auth — a dedicated shared secret (`X-Polsia-Inbound-Secret`), never the owner API key;
+      1. auth — a dedicated shared secret (`X-Meridian-Inbound-Secret`), never the owner API key;
          unset `SUPPORT_INBOUND_SECRET` is the NAMED `E_CONFIG` refusal, never an open endpoint;
       2. validation — a malformed payload is `E_VALIDATION` with `context.field`, never the
          framework's uncoded 422 and never an echoed customer body;
@@ -40,7 +40,7 @@ from app.models.support import SupportInboxItem
 from app.models.task import Task
 
 INBOUND_PATH = "/api/v1/support/inbox/inbound"
-SECRET_HEADER = "X-Polsia-Inbound-Secret"
+SECRET_HEADER = "X-Meridian-Inbound-Secret"
 SECRET = "w5-inbound-shared-secret"
 BODY_MARKER = "Please refund order #1042; it arrived broken."
 
@@ -112,7 +112,7 @@ async def test_the_inbound_route_exists_and_requires_the_shared_secret(api_clien
     error = _error(response)
     assert error["code"] == "E_AUTH"
     assert error["how_to_fix"], "a named refusal must say how to fix it"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_AUTH"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_AUTH"
     assert SECRET not in response.text and BODY_MARKER not in response.text
 
 
@@ -134,7 +134,7 @@ async def test_a_wrong_secret_is_a_named_401_and_stores_nothing(
     assert response.status_code == 401, response.text[:400]
     error = _error(response)
     assert error["code"] == "E_AUTH"
-    assert response.headers.get("X-Polsia-Error-Code") == "E_AUTH"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_AUTH"
     assert await _count(async_db_session, SupportInboxItem) == 0
     # neither the configured value nor the presented one is echoed, nor the customer body
     assert configured_secret not in response.text
@@ -383,7 +383,7 @@ async def test_a_malformed_payload_is_a_named_422_with_the_field(
     assert error["code"] == "E_VALIDATION"
     assert error["how_to_fix"]
     assert error["context"]["field"] == field, error
-    assert response.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert response.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
     assert await _count(async_db_session, SupportInboxItem) == 0
     assert len(response.text) < 4_000, "a refusal must never echo the payload back"
     assert BODY_MARKER not in response.text

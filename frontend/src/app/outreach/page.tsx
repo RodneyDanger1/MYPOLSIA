@@ -43,7 +43,7 @@ function errorText(e: unknown): string {
 export default function OutreachPage() {
   const [data, setData] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** The server's full filtered count from THIS read's `X-Polsia-Total` (same response as the
+  /** The server's full filtered count from THIS read's `X-Meridian-Total` (same response as the
    *  rows). null = no readable header; the count then states only the page length + cap. */
   const [total, setTotal] = useState<number | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
@@ -59,7 +59,7 @@ export default function OutreachPage() {
       .get<Prospect[]>(`/outreach/prospects?limit=${LIST_LIMIT}`, {
         onHeaders: (headers) => {
           if (cancelled) return;
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           if (raw === null) return;
           const parsed = Number(raw.trim());
           if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);

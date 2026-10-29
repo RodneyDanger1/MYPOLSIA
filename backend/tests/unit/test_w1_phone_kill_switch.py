@@ -16,7 +16,7 @@ driver/bridge work.  These tests pin:
   * it holds even when a caller passes `sandbox=False` — the sandbox flag is a deployment switch,
     never a policy override;
   * with the fleet running, the existing sandbox refusal is unchanged (no regression);
-  * the refusal maps to HTTP 403 + `X-Polsia-Error-Code` through the shipped `http_refusal`.
+  * the refusal maps to HTTP 403 + `X-Meridian-Error-Code` through the shipped `http_refusal`.
 """
 from __future__ import annotations
 
@@ -142,6 +142,6 @@ def test_the_kill_switch_refusal_is_http_403_with_the_code_header(running_fleet)
 
     http = phone.http_refusal(caught.value)
     assert http.status_code == 403
-    assert http.headers["X-Polsia-Error-Code"] == E_POLICY_DENIED
+    assert http.headers["X-Meridian-Error-Code"] == E_POLICY_DENIED
     assert http.detail["code"] == E_POLICY_DENIED
     assert http.detail["how_to_fix"]

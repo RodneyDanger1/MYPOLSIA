@@ -111,7 +111,7 @@ const GITHUB_CONFIGURED: ProviderStatus = provider({
 const GITHUB_MISSING: ProviderStatus = MISSING.providers[0];
 
 const baseConfig: SettingsConfig = {
-  name: "Polsia",
+  name: "Meridian",
   mission: null,
   vision: null,
   description: null,

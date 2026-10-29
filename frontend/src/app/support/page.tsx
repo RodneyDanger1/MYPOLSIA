@@ -30,7 +30,7 @@ function errorText(e: unknown): string {
 export default function SupportPage() {
   const [items, setItems] = useState<SupportInboxItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** The server's full filtered count from THIS read's `X-Polsia-Total` (same response as the
+  /** The server's full filtered count from THIS read's `X-Meridian-Total` (same response as the
    *  rows). null = no readable header; the count then states only the page length + cap. */
   const [total, setTotal] = useState<number | null>(null);
   const [filter, setFilter] = useState<"" | SupportInboxStatus>("");
@@ -51,7 +51,7 @@ export default function SupportPage() {
       .get<SupportInboxItem[]>(path, {
         onHeaders: (headers) => {
           if (cancelled) return;
-          const raw = headers.get("X-Polsia-Total");
+          const raw = headers.get("X-Meridian-Total");
           if (raw === null) return;
           const parsed = Number(raw.trim());
           if (Number.isSafeInteger(parsed) && parsed >= 0) setTotal(parsed);

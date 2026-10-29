@@ -42,7 +42,7 @@ ADDRESS = "ada@example.com"
 OTHER = "grace@example.com"
 
 COMPANY = SimpleNamespace(
-    sender_legal_name="Polsia Labs, Inc.",
+    sender_legal_name="Meridian Labs, Inc.",
     sender_postal_address="1 Example Street, Springfield, IL 62701",
     website_url="https://example.test",
 )
@@ -259,7 +259,7 @@ async def test_r10_mode1_a_worker_verified_preflight_sends_through_the_guarded_p
     assert len(provider.calls) == 1
     body = provider.bodies[0]
     assert "the body" in body
-    assert "Polsia Labs, Inc." in body, "the sender identity footer is present"
+    assert "Meridian Labs, Inc." in body, "the sender identity footer is present"
     assert "/api/v1/outreach/unsubscribe?token=" in body, (
         "a signed one-click opt-out link must be in every guarded send"
     )

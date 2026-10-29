@@ -165,7 +165,7 @@ export type ApiFetchOptions = RequestInit & {
   /** Whole-call budget override for idempotent reads (default READ_TOTAL_BUDGET_MS = 20 000 ms). */
   budgetMs?: number;
   /** Called with the successful response's headers BEFORE the body is parsed. The declared-total
-   *  reads (`X-Polsia-Total` on `/tasks`, `/ads/campaigns`, …) need the header and the body from
+   *  reads (`X-Meridian-Total` on `/tasks`, `/ads/campaigns`, …) need the header and the body from
    *  ONE request; a separate probe could disagree with the rows it labels. Never called on a
    *  failed response. */
   onHeaders?: (headers: Headers) => void;
@@ -294,7 +294,7 @@ async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise
 
       if (res.status === 204) return undefined as T;
       // The successful response's headers, before the body is consumed. A declared total read
-      // (X-Polsia-Total) must come from the SAME response as its rows, or the label can lie.
+      // (X-Meridian-Total) must come from the SAME response as its rows, or the label can lie.
       onHeaders?.(res.headers);
       return (await res.json()) as T;
     } catch (e) {

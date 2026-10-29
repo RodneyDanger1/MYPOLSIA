@@ -186,7 +186,7 @@ def render_site_package(company: CompanyConfig) -> dict[str, str]:
         f"# {company.name} — static site package\n\n"
         "This folder is a plain static site: `index.html` plus this README. There is **no hosting, "
         "no deployment and no uptime promise** attached to it — nothing here is published, and "
-        "Polsia makes no promises about what happens if you publish it.\n\n"
+        "Meridian makes no promises about what happens if you publish it.\n\n"
         "## Contents\n\n"
         "- `index.html` — the site page (about, services, the recorded product catalogue when the "
         "company profile has one, contact), built from the company profile.\n"

@@ -41,7 +41,7 @@ SECRET = "w7-email-secret"
 ADDRESS = "ada@example.com"
 
 COMPANY = SimpleNamespace(
-    sender_legal_name="Polsia Labs, Inc.",
+    sender_legal_name="Meridian Labs, Inc.",
     sender_postal_address="1 Example Street, Springfield, IL 62701",
     website_url="https://example.test",
 )

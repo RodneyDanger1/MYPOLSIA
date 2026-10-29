@@ -110,7 +110,7 @@ export default function GlobalError({
           >
             <p style={{ ...LABEL_STYLE, color: INK_MUTED, margin: "0 0 0.25rem" }}>Root failure</p>
             <h1 style={{ fontSize: "1.5rem", fontWeight: 700, margin: "0 0 0.75rem" }}>
-              Polsia failed to start
+              Meridian failed to start
             </h1>
             <p style={{ color: INK_MUTED, fontSize: "0.875rem", margin: "0 0 1rem" }}>
               The root layout crashed, so nothing could be rendered inside it. This page is the

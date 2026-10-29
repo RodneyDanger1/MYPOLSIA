@@ -31,7 +31,7 @@ THE ONE CODE THAT DOES NOT LIVE IN `core/errors.py`
     `core/errors.py` is outside this lane's write territory (HANDOFF note in the receipt asks its
     owner to absorb it). The refusal still travels in the shipped envelope: `http_refusal()` builds
     the same `{code, message, how_to_fix, context}` detail `deps.as_http_exception` builds, and
-    `main.py`'s coded-HTTP handler adds `X-Polsia-Error-Code` and the `{ok:false,error}` wrapper.
+    `main.py`'s coded-HTTP handler adds `X-Meridian-Error-Code` and the `{ok:false,error}` wrapper.
 
 NO MOCK BRANCH
     There is no demo/dry-run mode in this module. Tests replace `_run_driver` (the process boundary)
@@ -757,7 +757,7 @@ def http_refusal(exc: PolsiaError) -> HTTPException:
             "how_to_fix": exc.how_to_fix or ERROR_HINTS.get(exc.code, ""),
             "context": exc.context,
         },
-        headers={"X-Polsia-Error-Code": exc.code},
+        headers={"X-Meridian-Error-Code": exc.code},
     )
 
 

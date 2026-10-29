@@ -121,7 +121,7 @@ _OUTCOME_ROUTES: dict[str, tuple[str, str]] = {
 }
 
 #: Subject prefix when the company row has no usable name.
-_DEFAULT_SUBJECT_PREFIX = "Polsia"
+_DEFAULT_SUBJECT_PREFIX = "Meridian"
 
 #: Titles longer than this are shortened in the SUBJECT only; the body carries the full title.
 _SUBJECT_TITLE_MAX = 120

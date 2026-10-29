@@ -3,7 +3,7 @@
 Premise (RED before the fix; raw evidence: fix-5/raw/probe_premises_l1.txt): with the shipped
 `cors_origins` (`http://localhost`, `http://localhost:3000`) and an allowed Origin, both the
 200 and the 401 legs answered `access-control-expose-headers: None` — so a browser JS client
-could not read `X-Polsia-Error-Code` / `X-Request-ID` / `X-Response-Time-ms`, while the
+could not read `X-Meridian-Error-Code` / `X-Request-ID` / `X-Response-Time-ms`, while the
 shipped error page tells the operator to look up the X-Request-ID.  The three names are
 exactly the custom headers the app greps to (main.py middleware + `_refusal_headers` +
 `deps.as_http_exception`); `WWW-Authenticate` is a standard header and not exposed here.

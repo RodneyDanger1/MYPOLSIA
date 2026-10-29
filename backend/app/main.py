@@ -209,7 +209,7 @@ class ErrorBoundary:
             response = JSONResponse(
                 status_code=http_status_for(E_INTERNAL),
                 content=to_http_detail(refusal),
-                headers={"X-Request-ID": request_id, "X-Polsia-Error-Code": E_INTERNAL},
+                headers={"X-Request-ID": request_id, "X-Meridian-Error-Code": E_INTERNAL},
             )
             await response(scope, receive, send)
 
@@ -217,7 +217,7 @@ class ErrorBoundary:
 def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
     """Extra headers a named refusal must carry — the SAME set wherever it was raised.
 
-    `X-Polsia-Error-Code` is the machine-readable form of the code the body already names.  The
+    `X-Meridian-Error-Code` is the machine-readable form of the code the body already names.  The
     in-route `refusal_guard` path has always sent it (`deps.as_http_exception`), and a client must
     not see a different response for the same refusal just because it was raised a layer earlier:
     before this header was added here, a pre-route refusal (a dependency, e.g. a failing `get_db`)
@@ -228,7 +228,7 @@ def _refusal_headers(exc: PolsiaError) -> dict[str, str]:
     `WWW-Authenticate: X-API-Key` header the previous bare-HTTPException path sent, so a client that
     looks for it is not silently worse off for the refusal having become nameable.
     """
-    headers = {"X-Polsia-Error-Code": exc.code}
+    headers = {"X-Meridian-Error-Code": exc.code}
     if exc.code == E_AUTH:
         headers["WWW-Authenticate"] = "X-API-Key"
     return headers
@@ -411,7 +411,7 @@ def create_app() -> FastAPI:
     # FastAPI's own "/docs", "/redoc", "/openapi.json" values byte-for-byte.  Read at construction:
     # the app object is the seam, exactly as `debug` below is.
     application = FastAPI(
-        title="Polsia API",
+        title="Meridian API",
         description="Autonomous multi-agent AI business platform",
         version="1.0.0",
         docs_url="/docs" if settings.sandbox_mode else None,
@@ -442,20 +442,20 @@ def create_app() -> FastAPI:
         # (X-Request-ID) has the server side") and the machine-readable refusal code were
         # invisible on exactly the split-origin client the default `cors_origins`
         # (http://localhost:3000) describes — same-origin nginx deployments never needed them.
-        # V7-T07: X-Polsia-Row-Count (runs export, app/api/v1/runs.py) joins the list so a
+        # V7-T07: X-Meridian-Row-Count (runs export, app/api/v1/runs.py) joins the list so a
         # cross-origin client reads the declared total under the same contract as the rest.
         # V18 (V18-05): Content-Disposition joins so a cross-origin JS download can read the
         # server's own filename (phone media parts; same-origin clients already saw it).
-        # V21/L1 (V20 handoff): X-Polsia-Total — the declared FULL match count the paged owner
+        # V21/L1 (V20 handoff): X-Meridian-Total — the declared FULL match count the paged owner
         # reads carry (app/api/v1/totals.py) — joins the list.  Same law as Row-Count: without
         # it a cross-origin client reads the page but not the honest total, so a truncated page
         # is indistinguishable from the whole table.
         expose_headers=[
-            "X-Polsia-Error-Code",
+            "X-Meridian-Error-Code",
             "X-Request-ID",
             "X-Response-Time-ms",
-            "X-Polsia-Row-Count",
-            "X-Polsia-Total",
+            "X-Meridian-Row-Count",
+            "X-Meridian-Total",
             "Content-Disposition",
         ],
     )
@@ -536,7 +536,7 @@ def create_app() -> FastAPI:
                 request_id_from_scope(request.scope), refusal.message,
             )
             headers = dict(exc.headers or {})
-            headers.setdefault("X-Polsia-Error-Code", refusal.code)
+            headers.setdefault("X-Meridian-Error-Code", refusal.code)
             return JSONResponse(
                 status_code=exc.status_code, content=to_http_detail(refusal), headers=headers
             )
@@ -552,7 +552,7 @@ def create_app() -> FastAPI:
         # explicit header (the in-route `refusal_guard` shape sets it via `as_http_exception`)
         # untouched, so every coded refusal carries exactly one value: the body's code.
         headers = dict(exc.headers or {})
-        headers.setdefault("X-Polsia-Error-Code", envelope["error"]["code"])
+        headers.setdefault("X-Meridian-Error-Code", envelope["error"]["code"])
         return JSONResponse(status_code=exc.status_code, content=envelope, headers=headers)
 
     @application.exception_handler(RequestValidationError)
@@ -604,7 +604,7 @@ def create_app() -> FastAPI:
                 },
                 "detail": errors,
             },
-            headers={"X-Polsia-Error-Code": E_VALIDATION},
+            headers={"X-Meridian-Error-Code": E_VALIDATION},
         )
 
     @application.exception_handler(OverflowError)
@@ -645,7 +645,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(tasks.attachments_router)
     api_v1.include_router(vision.router)  # wave V26 (L4): vision on demand
     api_v1.include_router(agents.router)
-    api_v1.include_router(chat.router)       # wave V8 (C1): the owner <-> Polsia chat (message/confirm/history)
+    api_v1.include_router(chat.router)       # wave V8 (C1): the owner <-> Meridian chat (message/confirm/history)
     api_v1.include_router(config.router)
     api_v1.include_router(integrations.router)  # wave V26 (L2): masked status + save/clear + read-only test
     api_v1.include_router(dashboard.router)
@@ -707,7 +707,7 @@ def create_app() -> FastAPI:
     # ible marker) returned 200 on all 17 legacy directories and any future fixture/debug file
     # would have been published the moment it was written.  It now serves the generator's own file
     # set only and refuses a dotfile / non-page path as a NAMED 404 (`E_NOT_FOUND` envelope +
-    # `X-Polsia-Error-Code`); the markers stay on disk (their disposition is the owner's).
+    # `X-Meridian-Error-Code`); the markers stay on disk (their disposition is the owner's).
     sites_root = site_service.SITES_ROOT
     sites_root.mkdir(parents=True, exist_ok=True)
     application.mount("/sites", SiteStaticFiles(directory=str(sites_root), html=True), name="sites")

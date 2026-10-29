@@ -195,7 +195,7 @@ def test_dangling_allowlist_entry_raises_a_named_config_refusal(monkeypatch):
 #   * PINNED_REGISTRY_TOOLS gains `github_repo`, `github_branch`, `github_commit`, `github_pr`
 #     (12 tools, sorted).  Evidence: V25-PLAN "Remaining work" row 2 — "**GitHub tools** —
 #     repo/branch/commit/PR behind the firewalled registry + secret store ... The code agent can
-#     actually ship code; source history like Polsia".
+#     actually ship code; source history like Meridian".
 #   * `code_generation` gains the quartet AFTER the workspace trio (append-only): it is the one
 #     role that ships source, the one holder of the `github` channel, and the one CLI allowlist
 #     that already speaks git (while still denying `git push`).  Every other row is UNCHANGED.

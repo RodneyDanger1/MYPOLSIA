@@ -1,7 +1,7 @@
 """Dependency audit: what the build needs vs what this venv can import.
 
 Run with the repo venv:
-  C:\\Users\\Riley\\Desktop\\Polsia\\.venv\\Scripts\\python.exe check_deps.py
+  C:\\Users\\Riley\\Desktop\\Meridian\\.venv\\Scripts\\python.exe check_deps.py
 """
 import importlib
 import sys

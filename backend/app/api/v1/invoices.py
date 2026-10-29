@@ -191,7 +191,7 @@ async def list_invoices(
 ) -> list[InvoiceResponse]:
     """The invoice list, newest first.
 
-    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    V20/L1 (card L2-07): `X-Meridian-Total` declares the FULL filtered count (the same `WHERE`,
     without LIMIT) so a full page is distinguishable from a truncated one.  The body stays a bare
     array — every existing client parses it as one.  `status` is validated by the service
     (`invoice_service._coerce_status`), unchanged.

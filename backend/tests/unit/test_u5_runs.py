@@ -10,7 +10,7 @@ The contract this file measures (stated identically in `app/api/v1/runs.py` + `r
       cost_source / pricing_version are read from the row's stored usage_json; unmeasured -> null.
     GET /api/v1/runs/export?format=csv|json  — the same filters, the FULL filtered set (no
       limit/offset): CSV = header row + one row per record; row count == the same filter's total
-      (B8's declared-total rule) == the `X-Polsia-Row-Count` header; unknown format refuses by name
+      (B8's declared-total rule) == the `X-Meridian-Row-Count` header; unknown format refuses by name
       (E_VALIDATION).  JSON = the same wrapper object.
 
 What each block exists to catch:
@@ -27,10 +27,10 @@ What each block exists to catch:
   * the bound-instant rule — an AWARE `from=` window selects rows whose SQLite storage is NAIVE
     (`as_bound_instant`; without it the window silently selects zero rows);
   * export completeness — the CSV row count equals `/runs`'s total for the same filter and the
-    declared `X-Polsia-Row-Count`; an empty set is a header-only CSV; an unknown format is 422
+    declared `X-Meridian-Row-Count`; an empty set is a header-only CSV; an unknown format is 422
     E_VALIDATION; the undeclared `limit` param cannot truncate the export;
   * honest failure — a broken source answers the named E_DB refusal (503 + envelope +
-    `X-Polsia-Error-Code`) on BOTH routes, never a 200 that reads like "no runs"; a declared-vs-read
+    `X-Meridian-Error-Code`) on BOTH routes, never a 200 that reads like "no runs"; a declared-vs-read
     count mismatch refuses loudly with both numbers (B8's rule).
 
 RED-leg evidence (each planted, observed, restored byte-exact; raw output in the lane receipt):
@@ -390,7 +390,7 @@ async def test_list_db_outage_is_a_named_refusal_never_an_empty_page(api_client,
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == "E_DB"
     assert "items" not in body, "a failure must never look like an empty ledger"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_DB"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_DB"
 
 
 # ── routes: the export endpoint ──────────────────────────────────────────────────────────────
@@ -464,7 +464,7 @@ async def test_export_unknown_format_refuses_by_name(api_client, auth_headers):
     assert body["ok"] is False and body["error"]["code"] == "E_VALIDATION"
     assert "xml" in body["error"]["message"]
     assert body["error"]["context"]["supported"] == ["csv", "json"]
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_VALIDATION"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_VALIDATION"
 
     # format matching is case-insensitive (documented normalization) — CSV is not "unknown"
     ok = await api_client.get(EXPORT_PATH, params={"format": "CSV"}, headers=auth_headers)
@@ -494,7 +494,7 @@ async def test_export_db_outage_is_a_named_refusal_with_no_body(api_client, auth
     body = resp.json()
     assert body["ok"] is False and body["error"]["code"] == "E_DB"
     assert "items" not in body and "id," not in resp.text, "nothing may be streamed on a refusal"
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_DB"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_DB"
 
 
 @pytest.mark.asyncio
@@ -511,4 +511,4 @@ async def test_export_count_mismatch_refuses_loudly(api_client, auth_headers, mo
     assert body["ok"] is False and body["error"]["code"] == "E_DB"
     assert "declared total=7" in body["error"]["message"]
     assert body["error"]["context"]["rows_read"] == 0
-    assert resp.headers.get("X-Polsia-Error-Code") == "E_DB"
+    assert resp.headers.get("X-Meridian-Error-Code") == "E_DB"

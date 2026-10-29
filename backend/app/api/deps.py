@@ -66,7 +66,7 @@ def as_http_exception(exc: PolsiaError) -> HTTPException:
             "how_to_fix": exc.how_to_fix,
             "context": exc.context,
         },
-        headers={"X-Polsia-Error-Code": exc.code},
+        headers={"X-Meridian-Error-Code": exc.code},
     )
 
 

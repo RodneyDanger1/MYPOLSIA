@@ -1,4 +1,4 @@
-"""Polsia orchestration — multi-agent planning above the agent layer.
+"""Meridian orchestration — multi-agent planning above the agent layer.
 
 `planner` turns the orchestrator's proposed task list into a validated, scheduled, budget-gated,
 idempotent day plan. Nothing in this package runs an agent itself: the queue/dispatcher consumes

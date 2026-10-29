@@ -29,7 +29,7 @@ AUTH — TWO trust models, two credentials (deliberately not one):
     precedent).  These are CUSTOMER EMAILS: the API-key holder and nobody else.
   * the PROVIDER route (`POST /api/v1/support/inbox/inbound`) is authenticated by ONE of the
     provider's own mechanisms: for JSON, the DEDICATED shared secret `SUPPORT_INBOUND_SECRET` in
-    `X-Polsia-Inbound-Secret` (constant time); for multipart, SendGrid's ECDSA signature
+    `X-Meridian-Inbound-Secret` (constant time); for multipart, SendGrid's ECDSA signature
     (`X-Twilio-Email-Event-Webhook-Signature` / `-Timestamp` over the raw bytes) or its OAuth
     `Authorization: Bearer` token.  It is NOT the owner API key on purpose: a third party's webhook
     configuration must never have to hold the key that opens the whole dashboard API.  Unset JSON
@@ -92,7 +92,7 @@ from app.services.support_inbox_service import (
 router = APIRouter(prefix="/support", tags=["support"])
 
 #: The header an inbound-email provider presents.  DEDICATED: never the owner `X-API-Key`.
-INBOUND_SECRET_HEADER = "X-Polsia-Inbound-Secret"
+INBOUND_SECRET_HEADER = "X-Meridian-Inbound-Secret"
 
 #: The documented payload fields and the aliases a real provider already sends.  The FIRST name in
 #: each tuple is the documented one; `AliasChoices` picks the first alias present in the body, and
@@ -251,7 +251,7 @@ def require_inbound_secret(provided: str | None) -> None:
     Called from the route body rather than as a FastAPI dependency since WAVE 9: the route now
     dispatches on Content-Type BEFORE it knows which credential applies, and a route-level
     dependency would have refused every real SendGrid multipart delivery (which carries no
-    `X-Polsia-Inbound-Secret` at all).  The RULES are unchanged, in the shipped order: a missing
+    `X-Meridian-Inbound-Secret` at all).  The RULES are unchanged, in the shipped order: a missing
     or wrong secret is the named 401 `E_AUTH`; an UNSET `SUPPORT_INBOUND_SECRET` is the named 503
     `E_CONFIG` (never an open inbox) — pinned by `tests/unit/test_w5_inbound.py`.
     """
@@ -443,7 +443,7 @@ async def ingest_inbound_message(
       a non-SendGrid multipart provider can use the shipped credential.  The item's provider id is
       DERIVED (the vendor sends none) and recorded with the fields that produced it.
     * anything else — the shipped JSON webhook (Postmark-style aliases), authenticated by
-      `X-Polsia-Inbound-Secret` with exactly the rules W5 shipped (missing/wrong → 401, unset
+      `X-Meridian-Inbound-Secret` with exactly the rules W5 shipped (missing/wrong → 401, unset
       secret → 503 `E_CONFIG`), and an unsupported Content-Type is a named 422 rather than a
       framework 415/422 array.
 
@@ -516,7 +516,7 @@ async def read_inbox(
 ) -> list[SupportInboxItemResponse]:
     """The stored items, newest first. `?status=pending|dispatched` filters; unknown → 422.
 
-    V20/L1 (card L2-07): `X-Polsia-Total` declares the FULL filtered count (the same `WHERE`,
+    V20/L1 (card L2-07): `X-Meridian-Total` declares the FULL filtered count (the same `WHERE`,
     without LIMIT/OFFSET) so a full page is distinguishable from a truncated one.  The body stays
     a bare array.
     """

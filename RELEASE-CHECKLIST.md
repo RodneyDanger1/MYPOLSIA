@@ -291,11 +291,11 @@ The read-only subset was executed by the V17 release-ops lane on 2026-10-18 — 
       `{"data":{"failures":…,"skipped_while_open":…,"breaker_open":…,"ts":"…"}}`.
       `docker compose exec redis redis-cli DEL polsia:activity-publish:stats` → `{"data":null}`;
       stop Redis → **503** with
-      `X-Polsia-Error-Code: E_REDIS`. `/usage` → the **Worker process** card shows the published
+      `X-Meridian-Error-Code: E_REDIS`. `/usage` → the **Worker process** card shows the published
       counters with their publish time, or the honest "not published yet" (no fabricated zeros); the
       old "worker invisible" sentence is gone. Evidence: `wave-v23/l4-observability/RECEIPT.md`.
 - [ ] **V23 — feed count (parent live-check)** — open `/dashboard`: the Activity feed header reads
-      `N events` (`1 event` singular) and `N` equals the `X-Polsia-Total` response header on the
+      `N events` (`1 event` singular) and `N` equals the `X-Meridian-Total` response header on the
       activity snapshot request (DevTools → Network). A response without the header draws **no
       count** — never the number of rows on hand. Evidence: `wave-v23/l4-observability/RECEIPT.md`.
 - [ ] **V23 — commit content (parent)** — the wave commit must include
