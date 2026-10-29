@@ -22,6 +22,18 @@ timezone from `settings.company_timezone`, dialect-bound.  Reading
 the configured company timezone and the statement *also* returns the row's timezone:
 if the two disagree, the mismatch is logged with both values instead of silently
 shifting the window (receipt: `## UNVERIFIED` #3 and REQUESTS #5).
+
+R-W10-1 — THE REPORT CYCLE'S STATE WAS UNKNOWABLE FROM THIS WIRE.  `last_report_date` is
+the newest `daily_reports.report_date`, and that row is created by the MORNING cycle's
+`save_morning_plan`; the report itself is written by the EVENING cycle's
+`save_evening_summary`.  The live row for 2026-10-20 carries a morning plan and no evening
+summary, so the dashboard said "last report 2026-10-20" when the last COMPLETED report was
+2026-10-19 — and with beat OFF by policy, "no cycle since" and "the cycle is failing" rendered
+identically.  The response now appends `report_cycle` (schema docstring carries the vocabulary):
+`report_service.derive_report_cycle` compares the committed `cycle_claimed` ledger against the
+`daily_reports` evening summaries and returns ONE named state, plus the raw evidence.  The
+cycle's schedule lives in a separate beat process the API cannot observe, so the block declares
+`scheduler_observable: false` instead of guessing a next-run time.
 """
 from __future__ import annotations
 
@@ -46,13 +58,21 @@ from app.schemas.report import (
     ActivityEventResponse,
     DailyReportResponse,
     DashboardMeasuredFinance,
+    DashboardReportCycle,
     DashboardSummaryResponse,
     ReportsListResponse,
 )
 from app.services.activity_service import get_recent_activity
 from app.services.finance_service import SNAPSHOT_MEASUREMENT_COLUMNS, snapshot_provenance
 from app.services.query_helpers import agent_rollup_expr, fetch_one, fetch_scalars
-from app.services.report_service import build_cash_block, get_daily_report
+from app.services.report_service import (
+    REPORT_CYCLE_CLAIM_ACTION,
+    REPORT_CYCLE_SKIP_ACTION,
+    REPORT_EVENING_CYCLE,
+    build_cash_block,
+    derive_report_cycle,
+    get_daily_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +114,31 @@ def _summary_statement(db: AsyncSession):
         .limit(1)
         .subquery("latest_snapshot")
     )
+    # R-W10-1: the report cycle's evidence as 1-row subqueries of the SAME statement.  `id` is
+    # the ordering key (a claim row's `created_at` is a server default, so id order is insertion
+    # order and immune to a NULL stamp); the newest EVENING claim is filtered on the writer's own
+    # JSON payload (`detail.cycle`), because only the evening cycle writes the report.
+    latest_claim = (
+        select(
+            ActivityLog.created_at.label("claim_at"),
+            ActivityLog.detail["cycle"].as_string().label("claim_cycle"),
+            ActivityLog.detail["day"].as_string().label("claim_day"),
+        )
+        .where(ActivityLog.action == REPORT_CYCLE_CLAIM_ACTION)
+        .order_by(ActivityLog.id.desc())
+        .limit(1)
+        .subquery("latest_cycle_claim")
+    )
+    latest_report_claim = (
+        select(ActivityLog.detail["day"].as_string().label("evening_claim_day"))
+        .where(
+            ActivityLog.action == REPORT_CYCLE_CLAIM_ACTION,
+            ActivityLog.detail["cycle"].as_string() == REPORT_EVENING_CYCLE,
+        )
+        .order_by(ActivityLog.id.desc())
+        .limit(1)
+        .subquery("latest_report_cycle_claim")
+    )
     # LEFT JOIN keeps the aggregate's single row when there is no company row at
     # all (the empty-database case the shipped test exercises) — and when there is no
     # snapshot row yet (every measured-finance column comes back NULL = "unmeasured").
@@ -108,8 +153,31 @@ def _summary_statement(db: AsyncSession):
         company_row.c.timezone.label("company_timezone"),
         latest_snapshot.c.snapshot_date,
         *[latest_snapshot.c[column] for column in SNAPSHOT_MEASUREMENT_COLUMNS],
+        latest_claim.c.claim_at,
+        latest_claim.c.claim_cycle,
+        latest_claim.c.claim_day,
+        latest_report_claim.c.evening_claim_day,
+        # R-W10-1: a row exists from the MORNING cycle; only a non-NULL evening_summary is a
+        # written report.  NULL here means no report has ever been completed — never 0/epoch.
+        select(func.max(DailyReport.report_date))
+        .where(DailyReport.evening_summary.is_not(None))
+        .scalar_subquery()
+        .label("completed_report_date"),
+        select(ActivityLog.detail["reason"].as_string())
+        .where(ActivityLog.action == REPORT_CYCLE_SKIP_ACTION)
+        .order_by(ActivityLog.id.desc())
+        .limit(1)
+        .scalar_subquery()
+        .label("last_skip_reason"),
+        select(func.min(ActivityLog.created_at))
+        .where(ActivityLog.action == REPORT_CYCLE_CLAIM_ACTION)
+        .scalar_subquery()
+        .label("claims_retained_since"),
     ).select_from(
-        today.outerjoin(company_row, true()).outerjoin(latest_snapshot, true())
+        today.outerjoin(company_row, true())
+        .outerjoin(latest_snapshot, true())
+        .outerjoin(latest_claim, true())
+        .outerjoin(latest_report_claim, true())
     )
 
 
@@ -168,6 +236,21 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
         last_snapshot_date=row.snapshot_date,
         provenance=str(snapshot_provenance(latest_values)["provenance"]),
     )
+    # R-W10-1: the cycle state is DERIVED in `report_service` from the rows above — the route
+    # never authors a state.  `today_in()` is the same company-local day the day window uses, so
+    # "today" means the same day here as everywhere else on this wire.
+    report_cycle = DashboardReportCycle(
+        **derive_report_cycle(
+            today=today_in(),
+            last_claim_at=row.claim_at,
+            last_claim_cycle=row.claim_cycle,
+            last_claim_day=row.claim_day,
+            last_evening_claim_day=row.evening_claim_day,
+            last_completed_report_date=row.completed_report_date,
+            last_skip_reason=row.last_skip_reason,
+            claims_retained_since=row.claims_retained_since,
+        )
+    )
     return DashboardSummaryResponse(
         tasks_today_total=int(row.total or 0),
         tasks_today_completed=int(row.completed or 0),
@@ -178,6 +261,7 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> DashboardSumm
         last_report_date=row.last_report_date,
         kpis_provenance="configured",
         measured_finance=measured_finance,
+        report_cycle=report_cycle,
     )
 
 

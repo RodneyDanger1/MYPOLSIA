@@ -16,7 +16,7 @@ renders null + a reason in `reasons` — never a fabricated 0.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, func, select
@@ -839,8 +839,165 @@ async def build_cash_block(db: AsyncSession) -> dict[str, Any]:
     }
 
 
+# ── R-W10-1: the report cycle's real state (rows in, one named state out) ─────────────────────
+# The two ledger actions the daily cycle writes (`celery_app/tasks/daily_cycle.py`, module
+# constants `CYCLE_CLAIM_ACTION` / `CYCLE_SKIP_ACTION`).  Repeated here as literals on purpose:
+# importing that module from the API process would pull Celery in.  `test_w3_report_cycle_state`
+# pins these against the writer's own constants so the two can never drift silently.
+REPORT_CYCLE_CLAIM_ACTION = "cycle_claimed"
+REPORT_CYCLE_SKIP_ACTION = "cycle_tick_skipped"
+#: The cycle that WRITES the report (`_evening_cycle` → `save_evening_summary`).  The morning
+#: cycle creates the row via `save_morning_plan`, so its claim cannot prove a report exists.
+REPORT_EVENING_CYCLE = "evening"
+
+#: The closed vocabulary `DashboardReportCycle.state` may carry.  `unknown` is a real answer,
+#: never a rolled-up guess (see `derive_report_cycle`).
+REPORT_CYCLE_STATES: tuple[str, ...] = (
+    "unknown",
+    "never_triggered",
+    "not_run_today",
+    "report_running",
+    "report_written_today",
+    "report_missing",
+)
+
+#: Why a next-run time cannot be served: the schedule lives in a beat process the API cannot
+#: see.  Served verbatim as `report_cycle.scheduler_reason`.
+REPORT_CYCLE_SCHEDULER_REASON = (
+    "the report cycle is a Celery beat entry in a separate process; the API cannot observe beat "
+    "(it may be stopped, profile-gated or crashing), so no next-run time is claimed. 'cycle "
+    "started' is a committed activity_log cycle_claimed row and 'report written' is a "
+    "daily_reports row carrying an evening_summary — the state is derived from those rows only."
+)
+
+
+def _claim_day(value: str | None) -> date | None:
+    """Parse a claim's `detail.day` (company-local ISO date); junk is None, never an exception."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def derive_report_cycle(
+    *,
+    today: date,
+    last_claim_at: datetime | None = None,
+    last_claim_cycle: str | None = None,
+    last_claim_day: str | None = None,
+    last_evening_claim_day: str | None = None,
+    last_completed_report_date: date | None = None,
+    last_skip_reason: str | None = None,
+    claims_retained_since: datetime | None = None,
+) -> dict[str, Any]:
+    """Derive the report cycle's state from the two ledgers; never from a schedule or a guess.
+
+    Returns the exact kwargs of `schemas.report.DashboardReportCycle`.  The inputs are rows the
+    dashboard statement already reads (`activity_log` claim/skip rows and `daily_reports` rows
+    carrying an evening summary); this function is pure, so every state is testable without a
+    database.
+
+    Every branch names its evidence in `state_reason`; an input that cannot decide a state yields
+    `unknown` with the reason, NEVER a guess.  In particular a future-dated claim (clock or
+    day-attribution fault) is `unknown`, not `report_running`.
+    """
+    evening_day = _claim_day(last_evening_claim_day)
+    completed = last_completed_report_date
+    state, reason = _report_cycle_state(
+        today=today,
+        evening_raw=last_evening_claim_day,
+        evening_day=evening_day,
+        completed=completed,
+        any_claim=last_claim_at is not None,
+    )
+    return {
+        "state": state,
+        "state_reason": reason,
+        "last_claim_at": last_claim_at,
+        "last_claim_cycle": last_claim_cycle,
+        "last_claim_day": last_claim_day,
+        "last_evening_claim_day": last_evening_claim_day,
+        "last_completed_report_date": completed,
+        "last_skip_reason": last_skip_reason,
+        "claims_retained_since": claims_retained_since,
+        "scheduler_observable": False,
+        "scheduler_reason": REPORT_CYCLE_SCHEDULER_REASON,
+    }
+
+
+def _report_cycle_state(
+    *,
+    today: date,
+    evening_raw: str | None,
+    evening_day: date | None,
+    completed: date | None,
+    any_claim: bool,
+) -> tuple[str, str]:
+    """`(state, reason)` — the comparison in one place, so no route can invent its own state."""
+    if evening_day is None:
+        if evening_raw:
+            return (
+                "unknown",
+                f"the newest report-cycle claim carries an unparsable day {evening_raw!r} — "
+                "the state cannot be decided from it",
+            )
+        if completed is None and not any_claim:
+            return (
+                "never_triggered",
+                "no cycle claim is retained and no daily report has ever carried an evening "
+                "summary — nothing has run on this deployment",
+            )
+        if completed is None:
+            return (
+                "unknown",
+                "a cycle has claimed but the report (evening) cycle never has in the retained "
+                "activity window, and no daily report carries an evening summary",
+            )
+        return (
+            "unknown",
+            "daily reports carry an evening summary but no report-cycle claim is retained — "
+            "the claim ledger cannot explain them",
+        )
+    if evening_day > today:
+        return (
+            "unknown",
+            f"the newest report-cycle claim is dated {evening_day.isoformat()}, after today "
+            f"({today.isoformat()}) — a clock or day-attribution fault, not a cycle state",
+        )
+    if evening_day == today:
+        if completed == today:
+            return (
+                "report_written_today",
+                f"the report cycle claimed {today.isoformat()} and that day's report carries "
+                "an evening summary",
+            )
+        return (
+            "report_running",
+            f"the report cycle claimed {today.isoformat()} and no evening summary exists yet",
+        )
+    if completed is None or completed < evening_day:
+        return (
+            "report_missing",
+            f"the report cycle claimed {evening_day.isoformat()} and no daily report for that "
+            "day carries an evening summary — it started and did not finish",
+        )
+    return (
+        "not_run_today",
+        f"the newest report-cycle claim is {evening_day.isoformat()} and its report was "
+        "written; no cycle has started since",
+    )
+
+
 __all__ = [
+    "REPORT_CYCLE_CLAIM_ACTION",
+    "REPORT_CYCLE_SCHEDULER_REASON",
+    "REPORT_CYCLE_SKIP_ACTION",
+    "REPORT_CYCLE_STATES",
+    "REPORT_EVENING_CYCLE",
     "build_cash_block",
+    "derive_report_cycle",
     "get_daily_report",
     "get_latest_daily_report",
     "get_or_create_daily_report",

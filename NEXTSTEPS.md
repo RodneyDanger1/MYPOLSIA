@@ -211,7 +211,7 @@ comments (`88/0/0/0` and `101/0/0/0` across focused runs).
 - **API typing — the five V19 cards (L1) — SETTLED ✅.** `wave-v20/l1-api-typing/RECEIPT.md` lists four
   work rows: L2-08 unknown `status=` → the same named `E_VALIDATION` 422 as tasks/invoices/support (and
   the identical hole in `ads` + `social` + the export route) · L2-09 the two defensive `RuntimeError`s
-  (`dashboard.py:94`, `chat_service.py:456`) → named `E_DB`, plus the `/dashboard/reports` fabricated
+  (`dashboard.py:195`, `chat_service.py:456`) → named `E_DB`, plus the `/dashboard/reports` fabricated
   `total: 0` on an absent count row · L2-06 the **9** live `/api/v1` dict routes (the tenth is `main.py`
   `/`, outside `/api/v1`) → real pydantic models publishing `$ref` schemas, with a schema-lint pin
   enforcing `response_model` or a named 12-entry exemption set · L2-07/L2-11 → honest totals: `pricing`
