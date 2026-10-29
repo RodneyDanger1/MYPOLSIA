@@ -230,7 +230,9 @@ async def stamp_rearmed(db: AsyncSession, task_ids: list[int], *, reason: str) -
     stamp = now_utc().isoformat()
     stamped: list[int] = []
     for row in rows:
-        merged = dict(row.metadata_json or {})
+        from app.services.task_service import task_metadata_bag  # local import: no cycle
+
+        merged = task_metadata_bag(row.metadata_json)
         merged["rearmed_at"] = stamp
         merged["rearm_reason"] = reason
         row.metadata_json = merged

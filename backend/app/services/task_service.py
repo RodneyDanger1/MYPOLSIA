@@ -25,6 +25,7 @@ where their consumers are.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -159,6 +160,67 @@ def is_valid_agent_type(agent_type: str) -> bool:
     return agent_type in VALID_AGENT_TYPES
 
 
+# ── A-W4-03: `tasks.metadata` is an OBJECT or it is not metadata ──────────────────────────────
+#: The `tasks.metadata` key a NON-OBJECT blob is preserved under when a merge meets one.  WHY keep
+#: it at all: the merge that follows REPLACES the column (a JSON column tracks attribute assignment),
+#: so an unidentified writer's array/string would be destroyed by the first merge that touches the
+#: row.  "The superseded evidence is retired, never erased" is this module's own rule for
+#: `error_message` — the same rule applies one column over.
+FOREIGN_METADATA_KEY = "foreign_metadata"
+#: Characters of the foreign blob kept.  A metadata bag must not grow without a bound; the flag
+#: `truncated` says the copy is partial, so nobody reads a clipped payload as the whole thing.
+FOREIGN_METADATA_MAX_CHARS = 2000
+
+
+def task_metadata_bag(metadata: Any) -> dict[str, Any]:
+    """A row's `tasks.metadata` JSON as a MUTABLE dict — never a `TypeError`, never a mutation.
+
+    A-W4-03 (auditor, wave 4): thirteen product sites merged that column with
+    `dict(row.metadata_json or {})`.  For the SHIPPED shapes that is right — `None` and an object
+    are the only values the product's own writers produce — but the column is a free-form JSON bag
+    and a live row was observed carrying the JSON **array** `[null]` (wave-4 taskmaster's repair of
+    task 313; the writer was never identified).  `dict([None])` raises `TypeError: cannot convert
+    dictionary update sequence element #0 to a sequence`, so ONE bad blob turned the row's next
+    merge — a completion, a re-arm, a stalled-claim sweep — into an unnamed 500 or a dead delivery,
+    long after and far from the write that caused it.
+
+    The three answers this function gives, all deliberate:
+
+      * `None` -> `{}` (the column's "no payload" value; every caller already treated it that way);
+      * a dict -> a COPY (callers reassign the attribute, and a JSON column tracks assignment, not
+        in-place mutation — returning the same object would silently drop the merge);
+      * anything else -> `{FOREIGN_METADATA_KEY: {stored_type, value, truncated, recorded_by}}`,
+        with a WARNING naming the row-shape problem.  The blob is preserved, bounded and labelled,
+        so the merge cannot destroy it and an operator can find out what was stored.
+
+    The `value` half is a bounded JSON rendering: a JSON array/string/number round-trips, and a
+    value that will not serialize at all falls back to `repr`, because a normaliser that raises
+    while explaining a bad blob would be the same defect wearing a different hat.
+    """
+    if metadata is None:
+        return {}
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    try:
+        rendered = json.dumps(metadata, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):          # pragma: no cover - repr covers exotic payloads
+        rendered = repr(metadata)
+    logger.warning(
+        "tasks.metadata is a %s, not an object; preserving it under %r so the merge cannot "
+        "destroy it (A-W4-03)",
+        type(metadata).__name__,
+        FOREIGN_METADATA_KEY,
+    )
+    return {
+        FOREIGN_METADATA_KEY: {
+            "stored_type": type(metadata).__name__,
+            "value": rendered[:FOREIGN_METADATA_MAX_CHARS],
+            "truncated": len(rendered) > FOREIGN_METADATA_MAX_CHARS,
+            "recorded_by": "task_metadata_bag",
+        }
+    }
+
+
 def _resolve_lease(lease_seconds: int | None) -> int:
     """The lease actually in force, validated.
 
@@ -203,12 +265,29 @@ async def create_task(
     `E_AGENT_UNKNOWN`); `status` deliberately does NOT raise `ValueError`, because that same
     route converts `ValueError` to an agent-type refusal and a typo'd status would wear the
     wrong code.
+
+    `metadata` is the per-task PAYLOAD channel (`tasks.metadata`), so it is asserted to be an
+    OBJECT (or None) BEFORE the row is built — A-W4-03's boundary half.  The reads tolerate a
+    non-object blob (`task_metadata_bag`), but a writer must not be able to create one: every
+    consumer of that column (the agent prompt, the approval channel, the DAG edges, the re-arm
+    marker) reads it as a mapping, and `dict([None])` is a crash, not a payload.
     """
     if not is_valid_agent_type(agent_type):
         raise ValueError(
             f"Unknown agent type: {agent_type!r}. Valid: {', '.join(VALID_AGENT_TYPES)}"
         )
     _require_valid_task_status(status)
+    if metadata is not None and not isinstance(metadata, dict):
+        raise PolsiaError(
+            E_VALIDATION,
+            f"`metadata` must be a JSON object (or omitted), got {type(metadata).__name__}; "
+            "refusing to store a non-object payload on the task (nothing was written)",
+            how_to_fix=(
+                "send `metadata` as an object — the column is the per-task payload channel "
+                "(approval_required, depends_on_ids, inbox_item, …), not a free-form value"
+            ),
+            context={"metadata_type": type(metadata).__name__},
+        )
 
     values: dict[str, Any] = {
         "title": title,
@@ -462,8 +541,16 @@ LAST_ATTEMPT_ERROR_KEY = "last_attempt_error"
 #: a metadata bag must not grow without a bound.  Truncation is STATED in the kept text.
 LAST_ATTEMPT_ERROR_MAX_CHARS = 8000
 
+#: The `tasks.metadata` key that KEEPS a verdict a completed row used to serve as its own state
+#: (wave 5).  `metadata.result_status` is written per ATTEMPT (`partial`/`refused`) but served as
+#: the ROW's `execution_status`, so an attempt that recorded a non-ok verdict and was then re-run
+#: (a re-park, a resume, a retry) labelled the finished row — and its badge — for ever.  A
+#: completion ends the attempt's story: the verdict is RETIRED here, never destroyed, exactly as
+#: `_retire_error_message` retires the superseded error.
+LAST_ATTEMPT_VERDICT_KEY = "last_attempt_verdict"
 
-def _retire_error_message(task: Task, *, status: str, actor: str) -> None:
+
+def _retire_error_message(task: Task, *, status: str, actor: str, supplied: bool = False) -> None:
     """Move a COMPLETED row's stale `error_message` into `metadata.last_attempt_error`.
 
     The success transition used to just NULL the column (F-23 residue).  That fixed the OWNER-VISIBLE
@@ -473,15 +560,26 @@ def _retire_error_message(task: Task, *, status: str, actor: str) -> None:
     the status it was retired by, who retired it and when.  `error_message` is then NULL, so
     `completed` and its served evidence agree (SV-W4-03).
 
+    `supplied` (A-W4-01, wave 5) records WHERE the text came from.  Both completed-writers used to
+    take the `error_message is not None` branch first, so a caller that SUPPLIED an error together
+    with `completed` skipped the retirement entirely and the row served
+    `status: completed` + `error_message: "…"` — the exact lie SV-W4-03 closed for the inherited
+    path, reachable through `PATCH /tasks/{id}/status`.  A supplied text is now written to the
+    column and retired by this same call, and the record says it was supplied by the completion
+    itself (`supplied_on_completion: true`) rather than inherited from an earlier attempt — the two
+    are different facts and the audit keeps them apart.
+
     Rules, all deliberate:
       * a string with content is retired; None / "" means there is nothing to preserve and the
         column is simply cleared (no key is invented);
       * the message is bounded by `LAST_ATTEMPT_ERROR_MAX_CHARS` with an explicit truncation
         marker — a bag write must not become an unbounded payload;
       * the bag is MERGED (a copy is reassigned so SQLAlchemy marks the JSON column dirty), never
-        replaced: another writer's keys (`approval_cleared`, `result_status`, …) survive;
+        replaced: another writer's keys (`approval_cleared`, `result_status`, …) survive — and a
+        non-object blob is normalised by `task_metadata_bag`, never crashed on (A-W4-03);
       * this function only ever runs on a COMPLETED transition; the requeue path keeps the column
-        (`pending` is not a completion) and a caller-supplied error is written as supplied.
+        (`pending` is not a completion) and a caller-supplied error on a NON-completion is written
+        as supplied.
     """
     message = task.error_message
     if isinstance(message, str) and message:
@@ -492,8 +590,7 @@ def _retire_error_message(task: Task, *, status: str, actor: str) -> None:
                 + f"… [truncated at {LAST_ATTEMPT_ERROR_MAX_CHARS} chars]"
             )
         attempts = task.attempts
-        bag = task.metadata_json if isinstance(task.metadata_json, dict) else {}
-        merged = dict(bag)
+        merged = task_metadata_bag(task.metadata_json)
         merged[LAST_ATTEMPT_ERROR_KEY] = {
             "message": kept,
             "attempts": (
@@ -502,9 +599,42 @@ def _retire_error_message(task: Task, *, status: str, actor: str) -> None:
             "retired_at": utcnow().isoformat(),
             "retired_by": actor,
             "retired_on_status": status,
+            "supplied_on_completion": bool(supplied),
         }
         task.metadata_json = merged
     task.error_message = None
+
+
+def _retire_stale_verdict(task: Task, *, status: str, actor: str) -> bool:
+    """Retire a `metadata.result_status` left behind by an EARLIER attempt of this row (wave 5).
+
+    The verdict is written per attempt (the worker stamps `partial`/`refused` from the run's own
+    envelope) but SERVED as the row's `execution_status`, so the row that outlives its attempt lies:
+    a run that recorded `partial` and was then re-run — re-parked for an approval and resumed, or
+    re-armed and retried — kept serving `partial` + `needs_attention: true` after it had finished
+    cleanly, i.e. a finished task advertising work that still needs the owner.
+
+    Same rule and same shape as `_retire_error_message`: the fact is MOVED to
+    `metadata.last_attempt_verdict` (with who ended it, when, and the status it ended with) and the
+    served key is dropped, so the row's state is the completing attempt's.  The worker's own
+    partial write still wins — it merges `result_status` AFTER this call, in the same transaction.
+
+    Returns True when a verdict was retired.
+    """
+    bag = task_metadata_bag(task.metadata_json)
+    recorded = bag.get(RESULT_STATUS_KEY)
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    merged = {key: value for key, value in bag.items() if key != RESULT_STATUS_KEY}
+    merged[LAST_ATTEMPT_VERDICT_KEY] = {
+        "status": recorded,
+        "retired_at": utcnow().isoformat(),
+        "retired_by": actor,
+        "retired_on_status": status,
+    }
+    task.metadata_json = merged
+    return True
+
 
 
 def _clear_parked_approval(task: Task, *, status: str, actor: str) -> bool:
@@ -574,7 +704,15 @@ async def update_task_status(
     `result_summary`/`error_message` are assigned only when not None, so an ordinary write cannot
     wipe a previously recorded message (and vice versa).  The ONE exception is a completion: a
     `completed` row retires an earlier attempt's error to `metadata.last_attempt_error` and clears
-    the column (F-23 residue + SV-W4-03 — see `_retire_error_message`).
+    the column (F-23 residue + SV-W4-03 — see `_retire_error_message`), and it retires a
+    `metadata.result_status` left by an earlier attempt (`_retire_stale_verdict`, wave 5).
+
+    A-W4-01 (wave 5): a completion that SUPPLIES an `error_message` used to keep it — the
+    `error_message is not None` branch ran first, so the retirement was skipped and the row served
+    `status: completed` + `error_message: "…"`.  This writer RETIRES a supplied text instead of
+    serving it (the flag `supplied_on_completion` records where it came from).  It does not REFUSE
+    it: this is the worker's writer, and an exception here would roll back the run's ledger row —
+    the caller-facing writer `transition_task_status` is the one that refuses by name.
 
     An unknown `status` is refused by NAME (`E_VALIDATION`) BEFORE anything is mutated —
     0002's own doctrine is that the value sets are "asserted by the code paths that write
@@ -602,13 +740,23 @@ async def update_task_status(
         _clear_parked_approval(task, status=status, actor="update_task_status")
     if result_summary is not None:
         task.result_summary = result_summary
-    if error_message is not None:
+    if status == TaskStatus.COMPLETED:
+        # F-23 residue + SV-W4-03 + A-W4-01 + the wave-5 stale verdict: a completion ends the
+        # PREVIOUS attempt's story.  A supplied text is written to the column first so the
+        # retirement keeps exactly what the caller said (and labels it as supplied); an inherited
+        # one is retired as it stands.  Both end with `error_message` NULL, so `completed` and its
+        # served evidence agree on every path.
+        if error_message is not None:
+            task.error_message = error_message
+        _retire_stale_verdict(task, status=str(TaskStatus.COMPLETED), actor="update_task_status")
+        _retire_error_message(
+            task,
+            status=str(TaskStatus.COMPLETED),
+            actor="update_task_status",
+            supplied=error_message is not None,
+        )
+    elif error_message is not None:
         task.error_message = error_message
-    elif status == TaskStatus.COMPLETED:
-        # F-23 residue + SV-W4-03 (see `transition_task_status`'s twin): a completion ends the
-        # failure history — the text is RETIRED to `metadata.last_attempt_error`, never just
-        # dropped, so "completed" and its evidence agree while the earlier attempt stays auditable.
-        _retire_error_message(task, status=str(TaskStatus.COMPLETED), actor="update_task_status")
     task.updated_at = utcnow()
     await db.flush()
     return task
@@ -645,7 +793,15 @@ async def transition_task_status(
     `result_summary`/`error_message` keep the service's "only when supplied" rule — a transition
     must not wipe a previously recorded message — EXCEPT on a completion, which retires an earlier
     attempt's error to `metadata.last_attempt_error` and clears the column (`_retire_error_message`,
-    the one rule both completed-writers share).
+    the one rule both completed-writers share) and retires a stale `metadata.result_status`
+    (`_retire_stale_verdict`).
+
+    A-W4-01 (wave 5): a completion that SUPPLIES an `error_message` is REFUSED by name — guard 4,
+    checked with the other three and before any mutation.  The two facts contradict each other
+    (`completed` means the failure history ended; an error is a failure), the caller is present and
+    can simply re-issue the request without it, and the row stays byte-identical.  Accepting it and
+    retiring it silently — the worker writer's answer, where a raise would roll back the run's
+    ledger row — would report success for a value this route then refuses to serve.
     """
     _require_valid_task_status(status)
     target = TaskStatus(status)
@@ -700,6 +856,25 @@ async def transition_task_status(
                 "accepted": list(accepted),
             },
         )
+    if target is TaskStatus.COMPLETED and error_message is not None:
+        # A-W4-01: the contradiction is refused at the door.  Same shape as the guards above:
+        # named code, the task in context, nothing mutated (the row is still `current`).
+        raise PolsiaError(
+            E_VALIDATION,
+            f"a completed task cannot carry an error_message (task {task_id}); 'completed' ends "
+            "the failure history this route would have to serve (nothing was written)",
+            how_to_fix=(
+                "send the failure as a `failed` write, or re-send the completion without "
+                "`error_message` — the completed row always serves a null error; a previous "
+                "attempt's text is preserved in the task's metadata as `last_attempt_error`"
+            ),
+            context={
+                "task_id": task_id,
+                "from": current,
+                "to": target.value,
+                "field": "error_message",
+            },
+        )
 
     task.status = target
     if target.value in _TERMINAL_TASK_STATUSES:
@@ -708,15 +883,19 @@ async def transition_task_status(
         _clear_parked_approval(task, status=target.value, actor=actor)
     if result_summary is not None:
         task.result_summary = result_summary
-    if error_message is not None:
-        task.error_message = error_message
-    elif target is TaskStatus.COMPLETED:
-        # F-23 residue + SV-W4-03: a COMPLETED row carrying an earlier attempt's failure text is a
-        # lie the owner reads (live: task 313 completed at 21:23 with `E_AGENT_BAD_OUTPUT … <= 280
-        # chars` still on the row).  A completion ENDS the failure history — the text is RETIRED to
-        # `metadata.last_attempt_error` (not destroyed), and the retry path that preserves it in the
-        # COLUMN writes `pending`, not `completed`, so it is untouched.
+    if target is TaskStatus.COMPLETED:
+        # F-23 residue + SV-W4-03 (see `update_task_status`'s twin): a COMPLETED row carrying an
+        # earlier attempt's failure text is a lie the owner reads (live: task 313 completed at
+        # 21:23 with `E_AGENT_BAD_OUTPUT … <= 280 chars` still on the row).  A completion ENDS the
+        # failure history — the text is RETIRED to `metadata.last_attempt_error` (not destroyed),
+        # and the retry path that preserves it in the COLUMN writes `pending`, not `completed`, so
+        # it is untouched.  A supplied error was refused above, so `supplied=False` here.
+        # The stale attempt VERDICT is retired the same way (wave 5): `execution_status` is the
+        # completing attempt's, not the one that parked this row.
+        _retire_stale_verdict(task, status=target.value, actor=actor)
         _retire_error_message(task, status=target.value, actor=actor)
+    elif error_message is not None:
+        task.error_message = error_message
     task.updated_at = utcnow()
     await db.flush()
 
@@ -1669,7 +1848,7 @@ async def materialize_upstream_results(db: AsyncSession, task: Task) -> list[Any
     results = await _load_upstream(db, task.metadata_json)
     if not results:
         return []
-    bag = dict(task.metadata_json or {})
+    bag = task_metadata_bag(task.metadata_json)
     bag[UPSTREAM_RESULTS_KEY] = [record.model_dump(mode="json") for record in results]
     bag[UPSTREAM_RESULTS_RECORDED_KEY] = utcnow().isoformat()
     task.metadata_json = bag
@@ -1805,7 +1984,7 @@ async def release_ready_dependents(db: AsyncSession, *, completed_id: int) -> li
             await materialize_upstream_results(db, ready_task)
             # OR-01: the release marker rides the SAME transaction as the release itself, so a
             # second completion hook sees it (the marker cannot be lost without the release).
-            merged = dict(ready_task.metadata_json or {})
+            merged = task_metadata_bag(ready_task.metadata_json)
             merged[DAG_RELEASED_KEY] = released_at
             merged["dag_released_by"] = int(completed_id)
             ready_task.metadata_json = merged
@@ -2380,7 +2559,11 @@ __all__ = [
     "APPROVAL_REAP_BATCH",
     "APPROVAL_TOKEN_FINGERPRINT_METADATA_KEY",
     "APPROVAL_TOKEN_METADATA_KEY",
+    "FOREIGN_METADATA_KEY",
+    "FOREIGN_METADATA_MAX_CHARS",
     "IN_FLIGHT_USAGE_KEY",
+    "LAST_ATTEMPT_ERROR_KEY",
+    "LAST_ATTEMPT_VERDICT_KEY",
     "NEEDS_ATTENTION_EXECUTION_STATUSES",
     "PARTIAL_EXECUTION_STATUS",
     "PARTIAL_SUMMARY_PREFIX",
@@ -2419,6 +2602,7 @@ __all__ = [
     "requeue_stale_claims",
     "task_completed_at",
     "task_execution_state",
+    "task_metadata_bag",
     "task_terminal_at_expr",
     "transition_task_status",
     "update_task_status",

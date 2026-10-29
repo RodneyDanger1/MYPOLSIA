@@ -999,7 +999,9 @@ async def _morning_cycle() -> dict[str, Any]:
         by_title = {str(row.title): int(row.id) for row in planned_rows}
         edges: dict[int, list[int]] = {}
         for row in planned_rows:
-            meta = dict(row.metadata_json or {})
+            from app.services.task_service import task_metadata_bag  # local import: no cycle
+
+            meta = task_metadata_bag(row.metadata_json)
             own = int(row.id)
             resolved: list[int] = []
             unresolved: list[str] = []
@@ -1032,7 +1034,9 @@ async def _morning_cycle() -> dict[str, Any]:
             rows_by_id = {int(row.id): row for row in planned_rows}
             for node in stranded:
                 row = rows_by_id[node]
-                meta = dict(row.metadata_json or {})
+                from app.services.task_service import task_metadata_bag
+
+                meta = task_metadata_bag(row.metadata_json)
                 meta["depends_on_cycle"] = [titles_by_id[dep] for dep in edges[node]]
                 # B2-C4-R2: the wire flattened the cycle to a BOOLEAN, throwing away the members
                 # the producer already had in hand.  Record them with their ids so the plan edge is

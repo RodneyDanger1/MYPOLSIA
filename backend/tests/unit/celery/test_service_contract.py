@@ -60,6 +60,16 @@ IMPORTED = {
     # imported from the service is still a real callable on it and every call site still binds
     # (the second test in this file proves that against the live signatures).
     "record_run_usage_progress",
+    # RE-PINNED DELIBERATELY (wave 5 / A-W4-03, 2026-10-28): the caller's eight `tasks.metadata`
+    # merges now go through the service's ONE normaliser instead of `dict(metadata_json or {})`.
+    # OLD pin: the nine names above; NEW pin: those nine plus `task_metadata_bag`.  The shape the
+    # pin protects is unchanged — the caller imports a callable from the service and every call
+    # site still binds (the second test in this file proves that against the live signatures) —
+    # and the name is a FUNCTION, not a key literal, because a non-object blob (`[null]`, observed
+    # live on task 313) must be normalised by the module that owns the column's contract.  The
+    # guard W5-LD-03 added beside it needs no new name: it uses the already-imported
+    # `heartbeat_task`/`get_task`.
+    "task_metadata_bag",
 }
 
 CLAIM_TASK_PARAMETERS = ["db", "worker", "lease_seconds", "task_id", "agent_type", "takeover_stale"]
