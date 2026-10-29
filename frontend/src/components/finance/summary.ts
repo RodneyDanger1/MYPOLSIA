@@ -3,6 +3,41 @@ import { NOT_MEASURED } from "@/components/dashboard/format";
 import type { FinanceSummary } from "@/lib/api";
 
 import { centsText, countText, usdText } from "./format";
+import type { RevenueSnapshotRow } from "./types";
+
+/**
+ * F-33 — the Revenue table's PROVENANCE column, from the marker the wire already carries
+ * (`RevenueSnapshotResponse.measured` / `.unmeasured` / `.provenance`, TS-1) and the finance page
+ * never rendered: a row of em dashes could otherwise read as "the business is at zero" instead of
+ * "that day's snapshot only measured two of its seven columns".
+ *
+ * The rule is the backend's own: `complete` = all seven columns measured, `partial` = some,
+ * `unmeasured` = the row records a date but no measurement. Counts are printed from the row's own
+ * lists — never a guessed number — and a word this build does not know is shown VERBATIM with the
+ * fact that it is unknown, never mapped onto a known state. A pre-TS-1 server (no marker) says
+ * "not declared"; absence is not "unmeasured" (the row may be fine; the server is old).
+ */
+export function revenueProvenanceText(row: RevenueSnapshotRow): string {
+  const word =
+    typeof row.provenance === "string" && row.provenance.trim() !== ""
+      ? row.provenance.trim()
+      : null;
+  if (word === null) return "not declared";
+  const measured = Array.isArray(row.measured)
+    ? row.measured.filter((name): name is string => typeof name === "string").length
+    : null;
+  const unmeasured = Array.isArray(row.unmeasured)
+    ? row.unmeasured.filter((name): name is string => typeof name === "string").length
+    : null;
+  if (word === "complete") {
+    return measured === null ? "complete" : `complete · ${measured}/7 measured`;
+  }
+  if (word === "partial") {
+    return unmeasured === null ? "partial" : `partial · ${unmeasured} unmeasured`;
+  }
+  if (word === "unmeasured") return "unmeasured — no column measured";
+  return `${word} — not a coverage word this build knows`;
+}
 
 /**
  * The summary's presentation logic, pure: which cards exist, what each one prints, and whether the

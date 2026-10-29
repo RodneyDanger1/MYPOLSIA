@@ -8,7 +8,7 @@ import { FinanceSummaryGrid } from "@/components/finance/FinanceSummaryGrid";
 import { HumanRateCard } from "@/components/finance/HumanRateCard";
 import { centsText, countText, moneyCentsText, textOrDash, usdText } from "@/components/finance/format";
 import { IdleNotice, ListSkeleton, ReadError, SummarySkeleton } from "@/components/finance/states";
-import { isIdleSummary } from "@/components/finance/summary";
+import { isIdleSummary, revenueProvenanceText } from "@/components/finance/summary";
 import type { ExpenseRow, RevenueSnapshotRow, StripeEventRow } from "@/components/finance/types";
 import { useFinanceRead } from "@/components/finance/useFinanceRead";
 import { useRefreshOnFocus } from "@/hooks/useRefreshOnFocus";
@@ -56,6 +56,10 @@ const REVENUE_COLUMNS: FinanceColumn<RevenueSnapshotRow>[] = [
   { key: "mrr", label: "MRR", value: (row) => centsText(row.mrr_cents) },
   { key: "arr", label: "ARR", value: (row) => centsText(row.arr_cents) },
   { key: "subscribers", label: "Subscribers", value: (row) => countText(row.active_subscribers) },
+  // F-33: the TS-1 marker the wire has always carried, rendered at last. Without it a row whose
+  // only measured columns are the two month/balance fields reads as a business at zero; with it
+  // the row says exactly how much of that day was measured.
+  { key: "provenance", label: "Provenance", value: (row) => revenueProvenanceText(row) },
   { key: "recorded", label: "Recorded", value: (row) => absoluteStamp(row.created_at) },
 ];
 

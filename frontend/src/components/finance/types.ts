@@ -17,6 +17,15 @@ export type RevenueSnapshotRow = {
   total_revenue_month_cents: number | null;
   stripe_balance_cents: number | null;
   created_at: string | null;
+  /**
+   * TS-1 provenance (F-33 renders it): the row's own measured columns, their exact complement, and
+   * the coverage word `complete` / `partial` / `unmeasured` — computed server-side by
+   * `finance_service.snapshot_provenance`, never stored. Optional here because a pre-TS-1 server
+   * omits them; the table then says "not declared" instead of inventing coverage.
+   */
+  measured?: string[];
+  unmeasured?: string[];
+  provenance?: string;
 };
 
 export type ExpenseRow = {
