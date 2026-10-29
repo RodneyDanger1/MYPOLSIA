@@ -382,8 +382,11 @@ async def test_post_sites_accepts_template_and_custom_domain_and_records_them(
         headers=auth_headers,
     )
     assert resp.status_code == 201, resp.text
-    # The frozen 201 body does not change: {slug, url, bytes}.
-    assert set(resp.json()) == {"slug", "url", "bytes"}
+    # OLD pin: `set(resp.json()) == {"slug", "url", "bytes"}` — the pre-F-32 frozen body.
+    # NEW (wave 4 / F-32 / R-W2-B2): the SAME three keys PLUS the additive `publishing_warnings`
+    # list, which bridge STOREFRONT-CONTRACT §3 specifies and the create route now serves.  No
+    # existing key was renamed or removed; the set is exactly one entry larger.
+    assert set(resp.json()) == {"slug", "url", "bytes", "publishing_warnings"}
     site_dir = tmp_path / "bold-probe"
     meta = json.loads((site_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["template"] == "bold"

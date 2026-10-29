@@ -362,7 +362,12 @@ async def test_post_sites_answers_201_with_slug_url_and_bytes(
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert set(body) == {"slug", "url", "bytes"}
+    # OLD pin: `set(body) == {"slug", "url", "bytes"}` — the pre-F-32 frozen body.
+    # NEW (wave 4 / F-32 / R-W2-B2): the same three keys plus the additive `publishing_warnings`
+    # list (bridge STOREFRONT-CONTRACT §3).  One entry larger; nothing renamed or removed.
+    assert set(body) == {"slug", "url", "bytes", "publishing_warnings"}
+    # This fixture stores a legal name, so the warning is populated and names exactly it.
+    assert [w["fields"] for w in body["publishing_warnings"]] == [["sender_legal_name"]]
     assert body["slug"] == "from-the-api"
     assert body["url"] == "/sites/from-the-api/"
     assert body["bytes"] > 0

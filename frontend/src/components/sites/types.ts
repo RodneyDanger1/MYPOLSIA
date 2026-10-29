@@ -19,12 +19,51 @@ export type SiteSummary = {
   custom_domain?: string | null;
 };
 
-/** The frozen 201 body — where the site is and how many bytes were written. */
+/**
+ * F-32 — one public-exposure warning `POST /sites` returns with a created site
+ * (bridge STOREFRONT-CONTRACT §3): the company-profile fields the generated `contact.html` prints
+ * verbatim, and how to stop it. `[]` when nothing is published.
+ */
+export type PublishingWarning = {
+  code: string;
+  message: string;
+  fields: string[];
+  how_to_fix: string;
+};
+
+/** The frozen 201 body — where the site is and how many bytes were written.
+ *
+ *  F-32 appends `publishing_warnings` (ADDITIVE). Typed as `unknown` on the wire and narrowed by
+ *  `sitePublishingWarnings` because a pre-F-32 server omits it entirely — absence is "this server
+ *  declared nothing", not an empty claim. */
 export type SiteCreated = {
   slug: string;
   url: string;
   bytes: number;
+  publishing_warnings?: unknown;
 };
+
+/** The 201 body's warnings, narrowed defensively. A malformed entry is DROPPED rather than
+ *  rendered as half a warning; an absent/non-list value is `[]` (an older server). */
+export function sitePublishingWarnings(created: SiteCreated | null | undefined): PublishingWarning[] {
+  const raw = created?.publishing_warnings;
+  if (!Array.isArray(raw)) return [];
+  const warnings: PublishingWarning[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.code !== "string" || typeof record.message !== "string") continue;
+    warnings.push({
+      code: record.code,
+      message: record.message,
+      fields: Array.isArray(record.fields)
+        ? record.fields.filter((field): field is string => typeof field === "string")
+        : [],
+      how_to_fix: typeof record.how_to_fix === "string" ? record.how_to_fix : "",
+    });
+  }
+  return warnings;
+}
 
 /* ── Render deploy (wave V25, lane L3) ─────────────────────────────────────────────────────── */
 /** The persisted `last_deploy` record of `meta.json` (backend `DeployRecordResponse`).

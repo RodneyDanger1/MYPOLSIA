@@ -5,6 +5,11 @@ Frozen interface (V24-PLAN):
     GET  /api/v1/sites -> [{slug, title, url, created_at, bytes}], newest first
     unknown slug -> E_NOT_FOUND; slug `[a-z0-9-]{2,48}`, collision -> E_VALIDATION naming it
 
+Wave 4 (F-32 / R-W2-B2) appends ONE additive key to that 201 body — the public-exposure warning
+the create form already carried in prose but an API client could not see:
+    POST /api/v1/sites -> 201 {slug, url, bytes, publishing_warnings: [{code, message, fields,
+                                how_to_fix}]}      # `[]` when the profile publishes nothing
+
 Wave V25 (lane L3) adds the Render deploy surface on top of the same disk-backed site:
     POST /api/v1/sites/{slug}/deploy  {dry_run?, approval_token?} (or ?dry_run=) -> the plan
          (dry, default) or the submitted deploy; `E_CONFIG` with no key/service, `E_UPSTREAM`
@@ -79,12 +84,32 @@ class SiteCreateRequest(BaseModel):
     )
 
 
+class PublishingWarning(BaseModel):
+    """One public-exposure warning for a created site (F-32; bridge STOREFRONT-CONTRACT §3).
+
+    `fields` names the company-profile fields the generated `contact.html` prints VERBATIM, in the
+    order the page prints them; a warning exists only for fields the profile actually fills, and
+    `[]` is the honest answer when none are set.
+    """
+
+    code: str
+    message: str
+    fields: list[str]
+    how_to_fix: str
+
+
 class SiteCreatedResponse(BaseModel):
-    """Exactly the frozen 201 body: where the site is and how many bytes were written."""
+    """The frozen 201 body: where the site is and how many bytes were written.
+
+    F-32 / R-W2-B2 appends the ADDITIVE `publishing_warnings` list (the exact shape in
+    `bridge/STOREFRONT-CONTRACT.md` §3).  No existing key changes, so a pre-F-32 client parses the
+    body as it always did; `[]` is served — never omitted — when nothing is published.
+    """
 
     slug: str
     url: str
     bytes: int
+    publishing_warnings: list[PublishingWarning] = Field(default_factory=list)
 
 
 class SiteSummaryResponse(BaseModel):

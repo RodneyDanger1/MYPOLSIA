@@ -12,11 +12,13 @@ import {
   approvalRefusalFingerprint,
   bytesText,
   describeError,
+  sitePublishingWarnings,
   type ApprovalGate,
   type ApprovalMint,
   type DeployRecord,
   type DeployResponse,
   type DeployStateResponse,
+  type PublishingWarning,
   type SiteCreated,
   type SiteDeleted,
   type SiteDraft,
@@ -73,7 +75,7 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
  *
  * Every control calls a REAL route and nothing else (`backend/app/api/v1/sites.py`):
  *   GET  /sites           -> [{slug, title, url, created_at, bytes}], newest first
- *   POST /sites           -> 201 {slug, url, bytes}
+ *   POST /sites           -> 201 {slug, url, bytes, publishing_warnings} (F-32 additive key)
  * The generated files are served by the backend's StaticFiles mount at `/sites/<slug>/` (nginx
  * proxies that prefix), so Open/Copy/the iframe all point at the artifact a visitor gets — there is
  * no stored copy in the UI that could drift from the served page.
@@ -129,6 +131,9 @@ export default function SitesPage() {
 
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  /** F-32: what the LAST successful create publishes (from the 201's `publishing_warnings`).
+   *  Cleared when another create starts or fails, so a stale warning never describes a new site. */
+  const [createWarnings, setCreateWarnings] = useState<PublishingWarning[]>([]);
 
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [copied, setCopied] = useState<{ slug: string; url: string } | null>(null);
@@ -474,6 +479,7 @@ export default function SitesPage() {
   async function create(draft: SiteDraft): Promise<boolean> {
     setBusy(true);
     setCreateError(null);
+    setCreateWarnings([]);
     setCopied(null);
     // V26: `template` is sent only when the operator picked a non-default preset, and
     // `custom_domain` only when one was typed — blank boxes stay omitted so the server's own
@@ -491,10 +497,13 @@ export default function SitesPage() {
     try {
       const created = await api.post<SiteCreated>("/sites", body);
       setSelectedSlug(created.slug);
+      // F-32: the warning the API client was previously never told — rendered above the rows.
+      setCreateWarnings(sitePublishingWarnings(created));
       reload();
       return true;
     } catch (error: unknown) {
       setCreateError(describeError(error));
+      setCreateWarnings([]);
       return false;
     } finally {
       setBusy(false);
@@ -582,6 +591,33 @@ export default function SitesPage() {
           </p>
         ) : null}
       </Card>
+
+      {/* F-32 / R-W2-B2: the create response now carries the exposure warning, and it is rendered
+          ABOVE the site rows (contract §3: a distinct `data-state="warning"` block). It describes
+          the site just created — the fields the generated contact page publishes verbatim and how
+          to stop it — instead of leaving that only in the pre-create form sentence. */}
+      {createWarnings.length > 0 ? (
+        <div
+          data-state="warning"
+          data-testid="sites-publishing-warnings"
+          className="border border-amber-300 bg-amber-50 px-3 py-2"
+        >
+          {createWarnings.map((warning) => (
+            <div key={warning.code} data-testid={`sites-publishing-warning-${warning.code}`}>
+              <p className="ui-label text-ink">PUBLISHING WARNING · {warning.code}</p>
+              <p className="mt-1 text-sm text-ink">{warning.message}</p>
+              {warning.fields.length > 0 ? (
+                <p className="ui-label mt-1 text-ink-muted">
+                  published fields: {warning.fields.join(", ")}
+                </p>
+              ) : null}
+              {warning.how_to_fix ? (
+                <p className="mt-1 text-xs text-ink-muted">{warning.how_to_fix}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {loading ? (
         <p data-testid="sites-loading" aria-busy="true" className="text-sm text-ink-muted">

@@ -203,6 +203,76 @@ def _profile_fields(company: CompanyConfig) -> dict[str, str]:
     }
 
 
+#: The three company-profile fields the CONTACT PAGE prints verbatim (bridge STOREFRONT-CONTRACT
+#: §3), as `(profile-reader key, company_config field it names, what the page publishes)`.  The
+#: reader key differs from the config field for the contact email: `_profile_fields` names it
+#: `contact_email` because that is the renderer's own word, while the profile field (and therefore
+#: the warning's `fields` entry) is `notification_email`.  Ordered as the page prints them, so the
+#: `fields` list reads in the same order a visitor sees.
+PUBLISHING_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("sender_postal_address", "sender_postal_address", "your stored postal address"),
+    ("sender_legal_name", "sender_legal_name", "your stored legal name"),
+    ("contact_email", "notification_email", "a mailto: link to your contact email"),
+)
+
+#: The ONE warning code for "creating this site publishes contact details" (contract §3).
+PUBLIC_CONTACT_DETAILS_CODE = "W_PUBLIC_CONTACT_DETAILS"
+
+#: Why the fix is a profile edit, not a site edit: the generator prints what Settings holds.
+_PUBLISHING_FIX = (
+    "clear the named fields in Settings → Company if this site is a draft that must not publish "
+    "them, or confirm that you intend to publish them; the contact page always prints exactly "
+    "what the company profile holds"
+)
+
+
+def publishing_warnings(company: CompanyConfig) -> list[dict[str, Any]]:
+    """The public-exposure warning `POST /sites` returns with a created site (F-32 / R-W2-B2).
+
+    THE DEFECT this closes: creating a site writes `contact.html` with the stored postal address,
+    legal name and contact email VERBATIM, and until now an API client got `{slug,url,bytes}` and
+    no warning at all (the create form carried a sentence; the wire did not).  The shape is
+    `bridge/STOREFRONT-CONTRACT.md` §3:
+
+        publishing_warnings: [{code, message, fields, how_to_fix}]
+
+    Honesty rules, pinned by `tests/unit/test_w4_f32_site_publishing_warnings.py`:
+
+      * the warning is emitted ONLY for fields the profile actually fills — one of them set means
+        `fields` names that one and the message claims only that one (never a blanket sentence
+        about an address nobody stored);
+      * none set is `[]` — the honest empty list the contract asks for ("When none of those three
+        fields is set");
+      * the message is built from the same `_profile_fields` reader the renderer uses, so the
+        warning cannot describe a page different from the one written;
+      * the function only READS the profile: it never clears a field, and the site is generated
+        exactly as before.
+    """
+    fields = _profile_fields(company)
+    published = [
+        (config_field, phrase)
+        for reader_key, config_field, phrase in PUBLISHING_FIELDS
+        if fields[reader_key]
+    ]
+    if not published:
+        return []
+    if len(published) == 1:
+        listed = published[0][1]
+    else:
+        listed = ", ".join(phrase for _, phrase in published[:-1]) + " and " + published[-1][1]
+    return [
+        {
+            "code": PUBLIC_CONTACT_DETAILS_CODE,
+            "message": (
+                f"contact.html publishes {listed} verbatim and unredacted, so anyone who can "
+                "reach this page can read them."
+            ),
+            "fields": [config_field for config_field, _ in published],
+            "how_to_fix": _PUBLISHING_FIX,
+        }
+    ]
+
+
 def _website_line(website: str) -> str:
     """The footer's website: a link only for an http(s) URL, escaped text otherwise."""
     if not website:
@@ -1594,6 +1664,10 @@ async def generate_site(
         "bytes": total,
         "title": page_title,
         "created_at": stamp,
+        # F-32 / R-W2-B2: what creating THIS site publishes, computed from the SAME profile the
+        # pages were rendered from (additive; `[]` when nothing is public).  A client that calls
+        # this route gets the warning the form has always carried in prose.
+        "publishing_warnings": publishing_warnings(company),
     }
 
 
@@ -1602,6 +1676,8 @@ __all__ = [
     "MAX_PRODUCTS",
     "MAX_PRODUCT_DESCRIPTION",
     "PAGES",
+    "PUBLISHING_FIELDS",
+    "PUBLIC_CONTACT_DETAILS_CODE",
     "SITES_ROOT",
     "SITEMAP_FILE",
     "SLUG_PATTERN",
@@ -1615,6 +1691,7 @@ __all__ = [
     "derive_slug",
     "generate_site",
     "list_sites",
+    "publishing_warnings",
     "read_deploy_state",
     "read_site",
     "read_site_meta",
