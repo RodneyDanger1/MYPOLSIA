@@ -7,6 +7,7 @@ import { readErrorText } from "@/components/dashboard/states";
 import { Button, Chip, cn } from "@/components/ui";
 
 import { runThisTask, triggerTaskRun } from "./actions";
+import { ExecutionVerdictChip } from "./ExecutionVerdictChip";
 import { recoveryFor } from "./recovery";
 import { errorText, statusChipClass, statusLabel } from "./status";
 import type { TaskRow } from "./types";
@@ -163,6 +164,10 @@ export function TaskCard({
           <Chip variant="soft" className={statusChipClass(task.status)}>
             {statusLabel(task.status)}
           </Chip>
+          {/* F-07: the run's own verdict sits BESIDE the lifecycle chip — a `completed` row
+              whose envelope said `partial` must not read as a clean success. Renders nothing
+              for an honest completion. */}
+          <ExecutionVerdictChip task={task} testId={`task-verdict-${task.id}`} />
           <span className="ui-label ml-auto text-ink-muted">{ageChip(task)}</span>
           {/* Yields its spot while the quick-action row is revealed (same triggers). */}
           <span

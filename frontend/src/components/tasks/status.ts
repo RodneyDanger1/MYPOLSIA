@@ -50,3 +50,81 @@ export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.display;
   return e instanceof Error ? e.message : String(e);
 }
+
+/**
+ * F-07 — the run's OWN verdict (wave-2 backend, wave-3 UI), read from the two additive wire
+ * fields `execution_status` / `needs_attention` (`backend/app/schemas/task.py:127-142`).
+ *
+ * The defect this exists for: tasks 311/312/314 carried `status: completed` while their own
+ * envelopes said `[partial]` — every badge read COMPLETED, which was true about the lifecycle and
+ * false about the outcome. The lifecycle vocabulary is FROZEN (`TASK_STATUS_VALUES`, the server's
+ * `TASK_TRANSITIONS` matrix); the verdict is a SEPARATE chip that sits beside it.
+ *
+ * Rules:
+ *   * `execution_status` is shown verbatim (uppercased) even when the word is unknown: an
+ *     unrecognised verdict is the server's, not an excuse to hide it or invent a friendlier one.
+ *   * `needs_attention: true` with NO execution_status still renders — the server flagged the row
+ *     and named no reason; the chip says exactly that (never a silent clean success).
+ *   * null/absent/false on both renders NOTHING: an honest clean completion gets no badge, so the
+ *     chip's presence always means something.
+ */
+const VERDICT_TONE: Record<string, string> = {
+  partial: "text-amber-800",
+  refused: "text-rose-800",
+};
+
+export type ExecutionVerdict = {
+  /** The chip label — the server's own word, uppercased. */
+  label: string;
+  /** The chip's text colour class (≥ 4.5:1 on the soft chip fill, like `STATUS_TEXT`). */
+  tone: string;
+  /** One sentence the title/description explains — what the badge does and does not mean. */
+  explanation: string;
+};
+
+export function executionVerdict(row: {
+  execution_status?: string | null;
+  needs_attention?: boolean | null;
+}): ExecutionVerdict | null {
+  const raw =
+    typeof row.execution_status === "string" ? row.execution_status.trim() : "";
+  if (raw !== "") {
+    const known = raw.toLowerCase();
+    if (known === "partial") {
+      return {
+        label: "PARTIAL",
+        tone: VERDICT_TONE.partial,
+        explanation:
+          "The run's own envelope said PARTIAL: it did real work but reported the result as " +
+          "incomplete. The lifecycle status beside it is the server's — this was not a clean " +
+          "completion.",
+      };
+    }
+    if (known === "refused") {
+      return {
+        label: "REFUSED",
+        tone: VERDICT_TONE.refused,
+        explanation:
+          "The run's own envelope said REFUSED: it produced a refusal rather than the work " +
+          "asked for. The lifecycle status beside it is the server's.",
+      };
+    }
+    return {
+      label: raw.toUpperCase(),
+      tone: VERDICT_TONE.partial,
+      explanation:
+        `The run recorded execution status "${raw}". This surface does not know that word, ` +
+        "so it is shown verbatim rather than mapped to a friendlier one.",
+    };
+  }
+  if (row.needs_attention === true) {
+    return {
+      label: "NEEDS ATTENTION",
+      tone: VERDICT_TONE.partial,
+      explanation:
+        "The server flagged this row as needing attention but recorded no execution status — " +
+        "the flag is shown, the reason is not invented.",
+    };
+  }
+  return null;
+}

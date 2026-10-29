@@ -10,9 +10,10 @@ import { api } from "@/lib/api";
 
 import { runThisTask } from "./actions";
 import { fingerprintsForTask } from "./approval";
+import { ExecutionVerdictChip } from "./ExecutionVerdictChip";
 import { recoveryFor } from "./recovery";
 import { costUsdText, tokenText } from "./runTruth";
-import { errorText, statusChipClass, statusLabel } from "./status";
+import { errorText, executionVerdict, statusChipClass, statusLabel } from "./status";
 import { TaskAttachments } from "./TaskAttachments";
 import { TaskStatusControl } from "./TaskStatusControl";
 import {
@@ -94,6 +95,9 @@ export function TaskDetailContent({
    * renaming its state) and it stays out of this grammar on purpose.
    */
   const recovery = recoveryFor(row);
+  /** F-07: the run's own verdict beside the lifecycle status. Null for an honest clean
+   *  completion, so the explanation below only ever appears when the badge does. */
+  const verdict = executionVerdict(row);
   const descriptionLines = splitDescription(row.description);
   /** F-36/C4: what the plan recorded about its dependencies — titles, ids, unresolved names and
    *  the dropped cycle (its MEMBERS when the server serves them), each read from D1's own key
@@ -215,6 +219,9 @@ export function TaskDetailContent({
           <Chip variant="soft" className={statusChipClass(row.status)}>
             {statusLabel(row.status)}
           </Chip>
+          {/* F-07: a `completed` row whose run said `partial` must not read as a clean success.
+              The verdict is a SEPARATE chip — `status` keeps the server's frozen vocabulary. */}
+          <ExecutionVerdictChip task={row} testId="task-detail-verdict" />
         </MetaRow>
         <MetaRow label="Agent">
           <span title={row.agent_type}>{agentLabel(row.agent_type)}</span>
@@ -229,6 +236,14 @@ export function TaskDetailContent({
         {row.source ? <MetaRow label="Source">{row.source}</MetaRow> : null}
         <MetaRow label="Priority">{row.priority ?? NOT_MEASURED}</MetaRow>
       </dl>
+
+      {/* F-07: what the verdict badge means, in one sentence, whenever it is present. A clean
+          completion renders nothing here — absence means the run claimed no non-ok verdict. */}
+      {verdict ? (
+        <p className="mt-2 text-xs text-ink-muted" data-testid="task-verdict-explanation">
+          {verdict.explanation}
+        </p>
+      ) : null}
 
       {/* ── F-36 / A5-02: the plan's provenance ─────────────────────────────────────────────
           The orchestrator persists the TaskSpec edge the plan already carried on the task row's

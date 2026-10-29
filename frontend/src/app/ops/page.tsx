@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { OpsApprovals } from "@/components/ops/OpsApprovals";
+import { OpsArtifacts } from "@/components/ops/OpsArtifacts";
 import { OpsRetention } from "@/components/ops/OpsRetention";
 import { OpsRunsTable } from "@/components/ops/OpsRunsTable";
 import { OpsSwitches } from "@/components/ops/OpsSwitches";
@@ -56,6 +57,11 @@ export default function OpsPage() {
       </div>
 
       <OpsTriggers tick={tick} onRetry={bump} />
+
+      {/* Wave 3 / R-W2-B3: the run-artifact reader over the wave-2 API. It reads its own index on
+          mount and on its own Refresh (not on every poll tick): the workspace walk is a disk scan
+          and an owner-driven read belongs in the card, not in the page's 15 s cadence. */}
+      <OpsArtifacts />
 
       {/* V27/L2: the run-workspace retention panel — the manual surface for the daily beat task.
           Additive, same Ops* card language; reads its own last-result route on mount only. */}

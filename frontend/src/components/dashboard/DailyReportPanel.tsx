@@ -35,6 +35,69 @@ type DailyReport = {
   cash_block?: CashBlock | null;
 };
 
+/**
+ * R-W10-1 — the report cycle's state, appended by truthseeker to `GET /dashboard/summary`
+ * (`DashboardReportCycle`, `backend/app/schemas/report.py:82-145`). Every field is read from
+ * committed rows (`activity_log.cycle_claimed`, `daily_reports.evening_summary`, the last named
+ * skip) — the shape carries `scheduler_observable: false` plus the reason, because the API cannot
+ * see the beat process. Declared locally because the shared api module does not carry it.
+ */
+type ReportCycle = {
+  state: string;
+  state_reason: string | null;
+  last_claim_at: string | null;
+  last_claim_cycle: string | null;
+  last_claim_day: string | null;
+  last_evening_claim_day: string | null;
+  last_completed_report_date: string | null;
+  last_skip_reason: string | null;
+  claims_retained_since: string | null;
+  scheduler_observable: boolean;
+  scheduler_reason: string | null;
+};
+
+type CycleRead =
+  | { kind: "loading" }
+  /** The summary read failed, or carried no `report_cycle` (an older server): the panel states
+   *  which, and does NOT invent a state. */
+  | { kind: "unavailable"; reason: string }
+  | { kind: "ready"; cycle: ReportCycle };
+
+/** The state vocabulary the backend derives (`DashboardReportCycle` docstring), mapped to one
+ *  headline each. An UNKNOWN word is rendered verbatim by `CycleBlock` — never folded into a
+ *  happier state. */
+const CYCLE_HEADLINES: Record<string, string> = {
+  never_triggered: "The report cycle has never started on this deployment",
+  not_run_today: "The report cycle has not run today — idle, not broken",
+  report_running: "The report cycle is in progress today",
+  report_written_today: "The report cycle wrote today's report",
+  report_missing: "The report cycle started and never finished — this is the broken signature",
+  unknown: "The report cycle's state could not be determined",
+};
+
+function asReportCycle(summary: unknown): ReportCycle | null {
+  if (summary === null || typeof summary !== "object" || Array.isArray(summary)) return null;
+  const raw = (summary as { report_cycle?: unknown }).report_cycle;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const cycle = raw as Record<string, unknown>;
+  if (typeof cycle.state !== "string" || cycle.state.trim() === "") return null;
+  const text = (value: unknown): string | null =>
+    typeof value === "string" && value !== "" ? value : null;
+  return {
+    state: cycle.state,
+    state_reason: text(cycle.state_reason),
+    last_claim_at: text(cycle.last_claim_at),
+    last_claim_cycle: text(cycle.last_claim_cycle),
+    last_claim_day: text(cycle.last_claim_day),
+    last_evening_claim_day: text(cycle.last_evening_claim_day),
+    last_completed_report_date: text(cycle.last_completed_report_date),
+    last_skip_reason: text(cycle.last_skip_reason),
+    claims_retained_since: text(cycle.claims_retained_since),
+    scheduler_observable: cycle.scheduler_observable === true,
+    scheduler_reason: text(cycle.scheduler_reason),
+  };
+}
+
 /** The cash block's wire shape (plan §9 B2): money inputs are nullable-with-a-reason. Money here is
  *  DOLLARS, not cents — the house names every cents field `*_cents` (mrr_cents, amount_cents,
  *  stripe_balance_cents), and this block's fields carry no such suffix. */
@@ -60,8 +123,19 @@ type CashBlock = {
  * this is not a failed read"), object = the report. The old absent copy said "the daily cycle
  * writes one after the evening run — check back once it has run", which promised a write this
  * panel cannot see: the live box had no report since 2026-10-20 and the sentence still rendered.
- * The panel now states its own boundary — it can see reports, not the scheduler — and points at
- * VIEW ALL, where every report that DOES exist is listed with its date.
+ * Wave 2 therefore removed the promise and stated the panel's boundary ("it can see reports, not
+ * the scheduler").
+ *
+ * R-W10-1 (wave 3, truthseeker): the boundary is now narrower and the panel can say WHY the day
+ * is empty. `GET /dashboard/summary` carries an additive `report_cycle` block derived from
+ * committed claim rows (`activity_log.cycle_claimed`, `daily_reports.evening_summary`, the last
+ * named skip): `not_run_today` ("idle, not broken"), `report_running`, `report_missing` ("started
+ * and never finished — the broken signature"), `never_triggered`, `report_written_today`,
+ * `unknown`. It is read ONLY when today's report is absent (the state that needs explaining), so
+ * a dashboard with a report issues no extra read. The block still declares
+ * `scheduler_observable: false` with its reason — the API cannot see the beat process, so no
+ * next-run time is claimed here either. An older server (no `report_cycle`) or a failed summary
+ * read renders a NAMED unavailable line, never a guessed state.
  *
  * It is titled **Daily Report** and not "Documents" on purpose — this deployment has no
  * documents store (no documents router exists in `backend/app/api/v1/`), and a "Documents"
@@ -78,6 +152,8 @@ export function DailyReportPanel() {
   const viewAllRef = useRef<HTMLButtonElement>(null);
   // V24/L5: the failure's Retry re-issues this read.
   const [attempt, setAttempt] = useState(0);
+  /** R-W10-1: the cycle state, read only once today's report is known to be ABSENT. */
+  const [cycle, setCycle] = useState<CycleRead | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +171,41 @@ export function DailyReportPanel() {
       cancelled = true;
     };
   }, [attempt]);
+
+  // R-W10-1: the absent state needs the cycle's own evidence to say whether it is idle or broken.
+  // A present report needs nothing extra, so this read happens ONLY on the absent path (report
+  // === null, after the daily read settled), and it is re-issued by the same Retry control.
+  useEffect(() => {
+    if (report !== null) {
+      setCycle(null);
+      return;
+    }
+    let cancelled = false;
+    setCycle({ kind: "loading" });
+    api
+      .get<unknown>("/dashboard/summary")
+      .then((summary) => {
+        if (cancelled) return;
+        const parsed = asReportCycle(summary);
+        setCycle(
+          parsed === null
+            ? {
+                kind: "unavailable",
+                reason:
+                  "the dashboard summary carried no report-cycle state (this server predates it)",
+              }
+            : { kind: "ready", cycle: parsed },
+        );
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setCycle({ kind: "unavailable", reason: readErrorText(e) });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [report, attempt]);
 
   const loading = report === undefined && !error;
 
@@ -140,21 +251,18 @@ export function DailyReportPanel() {
       ) : null}
       {!loading && !error && report === null ? (
         // F-10 (wave 2): the ABSENT state, named honestly. The endpoint answered 200 with `null`
-        // (the documented "no report for the day" — not an error), so this says exactly that and
-        // claims NOTHING about the cycle: the old copy promised "the daily cycle writes one after
-        // the evening run", but this panel cannot see the scheduler — on the live box no report
-        // had been written since 2026-10-20 and the promise still rendered. The last sentence is
-        // the boundary: this panel reports what was written; it does not know why nothing was.
+        // (the documented "no report for the day" — not an error), so this says exactly that.
+        // R-W10-1 (wave 3): the cycle block below then says WHICH kind of empty this is — idle,
+        // running, never triggered, or started-and-never-finished — from committed claim rows.
         <div data-testid="daily-report-absent" data-state="absent" className="space-y-2">
           <p className="ui-label text-ink">Not written yet — this is not a failed read</p>
           <p className="text-sm text-ink-muted" data-testid="daily-report-absent-copy">
             The reports store answered that no report exists for today. Nothing was written for
             this day; the read itself succeeded.
           </p>
+          <CycleBlock read={cycle} />
           <p className="ui-label text-ink-muted">
-            This panel can see reports, not the scheduler — it cannot tell whether the daily cycle
-            is still to run, is not scheduled, or stopped. VIEW ALL lists every report that HAS
-            been written, with its date.
+            VIEW ALL lists every report that HAS been written, with its date.
           </p>
         </div>
       ) : null}
@@ -166,6 +274,103 @@ export function DailyReportPanel() {
       </Card>
       <DocumentsOverlay open={docsOpen} onClose={closeOverlay} />
     </>
+  );
+}
+
+/**
+ * R-W10-1 — the report cycle's state, rendered INSIDE the absent state only.
+ *
+ * Three reads are kept distinct: still reading (`daily-report-cycle-loading`), unavailable
+ * (`daily-report-cycle-unavailable` — the summary read failed or this server predates
+ * `report_cycle`; the panel says which and does NOT invent a state), and the derived state
+ * (`daily-report-cycle`, `data-state` = the server's own word). The headline is a word-for-word
+ * mapping of the backend vocabulary (`DashboardReportCycle` docstring); an unknown word is shown
+ * verbatim, never folded into a happier state. Every evidence row is a committed fact; absence is
+ * stated ("none retained"), never left blank or filled with a guess. The scheduler line always
+ * states the boundary: the API cannot observe the beat process, so no next-run time is claimed.
+ */
+function CycleBlock({ read }: { read: CycleRead | null }) {
+  if (read === null || read.kind === "loading") {
+    return (
+      <p
+        className="ui-label text-ink-muted"
+        aria-busy="true"
+        data-testid="daily-report-cycle-loading"
+      >
+        Reading the report cycle&rsquo;s state…
+      </p>
+    );
+  }
+  if (read.kind === "unavailable") {
+    return (
+      <div
+        data-testid="daily-report-cycle-unavailable"
+        data-state="unavailable"
+        className="space-y-1"
+      >
+        <p className="ui-label text-ink">Cycle state unavailable</p>
+        <p className="text-sm text-ink-muted">{read.reason}</p>
+        <p className="ui-label text-ink-muted">
+          Without the cycle state this panel cannot tell an idle cycle from a broken one — it
+          reports that boundary rather than guessing a state.
+        </p>
+      </div>
+    );
+  }
+  const { cycle } = read;
+  const headline =
+    CYCLE_HEADLINES[cycle.state] ?? `The report cycle reported “${cycle.state}”`;
+  const claimLine =
+    cycle.last_claim_at !== null
+      ? `${cycle.last_claim_at}${cycle.last_claim_cycle ? ` (${cycle.last_claim_cycle})` : ""}${
+          cycle.last_claim_day ? ` for ${cycle.last_claim_day}` : ""
+        }`
+      : "no cycle claim in the retained window";
+  return (
+    <div data-testid="daily-report-cycle" data-state={cycle.state} className="space-y-1 border border-line bg-surface-sunk p-2">
+      <p className="ui-label text-ink" data-testid="daily-report-cycle-headline">
+        {headline}
+      </p>
+      {cycle.state_reason !== null ? (
+        <p className="text-sm text-ink-muted" data-testid="daily-report-cycle-reason">
+          {cycle.state_reason}
+        </p>
+      ) : null}
+      <dl className="ui-label space-y-0.5 text-ink-muted">
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt>Last completed report</dt>
+          <dd className="text-ink">
+            {cycle.last_completed_report_date ?? "never — no evening summary recorded"}
+          </dd>
+        </div>
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt>Last cycle claim</dt>
+          <dd className="text-ink">{claimLine}</dd>
+        </div>
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt>Last report-cycle (evening) claim</dt>
+          <dd className="text-ink">{cycle.last_evening_claim_day ?? "none retained"}</dd>
+        </div>
+        {cycle.last_skip_reason !== null ? (
+          <div className="flex flex-wrap justify-between gap-2">
+            <dt>Last named skip</dt>
+            <dd className="text-ink">{cycle.last_skip_reason}</dd>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt>Evidence retained since</dt>
+          <dd className="text-ink">{cycle.claims_retained_since ?? "unknown"}</dd>
+        </div>
+      </dl>
+      <p className="ui-label text-ink-muted" data-testid="daily-report-cycle-scheduler">
+        {cycle.scheduler_observable
+          ? "The scheduler is observable for this deployment."
+          : `No next-run time is claimed: ${
+              cycle.scheduler_reason ??
+              "the scheduler runs in a separate process this API cannot observe"
+            }`}
+      </p>
+    </div>
   );
 }
 

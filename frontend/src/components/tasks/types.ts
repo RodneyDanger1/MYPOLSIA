@@ -152,6 +152,19 @@ export type TaskRow = Task & {
    * "unknown", so an empty list is never backfilled from `result_summary` prose.
    */
   approval_fingerprints?: string[] | null;
+  /**
+   * F-07 — the run's OWN verdict, served BESIDE the lifecycle `status`
+   * (`task_service.task_execution_state`, `backend/app/schemas/task.py:127-142`).
+   *
+   * `status` is the persisted lifecycle and stays the one word the matrix pins; this pair says how
+   * the run itself ended: `partial` (real work, but the run's own envelope declared the result
+   * incomplete), `refused` (it produced a refusal), or null. A `completed` row with
+   * `needs_attention: true` is NOT a clean success and must never render as one — read it through
+   * `executionVerdict` (`status.ts`), never directly. Both keys are additive/optional: an older
+   * server omits them and the badge simply does not render.
+   */
+  execution_status?: string | null;
+  needs_attention?: boolean | null;
 };
 
 /** `POST /agents/{agent_type}/trigger` (agents.py:54-58, 202). */

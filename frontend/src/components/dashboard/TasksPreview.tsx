@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { Card, Chip } from "@/components/ui";
+import { ExecutionVerdictChip } from "@/components/tasks/ExecutionVerdictChip";
 import { api, type Task } from "@/lib/api";
 
 import { agentLabel, relativeTime } from "./format";
@@ -14,8 +15,16 @@ import { PanelError, PanelSkeleton, readErrorText } from "./states";
  * (`backend/app/schemas/task.py`), which carries a nullable `description` the shared `Task` type
  * stops short of; reading it here is additive (no shared file is changed) and it is what the live
  * task card shows as its second line. Everything else is the shared row shape.
+ *
+ * F-07 adds the run's own verdict pair (`execution_status` / `needs_attention`) — the dashboard
+ * preview is a task surface too, so a `completed` row that said `partial` must not read as a
+ * clean success here either. Both are optional: an older server omits them and the chip is absent.
  */
-type TaskRow = Task & { description?: string | null };
+type TaskRow = Task & {
+  description?: string | null;
+  execution_status?: string | null;
+  needs_attention?: boolean | null;
+};
 
 /**
  * How many rows the preview asks for — the live widget shows four. The API returns a bare list with
@@ -136,6 +145,8 @@ function TaskCard({ task }: { task: TaskRow }) {
             <Chip variant="soft" className={statusText}>
               {task.status ?? "unknown"}
             </Chip>
+            {/* F-07: the run's own verdict, beside the lifecycle chip — never instead of it. */}
+            <ExecutionVerdictChip task={task} testId={`preview-verdict-${task.id}`} />
           </span>
           <span className="ui-label flex items-center gap-3 text-ink-muted">
             <span className="text-ink">Priority {task.priority ?? "—"}</span>
