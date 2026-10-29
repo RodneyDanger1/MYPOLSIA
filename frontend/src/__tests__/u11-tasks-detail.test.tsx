@@ -165,7 +165,16 @@ describe("status write", () => {
     // Success updates the VISIBLE state — the chip now carries the server's returned status.
     expect(screen.getByText("cancelled", { selector: ".chip" })).toHaveClass("text-neutral-600");
     // ...and the surface re-reads the task (read-after-write).
-    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    // OLD pin: `expect(mockGet).toHaveBeenCalledTimes(2)`. That counted EVERY api.get on the page,
+    // and it was already satisfied at mount by the attachments panel's own read (task + attachments
+    // = 2) — so it never actually proved the re-read. NEW (F-27 / wave 4): the page also reads the
+    // task's runs once (`GET /runs?task_id=5`), so the all-call count is 3 at mount. The intent is
+    // repaired to count reads of THIS task's path: 1 at mount + 1 after the status write = 2.
+    await waitFor(() =>
+      expect(
+        mockGet.mock.calls.filter(([path]) => path === "/tasks/5"),
+      ).toHaveLength(2),
+    );
   });
 
   it("a refused transition renders by name, moves no visible state, and stays armed", async () => {

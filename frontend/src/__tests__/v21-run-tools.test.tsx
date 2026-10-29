@@ -203,8 +203,22 @@ it("re-reads when the route id changes and never shows the previous run under th
   const { rerender } = render(<RunDetailPage params={{ id: "5" }} />);
   expect(await screen.findByText("Run five")).toBeInTheDocument();
 
+  // F-27 (wave 4): the page now ALSO reads `GET /artifacts/{run_id}` for the run it displays, so a
+  // one-shot `mockReturnValueOnce` is ambiguous — the artifacts panel can consume the queued value
+  // first (child effects mount before the page's own). The mock is therefore PATH-AWARE: only
+  // `/runs/8` is the deferred read this test is about; the artifacts read answers an empty listing.
   const d = deferred<RunDetailRow>();
-  mockGet.mockReturnValueOnce(d.promise);
+  const EMPTY_LISTING = {
+    run_id: "8",
+    items: [],
+    total: 0,
+    total_bytes: 0,
+    truncated: false,
+    skipped_links: 0,
+  };
+  mockGet.mockImplementation((path: string) =>
+    path === "/runs/8" ? d.promise : Promise.resolve(EMPTY_LISTING),
+  );
   rerender(<RunDetailPage params={{ id: "8" }} />);
 
   await waitFor(() => expect(mockGet).toHaveBeenLastCalledWith("/runs/8"));
@@ -213,4 +227,6 @@ it("re-reads when the route id changes and never shows the previous run under th
 
   d.resolve(runDetail({ id: 8, task_title: "Run eight" }));
   expect(await screen.findByText("Run eight")).toBeInTheDocument();
+  // The artifacts panel renders under the loaded run and reports its measured zero honestly.
+  expect(await screen.findByTestId("run-artifacts-empty")).toHaveTextContent(/wrote nothing/);
 });

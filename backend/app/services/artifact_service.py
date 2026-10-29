@@ -86,6 +86,14 @@ MAX_LIST_ENTRIES = 500
 MAX_SCAN_FILES = 5000
 #: Run directories returned by the index.
 MAX_RUNS = 200
+#: The longest artifact PATH this surface will look at, and the longest single component.  A
+#: component over the filesystem's NAME_MAX can never name a real file, and an unbounded path
+#: reaches `Path.exists()`/`stat()`, which raise `OSError: [Errno 36] File name too long` — an
+#: UNNAMED 500 instead of the validation refusal this module contracts for.  Measured live on the
+#: rebuilt stack (wave 4): `GET /artifacts/314/content?path=<500 chars>` answered
+#: `500 E_INTERNAL` from `artifacts.py:191`.  Both bounds are refusals, never truncation.
+MAX_PATH_CHARS = 1024
+MAX_PATH_COMPONENT_CHARS = 255
 #: How many skipped/refused directory names the index reports in `skipped` detail.
 MAX_SKIP_DETAILS = 20
 #: The workspace is text-only by construction (`code_write` refuses NUL bytes and non-UTF-8).
@@ -374,6 +382,18 @@ def relative_parts(path: object) -> list[str]:
             how_to_fix="pass the artifact's path as returned by GET /api/v1/artifacts/{run_id}",
             context={"field": "path"},
         )
+    too_long = [part for part in parts if len(part) > MAX_PATH_COMPONENT_CHARS]
+    if too_long or len(normalized) > MAX_PATH_CHARS:
+        # A component over NAME_MAX cannot name a real file, and leaving it unbounded lets an
+        # `OSError: File name too long` escape from `exists()`/`stat()` as an UNNAMED 500.
+        raise PolsiaError(
+            E_VALIDATION,
+            f"artifacts: 'path' is too long (max {MAX_PATH_CHARS} chars, "
+            f"{MAX_PATH_COMPONENT_CHARS} per component)",
+            how_to_fix="pass the artifact's path exactly as GET /api/v1/artifacts/{run_id} returned it",
+            context={"field": "path", "chars": len(normalized),
+                     "overlong_components": len(too_long)},
+        )
     return parts
 
 
@@ -466,14 +486,28 @@ def resolve_artifact(
             context={"run_id": name, "path": str(path)[:200], "resolved": str(resolved)},
         )
     relative = "." if resolved == directory else resolved.relative_to(directory).as_posix()
-    if not resolved.exists():
+    try:
+        exists = resolved.exists()
+        is_link = resolved.is_symlink()
+        is_file = resolved.is_file()
+    except OSError as exc:
+        # `Path.exists()` only swallows a short errno list; ENAMETOOLONG/EACCES propagate.  They
+        # are filesystem faults, so they are the NAMED E_STORAGE refusal, never an unnamed 500.
+        raise PolsiaError(
+            E_STORAGE,
+            f"artifacts: {relative!r} in run {name} cannot be inspected "
+            f"({type(exc).__name__}: {exc.strerror or exc})",
+            how_to_fix="the workspace path is not readable by this process; check the volume",
+            context={"run_id": name, "path": relative[:200]},
+        ) from exc
+    if not exists:
         raise PolsiaError(
             E_NOT_FOUND,
             f"artifacts: no file {relative!r} exists in run {name}'s workspace",
             how_to_fix="list the run's artifacts first (GET /api/v1/artifacts/{run_id})",
             context={"run_id": name, "path": relative},
         )
-    if resolved.is_symlink():
+    if is_link:
         raise PolsiaError(
             E_VALIDATION,
             f"artifacts: {relative!r} is a symbolic link — artifacts are served as regular "
@@ -481,7 +515,7 @@ def resolve_artifact(
             how_to_fix="the artifact surface does not serve links; download the real file",
             context={"run_id": name, "path": relative},
         )
-    if not resolved.is_file():
+    if not is_file:
         raise PolsiaError(
             E_VALIDATION,
             f"artifacts: {relative!r} is not a regular file (it is a directory or a device)",

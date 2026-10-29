@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 
+import { RunArtifacts } from "@/components/artifacts/RunArtifacts";
 import { ListSkeleton, ReadError } from "@/components/finance/states";
 import { RunDetail } from "@/components/runs/RunDetail";
 import { parseRunId } from "@/components/runs/parseRunId";
@@ -20,6 +21,10 @@ import { useRunDetail } from "@/components/runs/useRunDetail";
  * States follow the house idiom (`/tasks/[id]`, `/usage`): loading is a busy skeleton, the
  * failure is NAMED through the shared `ApiError` display via `ReadError`, and a `[id]` that is
  * not a positive integer is never requested — the page says what the route expects.
+ *
+ * F-27 (wave 4): the page also renders this run's ARTIFACTS (`RunArtifacts`), so "open the run"
+ * answers "what did it write?" without a detour through `/ops`. Its read is independent of the
+ * ledger read, honest about a measured `0 files`, and runs on mount plus its own Refresh only.
  *
  * The ledger link is a plain `<a>` (a full page load), the same choice `/tasks/[id]` makes: this
  * route works from any render context.
@@ -70,6 +75,13 @@ export default function RunDetailPage({ params }: { params: { id: string } }) {
       {runId !== null && loading ? <ListSkeleton testId="run-detail-loading" /> : null}
 
       {runId !== null && data !== null ? <RunDetail run={data} /> : null}
+
+      {/* F-27 (wave 4): what this run actually WROTE, on the page the owner opens for it. The
+          panel reads `GET /artifacts/{run_id}` through the shared reader (mount + its own
+          Refresh only); a run with 0 files says so — the measured zero that makes a claimed
+          deliverable visible. It renders once the ledger row is a real read, so a failed run read
+          does not add a second request for a run id nothing confirmed. */}
+      {runId !== null && data !== null ? <RunArtifacts runId={runId} /> : null}
     </div>
   );
 }

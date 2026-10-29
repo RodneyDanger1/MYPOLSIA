@@ -68,12 +68,11 @@ API_ONLY: dict[tuple[str, str], str] = {
         "never by the SPA; auth is the dedicated SUPPORT_INBOUND_SECRET header, not the owner "
         "key. The resulting inbox item is read/consumed by the support page and attach sweep."
     ),
-    # wave-2 F-08: the owner-read artifact API ships before its /ops consumer.  The consumer is a
-    # recorded wave-4 REQUEST (R-W2-B3); until it lands these four are API-only BY DESIGN.
-    ("GET", "/api/v1/artifacts"): "owner-read artifact index; /ops consumer is R-W2-B3 (wave 4)",
-    ("GET", "/api/v1/artifacts/{run_id}"): "owner-read run artifact list; /ops consumer is R-W2-B3",
-    ("GET", "/api/v1/artifacts/{run_id}/content"): "owner-read artifact text; /ops consumer is R-W2-B3",
-    ("GET", "/api/v1/artifacts/{run_id}/download"): "owner-read artifact bytes; /ops consumer is R-W2-B3",
+    # wave-2 F-08 shipped the owner-read artifact API before its consumer; wave 3 wired `/ops`
+    # (R-W2-B3) and wave 4 wired `/runs/{id}` + `/tasks/{id}` (F-27), so ALL FOUR artifact routes
+    # now have a shipped UI consumer (`components/artifacts/reader.ts`).  Their API_ONLY entries
+    # are therefore removed: an entry that claims "no browser calls this" while the UI does would
+    # be exactly the documentation drift this guard exists to catch.
 }
 
 #: Settings read through a COMPUTED attribute name (invisible to a literal scan).  Empty today:
@@ -178,13 +177,23 @@ def test_every_route_has_a_ui_consumer_or_a_documented_reason() -> None:
                 continue
             undocumented.append(f"{method} {path}")
 
-    stale = [
-        f"{method} {path}"
-        for (method, path) in sorted(API_ONLY)
-        if path not in routes or method not in routes[path]
-    ]
+    # The docstring's promise ("an entry that no longer exists … OR a route that gained a
+    # consumer → STALE") was not code: only route existence was checked.  The four artifact
+    # entries therefore kept claiming "no browser calls this" while `/ops` (wave 3) and
+    # `/runs/{id}` + `/tasks/{id}` (wave 4) all consume them.  Both staleness shapes are one
+    # assertion now, so a documented API-only reason cannot outlive its truth.
+    def _route_key(path: str) -> str:
+        return _norm(path[len(API_PREFIX):] if path.startswith(API_PREFIX) else path)
 
-    assert not stale, f"API_ONLY entries no longer match a route: {stale}"
+    stale: list[str] = []
+    for (method, path) in sorted(API_ONLY):
+        key = _route_key(path)
+        if path not in routes or method not in routes[path]:
+            stale.append(f"{method} {path} (no such route)")
+        elif key in ui:
+            stale.append(f"{method} {path} (documented API-only, but the UI calls it)")
+
+    assert not stale, f"API_ONLY entries are stale: {stale}"
     assert not undocumented, (
         "routes with no UI consumer and no documented API-only reason: "
         + "; ".join(undocumented)

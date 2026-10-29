@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { TaskArtifacts } from "@/components/tasks/TaskArtifacts";
 import { TaskDetailContent } from "@/components/tasks/TaskDetailContent";
 import { errorText } from "@/components/tasks/status";
 import type { TaskRow } from "@/components/tasks/types";
@@ -25,6 +26,10 @@ import { parseTaskId } from "./parseTaskId";
  * the route expects instead of issuing a request whose 404 would misstate the problem.
  * Navigation uses plain `<a>` (a full page load): this route works from any render context and
  * next/link's router subtleties buy nothing for a two-link header.
+ *
+ * F-27 (wave 4): below the detail, `TaskArtifacts` lists this task's runs (one `GET /runs?task_id=`
+ * read) and opens each run's real files through the shared artifact reader — the owner's way from
+ * "this task completed" to "here is what it wrote".
  */
 
 export default function TaskDetailPage({ params }: { params: { id: string } }) {
@@ -120,6 +125,11 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
           <TaskDetailContent task={row} onTaskQueued={() => setReloadSeq((n) => n + 1)} />
         </div>
       ) : null}
+
+      {/* F-27 (wave 4): the door into this task's agent artifacts. Rendered only once the task
+          row is a real read — the run ledger and the artifacts belong to a task that exists. It
+          reads `GET /runs?task_id=` once on mount, and each run's files only when expanded. */}
+      {taskId !== null && row !== null ? <TaskArtifacts taskId={taskId} /> : null}
     </div>
   );
 }
