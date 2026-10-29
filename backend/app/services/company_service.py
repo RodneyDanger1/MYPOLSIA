@@ -91,7 +91,9 @@ KPI_PROVENANCE_CONFIGURED = "configured"
 
 #: How long a computed context may be reused.  Deliberately short: the agent
 #: prompt is built from it, so staleness is bounded and visible within a cycle.
-CONTEXT_CACHE_TTL_SECONDS: float = 30.0
+#: The value is the `company_context_ttl_seconds` Settings field (default 30 s) — one number,
+#: declared once in `app/config.py` (SV-W4-05: the old module constant was a second copy that
+#: the getattr read could never actually be configured).
 
 # engine -> (expires_at, day_iso, tz, context).  A weak key so a disposed engine
 # (every unit test builds one) is collectable instead of pinned by this cache.
@@ -101,7 +103,7 @@ _CONTEXT_CACHE: weakref.WeakKeyDictionary[Any, tuple[float, str, str, dict[str, 
 
 
 def _cache_ttl() -> float:
-    return float(getattr(settings, "company_context_ttl_seconds", CONTEXT_CACHE_TTL_SECONDS))
+    return float(settings.company_context_ttl_seconds)
 
 
 def invalidate_company_context() -> int:
