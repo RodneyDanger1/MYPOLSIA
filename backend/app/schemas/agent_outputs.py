@@ -185,6 +185,15 @@ class CompetitorReport(AgentEnvelope):
 # 4. social media  (-> social_posts / social_engagements)
 # ---------------------------------------------------------------------------
 
+#: X's own post limit, in characters.  ONE number: `SocialMediaOutput.twitter_length` refuses
+#: anything longer, and the social agent's generation-time repair
+#: (`SocialMediaAgent.repair_model_payload`, F-21) fits an over-long caption to exactly this bound
+#: BEFORE this validator sees it.  The validator is deliberately NOT relaxed by that repair — the
+#: repair runs once, on the payload the model returned; any other path (a direct construction, a
+#: new caller) is still refused.
+TWITTER_MAX_CHARS: Final[int] = 280
+
+
 class SocialPostDraft(BaseModel):
     platform: Literal[
         "twitter", "linkedin", "facebook", "instagram", "tiktok", "youtube"
@@ -267,8 +276,8 @@ class SocialMediaOutput(AgentEnvelope):
     @classmethod
     def twitter_length(cls, v: list[SocialPostDraft]) -> list[SocialPostDraft]:
         for p in v:
-            if p.platform == "twitter" and len(p.content) > 280:
-                raise ValueError("twitter content must be <= 280 chars")
+            if p.platform == "twitter" and len(p.content) > TWITTER_MAX_CHARS:
+                raise ValueError(f"twitter content must be <= {TWITTER_MAX_CHARS} chars")
         return v
 
 
@@ -764,6 +773,7 @@ __all__ = [
     "FAILURE_TO_E_CODE",
     "REMEDIATION",
     "SCHEMA_VERSION",
+    "TWITTER_MAX_CHARS",
     "UNREGISTERED_SCHEMAS",
     "AdCampaignRow",
     "AdMetricRow",

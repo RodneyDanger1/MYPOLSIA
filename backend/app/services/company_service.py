@@ -28,6 +28,7 @@ import copy
 import math
 import time
 import weakref
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -36,12 +37,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.timeutil import day_window, today_in
 from app.models.company import CompanyConfig
-from app.models.report import DailyReport
+from app.models.report import ActivityLog, DailyReport
 from app.models.task import Task
 from app.services import economics_service
 from app.services.query_helpers import fetch_rows, fetch_scalar
 
 NO_CONTEXT = "No company context available."
+
+#: ── F-18 (wave 3): the confirmed idea's PROVENANCE ────────────────────────────────────────────
+#:
+#: `company_config.confirmed_idea` is a JSON bag written by the Planner's confirm step.  It carries
+#: no timestamp of its own, and the profile it was confirmed against lives in a DIFFERENT row of
+#: the same table — so after the owner edits the company (a new name, a new product, a new
+#: market), the old idea silently becomes a statement about a business that no longer exists,
+#: while every prompt still called it "CONFIRMED IDEA".  Measured live (VISUALS-2 F-18): a
+#: candle/soap company was briefed with an "AI Marketing Ops Retainer for SMB Agencies" idea
+#: confirmed fourteen days and several profile edits earlier.
+#:
+#: The honest signal available without inventing a migration: the Planner logs one
+#: `idea_confirmed` activity row in the SAME transaction as the write (`planner_service.confirm`),
+#: and `company_config.updated_at` is bumped by any later edit.  So "the profile was edited after
+#: the idea was confirmed" is a MEASURED fact, not a guess.  When the idea is stale, or when no
+#: confirmation is on record at all, the renderer never presents it as a current fact.
+#:
+#: The two literals below are `planner_service.PLANNER_AGENT_TYPE` / `CONFIRMED_ACTION`.  They are
+#: written out here (and pinned by a test that compares them) because `planner_service` imports
+#: THIS module — a module-level import back would be a cycle.
+IDEA_AGENT_TYPE = "company_planner"
+IDEA_CONFIRMED_ACTION = "idea_confirmed"
+
+IDEA_NONE = "none"
+IDEA_CONFIRMED = "confirmed"
+IDEA_STALE = "stale"
+IDEA_UNVERIFIED = "unverified"
 
 #: How long a computed context may be reused.  Deliberately short: the agent
 #: prompt is built from it, so staleness is bounded and visible within a cycle.
@@ -224,6 +252,15 @@ async def get_full_context(
         for task_id, title, description, agent_type, status, priority in task_rows
     ]
 
+    # F-18 (wave 3): `confirmed_idea` carries NO timestamp of its own, so `idea_brief_state`
+    # carries the measured provenance (confirmed / stale / unverified) beside it — a consumer that
+    # reads `idea_brief` as a FACT about the current company has to ignore that state to do it.
+    # The confirmation lookup is skipped entirely when no idea is stored.
+    idea_state = idea_brief_state(
+        company,
+        await _idea_confirmed_at(db) if isinstance(company.confirmed_idea, dict) else None,
+    )
+
     context: dict[str, Any] = {
         "company": {
             "id": company.id,
@@ -250,7 +287,11 @@ async def get_full_context(
         # /api/v1/planner/confirm (`company_config.confirmed_idea`, 0008).  None = nothing
         # confirmed yet; the key is ALWAYS present so planner-gated consumers (the morning
         # plan's "tie every task to a milestone in idea_brief" rule) read one stable shape.
+        # F-18 (wave 3): the bag carries NO timestamp, so `idea_brief_state` carries the
+        # measured provenance (confirmed / stale / unverified) beside it — a consumer that reads
+        # `idea_brief` as a FACT about the current company has to ignore that state to do it.
         "idea_brief": company.confirmed_idea,
+        "idea_brief_state": idea_state,
         # V11/W2: the sourced macro snapshot (World Bank / FRED / frankfurter, cache-only via
         # `economics_service`) — explicit ok/partial/unavailable with per-section reasons;
         # never fabricated values.
@@ -270,6 +311,86 @@ async def get_full_context(
             copy.deepcopy(context),
         )
     return context
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """A stored timestamp as aware UTC.  SQLite hands back naive datetimes, PostgreSQL aware ones.
+
+    `None` stays `None`: "no timestamp" is a fact this module reports, never a 1970 stand-in.
+    """
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def idea_brief_state(company: CompanyConfig, confirmed_at: datetime | None) -> dict[str, Any]:
+    """The confirmed idea's provenance, from MEASURED timestamps only (F-18, wave 3).
+
+    `status` is one of:
+
+      * `none`       — no idea is stored; the prompt says nothing about one;
+      * `confirmed`  — a Planner `idea_confirmed` record exists and the company profile has NOT
+                       been edited since it was written, so the idea still describes THIS company;
+      * `stale`      — the profile was edited AFTER the confirmation: the idea describes an
+                       earlier business.  Rendered as PRIOR IDEA history, never as a fact;
+      * `unverified` — an idea is stored but no confirmation record exists (written by an API
+                       client or a seed, not by the Planner's confirm step): rendered as a
+                       CANDIDATE, labelled unverified.
+
+    The comparison is strict (`profile_updated_at > confirmed_at`): `confirm()` writes the idea and
+    its activity row in ONE transaction, where both timestamps come from the same `now()`.
+    """
+    if not isinstance(company.confirmed_idea, dict):
+        return {
+            "status": IDEA_NONE,
+            "confirmed_at": None,
+            "profile_updated_at": None,
+            "reason": "no confirmed idea is stored",
+        }
+    edited = _as_utc(company.updated_at)
+    confirmed = _as_utc(confirmed_at)
+    base = {
+        "confirmed_at": confirmed.isoformat() if confirmed is not None else None,
+        "profile_updated_at": edited.isoformat() if edited is not None else None,
+    }
+    if confirmed is None:
+        return {
+            "status": IDEA_UNVERIFIED,
+            **base,
+            "reason": (
+                "an idea is stored but no Planner confirmation is on record, so its age and the "
+                "profile it was confirmed against are unknown"
+            ),
+        }
+    if edited is not None and edited > confirmed:
+        return {
+            "status": IDEA_STALE,
+            **base,
+            "reason": (
+                "the company profile was edited after the idea was confirmed, so the idea may "
+                "describe a different business than the one above"
+            ),
+        }
+    return {
+        "status": IDEA_CONFIRMED,
+        **base,
+        "reason": "confirmed in the Planner and the company profile has not been edited since",
+    }
+
+
+async def _idea_confirmed_at(db: AsyncSession) -> datetime | None:
+    """When the Planner last confirmed an idea, or `None` when no confirmation is on record."""
+    return await fetch_scalar(
+        db,
+        select(ActivityLog.created_at)
+        .where(
+            ActivityLog.agent_type == IDEA_AGENT_TYPE,
+            ActivityLog.action == IDEA_CONFIRMED_ACTION,
+        )
+        .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
+        .limit(1),
+        what="the latest planner idea confirmation",
+    )
 
 
 def build_context_prompt(context: dict[str, Any] | None) -> str:
@@ -317,24 +438,60 @@ def build_context_prompt(context: dict[str, Any] | None) -> str:
                 lines.append(f"- {value}")
 
     idea_brief = context.get("idea_brief")
+    state = context.get("idea_brief_state") or {}
     if isinstance(idea_brief, dict):
-        # V9/B1: the confirmed idea renders into every prompt this builder serves (the
-        # agent-layer path carries the key through the context dict; base_agent.py is
-        # frozen-read for seat b1, so this renderer is the honest in-territory path).
-        lines.append("")
-        lines.append("CONFIRMED IDEA (idea_brief):")
-        for label, key in (
-            ("IDEA", "name"),
-            ("ONE-LINER", "one_liner"),
-            ("BUYER", "buyer"),
-            ("CHANNEL", "channel"),
-        ):
-            value = idea_brief.get(key)
-            if value:
-                lines.append(f"{label}: {value}")
-        band = idea_brief.get("price_band")
-        if isinstance(band, list) and len(band) == 2:
-            lines.append(f"PRICE BAND: {band[0]}-{band[1]}")
+        # F-18 (wave 3): the confirmed idea is NOT automatically a fact about this company.
+        # `idea_brief_state` (measured: the Planner's confirmation record vs the profile's
+        # `updated_at`) decides how it is presented.  Before this, every prompt opened with
+        # "CONFIRMED IDEA" for an idea confirmed days and several profile edits earlier — a
+        # candle/soap company was briefed with an "AI Marketing Ops Retainer" business and then
+        # reasoned, and wrote, from the wrong company.  Whatever the state, the ONE thing a
+        # prompt may never do is assert the idea is current when the evidence does not say so.
+        if state.get("status") == IDEA_STALE:
+            lines.append("")
+            lines.append(
+                "PRIOR IDEA — NOT THE CURRENT BUSINESS (this is history, not a fact about the "
+                "company above):"
+            )
+            if idea_brief.get("name"):
+                lines.append(f"RECORDED NAME: {idea_brief.get('name')}")
+            lines.append(
+                f"WHY IT IS HISTORY: the idea was confirmed in the Planner at "
+                f"{state.get('confirmed_at')}, and the company profile was edited afterwards at "
+                f"{state.get('profile_updated_at')} — it may describe a different business."
+            )
+            lines.append(
+                "INSTRUCTION: do not brief work from this idea, do not repeat its claims, and do "
+                "not treat it as a fact about this company. It is kept only so the owner can "
+                "re-confirm or replace it in the Planner."
+            )
+        else:
+            if state.get("status") == IDEA_CONFIRMED:
+                lines.append("")
+                lines.append(
+                    "CONFIRMED IDEA (idea_brief — confirmed in the Planner at "
+                    f"{state.get('confirmed_at')}; the company profile has not been edited since):"
+                )
+            else:
+                # No confirmation on record (written by an API client / a seed), or a caller that
+                # passed a bare context dict: an unverified CANDIDATE, never a confirmed fact.
+                lines.append("")
+                lines.append(
+                    "RECORDED IDEA (idea_brief — UNVERIFIED: no Planner confirmation is on record "
+                    "for it; treat it as a candidate, never as a fact about the company above):"
+                )
+            for label, key in (
+                ("IDEA", "name"),
+                ("ONE-LINER", "one_liner"),
+                ("BUYER", "buyer"),
+                ("CHANNEL", "channel"),
+            ):
+                value = idea_brief.get(key)
+                if value:
+                    lines.append(f"{label}: {value}")
+            band = idea_brief.get("price_band")
+            if isinstance(band, list) and len(band) == 2:
+                lines.append(f"PRICE BAND: {band[0]}-{band[1]}")
 
     yesterday = context.get("yesterday_summary")
     if yesterday:
@@ -356,6 +513,12 @@ def build_context_prompt(context: dict[str, Any] | None) -> str:
 
 
 __all__ = [
+    "IDEA_AGENT_TYPE",
+    "IDEA_CONFIRMED",
+    "IDEA_CONFIRMED_ACTION",
+    "IDEA_NONE",
+    "IDEA_STALE",
+    "IDEA_UNVERIFIED",
     "NO_CONTEXT",
     "build_context_prompt",
     "cache_info",
@@ -363,6 +526,7 @@ __all__ = [
     "get_company_by_name",
     "get_daily_cycle_hour",
     "get_full_context",
+    "idea_brief_state",
     "invalidate_company_context",
     "measured_human_hourly_rate",
 ]

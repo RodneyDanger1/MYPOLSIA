@@ -39,7 +39,30 @@ from app.agents.side_effects import (
 )
 from app.config import settings
 from app.core.errors import E_RATE_LIMITED, E_VALIDATION, PolsiaError
-from app.schemas.agent_outputs import SocialMediaOutput
+from app.schemas.agent_outputs import TWITTER_MAX_CHARS, SocialMediaOutput
+
+#: How many `notes` entries the envelope accepts (`AgentEnvelope.notes`, max_length=20).  The
+#: repair below appends at most this many and never rewrites the model's own notes.
+_MAX_NOTES = 20
+
+
+def fit_twitter_content(content: str, limit: int = TWITTER_MAX_CHARS) -> str:
+    """`content` fitted to `limit` characters at a WORD boundary, with a visible cut mark.
+
+    Deterministic and lossless-by-statement: the kept text is an exact PREFIX of the input, the
+    removed tail is never reconstructed, and the trailing `…` says a cut happened.  A caption with
+    no usable break in its second half is cut at the character limit (still marked) rather than
+    left over-long — the platform limit is not negotiable.
+    """
+    if len(content) <= limit:
+        return content
+    head = content[: max(1, limit - 1)]          # reserve one character for the ellipsis
+    cut = head.rfind(" ")
+    if cut >= limit // 2:                        # a real word boundary, not a 2-word caption
+        head = head[:cut]
+    head = head.rstrip(" \t,;:.-—")
+    return f"{head}…" if head else content[: max(1, limit - 1)] + "…"
+
 
 ROLE = """You are the Social Media agent of an autonomous company: you run the company's public
 voice on X, LinkedIn, Facebook, Instagram, TikTok and YouTube.
@@ -77,6 +100,59 @@ class SocialMediaAgent(BasePolsiaAgent):
     output_schema = SocialMediaOutput
     max_turns = 30
     role_prompt = ROLE
+
+    # ------------------------------------------------------------------ generation-time repair
+    def repair_model_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """F-21: fit an over-long X caption to the platform limit BEFORE the schema validates it.
+
+        MEASURED DEFECT (VISUALS-2 F-21, live task 313 / run 310): a normal caption brief produced
+        a `posts[]` item with more than 280 characters of twitter copy.  The schema refused the
+        WHOLE payload (`E_AGENT_BAD_OUTPUT … twitter content must be <= 280 chars`), that raw
+        validator text reached the activity feed and the task row, and the product spent a retry
+        on copy the model had already written.
+
+        The limit is a platform FACT, not a bad answer, so this repair fits the caption at a word
+        boundary and RECORDS the change in the payload's own `notes` (original length, the limit,
+        and the fact that the removed tail was not stored).  The schema validator is unchanged:
+        this runs once, in the ladder's validator, on the payload the provider returned.
+        """
+        posts = payload.get("posts")
+        if not isinstance(posts, list):
+            return payload
+        cut: list[str] = []
+        for index, post in enumerate(posts):
+            if not isinstance(post, dict):
+                continue
+            platform = str(post.get("platform") or "twitter")
+            content = post.get("content")
+            if platform != "twitter" or not isinstance(content, str):
+                continue
+            if len(content) <= TWITTER_MAX_CHARS:
+                continue
+            fitted = fit_twitter_content(content, TWITTER_MAX_CHARS)
+            post["content"] = fitted
+            cut.append(
+                f"twitter post #{index} was {len(content)} chars, over the {TWITTER_MAX_CHARS}"
+                f"-char platform limit; it was cut at a word boundary to {len(fitted)} chars and "
+                "the removed tail was not stored"
+            )
+        if not cut:
+            return payload
+        notes = payload.get("notes")
+        notes = [str(note) for note in notes] if isinstance(notes, list) else []
+        room = max(0, _MAX_NOTES - len(notes))
+        if len(cut) <= room:
+            notes.extend(cut)
+        elif room:
+            # Not enough room to name every caption: say how many were fitted, never a silent cut.
+            notes.append(
+                f"{len(cut)} twitter captions were over the {TWITTER_MAX_CHARS}-char platform "
+                "limit and were cut at a word boundary; the removed tails were not stored"
+            )
+        payload["notes"] = notes[: _MAX_NOTES]
+        if "social_platform_fit" not in self._deterministic_repairs:
+            self._deterministic_repairs.append("social_platform_fit")
+        return payload
 
     # ------------------------------------------------------------------ side effects
     def _channel_counts(self, context: dict[str, Any], channel: str) -> tuple[int | None, int | None]:
@@ -283,4 +359,4 @@ class SocialMediaAgent(BasePolsiaAgent):
         return self.attach_run_meta(payload, assembled=assembled)
 
 
-__all__ = ["ROLE", "SocialMediaAgent"]
+__all__ = ["ROLE", "SocialMediaAgent", "fit_twitter_content"]

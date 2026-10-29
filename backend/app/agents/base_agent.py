@@ -43,6 +43,7 @@ from app.agents.context_assembler import (
     DEFAULT_BUDGETS,
     AssembledContext,
     Layer,
+    MemoryItem,
     assemble,
     budgets_for_total,
     compute_run_taint,
@@ -416,6 +417,10 @@ class BasePolsiaAgent(ABC):
         self.last_attempts: int = 0
         self.last_repair: str | None = None
         self.last_ladder: list[str] = []
+        #: F-21: the deterministic pre-validation repairs this run performed, in order.  An agent's
+        #: `repair_model_payload` appends its repair's NAME here; `call_claude_structured` folds it
+        #: into `last_repair` (`repaired_by`), beside anything the repair ladder later did.
+        self._deterministic_repairs: list[str] = []
         self._session_totals: dict[str, float] = {}
         # V25/L1 — the RUN context published for the invoke seam.  `timed_run` (the one entry
         # every dispatched run goes through) and `collect_structured` set these from the task;
@@ -526,6 +531,30 @@ class BasePolsiaAgent(ABC):
 
             return schema_for(self.agent_type)
         return self.output_schema
+
+    def repair_model_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Deterministic, IN-PLACE repair of the raw model payload, BEFORE schema validation.
+
+        F-21 (wave 3).  The schema is the contract and validation stays strict; but when a normal
+        answer violates a constraint THE PLATFORM imposes (X's 280-character post limit, say), the
+        run should not die and spend a retry on copy the model already wrote.  An agent that has
+        exactly such a repair overrides this hook, mutates the payload, records what it changed in
+        the payload's own `notes`, and appends the repair's NAME to `self._deterministic_repairs`
+        (which is what `usage_metadata()["repaired_by"]` reports, beside any ladder repair).
+
+        Two rules make this safe rather than a way to launder bad output:
+
+          * it runs ONCE, on the payload the provider returned, inside the repair ladder's
+            validator — so a payload built by any other path (a direct `Model(...)`, another
+            caller, a future producer) meets the unchanged validator and is still refused;
+          * it MUST mutate the dict it is given.  `structured_output.resolve_output` validates the
+            object it already holds and returns THAT object, so a repair that built a new dict
+            would be discarded and the un-repaired payload would then fail the final
+            re-validation after the ladder.
+
+        The default does nothing: every agent that has no such repair is byte-identical.
+        """
+        return payload
 
     # ------------------------------------------------------------------ prompt assembly
     def layers_for(
@@ -669,7 +698,12 @@ class BasePolsiaAgent(ABC):
         ]))
         memory_layer = Layer("memories", 0)
         if memories:
-            from app.agents.context_assembler import MemoryItem, memory_identity, rank_memories
+            from app.agents.context_assembler import (
+                MemoryItem,
+                memory_identity,
+                rank_memories,
+            )
+            from app.services.memory_service import SCOPE_FOREIGN
 
             items = [
                 MemoryItem(
@@ -680,11 +714,27 @@ class BasePolsiaAgent(ABC):
                     age_days=float(m.get("age_days") or 0.0),
                     tags=tuple(m.get("tags") or ()),
                     pinned=bool(m.get("pinned")),
+                    company_scope=str(m.get("company_scope") or "unscoped"),
                 )
                 for m in memories
             ]
-            ranked = rank_memories(items, query_terms=task_title_terms(task), k=30)
-            memory_layer.entries = [f"- {m.title}: {m.content}" for m in ranked]
+            # F-24 (wave 3): a memory row that names ANOTHER company is withheld — it is that
+            # company's history, and it is how wave-1's "55-hour burn" came back as "our current
+            # product story" for a company that never made that claim.  Withheld is COUNTED and
+            # said out loud in the layer, never dropped in silence.  Everything else is rendered
+            # with its own scope tag so no entry can be read as this company's fact by accident.
+            ours = [item for item in items if item.company_scope != SCOPE_FOREIGN]
+            withheld = len(items) - len(ours)
+            ranked = rank_memories(ours, query_terms=task_title_terms(task), k=30)
+            memory_layer.entries = [render_memory_entry(m) for m in ranked]
+            note = memory_scope_note(ranked)
+            if note:
+                memory_layer.entries.insert(0, note)
+            if withheld:
+                memory_layer.entries.append(
+                    f"- ({withheld} stored memories from a different company were withheld from "
+                    "this brief)"
+                )
 
         return {
             "identity": Layer("identity", 0, text=identity, pinned=True),
@@ -950,6 +1000,10 @@ class BasePolsiaAgent(ABC):
         self._tools_used = []
         self._run_num_turns = 0
         self._run_num_turns_measured = False
+        # F-21: the deterministic-repair record is a fact about ONE logical run, like the tool
+        # evidence above — a previous run's repair must never be reported as this run's.
+        self.last_repair = None
+        self._deterministic_repairs = []
 
     def _absorb_tool_names(self, raw: Any) -> bool:
         """Merge one envelope's `tools_used` into the run's list; True when the key was present."""
@@ -1262,9 +1316,19 @@ class BasePolsiaAgent(ABC):
             )
             json_schema = None
 
+        # F-21: the schema is the contract, and validation stays strict — but a repair that is
+        # DETERMINISTIC and fully recorded belongs BEFORE the validator, so a platform limit the
+        # model overran costs a note, not a whole run plus a retry.  The hook is handed the raw
+        # payload the model returned and must mutate it in place: `resolve_output` validates the
+        # object it already holds and returns THAT object on success, so a repair that returned a
+        # new dict would be discarded and the un-repaired payload would fail the final
+        # re-validation below.  The default does nothing, so every existing agent is unchanged.
+        def validate(payload: dict[str, Any]) -> Any:
+            return model.model_validate(self.repair_model_payload(payload))
+
         resolve_kwargs: dict[str, Any] = {
             "schema_name": name,
-            "validator": model.model_validate,
+            "validator": validate,
             "required_fields": tuple(model.model_json_schema().get("required") or ()),
             "coercions": _top_level_coercions(model),
         }
@@ -1291,7 +1355,14 @@ class BasePolsiaAgent(ABC):
             policy=structured_output.policy_from_settings(),
         )
         self.last_ladder = list(resolution.ladder_log)
-        self.last_repair = resolution.used_repair
+        # F-21: an agent's own deterministic repair (`repair_model_payload`) is a repair too — it
+        # ran BEFORE validation, so the ladder has no `used_repair` entry for it.  Both are real
+        # facts about this run, so `repaired_by` carries both in the order they ran (hook first,
+        # then the ladder).  When neither ran, the field stays empty exactly as before.
+        repairs = [*self._deterministic_repairs]
+        if resolution.used_repair:
+            repairs.append(resolution.used_repair)
+        self.last_repair = "+".join(dict.fromkeys(repairs)) or None
         if not resolution.ok or resolution.payload is None:
             raise resolution.to_polsia_error(agent_type=self.agent_type)
         try:
@@ -1629,6 +1700,15 @@ class BasePolsiaAgent(ABC):
         if not isinstance(result, dict):
             result = {"result": result}
         result["duration_secs"] = duration
+        # F-15 (wave 3): a run may only claim the files it really wrote.  Audited HERE — the one
+        # seam every dispatched run passes, planner runs included — because `summary` is what the
+        # worker copies into `tasks.result_summary`, the text the owner reads.  A claimed path the
+        # run workspace does not hold is labelled (and recorded under `claimed_files`); a run that
+        # claims no path is byte-identical, and a run with no `run_id` (an in-process probe) gets an
+        # `unverified` record rather than a guess.  The rule lives in `app.services.claimed_files`.
+        from app.services.claimed_files import audit_claimed_files
+
+        audit_claimed_files(run_id=self.run_id, result=result)
         from app.agents.run_verdict import apply_run_verdict
 
         return apply_run_verdict(self.agent_type, result)
@@ -1738,6 +1818,41 @@ def context_memories(context: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def render_memory_entry(item: MemoryItem) -> str:
+    """One `memories`-layer line, TAGGED with whose history it is (F-24, wave 3).
+
+    Measured defect: wave-1's Copper & Pine facts came back to a candle/soap company as "our current
+    product story", because a memory line carried no provenance at all.  Every entry now leads with
+    its scope:
+
+      * `[CURRENT COMPANY]` — the row is tagged with THIS company's id;
+      * `[UNSCOPED]`        — no company tag: written before memory was scoped (or by a path that
+                              does not tag), so its owner is UNKNOWN.  The prompt rule that reads
+                              these tags is in the layer header (`memory_scope_note`).
+
+    A tag, not a rewrite: the memory's own title and content are reproduced verbatim, so nothing is
+    paraphrased upward.  Foreign-company rows never reach here — `layers_for` withholds them.
+    """
+    scope = item.company_scope or "unscoped"
+    tag = "[CURRENT COMPANY]" if scope == "current" else "[UNSCOPED]"
+    return f"- {tag} {item.title}: {item.content}"
+
+
+def memory_scope_note(entries: list[MemoryItem]) -> str:
+    """The one-line key for the scope tags — present only when some entry is not current.
+
+    A prompt that only carries current-company memories needs no key (and stays byte-identical to
+    the pre-F-24 one).
+    """
+    if all((entry.company_scope or "unscoped") == "current" for entry in entries):
+        return ""
+    return (
+        "SCOPE: [CURRENT COMPANY] memories describe this company. [UNSCOPED] memories were "
+        "recorded before memories were company-scoped, so their owner is unknown — they may "
+        "describe a DIFFERENT company: never present one as a fact about this company."
+    )
+
+
 def _top_level_coercions(model: type[BaseModel]) -> dict[str, type]:
     """Which top-level scalars the deterministic repair may coerce ('42' -> 42).
 
@@ -1779,7 +1894,9 @@ __all__ = [
     "context_memories",
     "guard_caller_quarantine",
     "is_mock_mode",
+    "memory_scope_note",
     "parse_json_object",
+    "render_memory_entry",
     "render_upstream_results",
     "truthy",
 ]

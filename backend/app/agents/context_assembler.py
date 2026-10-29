@@ -307,6 +307,11 @@ class MemoryItem:
     #: Declared LAST and kw_only: mypy 1.13 (CI's pin) still enforces the dataclass ordering rule
     #: on kw_only fields, and every constructor in this tree passes keywords — V21 settle.
     memory_id: str | None = field(default=None, kw_only=True)
+    #: F-24 (wave 3): whose history this entry is — `current` (this company), `unscoped` (written
+    #: before memory was company-scoped, so its owner is unknown).  `foreign` rows are withheld by
+    #: the prompt layer and never reach a MemoryItem.  The DEFAULT is `unscoped` on purpose: a
+    #: caller that does not know whose memory this is must not be able to imply that it is ours.
+    company_scope: str = field(default="unscoped", kw_only=True)
 
 
 def memory_identity(item: dict[str, Any]) -> str | None:

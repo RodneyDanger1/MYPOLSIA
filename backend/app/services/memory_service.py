@@ -55,6 +55,59 @@ MAX_FALLBACK_LIMIT = 200
 
 logger = logging.getLogger(__name__)
 
+#: ── F-24 (wave 3): memory belongs to a COMPANY ────────────────────────────────────────────────
+#:
+#: Measured defect (VISUALS-2 F-24): wave-1's Copper & Pine run summaries ("coconut-soy wax, wood
+#: wick, 8 oz at $28, 55-hour burn") were still retrievable after the owner had replaced the company
+#: with a candle/soap brand, and run 312 — a run for the NEW company — reasoned from them: *"its
+#: published 35-hour burn also sits below the 55-hour claim in our current product story"*.  The
+#: memory layer had no company identity at all: `remember_run` wrote the summary with the agent type
+#: as its only tag, and the read side retrieved every row for every company.
+#:
+#: The fix is a TAG, not a schema change (memory rows are the owner's data and a migration is not
+#: this repair's business): a run memory is written with `company_id:<id>` and
+#: `company_name:<name>`, and the read side labels every hit CURRENT / FOREIGN / UNSCOPED from those
+#: tags.  Rows written before this change carry no company tag and CANNOT be proven to belong to the
+#: current company — they are `unscoped` and are labelled so; a row that names a DIFFERENT company
+#: is `foreign` and is withheld from the prompt.  We never guess a row's owner from its text.
+COMPANY_ID_TAG = "company_id:"
+COMPANY_NAME_TAG = "company_name:"
+
+SCOPE_CURRENT = "current"
+SCOPE_FOREIGN = "foreign"
+SCOPE_UNSCOPED = "unscoped"
+
+
+def company_id_tag(company_id: int) -> str:
+    """The tag that scopes a memory to one company row (the id, never the display name)."""
+    return f"{COMPANY_ID_TAG}{int(company_id)}"
+
+
+def memory_company_scope(tags: list[str] | tuple[str, ...], company_id: int | None) -> str:
+    """`current` when the row names THIS company, `foreign` when it names another, else `unscoped`.
+
+    A row with no company tag predates scoping (or was written by a path that does not tag): its
+    owner is UNKNOWN, which is not the same claim as "current".  `company_id is None` (no company
+    row at all) makes every tagged row foreign-by-definition and every untagged one unscoped.
+    """
+    named = [str(tag) for tag in tags if str(tag).startswith(COMPANY_ID_TAG)]
+    if not named:
+        return SCOPE_UNSCOPED
+    if company_id is None:
+        return SCOPE_FOREIGN
+    mine = company_id_tag(company_id)
+    return SCOPE_CURRENT if mine in named else SCOPE_FOREIGN
+
+
+def memory_company_name(tags: list[str] | tuple[str, ...]) -> str:
+    """The company display name a memory row carries, or "" when it carries none."""
+    for tag in tags:
+        text = str(tag)
+        if text.startswith(COMPANY_NAME_TAG):
+            return text[len(COMPANY_NAME_TAG):]
+    return ""
+
+
 
 def _build_where(category: str | None, source: str | None) -> dict[str, Any] | None:
     clauses = []
@@ -383,6 +436,12 @@ async def resolve_agent_memories(
     A vector-store failure with no fallback match raises the named `E_DB` (see `search_memory`)
     — the worker's hook catches that and leaves the context key ABSENT; an empty list must
     never stand in for "could not read" (the same rule every `_with_*` worker hook follows).
+
+    F-24 (wave 3): every view carries `company_scope` — `current` (the row is tagged with THIS
+    company's id), `foreign` (it is tagged with a different company's id) or `unscoped` (no company
+    tag: written before scoping existed, so its owner is unknown).  The classification is read off
+    the ROW's own tags; the text is never guessed at.  The prompt layer withholds `foreign` rows
+    and labels the rest (see `base_agent.render_memory_entry`).
     """
     text = (query or "").strip() or f"{agent_type} agent run"
     hits = await search_memory(db, text, n_results=max(1, min(int(limit or 8), 20)))
@@ -394,6 +453,13 @@ async def resolve_agent_memories(
             what="memory prompt rows",
         )
         rows = {int(entry.id): entry for entry in entries}
+    # The company this run is FOR.  Read through the shipped accessor (one row, the same lookup
+    # every other company-scoped read uses); a read failure is the named E_DB from there, and no
+    # company row means every tagged memory is another company's.
+    from app.services.company_service import get_company
+
+    company = await get_company(db)
+    company_id = int(company.id) if company is not None and company.id is not None else None
     views: list[dict[str, Any]] = []
     for hit in hits:
         memory_id = hit.get("memory_id")
@@ -404,6 +470,7 @@ async def resolve_agent_memories(
             if isinstance(distance, int | float)
             else 0.0
         )
+        tags = [str(tag) for tag in (row.tags or [])] if row is not None else []
         views.append({
             "memory_id": memory_id if memory_id is not None else hit.get("id"),
             "title": str(hit.get("title") or (row.title if row is not None else "")),
@@ -412,8 +479,11 @@ async def resolve_agent_memories(
             "source": hit.get("source") or (row.source if row is not None else None),
             "similarity": similarity,
             "age_days": _age_days(row.created_at) if row is not None else 0.0,
-            "tags": [str(tag) for tag in (row.tags or [])] if row is not None else [],
+            "tags": tags,
             "pinned": False,
+            # F-24: provenance, measured from the row's own tags — never inferred from its text.
+            "company_scope": memory_company_scope(tags, company_id),
+            "company_name": memory_company_name(tags),
         })
     return views
 
@@ -465,6 +535,18 @@ async def remember_run(
         )
     task_title = str((task or {}).get("title") or "").strip()
     title = f"{agent_type}: {task_title}" if task_title else f"{agent_type} run"
+    # F-24: stamp the COMPANY this run was for, so the read side can tell "our history" from "the
+    # previous company's history".  Read here (the worker owns the session) rather than trusting a
+    # caller to pass it: one writer, one place the tag can come from.  A missing company row means
+    # no tag — an unscoped row, which the read side already labels as unknown.
+    from app.services.company_service import get_company
+
+    company = await get_company(db)
+    tags = [agent_type]
+    if company is not None and company.id is not None:
+        tags.append(company_id_tag(int(company.id)))
+        if company.name:
+            tags.append(f"{COMPANY_NAME_TAG}{str(company.name)[:200]}")
     try:
         entry = await store_memory(
             db,
@@ -472,7 +554,7 @@ async def remember_run(
             title=title[:512],
             content=summary[:4000],
             source=agent_type,
-            tags=[agent_type],
+            tags=tags,
         )
     except PolsiaError as exc:
         return {
@@ -493,9 +575,17 @@ async def remember_run(
 
 
 __all__ = [
+    "COMPANY_ID_TAG",
+    "COMPANY_NAME_TAG",
+    "SCOPE_CURRENT",
+    "SCOPE_FOREIGN",
+    "SCOPE_UNSCOPED",
+    "company_id_tag",
     "delete_memory",
     "get_memory",
     "list_memories",
+    "memory_company_name",
+    "memory_company_scope",
     "remember_run",
     "resolve_agent_memories",
     "search_memory",
