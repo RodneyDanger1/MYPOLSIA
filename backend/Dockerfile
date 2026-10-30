@@ -9,8 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI globally.
+# WHERE it lands is not cosmetic: this base image is `python:3.12-slim` (Debian) with Node.js from
+# the NodeSource apt repo, so npm's global prefix is `/usr` and the binary is created at
+# `/usr/bin/claude` — NOT `/usr/local/bin/claude` (that path is what the official node:* images
+# produce; this image is not one).  The ENV below and this assertion must agree: a base-image /
+# NodeSource change that moves the binary then fails the BUILD by name, instead of shipping an
+# image whose CLAUDE_CLI_PATH names a path nothing created.  That was the live defect
+# (2026-10-30): the image ENV pinned `/usr/local/bin/claude`, `claude --version` worked from
+# `/usr/bin/claude`, and every agent run without a DeepSeek key was refused
+# `E_CLI_MISSING: '/usr/local/bin/claude' is not executable`.
+RUN npm install -g @anthropic-ai/claude-code && test -x /usr/bin/claude
 
 WORKDIR /app
 
@@ -22,7 +31,7 @@ COPY . .
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     CHROMA_PERSIST_DIR=/app/data/chroma \
-    CLAUDE_CLI_PATH=/usr/local/bin/claude
+    CLAUDE_CLI_PATH=/usr/bin/claude
 
 EXPOSE 8000
 

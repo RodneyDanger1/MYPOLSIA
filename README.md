@@ -246,7 +246,7 @@ Then walk the first-run checklist — company profile, sender identity, owner pr
 |----------|-------------|
 | `API_KEY` | Secret key for the dashboard API (`X-API-Key` header) |
 | `SANDBOX_MODE` | `true` = no real posts/emails/charges (default) |
-| `CLAUDE_CLI_PATH` | Path to the `claude` binary. The setting's default is `claude` (found on `PATH`); the container image's ENV sets `/usr/local/bin/claude` (`backend/Dockerfile:25`) |
+| `CLAUDE_CLI_PATH` | Path to the `claude` binary. The setting's default is `claude` (found on `PATH`); the container image's ENV sets `/usr/bin/claude` (`backend/Dockerfile` — npm's global prefix is `/usr` in that Debian + NodeSource image, and the build asserts the binary exists there) |
 
 The fallback Claude CLI authenticates via the `~/.claude` directory on your host, which is mounted read-only into the containers (run `claude login` on your host once if you use it); the default DeepSeek runtime needs only its API key, entered in the app.
 
