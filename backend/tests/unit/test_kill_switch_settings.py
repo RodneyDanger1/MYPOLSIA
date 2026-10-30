@@ -179,6 +179,57 @@ def test_a_logged_out_cli_refuses_dispatch_before_any_spawn(monkeypatch):
     assert exc_info.value.context["safety"]["cli_auth"] == "logged_out"
 
 
+#: The REAL `claude auth status` wire shape, measured on Claude Code 2.1.197 (the version the
+#: backend image's `npm install -g @anthropic-ai/claude-code` installs): a JSON OBJECT, not prose.
+REAL_CLI_LOGGED_OUT_STDOUT = (
+    '{\n  "loggedIn": false,\n  "authMethod": "none",\n  "apiProvider": "firstParty"\n}\n'
+)
+
+
+def test_the_real_cli_json_status_is_read_as_logged_out(monkeypatch):
+    """The shipped CLI's machine-readable status must be read as the definitive verdict it is.
+
+    RED (measured 2026-10-30, live worker): `_LOGGED_OUT_RE` matched only human prose, so this
+    exact output was classified `probed_ok`, `_spawn_facts()["auth_ok"]` was True while
+    `claude auth status` said `"loggedIn": false`, and every fallback run was dispatched into a
+    spawn that could only fail.  The prose test above pins the OLDER wording only.
+    """
+    _non_mock_runtime(monkeypatch)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
+    monkeypatch.setattr(crew_factory.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def _run(argv, **_kwargs):
+        return _FakeProc(stdout=REAL_CLI_LOGGED_OUT_STDOUT, returncode=0)
+
+    monkeypatch.setattr(crew_factory.subprocess, "run", _run)
+
+    problems = crew_factory.dispatch_preflight("email_outreach")
+    assert any(E_CLI_JSON in p for p in problems), problems
+
+    with pytest.raises(MeridianError) as exc_info:
+        crew_factory.run_agent_for_task("email_outreach", {}, {})
+    assert exc_info.value.code == E_POLICY_DENIED
+    assert exc_info.value.context["safety"]["cli_auth"] == "logged_out"
+
+
+def test_a_logged_in_cli_json_status_stays_clear(monkeypatch):
+    """The other half: `"loggedIn": true` is a REAL pass — the JSON branch must not refuse it."""
+    _non_mock_runtime(monkeypatch)
+    monkeypatch.delenv("MERIDIAN_KILL_SWITCH", raising=False)
+    monkeypatch.setattr(crew_factory.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def _run(argv, **_kwargs):
+        return _FakeProc(
+            stdout='{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}',
+            returncode=0,
+        )
+
+    monkeypatch.setattr(crew_factory.subprocess, "run", _run)
+
+    assert crew_factory.dispatch_preflight("email_outreach") == []
+    assert crew_factory._spawn_facts()["cli_auth"] == "probed_ok"
+
+
 def test_an_inconclusive_auth_probe_does_not_refuse_the_fleet(monkeypatch):
     """Honesty rule: a probe that cannot judge must NOT become a refusal.
 

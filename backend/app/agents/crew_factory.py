@@ -28,6 +28,7 @@ Per-action gating (post / email / ad change / payment / PR) happens inside each 
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import re
@@ -100,6 +101,37 @@ _LOGGED_OUT_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: The shipped Claude Code CLI (2.x) reports `claude auth status` as a JSON OBJECT, not prose —
+#: measured on 2.1.197, the version the backend image installs:
+#:     {"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}
+#: The prose regex above never matched that shape, so a DEFINITIVELY logged-out CLI was recorded
+#: `probed_ok` and every claude-cli-path dispatch was handed to a spawn that could only fail
+#: (the preflight's own promise is "a logged-out CLI is refused BEFORE any spawn").  The field is
+#: authoritative when present; the regex stays for older CLIs / prose variants.  `loggedIn` is
+#: only read from an OBJECT so an unrelated JSON blob cannot decide the verdict.
+_LOGGED_IN_JSON_KEY = "loggedIn"
+
+
+def _json_logged_in_state(output: str) -> bool | None:
+    """`loggedIn` from the CLI's JSON status object; None when the output carries no verdict.
+
+    Deliberately tolerant of the CLI's banners/noise around the object (first `{` .. last `}`),
+    and deliberately silent on anything malformed: an unreadable probe stays `unverified`, which
+    the caller does NOT turn into a refusal (the documented honesty rule).
+    """
+    start, end = output.find("{"), output.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        payload = json.loads(output[start : end + 1])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get(_LOGGED_IN_JSON_KEY)
+    return state if isinstance(state, bool) else None
+
+
 #: Probe cache keyed by the resolved CLI path: one bounded subprocess per worker process.
 _CLI_AUTH_VERDICTS: dict[str, tuple[bool, str]] = {}
 
@@ -136,9 +168,15 @@ def _probe_cli_auth() -> tuple[bool, str]:
             check=False,   # a non-zero exit is not by itself a logged-out signal (see docstring)
         )
         output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-        verdict: tuple[bool, str] = (
-            (False, "logged_out") if _LOGGED_OUT_RE.search(output) else (True, "probed_ok")
-        )
+        # JSON first: the shipped CLI's `loggedIn` field is the DEFINITIVE verdict; only when the
+        # output carries no such field does the prose regex get a say (older CLI wording).
+        logged_in = _json_logged_in_state(output)
+        if logged_in is True:
+            verdict = (True, "probed_ok")
+        elif logged_in is False or _LOGGED_OUT_RE.search(output):
+            verdict = (False, "logged_out")
+        else:
+            verdict = (True, "probed_ok")
     except (OSError, subprocess.SubprocessError):
         verdict = (True, "unverified")
     _CLI_AUTH_VERDICTS[path] = verdict
